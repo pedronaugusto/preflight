@@ -18,6 +18,10 @@ on:
         description: Use cached duration weights to plan the full-tier shards
         type: boolean
         default: false
+      fast-matrix:
+        description: Static Linux Debug shards generated from ci/workflow.json
+        type: string
+        default: '{"include":[{"name":"Linux Debug","args":"-Doptimize=Debug","cases":"","timeout":"","job_timeout":20,"cache_key":"fast-linux-debug-0"}]}'
       full-matrix:
         description: Static native full-tier matrix generated from ci/workflow.json
         type: string
@@ -65,13 +69,12 @@ jobs:
         run: zig build --build-file .preflight/build.zig attest
   fast:
     if: '!inputs.attest && !inputs.full'
-    name: test (${{ matrix.os }}, Debug)
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && inputs.windows-job-timeout || inputs.test-job-timeout }}
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+      matrix: ${{ fromJSON(inputs.fast-matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -82,15 +85,26 @@ jobs:
       - uses: ./.preflight/.github/actions/setup
         with:
           working-directory: ${{ inputs.working-directory }}
-          build-key: fast-${{ matrix.os }}-Debug
-      - name: Check sources on Linux, build and test
+          build-key: ${{ matrix.cache_key }}
+      - name: Check sources, run Linux Debug and compile other test targets
         env:
           STEP: preflight-fast
-          FAST_OS: ${{ matrix.os }}
+          BUILD_ARGS: ${{ matrix.args }}
+          CASES: ${{ matrix.cases }}
+          TEST_TIMEOUT: ${{ matrix.timeout }}
+          PREFLIGHT_SETUP: 'true'
+          FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - name: Verify the shared checker
-        if: github.repository == 'pedronaugusto/preflight' && matrix.os == 'ubuntu-latest'
+        if: github.repository == 'pedronaugusto/preflight'
         run: zig build verify
+      - uses: actions/upload-artifact@v4
+        if: contains(matrix.args, '-Dci-timings=true')
+        with:
+          name: timings-${{ matrix.cache_key }}
+          path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
+          include-hidden-files: true
+          retention-days: 7
   plan:
     if: '!inputs.attest && inputs.full && inputs.measured-plan'
     runs-on: ubuntu-latest

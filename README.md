@@ -54,8 +54,9 @@ Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
 that commit as `preflight-ref`, and `full: true` for a merge candidate. The sample
 caller in this repository shows the trigger and concurrency policy:
 
-- Work-branch pushes start no run. Dispatch requests Debug on Linux, macOS and
-  Windows in one job per host, with source checks inside the Linux job; its `full`
+- Work-branch pushes start no run. Dispatch requests source checks and the full Linux Debug suite in one Ubuntu
+  job, then compiles the test binaries for macOS, Windows and every configured
+  cross target; its `full`
   input requests the entire gate.
 - PR merge candidates and merge queue candidates run the full tier. A main push
   verifies a successful full run for its exact SHA and its full-tier proof artifact.
@@ -71,8 +72,17 @@ target and TSan where supported. Static full-tier matrices are generated locally
 `compile-matrix` and `run-matrix` inputs; `compile-once` enables the latter two.
 Regenerate these inputs when changing the configuration. Only callers whose
 Windows shards use measured weights set `measured-plan: true`, retaining the
-full-tier planning job. Fast runs always build and execute natively in three
-Debug jobs, without planning, artifacts or separate source jobs.
+full-tier planning job. Fast runs execute only on Linux. `ci-check` compiles the test graph without
+executing it, including packages whose full-tier cross step only builds a library.
+Callers generate `fast-matrix` with `zig build plan -- --full false --output <file>`.
+`fast_linux_shards` and `fast_linux_jobs` balance measured families across Ubuntu
+jobs; exactly one shard owns source checks and the other-target compile bundle.
+Shards may record timings for the next measured balance.
+
+A shared `skip` job filters changes before FAST. Changes touching only Markdown
+outside `src`, LICENSE or images run the documented-snippet check alone. Mixed
+changes, source Markdown and unavailable diff bases retain the test gate. FULL
+merge candidates always keep the complete gate, including docs-only candidates.
 
 Named Windows cases are assigned once per mode
 using longest-processing-time-first balancing. Repository-specific jobs stay in

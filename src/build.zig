@@ -28,6 +28,8 @@ pub fn addCi(b: *std.Build, config: Config) void {
     const ci = b.step("ci", "Run source checks, then the tests");
     ci.dependOn(config.tests);
     forceTests(config.tests);
+    const compile = b.step("ci-check", "Compile every test and its helpers without executing tests");
+    compileTests(config.tests, compile);
     const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
     const dep = b.lazyDependency("preflight", .{}) orelse return;
     const host = ciTarget(b);
@@ -114,4 +116,12 @@ fn orderTests(step: *std.Build.Step, lint: *std.Build.Step) void {
         return;
     }
     for (step.dependencies.items) |dependency| orderTests(dependency, lint);
+}
+
+fn compileTests(step: *std.Build.Step, compile: *std.Build.Step) void {
+    if (step.id == .compile) {
+        compile.dependOn(step);
+        return;
+    }
+    for (step.dependencies.items) |dependency| compileTests(dependency, compile);
 }

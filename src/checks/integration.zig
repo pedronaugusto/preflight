@@ -150,3 +150,16 @@ test "compiled caches never skip a second CI execution" {
     }
     try std.testing.expectEqualStrings("xx", try tmp.dir.readFileAlloc(io, "executions", a, .limited(32)));
 }
+
+test "compile-only test graph builds foreign binaries without executing failing tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "test \"must not run\" { return error.ExecutedCompileOnlyTest; }\n" });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "ci-check", "-Dtarget=x86_64-windows-gnu" }, .cwd = .{ .dir = tmp.dir } });
+    if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+}

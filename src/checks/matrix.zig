@@ -64,6 +64,7 @@ pub fn balance(a: std.mem.Allocator, values: []const src.Value, count: usize) ![
 
 pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
+    if (!full) return fastPlan(a, config);
     for (hosts) |host| {
         const modes: []const []const u8 = if (!full) &.{"Debug"} else if (std.mem.eql(u8, host, hosts[0])) &.{ "Debug", "ReleaseSafe", "ReleaseFast" } else &.{ "Debug", "ReleaseSafe" };
         for (modes) |mode| {
@@ -79,7 +80,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
                     .os = host,
                     .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}", .{ host, mode, suffix }),
                     .args = try std.fmt.allocPrint(a, "-Doptimize={s}{s}{s}", .{ mode, if (full or !std.mem.eql(u8, host, hosts[0])) " -Dci-lint=false" else "", if (full) " -Dci-timings=true" else "" }),
-                    .cases = if (!full and std.mem.eql(u8, host, hosts[2])) try fastCases(a, src.items(fast_shards)) else try std.mem.join(a, " ", group),
+                    .cases = if (!full and std.mem.eql(u8, host, hosts[2])) "" else try std.mem.join(a, " ", group),
                     .timeout = src.string(src.get(config, "test_timeout"), ""),
                     .setup = true,
                     .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
@@ -136,14 +137,50 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, full: b
     return .{ .native = native.items, .compile = compile.items, .run = run.items };
 }
 
-fn fastCases(a: std.mem.Allocator, values: []const src.Value) ![]const u8 {
-    var names: std.ArrayList([]const u8) = .empty;
-    for (values) |value| {
-        const name = src.string(src.get(value, "name"), "");
-        if (name.len == 0) return error.InvalidShard;
-        try names.append(a, name);
+fn fastPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
+    const values = src.items(src.get(config, "fast_linux_shards"));
+    const groups: []const []const []const u8 = if (values.len > 0)
+        try balance(a, values, src.number(src.get(config, "fast_linux_jobs"), 1))
+    else
+        &.{&.{}};
+    const jobs = try a.alloc(Job, groups.len);
+    for (groups, jobs, 0..) |group, *job, i| {
+        job.* = .{
+            .os = hosts[0],
+            .name = try std.fmt.allocPrint(a, "Linux Debug{s}", .{if (groups.len > 1) try std.fmt.allocPrint(a, " shard {d}", .{i + 1}) else ""}),
+            .step = "preflight-fast",
+            .args = try std.fmt.allocPrint(a, "-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (values.len > 0) " -Dci-timings=true" else "" }),
+            .cases = try std.mem.join(a, " ", group),
+            .timeout = src.string(src.get(config, "test_timeout"), ""),
+            .setup = true,
+            .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
+            .cache_key = try std.fmt.allocPrint(a, "fast-linux-debug-{d}", .{i}),
+        };
     }
-    return std.mem.join(a, " ", names.items);
+    return jobs;
+}
+
+pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
+    var targets: std.ArrayList(src.Value) = .empty;
+    try targets.appendSlice(a, src.items(src.get(config, "targets")));
+    for ([_][]const u8{ "aarch64-macos", "x86_64-windows-gnu" }) |native| {
+        var found = false;
+        for (targets.items) |target| {
+            const name = if (target == .string) target.string else src.string(src.get(target, "target"), "");
+            if (std.mem.eql(u8, name, native)) found = true;
+        }
+        if (!found) try targets.append(a, .{ .string = native });
+    }
+    return targets.items;
+}
+
+pub fn fastCrossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
+    const args = try crossArgs(a, config, target);
+    const result = try a.alloc([]const u8, args.len + 1);
+    @memcpy(result[0..args.len], args);
+    result[2] = "ci-check";
+    result[args.len] = "-Doptimize=Debug";
+    return result;
 }
 
 fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
@@ -197,30 +234,40 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null));
 }
 
-test "fast gate stays native with three Debug hosts and Linux source checks" {
+test "fast gate executes only Linux Debug and compiles all other test targets" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_once":true,"fast_windows_shards":[{"name":"core-a","seconds":2},{"name":"core-b","seconds":1}],"windows_shards":[{"name":"comparison","seconds":3}],"test_timeout":"--test-timeout 60s","setup_step":"ci-setup"}
+        \\{"compile_step":"install","compile_once":true,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}],"test_timeout":"--test-timeout 60s"}
     , .{})).value;
     const jobs = try plan(a, config, false);
-    try std.testing.expectEqual(@as(usize, 3), jobs.len);
-    for (jobs, hosts) |job, host| {
-        try std.testing.expectEqualStrings(host, job.os);
-        try std.testing.expectEqualStrings("ci", job.step);
-        try std.testing.expectEqualStrings("--test-timeout 60s", job.timeout);
-        try std.testing.expect(job.setup);
-        try std.testing.expect(std.mem.indexOf(u8, job.args, "Release") == null);
-        try std.testing.expect(std.mem.indexOf(u8, job.args, "-Doptimize=Debug") != null);
-        try std.testing.expectEqual(!std.mem.eql(u8, host, hosts[0]), std.mem.indexOf(u8, job.args, "-Dci-lint=false") != null);
-        try std.testing.expectEqual(@as(usize, 16), job.cache_key.len);
-    }
-    try std.testing.expectEqualStrings("core-a core-b", jobs[2].cases);
+    try std.testing.expectEqual(@as(usize, 1), jobs.len);
+    try std.testing.expectEqualStrings(hosts[0], jobs[0].os);
+    try std.testing.expectEqualStrings("-Doptimize=Debug", jobs[0].args);
+    const targets = try fastTargets(a, config);
+    try std.testing.expectEqual(@as(usize, 3), targets.len);
+    const args = try fastCrossArgs(a, config, targets[0]);
+    try std.testing.expectEqualStrings("ci-check", args[2]);
+    try std.testing.expectEqualStrings("-Dcpu=cortex_a72", args[5]);
+    try std.testing.expectEqualStrings("-Doptimize=Debug", args[6]);
     const tiers = try split(a, config, jobs, false);
-    try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
-    try std.testing.expectEqual(@as(usize, 0), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
+}
+
+test "Linux fast shards cover every measured family exactly once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"fast_linux_jobs":2,"fast_linux_shards":[{"name":"a","seconds":3},{"name":"b","seconds":2},{"name":"c","seconds":1}]}
+    , .{})).value;
+    const jobs = try plan(a, config, false);
+    try std.testing.expectEqual(@as(usize, 2), jobs.len);
+    try std.testing.expectEqualStrings("a", jobs[0].cases);
+    try std.testing.expectEqualStrings("b c", jobs[1].cases);
+    try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
 }
 
 test "duration balancing assigns each case once and equalizes measured weights" {

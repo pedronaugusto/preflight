@@ -9,6 +9,7 @@ pub const ziglint = @import("checks/ziglint.zig");
 pub const integration = @import("checks/integration.zig");
 pub const container = @import("checks/container.zig");
 pub const profile = @import("checks/profile.zig");
+pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 
 test {
@@ -23,4 +24,5 @@ test {
     _ = container;
     _ = profile;
     _ = attest;
+    _ = paths;
 }

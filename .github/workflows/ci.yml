@@ -22,13 +22,25 @@ permissions:
   contents: read
   actions: read
 jobs:
+  skip:
+    if: github.event_name != 'push' && !inputs.status-only
+    uses: ./.github/workflows/skip.yml
+    with:
+      full: ${{ github.event_name != 'workflow_dispatch' || inputs.full }}
+      preflight-ref: ${{ github.sha }}
+      working-directory: sample
   sample:
+    needs: skip
+    if: always() && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
     uses: ./.github/workflows/zig.yml
     with:
       full: ${{ github.event_name != 'workflow_dispatch' || inputs.full }}
       working-directory: sample
       preflight-ref: ${{ github.sha }}
       attest: ${{ github.event_name == 'push' || inputs.status-only }}
+      # Generated from ci/workflow.json with zig build plan -- --full false.
+      fast-matrix: >-
+        {"include":[{"os":"ubuntu-latest","name":"Linux Debug","step":"preflight-fast","args":"-Doptimize=Debug","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"fast-linux-debug-0","artifact":""}]}
       # Generated from ci/workflow.json with zig build plan -- --full true.
       full-matrix: >-
         {"include":[{"os":"ubuntu-latest","name":"test (ubuntu-latest, Debug)","step":"ci","args":"-Doptimize=Debug -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"0dc96c7aa5b8dbd7","artifact":""},{"os":"ubuntu-latest","name":"test (ubuntu-latest, ReleaseSafe)","step":"ci","args":"-Doptimize=ReleaseSafe -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"2d572e8719d44f39","artifact":""},{"os":"ubuntu-latest","name":"test (ubuntu-latest, ReleaseFast)","step":"ci","args":"-Doptimize=ReleaseFast -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"8206d5a705df8f65","artifact":""},{"os":"ubuntu-latest","name":"source checks and documented snippets","step":"lint","args":"","cases":"","timeout":"","setup":false,"job_timeout":20,"cache_key":"10bdf2590c7a0117","artifact":""},{"os":"ubuntu-latest","name":"compile (ReleaseSmall)","step":"check","args":"-Doptimize=ReleaseSmall","cases":"","timeout":"","setup":false,"job_timeout":20,"cache_key":"2d9a4fde819ce492","artifact":""},{"os":"ubuntu-latest","name":"cross (all configured targets)","step":"preflight-cross","args":"","cases":"","timeout":"","setup":false,"job_timeout":20,"cache_key":"0abaad5bfb3ff7f9","artifact":""}]}
@@ -38,7 +50,8 @@ jobs:
         {"include":[{"os":"macos-latest","name":"test (macos-latest, Debug)","step":"ci-run","args":"-Doptimize=Debug -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"856b401ed5dfdcc7","artifact":"preflight-856b401ed5dfdcc7"},{"os":"macos-latest","name":"test (macos-latest, ReleaseSafe)","step":"ci-run","args":"-Doptimize=ReleaseSafe -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"2379a1e7a1df7841","artifact":"preflight-2379a1e7a1df7841"},{"os":"windows-latest","name":"test (windows-latest, Debug)","step":"ci-run","args":"-Doptimize=Debug -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"fdf46551155f42b8","artifact":"preflight-fdf46551155f42b8"},{"os":"windows-latest","name":"test (windows-latest, ReleaseSafe)","step":"ci-run","args":"-Doptimize=ReleaseSafe -Dci-lint=false -Dci-timings=true","cases":"","timeout":"","setup":true,"job_timeout":20,"cache_key":"0894f776de4f698d","artifact":"preflight-0894f776de4f698d"}]}
       compile-once: true
   checks:
-    if: github.event_name != 'push' && !inputs.status-only && (github.event_name != 'workflow_dispatch' || inputs.full)
+    needs: skip
+    if: needs.skip.outputs.docs-only != 'true' && github.event_name != 'push' && !inputs.status-only && (github.event_name != 'workflow_dispatch' || inputs.full)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

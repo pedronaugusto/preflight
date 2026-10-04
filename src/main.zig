@@ -41,6 +41,13 @@ pub fn main(init: std.process.Init) !void {
         try retry(c, &.{ "zig", "build", "--fetch=all" });
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
+    } else if (std.mem.eql(u8, command, "skip")) {
+        const only_docs = !std.mem.eql(u8, init.environ_map.get("PREFLIGHT_FULL") orelse "false", "true") and try checks.paths.run(c, init.environ_map.get("PREFLIGHT_BASE") orelse "HEAD^");
+        if (init.environ_map.get("GITHUB_OUTPUT")) |path| try append(c, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
+        if (only_docs) {
+            const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+            try checks.docs.check(&c, config);
+        }
     } else if (std.mem.eql(u8, command, "attest")) {
         try checks.attest.run(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "docs")) {
@@ -151,19 +158,18 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
     if (std.mem.eql(u8, step, "preflight-fast")) {
-        const host = env.get("FAST_OS") orelse return error.MissingFastHost;
-        for (try checks.matrix.plan(c.a, config, false)) |job| {
-            if (!std.mem.eql(u8, job.os, host)) continue;
-            var fast_env = try env.clone(c.a);
-            defer fast_env.deinit();
-            try fast_env.put("STEP", job.step);
-            try fast_env.put("BUILD_ARGS", job.args);
-            try fast_env.put("CASES", job.cases);
-            try fast_env.put("TEST_TIMEOUT", job.timeout);
-            try fast_env.put("PREFLIGHT_SETUP", "true");
-            return runGate(c, &fast_env);
+        var fast_env = try env.clone(c.a);
+        defer fast_env.deinit();
+        try fast_env.put("STEP", "ci");
+        try runGate(c, &fast_env);
+        if (std.mem.eql(u8, env.get("FAST_COMPILE") orelse "true", "true")) {
+            for (try checks.matrix.fastTargets(c.a, config)) |target| {
+                const argv = try checks.matrix.fastCrossArgs(c.a, config, target);
+                std.debug.print("preflight fast compile: {s}\n", .{argv[4]});
+                try execute(c, argv);
+            }
         }
-        return error.UnknownFastHost;
+        return;
     }
     if (std.mem.eql(u8, step, "preflight-cross")) {
         const targets = src.items(src.get(config, "targets"));

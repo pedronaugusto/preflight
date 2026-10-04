@@ -8,6 +8,10 @@ on:
         description: Run the full merge gate
         type: boolean
         default: false
+      status-only:
+        description: Verify the recorded full gate for this exact commit
+        type: boolean
+        default: false
   pull_request:
   merge_group:
   schedule:
@@ -25,9 +29,9 @@ jobs:
       full: ${{ github.event_name != 'workflow_dispatch' || inputs.full }}
       working-directory: sample
       preflight-ref: ${{ github.sha }}
-      attest: ${{ github.event_name == 'push' }}
+      attest: ${{ github.event_name == 'push' || inputs.status-only }}
   checks:
-    if: github.event_name != 'push'
+    if: github.event_name != 'push' && !inputs.status-only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -2,8 +2,8 @@
 const std = @import("std");
 const src = @import("source.zig");
 
-fn successful(candidate: src.Value, sha: []const u8, current: []const u8) bool {
-    return std.mem.eql(u8, src.string(src.get(candidate, "head_sha"), ""), sha) and
+fn verified(candidate: src.Value, artifact: []const u8, proof: []const u8, current: []const u8) bool {
+    return std.mem.eql(u8, artifact, proof) and
         std.mem.eql(u8, src.string(src.get(candidate, "conclusion"), ""), "success") and
         src.get(candidate, "id") == .integer and
         src.get(candidate, "id").integer != (std.fmt.parseInt(i64, current, 10) catch return false);
@@ -17,16 +17,23 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
     var client: std.http.Client = .{ .allocator = c.a, .io = c.io };
     defer client.deinit();
     const prefix = try std.fmt.allocPrint(c.a, "https://api.github.com/repos/{s}/actions", .{repo});
-    const runs = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/workflows/ci.yml/runs?head_sha={s}&status=success&per_page=100", .{ prefix, sha }));
     const proof = try std.fmt.allocPrint(c.a, "preflight-full-{s}", .{sha});
-    for (src.items(src.get(runs, "workflow_runs"))) |candidate| {
-        if (!successful(candidate, sha, current)) continue;
-        const artifacts = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/runs/{d}/artifacts?per_page=100", .{ prefix, src.get(candidate, "id").integer }));
-        for (src.items(src.get(artifacts, "artifacts"))) |artifact| {
-            if (!std.mem.eql(u8, src.string(src.get(artifact, "name"), ""), proof)) continue;
-            std.debug.print("Full gate passed for {s}: {s}\n", .{ sha, src.string(src.get(candidate, "html_url"), "") });
-            return;
+    // PR metadata names the branch head; GITHUB_SHA and the proof name the
+    // tested merge commit. Search the proof rather than filtering head_sha.
+    var page: usize = 1;
+    while (true) : (page += 1) {
+        const runs = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/workflows/ci.yml/runs?status=success&per_page=100&page={d}", .{ prefix, page }));
+        const candidates = src.items(src.get(runs, "workflow_runs"));
+        for (candidates) |candidate| {
+            if (!verified(candidate, proof, proof, current)) continue;
+            const artifacts = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/runs/{d}/artifacts?per_page=100", .{ prefix, src.get(candidate, "id").integer }));
+            for (src.items(src.get(artifacts, "artifacts"))) |artifact| {
+                if (!verified(candidate, src.string(src.get(artifact, "name"), ""), proof, current)) continue;
+                std.debug.print("Full gate passed for {s}: {s}\n", .{ sha, src.string(src.get(candidate, "html_url"), "") });
+                return;
+            }
         }
+        if (candidates.len < 100) break;
     }
     std.debug.print("No successful full gate recorded for exact commit {s}; dispatch the full gate for this commit.\n", .{sha});
     return error.NoSuccessfulFullGate;
@@ -51,7 +58,11 @@ test "main requires a successful exact SHA and excludes itself" {
     const value = (try std.json.parseFromSlice(src.Value, arena.allocator(),
         \\{"id":123,"head_sha":"abc","conclusion":"success"}
     , .{})).value;
-    try std.testing.expect(successful(value, "abc", "456"));
-    try std.testing.expect(!successful(value, "def", "456"));
-    try std.testing.expect(!successful(value, "abc", "123"));
+    // The PR's branch head differs from the exact tested merge commit.
+    try std.testing.expect(verified(value, "preflight-full-merge", "preflight-full-merge", "456"));
+    try std.testing.expect(!verified(value, "preflight-full-other", "preflight-full-merge", "456"));
+    try std.testing.expect(!verified(value, "preflight-full-merge", "preflight-full-merge", "123"));
+    var failed = value;
+    try failed.object.put(arena.allocator(), "conclusion", .{ .string = "failure" });
+    try std.testing.expect(!verified(failed, "preflight-full-merge", "preflight-full-merge", "456"));
 }

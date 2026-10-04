@@ -72,6 +72,12 @@ test "format checks owned sources and ignores extracted dependency packages" {
     const invalid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(invalid.term == .exited and invalid.term.exited != 0);
     try std.testing.expect(std.mem.indexOf(u8, invalid.stderr, "non-conforming formatting") != null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
+    try tmp.dir.createDir(io, "examples", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\n" });
+    const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, cast.stderr, "examples/value.zig:2: @intFromPtr needs // safe:") != null);
 }
 
 test "portable replay records timings and still rejects failed tests and leaked memory" {
@@ -111,4 +117,36 @@ test "hosted output appends to existing records" {
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
     const text = try tmp.dir.readFileAlloc(io, "output", a, .limited(1024 * 1024));
     try std.testing.expect(std.mem.startsWith(u8, text, "kept=yes\nglobal="));
+}
+
+test "compiled caches never skip a second CI execution" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\test "runs each time" {
+        \\    const std = @import("std");
+        \\    const io = std.testing.io;
+        \\    const file = try std.Io.Dir.cwd().createFile(io, "executions", .{ .truncate = false, .read = true });
+        \\    defer file.close(io);
+        \\    var buffer: [32]u8 = undefined;
+        \\    var writer = file.writer(io, &buffer);
+        \\    writer.pos = (try file.stat(io)).size;
+        \\    try writer.interface.writeByte('x');
+        \\    try writer.interface.flush();
+        \\}
+        \\
+    });
+    const format = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(format.term == .exited and format.term.exited == 0);
+    for (0..2) |_| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci" }, .cwd = .{ .dir = tmp.dir } });
+        if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    }
+    try std.testing.expectEqualStrings("xx", try tmp.dir.readFileAlloc(io, "executions", a, .limited(32)));
 }

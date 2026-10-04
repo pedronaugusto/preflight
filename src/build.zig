@@ -16,6 +16,7 @@ pub fn addCi(b: *std.Build, config: Config) void {
     const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
     const ci = b.step("ci", "Run source checks, then the tests");
     ci.dependOn(config.tests);
+    forceTests(config.tests);
     const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
     const dep = b.lazyDependency("preflight", .{}) orelse return;
     const executable = b.addExecutable(.{
@@ -83,6 +84,15 @@ pub fn addCi(b: *std.Build, config: Config) void {
         orderTests(config.tests, lint);
         ci.dependOn(lint);
     }
+}
+
+fn forceTests(step: *std.Build.Step) void {
+    if (step.cast(std.Build.Step.Run)) |run| {
+        // Caches retain compiled products; a CI gate always executes its tests.
+        run.has_side_effects = true;
+        return;
+    }
+    for (step.dependencies.items) |dependency| forceTests(dependency);
 }
 
 // Only run steps acquire the lint prerequisite. Test compilation may overlap it.

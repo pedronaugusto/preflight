@@ -136,7 +136,7 @@ pub fn collect(c: Context, config: Value) ![]Source {
     return out.items;
 }
 
-fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !void {
+pub fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !void {
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walk(c.a);

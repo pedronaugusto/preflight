@@ -74,7 +74,17 @@ fn lint(c: *src.Context, config: src.Value, ziglint: []const u8) !void {
     try checks.policy.layout(c, sources, config);
     if (c.errors != 0) return;
     std.debug.print("preflight: cast reasons\n", .{});
-    checks.policy.casts(c, sources, config);
+    var cast_sources: std.ArrayList(src.Source) = .empty;
+    try cast_sources.appendSlice(c.a, sources);
+    for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |path| {
+        if (!c.exists(path)) continue;
+        var collected = false;
+        for (src.items(src.get(config, "sources"))) |configured| {
+            if (std.mem.eql(u8, src.string(configured, ""), path)) collected = true;
+        }
+        if (!collected) try src.collectRoot(c.*, path, &cast_sources);
+    }
+    checks.policy.casts(c, cast_sources.items, config);
     if (c.exists("build.zig")) checks.policy.casts(c, &.{try src.Source.parse(c.a, "build.zig", try c.read("build.zig"))}, config);
     if (c.errors != 0) return;
     std.debug.print("preflight: function length\n", .{});

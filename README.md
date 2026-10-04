@@ -20,6 +20,8 @@ preflight.addCi(b, .{ .tests = test_step });
 tests. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
 `-Dci-lint=false` lets the hosted optimization and shard jobs use the source job's
 result; the default local gate always checks sources.
+Compiled caches never skip test execution: each gate runs the test binaries even
+when their build products are already available.
 
 ## Repository facts
 
@@ -66,6 +68,8 @@ adds ReleaseSafe on each host, ReleaseFast on Linux, ReleaseSmall, every cross
 target and TSan where supported. Named Windows cases are assigned once per mode
 using longest-processing-time-first balancing. Repository-specific jobs stay in
 the caller and use the same full-tier condition.
+An optional shard `priority` runs a core family before its bundled comparisons
+while preserving the measured load balance.
 
 Fetched packages, compiled builds and pinned external tools have separate caches.
 Dependency fetches and tool setup retry three times with backoff. `zig build ci-setup`

@@ -47,7 +47,18 @@ pub fn balance(a: std.mem.Allocator, values: []const src.Value, count: usize) ![
         weights[index] += shard.seconds;
     }
     const out = try a.alloc([]const []const u8, groups.len);
-    for (groups, out) |group, *result| result.* = group.items;
+    for (groups, out) |group, *result| {
+        std.sort.insertion([]const u8, group.items, values, struct {
+            fn priority(items: []const src.Value, name: []const u8) usize {
+                for (items) |item| if (std.mem.eql(u8, src.string(src.get(item, "name"), ""), name)) return src.number(src.get(item, "priority"), 0);
+                return 0;
+            }
+            fn less(items: []const src.Value, x: []const u8, y: []const u8) bool {
+                return priority(items, x) > priority(items, y);
+            }
+        }.less);
+        result.* = group.items;
+    }
     return out;
 }
 
@@ -184,4 +195,13 @@ test "portable matrix builds macOS and Windows binaries on Linux without losing 
         try std.testing.expect(!std.mem.eql(u8, executor.os, hosts[0]));
     }
     try std.testing.expect(std.mem.indexOf(u8, tiers.compile[0].args, "aarch64-macos") != null);
+}
+
+test "priority cases start independently of their bundled comparisons" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const values = (try std.json.parseFromSlice(src.Value, a, "[{\"name\":\"comparison\",\"seconds\":10},{\"name\":\"core\",\"seconds\":3,\"priority\":1},{\"name\":\"tiny\",\"seconds\":2}]", .{})).value;
+    const groups = try balance(a, src.items(values), 1);
+    for ([_][]const u8{ "core", "comparison", "tiny" }, groups[0]) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
 }

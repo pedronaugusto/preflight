@@ -53,6 +53,27 @@ fn fixtureLayers(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = changed });
 }
 
+test "format checks owned sources and ignores extracted dependency packages" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    try tmp.dir.createDirPath(io, "zig-pkg/third-party");
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig-pkg/third-party/value.zig", .data = "const value=1;\n" });
+    const valid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (valid.term != .exited or valid.term.exited != 0) std.debug.print("{s}", .{valid.stderr});
+    try std.testing.expect(valid.term == .exited and valid.term.exited == 0);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\nconst value=1;\n" });
+    const invalid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(invalid.term == .exited and invalid.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, invalid.stderr, "non-conforming formatting") != null);
+}
+
 test "portable replay records timings and still rejects failed tests and leaked memory" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

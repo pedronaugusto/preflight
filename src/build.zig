@@ -59,7 +59,12 @@ pub fn addCi(b: *std.Build, config: Config) void {
             .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "layers", .module = layers } },
         }),
     });
-    const format = b.addFmt(.{ .paths = &.{"."}, .check = true });
+    var format_paths: std.ArrayList([]const u8) = .empty;
+    for ([_][]const u8{ "build.zig", "build.zig.zon", "src", "examples", "ci", "conformance", "bench" }) |path| {
+        b.build_root.handle.access(b.graph.io, path, .{}) catch continue;
+        format_paths.append(b.allocator, path) catch @panic("OOM");
+    }
+    const format = b.addFmt(.{ .paths = format_paths.items, .check = true });
     const structure = b.addRunArtifact(checker);
     structure.setCwd(b.path("."));
     b.step("check-imports", "Check declared source structure").dependOn(&structure.step);

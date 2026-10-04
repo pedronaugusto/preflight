@@ -14,13 +14,20 @@ pub fn addCi(b: *std.Build, config: Config) void {
     ci.dependOn(config.tests);
     const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
     const dep = b.lazyDependency("preflight", .{}) orelse return;
-    const cache = b.addSystemCommand(&.{"sh"});
-    cache.addFileArg(dep.path("checks/cache.sh"));
-    cache.addArg(b.pathFromRoot(".zig-cache"));
+    const executable = b.addExecutable(.{
+        .name = "preflight-checks",
+        .root_module = b.createModule(.{
+            .root_source_file = dep.path("src/main.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const cache = b.addRunArtifact(executable);
+    cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
+    cache.setCwd(b.path("."));
     b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
-    const docs = b.addSystemCommand(&.{"python3"});
-    docs.addFileArg(dep.path("checks/run.py"));
-    docs.addArgs(&.{ "--config", config.config, "--render" });
+    const docs = b.addRunArtifact(executable);
+    docs.addArgs(&.{ "docs", "--config", config.config, "--region" });
     docs.addArgs(b.args orelse &.{"usage"});
     docs.setCwd(b.path("."));
     b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
@@ -40,19 +47,18 @@ pub fn addCi(b: *std.Build, config: Config) void {
             .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "layers", .module = layers } },
         }),
     });
-    const format = b.addSystemCommand(&.{ "zig", "fmt", "--check", "." });
-    format.setCwd(b.path("."));
+    const format = b.addFmt(.{ .paths = &.{"."}, .check = true });
     const structure = b.addRunArtifact(checker);
     structure.setCwd(b.path("."));
-    const imports = b.step("check-imports", "Check declared source structure");
-    imports.dependOn(&structure.step);
+    b.step("check-imports", "Check declared source structure").dependOn(&structure.step);
     if (b.args) |args| structure.addArgs(args);
     const lint_structure = b.addRunArtifact(checker);
     lint_structure.setCwd(b.path("."));
     lint_structure.step.dependOn(&format.step);
-    const checks = b.addSystemCommand(&.{"python3"});
-    checks.addFileArg(dep.path("checks/run.py"));
-    checks.addArgs(&.{ "--config", config.config });
+    const ziglint_dep = dep.builder.lazyDependency("ziglint", .{ .target = b.graph.host, .optimize = .ReleaseSafe }) orelse return;
+    const checks = b.addRunArtifact(executable);
+    checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
+    checks.addArtifactArg(ziglint_dep.artifact("ziglint"));
     checks.setCwd(b.path("."));
     checks.step.dependOn(&lint_structure.step);
     lint.dependOn(&checks.step);

@@ -43,7 +43,7 @@ inside test blocks. Production declarations cannot import test files.
 
 Generated Markdown blocks retain their visible generator labels. Their source,
 region, module import and whether that import is shown are facts in the JSON
-configuration. Other generated blocks may use an explicit argument-array command.
+configuration. Other generated blocks may use an explicit `zig build` argument-array command.
 Missing markers, stale blocks and failed generators fail the gate.
 
 ## Hosted gate
@@ -66,7 +66,7 @@ using longest-processing-time-first balancing. Repository-specific jobs stay in
 the caller and use the same full-tier condition.
 
 Fetched packages, compiled builds and pinned external tools have separate caches.
-Dependency fetches and tool setup retry three times with backoff. `ci/setup.sh`
+Dependency fetches and tool setup retry three times with backoff. `zig build ci-setup`
 may install a repository's external tools into the cached runner temp directory.
 
 The design uses GitHub's standard [reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows):
@@ -74,10 +74,10 @@ repository facts stay with the caller and common mechanics have one owner.
 
 ## Development
 
-Requires Zig 0.16.0 and Python 3. Run `zig build test` for the check regression
+Requires Zig 0.16.0. Run `zig build test` for the check regression
 suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
 ziglint is pinned to v0.5.3's commit, with all rules except Z024 as in tycho;
-`zig fmt` owns line formatting. `PREFLIGHT_ZIGLINT` selects an already built copy.
+`zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
 
 MIT licensed.
 

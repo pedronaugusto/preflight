@@ -39,6 +39,7 @@ runs:
         key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
         restore-keys: |
           zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-
     - name: Cache external tools
       uses: actions/cache@v4
       with:

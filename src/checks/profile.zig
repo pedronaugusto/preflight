@@ -5,6 +5,10 @@ const src = @import("source.zig");
 pub const Weight = struct { name: []const u8, seconds: f64 };
 pub const Summary = struct { windows_shards: []Weight, test_records: usize };
 
+pub fn reset(c: src.Context, root: []const u8) !void {
+    try c.directory().deleteTree(c.io, root);
+}
+
 pub fn summarize(c: src.Context, config: src.Value, root: []const u8) !Summary {
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
@@ -74,4 +78,17 @@ test "profiles use complete recorded durations, keep new cases and ignore unrela
     const json = try std.json.Stringify.valueAlloc(a, summary, .{});
     const updated = try apply(a, config, (try std.json.parseFromSlice(src.Value, a, json, .{})).value);
     try std.testing.expectEqual(@as(i64, 2), src.get(src.items(src.get(updated, "windows_shards"))[1], "seconds").integer);
+}
+
+test "restored timings are discarded before a gate records this run" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = std.testing.allocator, .io = std.testing.io, .dir = tmp.dir };
+    try tmp.dir.createDirPath(c.io, "cache/preflight-timings");
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "cache/preflight-timings/previous.ndjson", .data = "old run" });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "cache/compiled", .data = "keep" });
+    try reset(c, "cache/preflight-timings");
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(c.io, "cache/preflight-timings", .{}));
+    try tmp.dir.access(c.io, "cache/compiled", .{});
+    try reset(c, "cache/preflight-timings");
 }

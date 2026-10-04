@@ -146,6 +146,9 @@ fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
 }
 
 fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
+    const step = env.get("STEP") orelse "ci";
+    if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
+        try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         const setup_step = src.get(config, "setup_step");

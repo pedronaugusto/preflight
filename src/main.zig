@@ -150,6 +150,16 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
+    if (std.mem.eql(u8, step, "preflight-cross")) {
+        const targets = src.items(src.get(config, "targets"));
+        if (targets.len == 0) return error.MissingCrossTargets;
+        for (targets) |target| {
+            const argv = try checks.matrix.crossArgs(c.a, config, target);
+            std.debug.print("preflight cross: {s}\n", .{argv[4]});
+            try execute(c, argv);
+        }
+        return;
+    }
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         const setup_step = src.get(config, "setup_step");
         if (setup_step == .string) try retry(c, &.{ "zig", "build", setup_step.string });

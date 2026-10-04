@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/checks.zig"),
-        .target = b.graph.host,
+        .target = @import("src/build.zig").ciTarget(b),
         .optimize = .Debug,
     }) });
     const options = b.addOptions();
@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run.step);
     const executable = b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
-        .target = b.graph.host,
+        .target = @import("src/build.zig").ciTarget(b),
         .optimize = .ReleaseSafe,
     }) });
     b.installArtifact(executable);

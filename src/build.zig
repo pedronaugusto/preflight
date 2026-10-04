@@ -11,6 +11,17 @@ pub const Config = struct {
     timings_enabled: ?bool = null,
 };
 
+/// CI tools use a stable CPU target across hosted runner models.
+pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
+    const host = b.graph.host.result;
+    return b.resolveTargetQuery(.{
+        .cpu_arch = host.cpu.arch,
+        .cpu_model = .baseline,
+        .os_tag = host.os.tag,
+        .abi = host.abi,
+    });
+}
+
 pub fn addCi(b: *std.Build, config: Config) void {
     if (b.pkg_hash.len != 0) return;
     const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
@@ -19,11 +30,12 @@ pub fn addCi(b: *std.Build, config: Config) void {
     forceTests(config.tests);
     const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
     const dep = b.lazyDependency("preflight", .{}) orelse return;
+    const host = ciTarget(b);
     const executable = b.addExecutable(.{
         .name = "preflight-checks",
         .root_module = b.createModule(.{
             .root_source_file = dep.path("src/main.zig"),
-            .target = b.graph.host,
+            .target = host,
             .optimize = .ReleaseSafe,
         }),
     });
@@ -44,18 +56,18 @@ pub fn addCi(b: *std.Build, config: Config) void {
     docs.addArgs(b.args orelse &.{"usage"});
     docs.setCwd(b.path("."));
     b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
-    const gantry_dep = dep.builder.lazyDependency("gantry", .{ .target = b.graph.host, .optimize = .Debug }) orelse return;
+    const gantry_dep = dep.builder.lazyDependency("gantry", .{ .target = host, .optimize = .Debug }) orelse return;
     const gantry = gantry_dep.module("gantry");
     const layers = b.createModule(.{
         .root_source_file = b.path(config.layers),
-        .target = b.graph.host,
+        .target = host,
         .imports = &.{.{ .name = "gantry", .module = gantry }},
     });
     const checker = b.addExecutable(.{
         .name = "preflight-structure",
         .root_module = b.createModule(.{
             .root_source_file = dep.path("src/structure.zig"),
-            .target = b.graph.host,
+            .target = host,
             .optimize = .Debug,
             .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "layers", .module = layers } },
         }),
@@ -73,7 +85,7 @@ pub fn addCi(b: *std.Build, config: Config) void {
     const lint_structure = b.addRunArtifact(checker);
     lint_structure.setCwd(b.path("."));
     lint_structure.step.dependOn(&format.step);
-    const ziglint_dep = dep.builder.lazyDependency("ziglint", .{ .target = b.graph.host, .optimize = .ReleaseSafe }) orelse return;
+    const ziglint_dep = dep.builder.lazyDependency("ziglint", .{ .target = host, .optimize = .ReleaseSafe }) orelse return;
     const checks = b.addRunArtifact(executable);
     checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
     checks.addArtifactArg(ziglint_dep.artifact("ziglint"));

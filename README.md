@@ -70,6 +70,9 @@ using longest-processing-time-first balancing. Repository-specific jobs stay in
 the caller and use the same full-tier condition.
 An optional shard `priority` runs a core family before its bundled comparisons
 while preserving the measured load balance.
+Cross targets run in one Linux job, retaining each target and optional CPU while
+sharing setup and compiled products. The checker uses its host's baseline CPU
+target so its cached executable is reusable across hosted runner CPU models.
 
 Fetched packages, compiled builds and pinned external tools have separate caches.
 Dependency fetches and tool setup retry three times with backoff. `zig build ci-setup`

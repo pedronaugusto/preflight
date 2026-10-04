@@ -137,12 +137,8 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job) !Tiers 
 fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     const compile = src.string(src.get(config, "compile_step"), "check");
     try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=ReleaseSmall" });
-    for (src.items(src.get(config, "targets"))) |target| {
-        const name = if (target == .string) target.string else src.string(src.get(target, "target"), "");
-        const cpu = src.get(target, "cpu");
-        const args = if (cpu == .string) try std.fmt.allocPrint(a, "-Dtarget={s} -Dcpu={s}", .{ name, cpu.string }) else try std.fmt.allocPrint(a, "-Dtarget={s}", .{name});
-        try jobs.append(a, .{ .os = hosts[0], .name = try std.fmt.allocPrint(a, "cross ({s})", .{args}), .step = compile, .args = args });
-    }
+    if (src.items(src.get(config, "targets")).len > 0)
+        try jobs.append(a, .{ .os = hosts[0], .name = "cross (all configured targets)", .step = "preflight-cross", .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20) });
     const sanitizer = src.get(config, "sanitizer");
     if (sanitizer == .string) try jobs.append(a, .{
         .os = hosts[0],
@@ -153,6 +149,40 @@ fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) 
         .setup = true,
         .job_timeout = src.number(src.get(config, "sanitizer_job_timeout"), 20),
     });
+}
+
+pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
+    const name = if (target == .string) target.string else src.string(src.get(target, "target"), "");
+    if (name.len == 0) return error.InvalidCrossTarget;
+    const cpu = src.get(target, "cpu");
+    var args: std.ArrayList([]const u8) = .empty;
+    try args.appendSlice(a, &.{ "zig", "build", src.string(src.get(config, "compile_step"), "check"), "-Dci-lint=false" });
+    try args.append(a, try std.fmt.allocPrint(a, "-Dtarget={s}", .{name}));
+    if (cpu == .string) try args.append(a, try std.fmt.allocPrint(a, "-Dcpu={s}", .{cpu.string}));
+    return args.toOwnedSlice(a);
+}
+
+test "the cross bundle retains every target, CPU and caller compile step" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"compile_step":"install","targets":["x86_64-windows-gnu",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
+    , .{})).value;
+    const jobs = try plan(a, config, true);
+    var bundles: usize = 0;
+    for (jobs) |job| if (std.mem.eql(u8, job.step, "preflight-cross")) {
+        bundles += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), bundles);
+    const targets = src.items(src.get(config, "targets"));
+    const first = try crossArgs(a, config, targets[0]);
+    const second = try crossArgs(a, config, targets[1]);
+    try std.testing.expectEqualStrings("install", first[2]);
+    try std.testing.expectEqualStrings("-Dtarget=x86_64-windows-gnu", first[4]);
+    try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[4]);
+    try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[5]);
+    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null));
 }
 
 test "fast gate contains three Debug hosts and source checks" {

@@ -14,6 +14,16 @@ pub fn addCi(b: *std.Build, config: Config) void {
     ci.dependOn(config.tests);
     const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
     const dep = b.lazyDependency("preflight", .{}) orelse return;
+    const cache = b.addSystemCommand(&.{"sh"});
+    cache.addFileArg(dep.path("checks/cache.sh"));
+    cache.addArg(b.pathFromRoot(".zig-cache"));
+    b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
+    const docs = b.addSystemCommand(&.{"python3"});
+    docs.addFileArg(dep.path("checks/run.py"));
+    docs.addArgs(&.{ "--config", config.config, "--render" });
+    docs.addArgs(b.args orelse &.{"usage"});
+    docs.setCwd(b.path("."));
+    b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
     const gantry_dep = dep.builder.lazyDependency("gantry", .{ .target = b.graph.host, .optimize = .Debug }) orelse return;
     const gantry = gantry_dep.module("gantry");
     const layers = b.createModule(.{

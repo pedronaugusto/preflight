@@ -1,0 +1,63 @@
+name: Zig setup
+description: Install Zig and restore package, build and external-tool caches; fetch with retries
+inputs:
+  working-directory:
+    description: Package root
+    default: .
+  build-key:
+    description: Stable cache scope without commas
+    default: extras
+  install-zig:
+    description: Install Zig unless the container already supplies it
+    default: 'true'
+runs:
+  using: composite
+  steps:
+  - uses: mlugg/setup-zig@v2
+    with:
+      version: 0.16.0
+      use-cache: false
+    if: inputs.install-zig == 'true'
+  - name: Locate Zig package and build caches
+    id: cache
+    run: |
+      cache_dir=$(zig env | sed -n 's/^    \.global_cache_dir = "\(.*\)",$/\1/p' | sed 's,\\\\,/,g')
+      test -n "$cache_dir"
+      mkdir -p "$cache_dir/p"
+      echo "global=$cache_dir" >> "$GITHUB_OUTPUT"
+    working-directory: ${{ inputs.working-directory }}
+    shell: bash
+  - name: Cache fetched Zig packages
+    uses: actions/cache@v4
+    with:
+      path: ${{ steps.cache.outputs.global }}/p
+      key: zig-packages-${{ runner.os }}-0.16.0-${{ hashFiles('**/build.zig.zon') }}
+      restore-keys: |
+        zig-packages-${{ runner.os }}-0.16.0-
+  - name: Cache compiled builds
+    uses: actions/cache@v4
+    with:
+      path: |
+        ${{ inputs.working-directory }}/.zig-cache
+        ${{ steps.cache.outputs.global }}/o
+        ${{ steps.cache.outputs.global }}/h
+        ${{ steps.cache.outputs.global }}/z
+      key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-${{ hashFiles('**/build.zig.zon') }}-${{ github.sha }}
+      restore-keys: |
+        zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-${{ hashFiles('**/build.zig.zon') }}-
+  - name: Cache external tools
+    uses: actions/cache@v4
+    with:
+      path: |
+        ${{ runner.temp }}/preflight-tools
+        ${{ inputs.working-directory }}/.zig-cache/preflight-tools
+      key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-0.16.0-80d2b08-${{ hashFiles('ci/setup*') }}
+  - name: Fetch dependencies with retries
+    run: |
+      for attempt in 1 2 3; do
+        if zig build --fetch=all; then break; fi
+        if [ "$attempt" -eq 3 ]; then exit 1; fi
+        sleep "$((5 << (attempt - 1)))"
+      done
+    working-directory: ${{ inputs.working-directory }}
+    shell: bash

@@ -1,5 +1,5 @@
 name: Zig
-on:
+'on':
   workflow_call:
     inputs:
       full:
@@ -7,7 +7,7 @@ on:
         default: false
       working-directory:
         type: string
-        default: '.'
+        default: .
       preflight-ref:
         type: string
         required: true
@@ -19,26 +19,26 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - id: matrix
-        env:
-          FULL: ${{ inputs.full }}
-        shell: bash
-        working-directory: ${{ inputs.working-directory }}
-        run: |
-          args=()
-          if [ "$FULL" = true ]; then args+=(--full); fi
-          python3 "$GITHUB_WORKSPACE/.preflight/checks/matrix.py" "${args[@]}" --output "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      with:
+        repository: pedronaugusto/preflight
+        ref: ${{ inputs.preflight-ref }}
+        path: .preflight
+    - id: matrix
+      env:
+        FULL: ${{ inputs.full }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        args=()
+        if [ "$FULL" = true ]; then args+=(--full); fi
+        python3 "$GITHUB_WORKSPACE/.preflight/checks/matrix.py" "${args[@]}" --output "$GITHUB_OUTPUT"
   gate:
     needs: plan
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -47,73 +47,45 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-          use-cache: false
-      - name: Locate Zig package and build caches
-        id: cache
-        run: |
-          cache_dir=$(zig env | sed -n 's/^    \.global_cache_dir = "\(.*\)",$/\1/p' | sed 's,\\\\,/,g')
-          test -n "$cache_dir"
-          mkdir -p "$cache_dir/p"
-          echo "global=$cache_dir" >> "$GITHUB_OUTPUT"
-      - name: Cache fetched Zig packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.cache.outputs.global }}/p
-          key: zig-packages-${{ runner.os }}-0.16.0-${{ hashFiles('**/build.zig.zon') }}
-          restore-keys: |
-            zig-packages-${{ runner.os }}-0.16.0-
-      - name: Cache compiled builds
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ inputs.working-directory }}/.zig-cache
-            ${{ steps.cache.outputs.global }}/o
-            ${{ steps.cache.outputs.global }}/h
-            ${{ steps.cache.outputs.global }}/z
-          key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ matrix.name }}-${{ hashFiles('**/build.zig.zon') }}-${{ github.sha }}
-          restore-keys: |
-            zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ matrix.name }}-${{ hashFiles('**/build.zig.zon') }}-
-      - name: Cache external tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/preflight-tools
-            ${{ inputs.working-directory }}/.zig-cache/preflight-tools
-          key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-0.16.0-80d2b08-${{ hashFiles('ci/setup*') }}
-      - name: Fetch dependencies with retries
-        run: |
+    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      with:
+        repository: pedronaugusto/preflight
+        ref: ${{ inputs.preflight-ref }}
+        path: .preflight
+    - uses: ./.preflight/.github/actions/setup
+      with:
+        working-directory: ${{ inputs.working-directory }}
+        build-key: ${{ matrix.cache_key }}
+    - name: Repository tool setup with retries
+      if: matrix.setup
+      run: |
+        if [ -f ci/setup.sh ]; then
           for attempt in 1 2 3; do
-            if zig build --fetch=all; then break; fi
+            if bash ci/setup.sh; then break; fi
             if [ "$attempt" -eq 3 ]; then exit 1; fi
             sleep "$((5 << (attempt - 1)))"
           done
-      - name: Repository tool setup with retries
-        if: matrix.setup
-        run: |
-          if [ -f ci/setup.sh ]; then
-            for attempt in 1 2 3; do
-              if bash ci/setup.sh; then break; fi
-              if [ "$attempt" -eq 3 ]; then exit 1; fi
-              sleep "$((5 << (attempt - 1)))"
-            done
-          fi
-      - name: Run the gate
-        env:
-          STEP: ${{ matrix.step }}
-          BUILD_ARGS: ${{ matrix.args }}
-          CASES: ${{ matrix.cases }}
-          TEST_TIMEOUT: ${{ matrix.timeout }}
-        run: |
-          read -r -a args <<< "$BUILD_ARGS"
-          read -r -a timeout <<< "$TEST_TIMEOUT"
-          if [ -n "$CASES" ]; then
-            for case in $CASES; do
-              zig build "$STEP" "${args[@]}" "${timeout[@]}" "-Dtest-case=$case"
-            done
-          else
-            zig build "$STEP" "${args[@]}" "${timeout[@]}"
-          fi
+        fi
+    - name: Repository probes before testing
+      if: matrix.step == 'ci'
+      env:
+        BUILD_ARGS: ${{ matrix.args }}
+      run: |
+        if [ -f ci/before-tests.sh ]; then bash ci/before-tests.sh; fi
+    - name: Run the gate
+      env:
+        STEP: ${{ matrix.step }}
+        BUILD_ARGS: ${{ matrix.args }}
+        CASES: ${{ matrix.cases }}
+        TEST_TIMEOUT: ${{ matrix.timeout }}
+      run: |
+        read -r -a args <<< "$BUILD_ARGS"
+        read -r -a timeout <<< "$TEST_TIMEOUT"
+        if [ -n "$CASES" ]; then
+          for case in $CASES; do
+            zig build "$STEP" "${args[@]}" "${timeout[@]}" "-Dtest-case=$case"
+          done
+        else
+          zig build "$STEP" "${args[@]}" "${timeout[@]}"
+        fi

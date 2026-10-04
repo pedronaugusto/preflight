@@ -1,5 +1,6 @@
 """Build the fast or full matrix from repository-owned facts."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -44,6 +45,9 @@ def matrix(config, full):
             jobs.append({'os': 'ubuntu-latest', 'name': 'ThreadSanitizer (Linux)', 'step': config['sanitizer'],
                          'args': '-Dthread-sanitizer -Doptimize=Debug', 'cases': '',
                          'timeout': '--test-timeout 120s', 'setup': True})
+    for job in jobs:
+        job['job_timeout'] = config.get('windows_job_timeout' if job['os'] == 'windows-latest' and job['step'] == 'ci' else 'test_job_timeout', 20) if job['step'] == 'ci' else config.get('sanitizer_job_timeout', 20) if job['name'] == 'ThreadSanitizer (Linux)' else config.get('source_job_timeout', 20) if job['step'] == 'lint' else 20
+        job['cache_key'] = hashlib.sha256(json.dumps(job, sort_keys=True).encode()).hexdigest()[:16]
     return {'include': jobs}
 
 

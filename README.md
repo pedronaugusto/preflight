@@ -80,3 +80,11 @@ ziglint is pinned to v0.5.3's commit, with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. `PREFLIGHT_ZIGLINT` selects an already built copy.
 
 MIT licensed.
+
+Existing ziglint findings may be recorded in a repository's `ziglint_exceptions`
+file with their rule, path, exact source line, diagnostic and reason. The allowance
+is consumed once per finding: duplicates, changed code and new findings fail.
+This records migration debt without disabling a rule or admitting growth.
+Layout exceptions likewise name their exact member set and a reason.
+`zig build docs -- usage` renders a configured region for updating its block.
+`zig build cache` preserves fetched packages and tools when pruning build products.

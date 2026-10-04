@@ -77,6 +77,7 @@ class Matrix(unittest.TestCase):
     def test_fast_has_three_hosts_and_lint(self):
         jobs = matrix.matrix({'targets': ['unused'], 'sanitizer': 'test'}, False)['include']
         self.assertEqual(4, len(jobs))
+        self.assertTrue(all(',' not in job['cache_key'] for job in jobs))
         self.assertEqual(set(matrix.HOSTS), {j['os'] for j in jobs if j['step'] == 'ci'})
         self.assertTrue(all('Release' not in j['args'] for j in jobs))
     def test_full_covers_each_case_once_per_mode_and_all_targets(self):
@@ -100,5 +101,5 @@ class Matrix(unittest.TestCase):
         self.assertIn('cancel-in-progress: true', caller)
         self.assertNotIn('concurrency:', shared)
         self.assertIn('workflow_call:', shared)
-        self.assertIn('Cache compiled builds', shared)
+        self.assertIn('Cache compiled builds', (root / '.github/actions/setup/action.yml').read_text())
 if __name__ == '__main__': unittest.main()

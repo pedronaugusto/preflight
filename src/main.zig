@@ -13,9 +13,18 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "plan")) {
         const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
         const full = std.mem.eql(u8, option(args, "--full") orelse "false", "true");
-        const value = try std.json.Stringify.valueAlloc(a, .{ .include = try checks.matrix.plan(a, config, full) }, .{});
+        const jobs = try checks.matrix.plan(a, config, full);
+        const tiers = try checks.matrix.split(a, config, jobs);
+        const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
         const output = option(args, "--output") orelse init.environ_map.get("GITHUB_OUTPUT");
-        if (output) |path| try append(c, path, try std.fmt.allocPrint(a, "matrix={s}\n", .{value})) else try stdout(c, value);
+        if (output) |path| {
+            try append(c, path, try std.fmt.allocPrint(a, "matrix={s}\n", .{value}));
+            try append(c, path, try std.fmt.allocPrint(a, "compile_matrix={s}\nrun_matrix={s}\nportable={s}\n", .{
+                try std.json.Stringify.valueAlloc(a, .{ .include = tiers.compile }, .{}),
+                try std.json.Stringify.valueAlloc(a, .{ .include = tiers.run }, .{}),
+                if (tiers.compile.len > 0) "true" else "false",
+            }));
+        } else try stdout(c, value);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
     } else if (std.mem.eql(u8, command, "setup")) {
@@ -24,6 +33,18 @@ pub fn main(init: std.process.Init) !void {
         try retry(c, &.{ "zig", "build", "--fetch=all" });
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
+    } else if (std.mem.eql(u8, command, "binaries")) {
+        const manifest = try c.json(option(args, "--manifest") orelse "zig-out/preflight/tests.json");
+        for (src.items(manifest)) |item| {
+            const values = src.items(src.get(item, "argv"));
+            const argv = try a.alloc([]const u8, values.len);
+            for (values, argv) |value, *arg| arg.* = src.string(value, "");
+            if (argv.len == 0) return error.EmptyBinaryCommand;
+            const binary = try c.directory().openFile(c.io, argv[0], .{});
+            defer binary.close(c.io);
+            if (std.Io.File.Permissions.has_executable_bit) try binary.setPermissions(c.io, .executable_file);
+            try execute(c, argv);
+        }
     } else if (std.mem.eql(u8, command, "docs")) {
         const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
         const label = try std.fmt.allocPrint(a, "zig build docs -- {s}", .{option(args, "--region") orelse "usage"});

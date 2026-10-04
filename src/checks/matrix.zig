@@ -12,6 +12,7 @@ pub const Job = struct {
     setup: bool = false,
     job_timeout: usize = 20,
     cache_key: []const u8 = "",
+    artifact: []const u8 = "",
 };
 
 const Shard = struct { name: []const u8, seconds: f64 };
@@ -55,7 +56,8 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
     for (hosts) |host| {
         const modes: []const []const u8 = if (!full) &.{"Debug"} else if (std.mem.eql(u8, host, hosts[0])) &.{ "Debug", "ReleaseSafe", "ReleaseFast" } else &.{ "Debug", "ReleaseSafe" };
         for (modes) |mode| {
-            const shard_values = src.items(src.get(config, "windows_shards"));
+            const fast_shards = src.get(config, "fast_windows_shards");
+            const shard_values = src.items(if (!full and fast_shards != .null) fast_shards else src.get(config, "windows_shards"));
             const groups: []const []const []const u8 = if (std.mem.eql(u8, host, hosts[2]) and shard_values.len > 0)
                 try balance(a, shard_values, src.number(src.get(config, "shard_jobs"), 5))
             else
@@ -83,6 +85,37 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
         job.cache_key = try std.fmt.allocPrint(a, "{x}", .{hash[0..8]});
     }
     return jobs.items;
+}
+
+pub const Tiers = struct { native: []Job, compile: []Job, run: []Job };
+
+pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job) !Tiers {
+    var native: std.ArrayList(Job) = .empty;
+    var compile: std.ArrayList(Job) = .empty;
+    var run: std.ArrayList(Job) = .empty;
+    const enabled = src.get(config, "compile_once");
+    for (jobs) |job| {
+        if (enabled != .bool or !enabled.bool or job.step.len != 2 or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
+            try native.append(a, job);
+            continue;
+        }
+        if (job.cases.len != 0) return error.ShardedPortableTestsUnsupported;
+        const target = if (std.mem.eql(u8, job.os, hosts[1])) "aarch64-macos" else "x86_64-windows-gnu";
+        var builder = job;
+        builder.os = hosts[0];
+        builder.step = "ci-build";
+        builder.setup = false;
+        builder.args = try std.fmt.allocPrint(a, "{s} -Dtarget={s}", .{ job.args, target });
+        builder.name = try std.fmt.allocPrint(a, "compile for {s}", .{job.name});
+        builder.cache_key = try std.fmt.allocPrint(a, "compile-{s}", .{job.cache_key});
+        builder.artifact = try std.fmt.allocPrint(a, "preflight-{s}", .{job.cache_key});
+        try compile.append(a, builder);
+        var executor = job;
+        executor.step = "ci-run";
+        executor.artifact = builder.artifact;
+        try run.append(a, executor);
+    }
+    return .{ .native = native.items, .compile = compile.items, .run = run.items };
 }
 
 fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
@@ -128,4 +161,22 @@ test "duration balancing assigns each case once and equalizes measured weights" 
         try std.testing.expectEqual(@as(usize, 7), sum);
     }
     try std.testing.expectError(error.InvalidShardCount, balance(a, src.items(config), 0));
+}
+
+test "portable matrix builds macOS and Windows binaries on Linux without losing native coverage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"unit\"}", .{})).value;
+    const jobs = try plan(a, config, true);
+    const tiers = try split(a, config, jobs);
+    try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 4), tiers.run.len);
+    try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);
+    for (tiers.compile, tiers.run) |builder, executor| {
+        try std.testing.expectEqualStrings(hosts[0], builder.os);
+        try std.testing.expectEqualStrings(builder.artifact, executor.artifact);
+        try std.testing.expect(!std.mem.eql(u8, executor.os, hosts[0]));
+    }
+    try std.testing.expect(std.mem.indexOf(u8, tiers.compile[0].args, "aarch64-macos") != null);
 }

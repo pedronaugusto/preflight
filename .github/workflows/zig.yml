@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      compile-matrix: ${{ steps.matrix.outputs.compile_matrix }}
+      run-matrix: ${{ steps.matrix.outputs.run_matrix }}
+      portable: ${{ steps.matrix.outputs.portable }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -54,6 +57,67 @@ jobs:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           CASES: ${{ matrix.cases }}
+          TEST_TIMEOUT: ${{ matrix.timeout }}
+          PREFLIGHT_SETUP: ${{ matrix.setup }}
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+  compile:
+    needs: plan
+    if: needs.plan.outputs.portable == 'true'
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.job_timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.compile-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-key: ${{ matrix.cache_key }}
+      - name: Compile test executables
+        env:
+          STEP: ${{ matrix.step }}
+          BUILD_ARGS: ${{ matrix.args }}
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ inputs.working-directory }}/zig-out/preflight
+          retention-days: 1
+  execute:
+    needs: [plan, compile]
+    if: needs.plan.outputs.portable == 'true'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.job_timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.run-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-key: execute-${{ matrix.cache_key }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ inputs.working-directory }}/zig-out/preflight
+      - name: Run test executables
+        env:
+          STEP: ${{ matrix.step }}
+          BUILD_ARGS: ${{ matrix.args }}
           TEST_TIMEOUT: ${{ matrix.timeout }}
           PREFLIGHT_SETUP: ${{ matrix.setup }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run

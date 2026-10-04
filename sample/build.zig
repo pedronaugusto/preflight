@@ -12,5 +12,5 @@ pub fn build(b: *std.Build) void {
     const step = b.step("test", "Run the sample tests");
     step.dependOn(&b.addRunArtifact(tests).step);
     b.step("check", "Compile the sample").dependOn(&tests.step);
-    preflight.addCi(b, .{ .tests = step });
+    preflight.addCi(b, .{ .tests = step, .portable_tests = true });
 }

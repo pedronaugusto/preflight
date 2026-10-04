@@ -4,8 +4,12 @@ pub const Value = std.json.Value;
 pub const Context = struct {
     a: std.mem.Allocator,
     io: std.Io,
-    dir: std.Io.Dir = .cwd(),
+    dir: ?std.Io.Dir = null,
     errors: usize = 0,
+
+    pub fn directory(c: Context) std.Io.Dir {
+        return c.dir orelse .cwd();
+    }
 
     pub fn fail(c: *Context, comptime fmt: []const u8, args: anytype) void {
         std.debug.print(fmt ++ "\n", args);
@@ -13,7 +17,7 @@ pub const Context = struct {
     }
 
     pub fn read(c: Context, path: []const u8) ![]const u8 {
-        return c.dir.readFileAlloc(c.io, path, c.a, .limited(64 * 1024 * 1024));
+        return c.directory().readFileAlloc(c.io, path, c.a, .limited(64 * 1024 * 1024));
     }
 
     pub fn json(c: Context, path: []const u8) !Value {
@@ -21,7 +25,7 @@ pub const Context = struct {
     }
 
     pub fn exists(c: Context, path: []const u8) bool {
-        c.dir.access(c.io, path, .{}) catch return false;
+        c.directory().access(c.io, path, .{}) catch return false;
         return true;
     }
 };
@@ -133,7 +137,7 @@ pub fn collect(c: Context, config: Value) ![]Source {
 }
 
 fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !void {
-    var dir = try c.dir.openDir(c.io, root, .{ .iterate = true });
+    var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walk(c.a);
     defer walker.deinit();

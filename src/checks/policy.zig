@@ -102,6 +102,32 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
         }
         if (count != 1) c.fail("{s}: namespace has {d} files; give it one adjacent {s}.zig entry", .{ directory, members.len, name });
     }
+    try flatNamespaces(c, sources, config);
+}
+
+fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+    var groups = std.StringHashMap(std.ArrayList([]const u8)).init(c.a);
+    for (sources) |s| {
+        if (src.testFile(s.path) or src.support(s.path, config)) continue;
+        const parent = std.fs.path.dirname(s.path) orelse ".";
+        const base = std.fs.path.basename(s.path);
+        const stem = base[0 .. base.len - 4];
+        const prefix = stem[0..(std.mem.indexOfScalar(u8, stem, '_') orelse stem.len)];
+        // Members already inside their namespace may retain descriptive prefixes.
+        if (std.ascii.eqlIgnoreCase(std.fs.path.basename(parent), prefix)) continue;
+        const lower = try std.ascii.allocLowerString(c.a, prefix);
+        const namespace = try std.fmt.allocPrint(c.a, "{s}/{s}", .{ parent, lower });
+        const group = try groups.getOrPut(namespace);
+        if (!group.found_existing) group.value_ptr.* = .empty;
+        try group.value_ptr.append(c.a, s.path);
+    }
+    var iterator = groups.iterator();
+    while (iterator.next()) |entry| {
+        const members = entry.value_ptr.items;
+        if (members.len < 2) continue;
+        if (layoutException(members, src.get(src.get(config, "layout_exceptions"), entry.key_ptr.*))) continue;
+        c.fail("layout: {s}: {d} namespace files belong in {s}/ beside its entry", .{ try std.mem.join(c.a, ", ", members), members.len, entry.key_ptr.* });
+    }
 }
 
 fn rootDirectory(path: []const u8, config: src.Value) bool {
@@ -167,4 +193,19 @@ test "namespace entry is case insensitive, tests and support are excluded" {
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try layout(&c, sources.items[0..2], .null);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
+}
+
+test "flat sibling namespaces must move into their directory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c: src.Context = .{ .a = a, .io = std.testing.io };
+    const s = try src.Source.parse(a, "src/parser.zig", "");
+    const flat = try src.Source.parse(a, "src/parser_options.zig", "");
+    try layout(&c, &.{ s, flat }, .null);
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
+    c.errors = 0;
+    const moved = try src.Source.parse(a, "src/parser/parser_options.zig", "");
+    try layout(&c, &.{ s, moved }, .null);
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
 }

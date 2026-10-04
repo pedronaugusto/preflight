@@ -88,3 +88,11 @@ This records migration debt without disabling a rule or admitting growth.
 Layout exceptions likewise name their exact member set and a reason.
 `zig build docs -- usage` renders a configured region for updating its block.
 `zig build cache` preserves fetched packages and tools when pruning build products.
+
+Packages with relocatable test binaries can set `.portable_tests = true` in the
+build helper and `compile_once: true` in `ci/workflow.json`. Linux then builds
+macOS and Windows tests; those runners download and execute the binaries through
+Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers or
+fixtures compiled with absolute runner paths must be made relocatable first.
+Upload permissions are restored by Zig before execution. The native matrix stays
+available for comparing elapsed time and runner minutes against this path.

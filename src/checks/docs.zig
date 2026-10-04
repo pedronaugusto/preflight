@@ -61,7 +61,7 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     const command = src.get(generator, "command");
     if (command == .null) return snippet(c, generator);
     const argv = try zigCommand(c.a, command);
-    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = .{ .dir = c.dir } });
+    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = .{ .dir = c.directory() } });
     if (result.term != .exited or result.term.exited != 0) {
         std.debug.print("docs: generator failed: {s}\n", .{result.stderr});
         return error.GeneratorFailed;
@@ -82,7 +82,7 @@ pub fn zigCommand(a: std.mem.Allocator, command: src.Value) ![]const []const u8 
 pub fn check(c: *src.Context, config: src.Value) !void {
     const generators = src.get(config, "docs");
     var seen = std.StringHashMap(void).init(c.a);
-    var dir = try c.dir.openDir(c.io, ".", .{ .iterate = true });
+    var dir = try c.directory().openDir(c.io, ".", .{ .iterate = true });
     defer dir.close(c.io);
     var iterator = dir.iterate();
     while (try iterator.next(c.io)) |entry| {

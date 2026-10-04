@@ -1,10 +1,12 @@
 //! Build-only CI checks. Consumers never acquire the checker's dependencies.
 const std = @import("std");
+const portable = @import("portable.zig");
 
 pub const Config = struct {
     tests: *std.Build.Step,
     layers: []const u8 = "ci/layers.zig",
     config: []const u8 = "ci/preflight.json",
+    portable_tests: bool = false,
 };
 
 pub fn addCi(b: *std.Build, config: Config) void {
@@ -22,6 +24,7 @@ pub fn addCi(b: *std.Build, config: Config) void {
             .optimize = .ReleaseSafe,
         }),
     });
+    if (config.portable_tests) portable.add(b, config.tests);
     const cache = b.addRunArtifact(executable);
     cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
     cache.setCwd(b.path("."));

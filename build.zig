@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
     verify.dependOn(&b.addFmt(.{ .paths = &.{"."}, .check = true }).step);
     verify.dependOn(&executable.step);
     const root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner") orelse ".";
-    for ([_][]const u8{ "plan", "setup", "fetch", "run", "cache", "docs" }) |name| {
+    for ([_][]const u8{ "plan", "setup", "fetch", "run", "cache", "docs", "profile", "attest" }) |name| {
         const command = b.addRunArtifact(executable);
         command.addArg(name);
         command.setCwd(.{ .cwd_relative = root });

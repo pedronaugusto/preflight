@@ -1,12 +1,14 @@
 //! Build-only CI checks. Consumers never acquire the checker's dependencies.
 const std = @import("std");
 const portable = @import("portable.zig");
+const record = @import("record.zig");
 
 pub const Config = struct {
     tests: *std.Build.Step,
     layers: []const u8 = "ci/layers.zig",
     config: []const u8 = "ci/preflight.json",
     portable_tests: bool = false,
+    timings_enabled: ?bool = null,
 };
 
 pub fn addCi(b: *std.Build, config: Config) void {
@@ -24,11 +26,18 @@ pub fn addCi(b: *std.Build, config: Config) void {
             .optimize = .ReleaseSafe,
         }),
     });
+    const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next full-tier shard plan") orelse false);
+    if (timing) record.add(b, config.tests, dep);
     if (config.portable_tests) portable.add(b, config.tests);
     const cache = b.addRunArtifact(executable);
     cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
     cache.setCwd(b.path("."));
     b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
+    const linux = b.addRunArtifact(executable);
+    linux.addArg("container");
+    if (b.args) |args| linux.addArgs(args);
+    linux.setCwd(b.path("."));
+    b.step("ci-linux", "Run the explicit Linux container gate").dependOn(&linux.step);
     const docs = b.addRunArtifact(executable);
     docs.addArgs(&.{ "docs", "--config", config.config, "--region" });
     docs.addArgs(b.args orelse &.{"usage"});

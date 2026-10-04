@@ -1,7 +1,7 @@
 //! Export relocatable test executables for Linux compilation and native execution.
 const std = @import("std");
 
-pub const Command = struct { argv: []const []const u8, test_runner: bool };
+pub const Command = struct { argv: []const []const u8, test_runner: bool, timings: ?[]const u8 = null, cwd: ?[]const u8 = null };
 
 pub fn add(b: *std.Build, tests: *std.Build.Step) void {
     const compile = b.step("ci-build", "Compile test executables for execution on another runner");
@@ -19,10 +19,13 @@ pub fn add(b: *std.Build, tests: *std.Build.Step) void {
     const stored = std.json.parseFromSlice([]Command, b.allocator, bytes, .{}) catch @panic("invalid portable test manifest");
     if (stored.value.len == 0) @panic("portable test manifest contains no tests");
     for (stored.value) |command| {
-        const run = b.addSystemCommand(command.argv);
-        run.setCwd(b.path("."));
+        const argv = b.allocator.dupe([]const u8, command.argv) catch @panic("OOM");
+        argv[0] = b.pathFromRoot(argv[0]);
+        const run = b.addSystemCommand(argv);
+        run.setCwd(b.path(command.cwd orelse "."));
         run.has_side_effects = true;
         if (command.test_runner) run.enableTestRunnerMode();
+        if (command.timings) |path| run.setEnvironmentVariable("PREFLIGHT_TIMINGS", path);
         RestorePermissions.original = run.step.makeFn;
         run.step.makeFn = RestorePermissions.make;
         execute.dependOn(&run.step);
@@ -46,7 +49,14 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
     const entry = seen.getOrPut(step) catch @panic("OOM");
     if (entry.found_existing) return;
     if (step.cast(std.Build.Step.Run)) |run| {
-        if (run.environ_map != null) @panic("portable tests must not contain runner-specific environment paths");
+        if (run.environ_map) |env| {
+            var iterator = env.iterator();
+            while (iterator.next()) |item| {
+                if (std.mem.eql(u8, item.key_ptr.*, "PREFLIGHT_TIMINGS")) continue;
+                const inherited = b.graph.environ_map.get(item.key_ptr.*) orelse @panic("portable tests must not contain runner-specific environment paths");
+                if (!std.mem.eql(u8, inherited, item.value_ptr.*)) @panic("portable tests must not contain runner-specific environment paths");
+            }
+        }
         if (run.argv.items.len == 0 or run.argv.items[0] != .artifact) @panic("portable tests must run compiled artifacts");
         const artifact = run.argv.items[0].artifact.artifact;
         const name = b.fmt("test-{d}{s}", .{ commands.items.len, if (artifact.root_module.resolved_target.?.result.os.tag == .windows) ".exe" else "" });
@@ -66,7 +76,12 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
             },
             else => @panic("portable tests must not contain generated arguments"),
         };
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test }) catch @panic("OOM");
+        const timings = if (run.environ_map) |env| env.get("PREFLIGHT_TIMINGS") else null;
+        const cwd = if (run.cwd) |path| switch (path) {
+            .src_path => |source| if (source.owner == b) source.sub_path else @panic("portable tests must use a repository-relative directory"),
+            else => @panic("portable tests must use a repository-relative directory"),
+        } else null;
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test, .timings = timings, .cwd = cwd }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }

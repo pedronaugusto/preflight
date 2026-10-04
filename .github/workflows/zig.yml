@@ -11,10 +11,31 @@ on:
       preflight-ref:
         type: string
         required: true
+      attest:
+        type: boolean
+        default: false
 permissions:
   contents: read
+  actions: read
 jobs:
+  main:
+    if: inputs.attest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Confirm the full gate for this commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: zig build --build-file .preflight/build.zig attest
   plan:
+    if: '!inputs.attest'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -31,8 +52,14 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache/restore@v4
+        with:
+          path: .preflight-timings
+          key: preflight-timings-${{ github.repository }}-${{ github.sha }}
+          restore-keys: |
+            preflight-timings-${{ github.repository }}-
       - id: matrix
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" plan -- --full "${{ inputs.full }}"
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" plan -- --full "${{ inputs.full }}" --measurements "${{ github.workspace }}/.preflight-timings/summary.json"
   gate:
     needs: plan
     name: ${{ matrix.name }}
@@ -60,6 +87,13 @@ jobs:
           TEST_TIMEOUT: ${{ matrix.timeout }}
           PREFLIGHT_SETUP: ${{ matrix.setup }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - uses: actions/upload-artifact@v4
+        if: inputs.full && matrix.step == 'ci'
+        with:
+          name: timings-${{ matrix.cache_key }}
+          path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
+          include-hidden-files: true
+          retention-days: 7
   compile:
     needs: plan
     if: needs.plan.outputs.portable == 'true'
@@ -121,3 +155,40 @@ jobs:
           TEST_TIMEOUT: ${{ matrix.timeout }}
           PREFLIGHT_SETUP: ${{ matrix.setup }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - uses: actions/upload-artifact@v4
+        if: inputs.full
+        with:
+          name: timings-${{ matrix.cache_key }}
+          path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
+          include-hidden-files: true
+          retention-days: 7
+  profile:
+    needs: [gate, execute]
+    if: always() && inputs.full && needs.gate.result == 'success' && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: timings-*
+          path: .preflight-timings
+          merge-multiple: true
+      - name: Record the next full-tier shard weights
+        run: zig build --build-file .preflight/build.zig profile -- --config "${{ inputs.working-directory }}/ci/workflow.json"
+      - uses: actions/cache/save@v4
+        with:
+          path: .preflight-timings
+          key: preflight-timings-${{ github.repository }}-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preflight-full-${{ github.sha }}
+          path: .preflight-timings/summary.json
+          retention-days: 90

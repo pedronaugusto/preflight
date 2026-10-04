@@ -11,7 +11,9 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 2) return error.MissingCommand;
     const command = args[1];
     if (std.mem.eql(u8, command, "plan")) {
-        const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
+        var config = try c.json(option(args, "--config") orelse "ci/workflow.json");
+        const measurements = option(args, "--measurements") orelse ".preflight-timings/summary.json";
+        if (c.exists(measurements)) config = try checks.profile.apply(a, config, try c.json(measurements));
         const full = std.mem.eql(u8, option(args, "--full") orelse "false", "true");
         const jobs = try checks.matrix.plan(a, config, full);
         const tiers = try checks.matrix.split(a, config, jobs);
@@ -27,24 +29,20 @@ pub fn main(init: std.process.Init) !void {
         } else try stdout(c, value);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
+    } else if (std.mem.eql(u8, command, "container")) {
+        try checks.container.run(c, try c.json("ci/workflow.json"), try checks.container.options(args[2..]));
     } else if (std.mem.eql(u8, command, "setup")) {
         try setup(c, init.environ_map);
+    } else if (std.mem.eql(u8, command, "profile")) {
+        const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
+        const summary = try checks.profile.summarize(c, config, option(args, "--input") orelse ".preflight-timings");
+        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse ".preflight-timings/summary.json", .data = try std.json.Stringify.valueAlloc(a, summary, .{}) });
     } else if (std.mem.eql(u8, command, "fetch")) {
         try retry(c, &.{ "zig", "build", "--fetch=all" });
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
-    } else if (std.mem.eql(u8, command, "binaries")) {
-        const manifest = try c.json(option(args, "--manifest") orelse "zig-out/preflight/tests.json");
-        for (src.items(manifest)) |item| {
-            const values = src.items(src.get(item, "argv"));
-            const argv = try a.alloc([]const u8, values.len);
-            for (values, argv) |value, *arg| arg.* = src.string(value, "");
-            if (argv.len == 0) return error.EmptyBinaryCommand;
-            const binary = try c.directory().openFile(c.io, argv[0], .{});
-            defer binary.close(c.io);
-            if (std.Io.File.Permissions.has_executable_bit) try binary.setPermissions(c.io, .executable_file);
-            try execute(c, argv);
-        }
+    } else if (std.mem.eql(u8, command, "attest")) {
+        try checks.attest.run(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "docs")) {
         const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
         const label = try std.fmt.allocPrint(a, "zig build docs -- {s}", .{option(args, "--region") orelse "usage"});
@@ -99,7 +97,7 @@ fn stdout(c: src.Context, text: []const u8) !void {
 }
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
-    const file = try std.Io.Dir.cwd().createFile(c.io, path, .{ .truncate = false });
+    const file = try std.Io.Dir.cwd().createFile(c.io, path, .{ .truncate = false, .read = true });
     defer file.close(c.io);
     var buffer: [4096]u8 = undefined;
     var writer = file.writer(c.io, &buffer);
@@ -157,7 +155,12 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     while (cases.next()) |case| {
         argv.shrinkRetainingCapacity(length);
         try argv.append(c.a, try std.fmt.allocPrint(c.a, "-Dtest-case={s}", .{case}));
-        try execute(c, argv.items);
+        var case_env = try env.clone(c.a);
+        defer case_env.deinit();
+        try case_env.put("PREFLIGHT_SHARD", case);
+        var child = try std.process.spawn(c.io, .{ .argv = argv.items, .environ_map = &case_env });
+        const term = try child.wait(c.io);
+        if (term != .exited or term.exited != 0) return error.CommandFailed;
         count += 1;
     }
     if (count == 0) try execute(c, argv.items);

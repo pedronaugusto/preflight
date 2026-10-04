@@ -67,7 +67,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
                 try jobs.append(a, .{
                     .os = host,
                     .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}", .{ host, mode, suffix }),
-                    .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false", .{mode}),
+                    .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false{s}", .{ mode, if (full) " -Dci-timings=true" else "" }),
                     .cases = try std.mem.join(a, " ", group),
                     .timeout = src.string(src.get(config, "test_timeout"), ""),
                     .setup = true,
@@ -95,7 +95,12 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job) !Tiers 
     var run: std.ArrayList(Job) = .empty;
     const enabled = src.get(config, "compile_once");
     for (jobs) |job| {
-        if (enabled != .bool or !enabled.bool or job.step.len != 2 or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
+        const portable_hosts = src.get(config, "portable_hosts");
+        var allowed = portable_hosts == .null;
+        for (src.items(portable_hosts)) |host| if (std.mem.eql(u8, src.string(host, ""), job.os)) {
+            allowed = true;
+        };
+        if (enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
             try native.append(a, job);
             continue;
         }

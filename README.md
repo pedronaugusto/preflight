@@ -54,9 +54,11 @@ caller in this repository shows the trigger and concurrency policy:
 
 - Work-branch pushes start no run. Dispatch requests Debug on Linux, macOS and
   Windows plus source checks; its `full` input requests the entire gate.
-- PR merge candidates and merge queue candidates run the full tier. Main runs
-  only on schedule, so merging a candidate never repeats its gate.
-- The caller owns one concurrency group per branch, with cancellation enabled.
+- PR merge candidates and merge queue candidates run the full tier. A main push
+  verifies a successful full run for its exact SHA and its full-tier proof artifact.
+  It reports green without repeating tests; absent evidence fails visibly.
+- The caller owns one concurrency group per branch, with cancellation enabled
+  for work branches and disabled for main's status job. Main also runs on schedule.
 
 `ci/workflow.json` names cross targets and optional CPUs, the compile step, test
 timeout, sanitizer step and Windows cases with duration weights. The full tier
@@ -96,3 +98,10 @@ Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers o
 fixtures compiled with absolute runner paths must be made relocatable first.
 Upload permissions are restored by Zig before execution. The native matrix stays
 available for comparing elapsed time and runner minutes against this path.
+
+The full tier records each test's duration through Zig's test protocol, caches
+the summary and balances the next full Windows shards using the measured totals.
+Fast and local gates keep their existing runner. Custom runners can import
+`preflight_timings` when their `ci-timings` option is enabled.
+`zig build ci-linux -- --musl --optimize ReleaseSafe` runs the package's Dockerfile
+when explicitly requested; `--cgroup true` requests its privileged cgroup gate.

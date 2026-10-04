@@ -1,0 +1,32 @@
+name: CI
+on:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full merge gate
+        type: boolean
+        default: false
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: '17 4 * * 1'
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  sample:
+    uses: ./.github/workflows/zig.yml
+    with:
+      full: ${{ github.event_name != 'workflow_dispatch' || inputs.full }}
+      working-directory: sample
+      preflight-ref: ${{ github.sha }}
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build test

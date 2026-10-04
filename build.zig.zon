@@ -1,0 +1,14 @@
+.{
+    .name = .preflight,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x52c46579c2597d2d,
+    .paths = .{ "build.zig", "build.zig.zon", "src", "checks", "README.md", "LICENSE" },
+    .dependencies = .{
+        .gantry = .{
+            .url = "git+https://github.com/pedronaugusto/gantry#b5b991bcc590a8f7032444287465269acda4fdaa",
+            .hash = "gantry-0.1.0-1iNrkcw4BwBD3pRucqF5FkGsGSOPIhkPh0rLr1u4EMDW",
+            .lazy = true,
+        },
+    },
+}

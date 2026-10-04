@@ -69,7 +69,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
         for (modes) |mode| {
             const fast_shards = src.get(config, "fast_windows_shards");
             const shard_values = src.items(if (!full and fast_shards != .null) fast_shards else src.get(config, "windows_shards"));
-            const groups: []const []const []const u8 = if (std.mem.eql(u8, host, hosts[2]) and shard_values.len > 0)
+            const groups: []const []const []const u8 = if (full and std.mem.eql(u8, host, hosts[2]) and shard_values.len > 0)
                 try balance(a, shard_values, src.number(src.get(config, "shard_jobs"), 5))
             else
                 &.{&.{}};
@@ -78,8 +78,8 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
                 try jobs.append(a, .{
                     .os = host,
                     .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}", .{ host, mode, suffix }),
-                    .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false{s}", .{ mode, if (full) " -Dci-timings=true" else "" }),
-                    .cases = try std.mem.join(a, " ", group),
+                    .args = try std.fmt.allocPrint(a, "-Doptimize={s}{s}{s}", .{ mode, if (full or !std.mem.eql(u8, host, hosts[0])) " -Dci-lint=false" else "", if (full) " -Dci-timings=true" else "" }),
+                    .cases = if (!full and std.mem.eql(u8, host, hosts[2])) try fastCases(a, src.items(fast_shards)) else try std.mem.join(a, " ", group),
                     .timeout = src.string(src.get(config, "test_timeout"), ""),
                     .setup = true,
                     .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
@@ -87,8 +87,10 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
             }
         }
     }
-    try jobs.append(a, .{ .os = hosts[0], .name = "source checks and documented snippets", .step = "lint", .job_timeout = src.number(src.get(config, "source_job_timeout"), 20) });
-    if (full) try fullJobs(a, config, &jobs);
+    if (full) {
+        try jobs.append(a, .{ .os = hosts[0], .name = "source checks and documented snippets", .step = "lint", .job_timeout = src.number(src.get(config, "source_job_timeout"), 20) });
+        try fullJobs(a, config, &jobs);
+    }
     for (jobs.items) |*job| {
         const text = try std.json.Stringify.valueAlloc(a, job.*, .{});
         var hash: [32]u8 = undefined;
@@ -100,7 +102,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
 
 pub const Tiers = struct { native: []Job, compile: []Job, run: []Job };
 
-pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job) !Tiers {
+pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, full: bool) !Tiers {
     var native: std.ArrayList(Job) = .empty;
     var compile: std.ArrayList(Job) = .empty;
     var run: std.ArrayList(Job) = .empty;
@@ -111,7 +113,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job) !Tiers 
         for (src.items(portable_hosts)) |host| if (std.mem.eql(u8, src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
+        if (!full or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
             try native.append(a, job);
             continue;
         }
@@ -132,6 +134,16 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job) !Tiers 
         try run.append(a, executor);
     }
     return .{ .native = native.items, .compile = compile.items, .run = run.items };
+}
+
+fn fastCases(a: std.mem.Allocator, values: []const src.Value) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (values) |value| {
+        const name = src.string(src.get(value, "name"), "");
+        if (name.len == 0) return error.InvalidShard;
+        try names.append(a, name);
+    }
+    return std.mem.join(a, " ", names.items);
 }
 
 fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
@@ -185,15 +197,30 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null));
 }
 
-test "fast gate contains three Debug hosts and source checks" {
+test "fast gate stays native with three Debug hosts and Linux source checks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const jobs = try plan(arena.allocator(), .null, false);
-    try std.testing.expectEqual(@as(usize, 4), jobs.len);
-    for (jobs) |job| {
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"compile_once":true,"fast_windows_shards":[{"name":"core-a","seconds":2},{"name":"core-b","seconds":1}],"windows_shards":[{"name":"comparison","seconds":3}],"test_timeout":"--test-timeout 60s","setup_step":"ci-setup"}
+    , .{})).value;
+    const jobs = try plan(a, config, false);
+    try std.testing.expectEqual(@as(usize, 3), jobs.len);
+    for (jobs, hosts) |job, host| {
+        try std.testing.expectEqualStrings(host, job.os);
+        try std.testing.expectEqualStrings("ci", job.step);
+        try std.testing.expectEqualStrings("--test-timeout 60s", job.timeout);
+        try std.testing.expect(job.setup);
         try std.testing.expect(std.mem.indexOf(u8, job.args, "Release") == null);
+        try std.testing.expect(std.mem.indexOf(u8, job.args, "-Doptimize=Debug") != null);
+        try std.testing.expectEqual(!std.mem.eql(u8, host, hosts[0]), std.mem.indexOf(u8, job.args, "-Dci-lint=false") != null);
         try std.testing.expectEqual(@as(usize, 16), job.cache_key.len);
     }
+    try std.testing.expectEqualStrings("core-a core-b", jobs[2].cases);
+    const tiers = try split(a, config, jobs, false);
+    try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
+    try std.testing.expectEqual(@as(usize, 0), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
 }
 
 test "duration balancing assigns each case once and equalizes measured weights" {
@@ -215,7 +242,7 @@ test "portable matrix builds macOS and Windows binaries on Linux without losing 
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"unit\"}", .{})).value;
     const jobs = try plan(a, config, true);
-    const tiers = try split(a, config, jobs);
+    const tiers = try split(a, config, jobs, true);
     try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 4), tiers.run.len);
     try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);

@@ -14,6 +14,29 @@ on:
       attest:
         type: boolean
         default: false
+      measured-plan:
+        description: Use cached duration weights to plan the full-tier shards
+        type: boolean
+        default: false
+      full-matrix:
+        description: Static native full-tier matrix generated from ci/workflow.json
+        type: string
+        default: '{"include":[]}'
+      compile-matrix:
+        type: string
+        default: '{"include":[]}'
+      run-matrix:
+        type: string
+        default: '{"include":[]}'
+      compile-once:
+        type: boolean
+        default: false
+      test-job-timeout:
+        type: number
+        default: 20
+      windows-job-timeout:
+        type: number
+        default: 20
 permissions:
   contents: read
   actions: read
@@ -40,8 +63,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: zig build --build-file .preflight/build.zig attest
+  fast:
+    if: '!inputs.attest && !inputs.full'
+    name: test (${{ matrix.os }}, Debug)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && inputs.windows-job-timeout || inputs.test-job-timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          build-key: fast-${{ matrix.os }}-Debug
+      - name: Check sources on Linux, build and test
+        env:
+          STEP: preflight-fast
+          FAST_OS: ${{ matrix.os }}
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - name: Verify the shared checker
+        if: github.repository == 'pedronaugusto/preflight' && matrix.os == 'ubuntu-latest'
+        run: zig build verify
   plan:
-    if: '!inputs.attest'
+    if: '!inputs.attest && inputs.full && inputs.measured-plan'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -68,12 +119,13 @@ jobs:
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" plan -- --full "${{ inputs.full }}" --measurements "${{ github.workspace }}/.preflight-timings/summary.json"
   gate:
     needs: plan
+    if: always() && !inputs.attest && inputs.full && (needs.plan.result == 'success' || (!inputs.measured-plan && needs.plan.result == 'skipped'))
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(inputs.measured-plan && needs.plan.outputs.matrix || inputs.full-matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -102,13 +154,13 @@ jobs:
           retention-days: 7
   compile:
     needs: plan
-    if: needs.plan.outputs.portable == 'true'
+    if: always() && !inputs.attest && inputs.full && (inputs.measured-plan && needs.plan.outputs.portable == 'true' || !inputs.measured-plan && inputs.compile-once)
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.compile-matrix) }}
+      matrix: ${{ fromJSON(inputs.measured-plan && needs.plan.outputs.compile-matrix || inputs.compile-matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -132,13 +184,13 @@ jobs:
           retention-days: 1
   execute:
     needs: [plan, compile]
-    if: needs.plan.outputs.portable == 'true'
+    if: always() && !inputs.attest && inputs.full && needs.compile.result == 'success'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.run-matrix) }}
+      matrix: ${{ fromJSON(inputs.measured-plan && needs.plan.outputs.run-matrix || inputs.run-matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -169,8 +221,8 @@ jobs:
           include-hidden-files: true
           retention-days: 7
   profile:
-    needs: [gate, execute]
-    if: always() && inputs.full && needs.gate.result == 'success' && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
+    needs: [gate, compile, execute]
+    if: always() && inputs.full && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

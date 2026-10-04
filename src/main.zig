@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
         if (c.exists(measurements)) config = try checks.profile.apply(a, config, try c.json(measurements));
         const full = std.mem.eql(u8, option(args, "--full") orelse "false", "true");
         const jobs = try checks.matrix.plan(a, config, full);
-        const tiers = try checks.matrix.split(a, config, jobs);
+        const tiers = try checks.matrix.split(a, config, jobs, full);
         const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
         const output = option(args, "--output") orelse init.environ_map.get("GITHUB_OUTPUT");
         if (output) |path| {
@@ -150,6 +150,21 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
+    if (std.mem.eql(u8, step, "preflight-fast")) {
+        const host = env.get("FAST_OS") orelse return error.MissingFastHost;
+        for (try checks.matrix.plan(c.a, config, false)) |job| {
+            if (!std.mem.eql(u8, job.os, host)) continue;
+            var fast_env = try env.clone(c.a);
+            defer fast_env.deinit();
+            try fast_env.put("STEP", job.step);
+            try fast_env.put("BUILD_ARGS", job.args);
+            try fast_env.put("CASES", job.cases);
+            try fast_env.put("TEST_TIMEOUT", job.timeout);
+            try fast_env.put("PREFLIGHT_SETUP", "true");
+            return runGate(c, &fast_env);
+        }
+        return error.UnknownFastHost;
+    }
     if (std.mem.eql(u8, step, "preflight-cross")) {
         const targets = src.items(src.get(config, "targets"));
         if (targets.len == 0) return error.MissingCrossTargets;

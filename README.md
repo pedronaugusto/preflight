@@ -55,17 +55,26 @@ that commit as `preflight-ref`, and `full: true` for a merge candidate. The samp
 caller in this repository shows the trigger and concurrency policy:
 
 - Work-branch pushes start no run. Dispatch requests Debug on Linux, macOS and
-  Windows plus source checks; its `full` input requests the entire gate.
+  Windows in one job per host, with source checks inside the Linux job; its `full`
+  input requests the entire gate.
 - PR merge candidates and merge queue candidates run the full tier. A main push
   verifies a successful full run for its exact SHA and its full-tier proof artifact.
   It reports green without repeating tests; absent evidence fails visibly.
 - The caller owns one concurrency group per branch, with cancellation enabled
-  for work branches and disabled for main's status job. Main also runs on schedule.
+  for work branches and disabled for main's status job. No scheduled runs are enabled.
 
 `ci/workflow.json` names cross targets and optional CPUs, the compile step, test
 timeout, sanitizer step and Windows cases with duration weights. The full tier
 adds ReleaseSafe on each host, ReleaseFast on Linux, ReleaseSmall, every cross
-target and TSan where supported. Named Windows cases are assigned once per mode
+target and TSan where supported. Static full-tier matrices are generated locally from `ci/workflow.json` with
+`zig build plan -- --full true --output <file>` and passed as `full-matrix`,
+`compile-matrix` and `run-matrix` inputs; `compile-once` enables the latter two.
+Regenerate these inputs when changing the configuration. Only callers whose
+Windows shards use measured weights set `measured-plan: true`, retaining the
+full-tier planning job. Fast runs always build and execute natively in three
+Debug jobs, without planning, artifacts or separate source jobs.
+
+Named Windows cases are assigned once per mode
 using longest-processing-time-first balancing. Repository-specific jobs stay in
 the caller and use the same full-tier condition.
 An optional shard `priority` runs a core family before its bundled comparisons

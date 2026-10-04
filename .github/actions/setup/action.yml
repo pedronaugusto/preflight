@@ -18,15 +18,11 @@ runs:
         version: 0.16.0
         use-cache: false
       if: inputs.install-zig == 'true'
-    - name: Locate Zig package and build caches
-      id: cache
-      run: zig build --build-file .preflight/build.zig setup
-      shell: bash
     - name: Cache fetched Zig packages
       id: packages
       uses: actions/cache@v4
       with:
-        path: ${{ steps.cache.outputs.global }}/p
+        path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
         key: zig-packages-${{ runner.os }}-0.16.0-${{ hashFiles('**/build.zig.zon') }}
         restore-keys: |
           zig-packages-${{ runner.os }}-0.16.0-
@@ -37,9 +33,9 @@ runs:
         path: |
           ${{ inputs.working-directory }}/.zig-cache
           .preflight/.zig-cache
-          ${{ steps.cache.outputs.global }}/o
-          ${{ steps.cache.outputs.global }}/h
-          ${{ steps.cache.outputs.global }}/z
+          ${{ env.ZIG_GLOBAL_CACHE_DIR }}/o
+          ${{ env.ZIG_GLOBAL_CACHE_DIR }}/h
+          ${{ env.ZIG_GLOBAL_CACHE_DIR }}/z
         key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
         restore-keys: |
           zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-

@@ -79,7 +79,7 @@ pub fn excluded(path: []const u8, patterns: Value) bool {
 
 pub fn testFile(path: []const u8) bool {
     const name = std.fs.path.basename(path);
-    return std.mem.endsWith(u8, name, "_test.zig") or std.mem.endsWith(u8, name, "_tests.zig") or
+    return std.mem.endsWith(u8, name, "_test.zig") or
         std.mem.startsWith(u8, name, "test_") or std.mem.eql(u8, name, "tests.zig");
 }
 

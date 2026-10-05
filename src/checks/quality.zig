@@ -189,6 +189,8 @@ test "each source policy finds code and ignores literals, tests and justified un
         const ignored = try src.Source.parse(a, path, "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
         try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{ignored})).len);
     }
+    const plural = try src.Source.parse(a, "src/work_tests.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
+    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{plural})).len);
     try std.testing.expect(!commentReason("foo(\"// unreachable: fake\") catch unreachable;"));
     try std.testing.expect(!commentReason("foo() catch unreachable; // unreachable: "));
     try std.testing.expect(!commentReason("\\\\ // unreachable: fake"));

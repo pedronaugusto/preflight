@@ -3,11 +3,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const upstream = @import("preflight_default_test_runner");
 const timings = @import("preflight_timings");
+const shuffle = @import("preflight_order");
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
 var errors: std.atomic.Value(usize) = .init(0);
 var fuzz_test: bool = false;
+var order: []usize = &.{};
 
 pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
     if (level == .err) _ = errors.fetchAdd(1, .monotonic);
@@ -28,9 +30,9 @@ pub fn main(init: std.process.Init.Minimal) void {
     var listen = false;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--listen=-")) listen = true;
-        if (std.mem.startsWith(u8, arg, "--seed=")) testing.random_seed = std.fmt.parseUnsigned(u32, arg[7..], 0) catch @panic("test runner seed");
     }
-    if (!listen) return upstream.main(init);
+    order = shuffle.init(io, init, args, builtin.test_functions.len) catch @panic("test runner seed and order");
+    if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
     serve(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
 }
 
@@ -63,7 +65,8 @@ fn metadata(server: *std.zig.Server) !void {
     const panics = try a.alloc(u32, builtin.test_functions.len);
     defer a.free(panics);
     @memset(panics, 0);
-    for (builtin.test_functions, names) |test_fn, *name| {
+    for (order, names) |index, *name| {
+        const test_fn = builtin.test_functions[index];
         name.* = @intCast(bytes.items.len);
         try bytes.appendSlice(a, test_fn.name);
         try bytes.append(a, 0);
@@ -73,7 +76,7 @@ fn metadata(server: *std.zig.Server) !void {
 
 fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.process.Init.Minimal) !void {
     const index = try server.receiveBody_u32();
-    const test_fn = builtin.test_functions[index];
+    const test_fn = builtin.test_functions[order[index]];
     testing.environ = init.environ;
     testing.allocator_instance = .{};
     testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
@@ -84,13 +87,14 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     const status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
         error.SkipZigTest => .skip,
         else => failure: {
-            std.debug.print("{s}: {t}\n", .{ test_fn.name, err });
+            std.debug.print("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
             if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
             break :failure .fail;
         },
     };
     testing.io_instance.deinit();
     const leaks = testing.allocator_instance.detectLeaks();
+    if (leaks != 0 or errors.load(.monotonic) != 0) std.debug.print("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
     testing.allocator_instance.deinitWithoutLeakChecks();
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     try recorder.record(test_fn.name, elapsed, @tagName(status));
@@ -100,4 +104,35 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
         .log_err_count = std.math.lossyCast(@FieldType(std.zig.Server.Message.TestResults.Flags, "log_err_count"), errors.load(.monotonic)),
         .leak_count = std.math.lossyCast(@FieldType(std.zig.Server.Message.TestResults.Flags, "leak_count"), leaks),
     } });
+}
+
+fn terminal(init: std.process.Init.Minimal) !void {
+    const recorder = try timings.Recorder.init(io, init.environ);
+    defer recorder.deinit();
+    var failures: usize = 0;
+    for (order) |index| {
+        const test_fn = builtin.test_functions[index];
+        testing.environ = init.environ;
+        testing.allocator_instance = .{};
+        testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
+        errors.store(0, .monotonic);
+        const start: std.Io.Clock.Timestamp = .now(io, .awake);
+        const status: []const u8 = if (test_fn.func()) |_| "pass" else |err| switch (err) {
+            error.SkipZigTest => "skip",
+            else => failed: {
+                std.debug.print("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
+                if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
+                break :failed "fail";
+            },
+        };
+        testing.io_instance.deinit();
+        const leaks = testing.allocator_instance.detectLeaks();
+        testing.allocator_instance.deinitWithoutLeakChecks();
+        try recorder.record(test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
+        if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
+    }
+    if (failures != 0) {
+        std.debug.print("preflight: {d} failed tests; seed {d}\n", .{ failures, testing.random_seed });
+        std.process.exit(1);
+    }
 }

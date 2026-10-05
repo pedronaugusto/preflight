@@ -113,6 +113,29 @@ Existing ziglint findings may be recorded in a repository's `ziglint_exceptions`
 file with their rule, path, exact source line, diagnostic and reason. The allowance
 is consumed once per finding: duplicates, changed code and new findings fail.
 This records migration debt without disabling a rule or admitting growth.
+On branches, git supplies the PR base ledger (or main locally). Every exception
+must already exist there; removals are allowed. Unused exceptions fail on every
+branch, including main. Git renames preserve allowances only when the rule,
+source and diagnostic still match exactly. Hosted checks fetch the base history;
+`PREFLIGHT_LEDGER_BASE` can select an explicit base for a local reproduction.
+
+Zig sources also reject `catch unreachable` without a nonempty
+`// unreachable: <why>` on the same or preceding line, and `std.debug.print`
+outside test blocks, test files and `src/testing/`. Files with top-level fields
+use TitleCase; other files use snake_case or lowercase. Existing findings use
+independent `unreachable_exceptions`, `debug_print_exceptions` and
+`file_name_exceptions` JSON ledgers with the same five fields and shrinking
+budget as ziglint. Assertion counts per function and package appear in the run
+summary as a report, without affecting the gate.
+
+The reusable workflow's `adopt` input defaults to false. For a package's first
+adoption it can initialize an absent source ledger only from exact findings
+already present in the base source, with the reason
+`existing at gate adoption; burned down in the cleanup pass`. Existing ledgers
+always retain the shrinking budget, even when this input is enabled.
+`zig build findings -Drepo-root=<package>` prints the new source findings as JSON
+for preparing an initial ledger; it does not change the package or approve debt.
+
 Layout exceptions likewise name their exact member set and a reason.
 `zig build docs -- usage` renders a configured region for updating its block.
 `zig build cache` preserves fetched packages and tools when pruning build products.
@@ -127,7 +150,10 @@ available for comparing elapsed time and runner minutes against this path.
 
 The full tier records each test's duration through Zig's test protocol, caches
 the summary and balances the next full Windows shards using the measured totals.
-Fast and local gates keep their existing runner. Custom runners can import
-`preflight_timings` when their `ci-timings` option is enabled.
+The shared runner shuffles test order using the test seed on full, fast and local
+CI gates. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
+reproduce an order. Direct test binaries also accept `--seed=<number>`.
+Custom runners retain their watchdogs and can import `preflight_order` to use
+the same seeded permutation, and `preflight_timings` to record durations.
 `zig build ci-linux -- --musl --optimize ReleaseSafe` runs the package's Dockerfile
 when explicitly requested; `--cgroup true` requests its privileged cgroup gate.

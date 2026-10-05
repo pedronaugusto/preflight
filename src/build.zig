@@ -42,7 +42,7 @@ pub fn addCi(b: *std.Build, config: Config) void {
         }),
     });
     const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next full-tier shard plan") orelse false);
-    if (timing) record.add(b, config.tests, dep);
+    record.add(b, config.tests, dep, timing);
     if (config.portable_tests) portable.add(b, config.tests);
     const cache = b.addRunArtifact(executable);
     cache.addArgs(&.{ "cache", "--path", ".zig-cache" });

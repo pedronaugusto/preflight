@@ -6,6 +6,9 @@ pub const Context = struct {
     io: std.Io,
     dir: ?std.Io.Dir = null,
     errors: usize = 0,
+    ledger_base: ?[]const u8 = null,
+    summary_path: ?[]const u8 = null,
+    adopt: bool = false,
 
     pub fn directory(c: Context) std.Io.Dir {
         return c.dir orelse .cwd();
@@ -78,6 +81,10 @@ pub fn testFile(path: []const u8) bool {
     const name = std.fs.path.basename(path);
     return std.mem.endsWith(u8, name, "_test.zig") or std.mem.endsWith(u8, name, "_tests.zig") or
         std.mem.startsWith(u8, name, "test_") or std.mem.eql(u8, name, "tests.zig");
+}
+
+pub fn outsideTests(s: Source, token: std.zig.Ast.TokenIndex) bool {
+    return !testFile(s.path) and !glob("src/testing/*", s.path) and !s.inTest(token);
 }
 
 pub fn support(path: []const u8, config: Value) bool {

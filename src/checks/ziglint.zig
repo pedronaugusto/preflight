@@ -1,5 +1,6 @@
 const std = @import("std");
 const src = @import("source.zig");
+const ledger = @import("ledger.zig");
 
 pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
     var argv: std.ArrayList([]const u8) = .empty;
@@ -14,23 +15,20 @@ pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
     }
     const result = try std.process.run(c.a, c.io, .{ .argv = argv.items });
     const output = try std.mem.concat(c.a, u8, &.{ result.stdout, result.stderr });
-    const file = src.get(config, "ziglint_exceptions");
-    const exceptions = if (file == .string) try c.json(file.string) else .null;
-    try findings(c, output, exceptions);
+    var allowed = try ledger.Ledger.load(c, config, "ziglint_exceptions");
+    try parseFindings(c, output, &allowed);
+    try allowed.finish();
     if ((result.term != .exited or result.term.exited != 0) and std.mem.trim(u8, output, " \t\r\n").len == 0)
         c.fail("ziglint: command failed without diagnostics", .{});
 }
 
 pub fn findings(c: *src.Context, output: []const u8, exceptions: src.Value) !void {
-    const allowed = src.items(exceptions);
-    const used = try c.a.alloc(bool, allowed.len);
-    @memset(used, false);
-    for (allowed) |item| {
-        if (std.mem.trim(u8, src.string(src.get(item, "reason"), ""), " \t\r\n").len == 0) {
-            c.fail("ziglint: each exception needs a reason", .{});
-            return;
-        }
-    }
+    var allowed = try ledger.Ledger.init(c, exceptions);
+    try parseFindings(c, output, &allowed);
+    try allowed.finish();
+}
+
+fn parseFindings(c: *src.Context, output: []const u8, allowed: *ledger.Ledger) !void {
     var remaining = std.mem.trim(u8, output, " \t\r\n");
     while (remaining.len > 0) {
         const rule_end = std.mem.indexOf(u8, remaining, ": ") orelse {
@@ -58,22 +56,9 @@ pub fn findings(c: *src.Context, output: []const u8, exceptions: src.Value) !voi
         const detail = std.mem.trim(u8, remaining[detail_start..next], " \t\r\n");
         const text = c.read(path) catch "";
         const source = sourceLine(text, line);
-        var matched = false;
-        for (allowed, 0..) |item, i| {
-            if (used[i]) continue;
-            if (equals(item, "rule", rule) and equals(item, "path", path) and equals(item, "source", source) and equals(item, "detail", detail)) {
-                used[i] = true;
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) c.fail("{s}: {s}:{d}: {s}", .{ rule, path, line, detail });
+        if (!allowed.consume(rule, path, source, detail)) c.fail("{s}: {s}:{d}: {s}", .{ rule, path, line, detail });
         remaining = std.mem.trimStart(u8, remaining[next..], "\r\n");
     }
-}
-
-fn equals(item: src.Value, key: []const u8, wanted: []const u8) bool {
-    return std.mem.eql(u8, src.string(src.get(item, key), ""), wanted);
 }
 
 fn nextDiagnostic(text: []const u8, start: usize) usize {
@@ -102,9 +87,9 @@ test "unknown failures and missing reasons cannot be hidden" {
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
     try findings(&c, "internal error\n", .null);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
-    const exceptions = (try std.json.parseFromSlice(src.Value, c.a, "[{\"reason\":\"\"}]", .{})).value;
+    const exceptions = (try std.json.parseFromSlice(src.Value, c.a, "[{\"rule\":\"Z001\",\"path\":\"x.zig\",\"source\":\"code\",\"detail\":\"detail\",\"reason\":\"\"}]", .{})).value;
     try findings(&c, "", exceptions);
-    try std.testing.expectEqual(@as(usize, 2), c.errors);
+    try std.testing.expectEqual(@as(usize, 3), c.errors);
 }
 
 test "exact exceptions are consumed once and cannot admit source changes" {
@@ -122,5 +107,5 @@ test "exact exceptions are consumed once and cannot admit source changes" {
     try std.testing.expectEqual(@as(usize, 1), c.errors);
     try tmp.dir.writeFile(c.io, .{ .sub_path = "value.zig", .data = "const changed = @import(\"other.zig\").value;\n" });
     try findings(&c, output, allowed);
-    try std.testing.expectEqual(@as(usize, 2), c.errors);
+    try std.testing.expectEqual(@as(usize, 3), c.errors);
 }

@@ -38,6 +38,10 @@ on:
       test-job-timeout:
         type: number
         default: 20
+      windows-git-latest:
+        description: Upgrade Git for Windows before setting up test tools
+        type: boolean
+        default: false
       windows-job-timeout:
         type: number
         default: 20
@@ -84,6 +88,7 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
+          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-key: ${{ matrix.cache_key }}
       - name: Check sources, run Linux Debug and compile other test targets
@@ -149,6 +154,7 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
+          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-key: ${{ matrix.cache_key }}
       - name: Run the gate
@@ -184,6 +190,7 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
+          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-key: ${{ matrix.cache_key }}
       - name: Compile test executables
@@ -214,6 +221,7 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
+          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-key: execute-${{ matrix.cache_key }}
       - uses: actions/download-artifact@v4

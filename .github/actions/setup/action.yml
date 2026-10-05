@@ -10,9 +10,19 @@ inputs:
   install-zig:
     description: Install Zig unless the container already supplies it
     default: 'true'
+  windows-git-latest:
+    description: Upgrade Git for Windows to the latest release
+    default: 'false'
 runs:
   using: composite
   steps:
+    - name: Upgrade Git for Windows
+      if: runner.os == 'Windows' && inputs.windows-git-latest == 'true'
+      shell: pwsh
+      run: |
+        choco upgrade git -y --no-progress
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        git --version
     - uses: mlugg/setup-zig@v2
       with:
         version: 0.16.0

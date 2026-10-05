@@ -57,7 +57,7 @@ pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) 
             const proto = s.tree.fullFnProto(&buffer, node).?;
             const name = s.tree.tokenSlice(proto.name_token orelse continue);
             const line = s.line(s.tree.firstToken(node));
-            const count = s.line(s.tree.lastToken(node)) - line + 1;
+            const count = s.line(s.tree.lastToken(node)) - line + 1 - typeBody(s, node, proto);
             var limit = src.number(src.get(config, "function_limit"), 120);
             const limits = src.get(config, "function_limits");
             if (limits == .object) {
@@ -74,6 +74,28 @@ pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) 
             } else if (count > limit) c.fail("{s}:{d}: {s} is {d} lines (limit {d})", .{ s.path, line, name, count, limit });
         }
     }
+}
+
+/// A function returning `type` is a type constructor: the container it
+/// returns is a type, not a procedure, and its methods are measured as
+/// functions of their own. Its lines are taken out of the constructor's
+/// count, leaving what runs before the type is made.
+fn typeBody(s: src.Source, node: std.zig.Ast.Node.Index, proto: std.zig.Ast.full.FnProto) usize {
+    const ret = proto.ast.return_type.unwrap() orelse return 0;
+    if (s.tree.nodeTag(ret) != .identifier or !std.mem.eql(u8, s.tree.tokenSlice(s.tree.nodeMainToken(ret)), "type")) return 0;
+    const first = s.tree.firstToken(node);
+    const last = s.tree.lastToken(node);
+    var widest: usize = 0;
+    var buffer: [2]std.zig.Ast.Node.Index = undefined;
+    for (0..s.tree.nodes.len) |i| {
+        const inner: std.zig.Ast.Node.Index = @enumFromInt(i);
+        if (s.tree.fullContainerDecl(&buffer, inner) == null) continue;
+        const from = s.tree.firstToken(inner);
+        const to = s.tree.lastToken(inner);
+        if (from < first or to > last) continue;
+        widest = @max(widest, s.line(to) - s.line(from));
+    }
+    return widest;
 }
 
 pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
@@ -178,6 +200,24 @@ test "function spans ignore literal braces and exact exceptions cannot grow" {
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     const grown = try src.Source.parse(a, "src/a.zig", "fn value() void {\n\n\n\n}\n");
     try lengths(&c, &.{grown}, config);
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
+}
+
+test "a type constructor counts its own lines, not the type it returns" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c: src.Context = .{ .a = a, .io = std.testing.io };
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"function_limit\":4}", .{})).value;
+    const short = try src.Source.parse(a, "src/a.zig", "pub fn Box(comptime T: type) type {\n    return struct {\n        value: T,\n        a: u8,\n        b: u8,\n        c: u8,\n        fn get(self: @This()) T {\n            return self.value;\n        }\n    };\n}\n");
+    try lengths(&c, &.{short}, config);
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    const method = try src.Source.parse(a, "src/a.zig", "pub fn Box(comptime T: type) type {\n    return struct {\n        value: T,\n        fn get(self: @This()) T {\n            _ = 1;\n            _ = 2;\n            _ = 3;\n            return self.value;\n        }\n    };\n}\n");
+    try lengths(&c, &.{method}, config);
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
+    c.errors = 0;
+    const work = try src.Source.parse(a, "src/a.zig", "pub fn Box(comptime T: type) type {\n    _ = 1;\n    _ = 2;\n    _ = 3;\n    _ = 4;\n    return struct { value: T };\n}\n");
+    try lengths(&c, &.{work}, config);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 

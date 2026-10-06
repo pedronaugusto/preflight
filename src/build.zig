@@ -12,10 +12,16 @@ pub const Config = struct {
     durations: []const u8 = "ci/durations.json",
     portable_tests: bool = false,
     timings_enabled: ?bool = null,
-    /// One test, its Io teardown included, fails by name once it runs this
-    /// long, in local runs too. Null turns the watchdog off.
-    test_timeout: ?std.Io.Duration = null,
+    /// The watchdog: one test, its Io teardown included, fails by name,
+    /// phase and seed once it runs this long, in local runs too. preflight
+    /// also bounds the build runner's `--test-timeout` past it.
+    test_timeout: TestTimeout = .default,
+    /// The `std.log` level a test prints at. Zig's runner prints `.warn`
+    /// and above; a library that logs what it does can ask for `.info`.
+    test_log_level: std.log.Level = .warn,
 };
+
+pub const TestTimeout = record.TestTimeout;
 
 /// CI tools use a stable CPU target across hosted runner models.
 pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
@@ -86,9 +92,12 @@ const Steps = struct {
             }),
         });
         const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false);
-        const timeout: u64 = if (config.test_timeout) |duration| @intCast(@max(duration.toNanoseconds(), 1)) else 0;
-        record.add(b, config.tests, pkg, .{ .timing = timing, .test_timeout_ns = timeout, .durations = config.durations });
-        if (config.portable_tests) portable.add(b, config.tests, config.durations);
+        const timeout = config.test_timeout.nanoseconds() orelse fail: {
+            config.tests.dependOn(&b.addFail("test_timeout: a bound other than the default, or none, needs its reason").step);
+            break :fail 0;
+        };
+        record.add(b, config.tests, pkg, .{ .timing = timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        if (config.portable_tests) portable.add(b, config.tests, config.durations, record.outerTimeout(timeout));
         const cache = b.addRunArtifact(executable);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));

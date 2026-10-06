@@ -1,20 +1,25 @@
 //! Timing evidence is recorded by the test runner, never asserted by a test.
 const std = @import("std");
-const builtin = @import("builtin");
-
-/// The `ci/durations.json` column these records refresh.
-pub const key = @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.mode);
 
 pub const Recorder = struct {
     io: std.Io,
     file: ?std.Io.File = null,
+    /// The `ci/durations.json` column these records refresh.
+    key: []const u8,
+    /// The shard that ran the tests, `i/n`, or empty for all of them.
+    shard: []const u8 = "",
 
-    pub fn init(io: std.Io, environ: std.process.Environ) !Recorder {
+    pub fn init(io: std.Io, environ: std.process.Environ, key: []const u8) !Recorder {
         var env = try environ.createMap(std.heap.page_allocator);
         defer env.deinit();
-        const path = env.get("PREFLIGHT_TIMINGS") orelse return .{ .io = io };
+        const path = env.get("PREFLIGHT_TIMINGS") orelse return .{ .io = io, .key = key };
         if (std.fs.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
-        return .{ .io = io, .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true }) };
+        return .{
+            .io = io,
+            .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true }),
+            .key = key,
+            .shard = try std.heap.page_allocator.dupe(u8, env.get("PREFLIGHT_SHARD") orelse ""),
+        };
     }
 
     pub fn deinit(recorder: Recorder) void {
@@ -27,7 +32,8 @@ pub const Recorder = struct {
             .name = name,
             .seconds = @as(f64, @floatFromInt(nanoseconds)) / std.time.ns_per_s,
             .status = status,
-            .key = key,
+            .key = recorder.key,
+            .shard = recorder.shard,
         }, .{});
         defer std.heap.page_allocator.free(json);
         var buffer: [4096]u8 = undefined;

@@ -50,8 +50,6 @@ pub fn run(c: src.Context, config: src.Value, opts: Options) !void {
         try argv.appendSlice(c.a, &.{ "--volume", volume, "--workdir", "/src", "--env", "HOME=/tmp/preflight-home", "--env", "XDG_CONFIG_HOME=/tmp/preflight-home", tag, "zig", "build", "ci" });
         try argv.append(c.a, try std.fmt.allocPrint(c.a, "-Doptimize={s}", .{mode}));
         if (!opts.lint) try argv.append(c.a, "-Dci-lint=false");
-        var timeout = std.mem.tokenizeAny(u8, src.string(src.get(config, "test_timeout"), ""), " \t");
-        while (timeout.next()) |arg| try argv.append(c.a, arg);
         try argv.appendSlice(c.a, &.{ "--cache-dir", "/src/.zig-cache/preflight-linux/local", "--global-cache-dir", "/src/.zig-cache/preflight-linux/global" });
         try command(c, argv.items);
     }

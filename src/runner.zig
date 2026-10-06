@@ -1,5 +1,5 @@
-//! Zig's test protocol with per-test timing records, shard selection and a
-//! watchdog. Fuzzing stays upstream's.
+//! Zig's test protocol with per-test timing records, shard selection, a
+//! watchdog and the package's log level. Fuzzing stays upstream's.
 const std = @import("std");
 const builtin = @import("builtin");
 const upstream = @import("preflight_default_test_runner");
@@ -9,6 +9,8 @@ const options = @import("preflight_runner_options");
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
+/// The options module carries its own copy of the enum.
+const log_level = @field(std.log.Level, @tagName(options.test_log_level));
 var errors: std.atomic.Value(usize) = .init(0);
 var order: []usize = &.{};
 
@@ -19,6 +21,14 @@ pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), compti
 
 // A fuzz test reports itself only to a build with fuzzing, which upstream's runner serves.
 pub const fuzz = upstream.fuzz;
+
+/// The runner's own lines on stderr, under the lock `std.log` takes.
+fn report(comptime format: []const u8, args: anytype) void {
+    var buffer: [64]u8 = undefined;
+    const stderr = std.debug.lockStderr(&buffer);
+    defer std.debug.unlockStderr();
+    stderr.file_writer.interface.print(format, args) catch return;
+}
 
 /// Ends the process when one test, its Io teardown included, outlasts the
 /// package's `test_timeout`, and says which test and phase it was in.
@@ -31,6 +41,7 @@ const Watchdog = struct {
     const Phase = enum(u8) { body, io_teardown, reporting };
 
     fn start(watchdog: *Watchdog) !void {
+        // The build refuses a single-threaded build with a watchdog.
         if (builtin.single_threaded or options.test_timeout_ns == 0) return;
         watchdog.thread = try std.Thread.spawn(.{}, watch, .{watchdog});
     }
@@ -47,7 +58,7 @@ const Watchdog = struct {
         const deadline: std.Io.Clock.Timestamp = .fromNow(io, limit);
         while (watchdog.done.load(.acquire) == 0) {
             if (deadline.untilNow(io).raw.nanoseconds >= 0) {
-                std.debug.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
+                report("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
                     watchdog.name, options.test_timeout_ns / std.time.ns_per_ms, watchdog.phase.load(.acquire), testing.random_seed,
                 });
                 std.process.exit(1);
@@ -81,7 +92,7 @@ fn serve(init: std.process.Init.Minimal) !void {
     var reader = std.Io.File.stdin().readerStreaming(io, &input);
     var writer = std.Io.File.stdout().writerStreaming(io, &output);
     var server = try std.zig.Server.init(.{ .in = &reader.interface, .out = &writer.interface, .zig_version = builtin.zig_version_string });
-    const recorder = try timings.Recorder.init(io, init.environ);
+    const recorder = try timings.Recorder.init(io, init.environ, order_module.key);
     defer recorder.deinit();
     while (true) {
         const header = try server.receiveMessage();
@@ -120,6 +131,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     try watchdog.start();
     defer watchdog.stop();
     testing.environ = init.environ;
+    testing.log_level = log_level;
     testing.allocator_instance = .{};
     testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
     errors.store(0, .monotonic);
@@ -128,7 +140,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     const status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
         error.SkipZigTest => .skip,
         else => failure: {
-            std.debug.print("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
+            report("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
             if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
             break :failure .fail;
         },
@@ -136,7 +148,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     watchdog.phase.store(.io_teardown, .release);
     testing.io_instance.deinit();
     const leaks = testing.allocator_instance.detectLeaks();
-    if (leaks != 0 or errors.load(.monotonic) != 0) std.debug.print("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
+    if (leaks != 0 or errors.load(.monotonic) != 0) report("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
     testing.allocator_instance.deinitWithoutLeakChecks();
     watchdog.phase.store(.reporting, .release);
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
@@ -150,7 +162,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
 }
 
 fn terminal(init: std.process.Init.Minimal) !void {
-    const recorder = try timings.Recorder.init(io, init.environ);
+    const recorder = try timings.Recorder.init(io, init.environ, order_module.key);
     defer recorder.deinit();
     var failures: usize = 0;
     for (order) |index| {
@@ -159,6 +171,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         try watchdog.start();
         defer watchdog.stop();
         testing.environ = init.environ;
+        testing.log_level = log_level;
         testing.allocator_instance = .{};
         testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
         errors.store(0, .monotonic);
@@ -166,7 +179,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         const status: []const u8 = if (test_fn.func()) |_| "pass" else |err| switch (err) {
             error.SkipZigTest => "skip",
             else => failed: {
-                std.debug.print("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
+                report("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
                 if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
                 break :failed "fail";
             },
@@ -180,7 +193,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
     }
     if (failures != 0) {
-        std.debug.print("preflight: {d} failed tests; seed {d}\n", .{ failures, testing.random_seed });
+        report("preflight: {d} failed tests; seed {d}\n", .{ failures, testing.random_seed });
         std.process.exit(1);
     }
 }

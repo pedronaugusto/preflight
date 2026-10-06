@@ -5,9 +5,18 @@ const declared = @import("layers");
 const source = @import("checks/source.zig");
 const structure = @import("structure/check.zig");
 
-fn keep(_: void, path: []const u8, kind: std.Io.File.Kind) bool {
-    if (kind == .directory) return std.mem.eql(u8, path, "src") or std.mem.startsWith(u8, path, "src/");
-    return std.mem.startsWith(u8, path, "src/") and std.mem.endsWith(u8, path, ".zig");
+/// Zig files under the configured source roots, and the directories on the
+/// way to them.
+fn keep(roots: []const []const u8, path: []const u8, kind: std.Io.File.Kind) bool {
+    for (roots) |root| {
+        if (kind == .directory and (within(path, root) or within(root, path))) return true;
+        if (kind != .directory and within(path, root) and !std.mem.eql(u8, path, root) and std.mem.endsWith(u8, path, ".zig")) return true;
+    }
+    return false;
+}
+/// `path` is `dir` or below it.
+fn within(path: []const u8, dir: []const u8) bool {
+    return std.mem.startsWith(u8, path, dir) and (path.len == dir.len or path[dir.len] == '/');
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -37,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
         .owned = if (@hasDecl(declared, "owned")) declared.owned else &.{},
         .test_paths = try source.testPaths(a, config),
     };
-    var paths = try gantry.walk(a, init.io, .cwd(), {}, keep);
+    var paths = try gantry.walk(a, init.io, .cwd(), try source.roots(a, config), keep);
     defer paths.deinit();
     const reader: gantry.DirReader = .{ .io = init.io, .dir = .cwd() };
     var diagnostic = gantry.ScanDiagnostic.init(a);

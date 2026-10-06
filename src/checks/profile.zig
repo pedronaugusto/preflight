@@ -22,9 +22,13 @@ pub fn reset(c: src.Context, root: []const u8) !void {
 }
 
 /// Reads every `.ndjson` record under `root`. A column this run measured
-/// replaces the one in `previous`; columns it did not measure are kept.
+/// replaces the one in `previous`; columns it did not measure are kept. A
+/// test that two shards of one column both ran fails: the split is broken.
 pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Durations {
     var result: Durations = .{};
+    // The shard that recorded each test, by name and column.
+    var shards: std.StringHashMapUnmanaged([]const u8) = .empty;
+    var split = true;
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walk(c.a);
@@ -39,9 +43,19 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
             result.records += 1;
             const column = src.string(src.get(value, "key"), "");
             if (column.len == 0) continue;
+            const name = src.string(src.get(value, "name"), "");
+            const shard = src.string(src.get(value, "shard"), "");
+            const seen = try shards.getOrPut(c.a, try std.fmt.allocPrint(c.a, "{s}\x00{s}", .{ name, column }));
+            if (!seen.found_existing) {
+                seen.value_ptr.* = try c.a.dupe(u8, shard);
+            } else if (!std.mem.eql(u8, seen.value_ptr.*, shard)) {
+                c.report("profile: {s} ran on shards {s} and {s} of {s}\n", .{ name, seen.value_ptr.*, shard, column });
+                split = false;
+            }
             try result.put(c.a, try c.a.dupe(u8, src.string(src.get(value, "name"), "")), try c.a.dupe(u8, column), seconds);
         }
     }
+    if (!split) return error.TestOnTwoShards;
     const measured = try result.keys.clone(c.a);
     const keys = src.items(src.get(previous, "keys"));
     const tests = src.get(previous, "tests");
@@ -141,4 +155,18 @@ test "restored timings are discarded before a gate records this run" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(c.io, "cache/preflight-timings", .{}));
     try tmp.dir.access(c.io, "cache/compiled", .{});
     try reset(c, "cache/preflight-timings");
+}
+
+test "a test recorded on two shards of one column fails the refresh" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-1of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"windows-Debug\",\"shard\":\"1/2\"}\n" });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-macos-Debug-2of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"macos-Debug\",\"shard\":\"2/2\"}\n" });
+    _ = try summarize(c, ".", .null);
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-2of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":2,\"status\":\"pass\",\"key\":\"windows-Debug\",\"shard\":\"2/2\"}\n" });
+    try std.testing.expectError(error.TestOnTwoShards, summarize(c, ".", .null));
 }

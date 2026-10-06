@@ -15,7 +15,6 @@ pub const Job = struct {
     args: []const u8 = "",
     /// `i/n` when the job runs one shard of its tests.
     shard: []const u8 = "",
-    timeout: []const u8 = "",
     setup: bool = false,
     job_timeout: usize = 20,
     cache_key: []const u8 = "",
@@ -45,6 +44,8 @@ fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
 
 pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
     for (obsolete) |name| if (src.get(config, name) != .null) return error.ObsoleteShardConfig;
+    // The build bounds each test past its watchdog (`Config.test_timeout`).
+    if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
     if (!full) return fastPlan(a, config);
     var jobs: std.ArrayList(Job) = .empty;
     for (hosts, host_names) |host, host_name| {
@@ -57,7 +58,6 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
                 .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}{s}", .{ host, mode, if (count > 1) " shard " else "", shard }),
                 .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false -Dci-timings=true", .{mode}),
                 .shard = shard,
-                .timeout = src.string(src.get(config, "test_timeout"), ""),
                 .setup = true,
                 .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
             });
@@ -130,7 +130,6 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
             .step = "preflight-fast",
             .args = try std.fmt.allocPrint(a, "-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (count > 1) " -Dci-timings=true" else "" }),
             .shard = shard,
-            .timeout = src.string(src.get(config, "test_timeout"), ""),
             .setup = true,
             .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
             .cache_key = try std.fmt.allocPrint(a, "fast-linux-debug-{d}", .{i}),
@@ -173,7 +172,6 @@ fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) 
         .name = "ThreadSanitizer (Linux)",
         .step = sanitizer.string,
         .args = "-Dthread-sanitizer -Doptimize=Debug -Dci-lint=false",
-        .timeout = "--test-timeout 120s",
         .setup = true,
         .job_timeout = src.number(src.get(config, "sanitizer_job_timeout"), 20),
     });
@@ -218,7 +216,7 @@ test "fast gate executes only Linux Debug and compiles all other test targets" {
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_step":"install","compile_once":true,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}],"test_timeout":"--test-timeout 60s"}
+        \\{"compile_step":"install","compile_once":true,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
     , .{})).value;
     const jobs = try plan(a, config, false);
     try std.testing.expectEqual(@as(usize, 1), jobs.len);
@@ -292,6 +290,17 @@ test "named weighted cases are refused, naming the per-test shards that replace 
         try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, true));
         try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, false));
     }
+}
+
+test "a workflow-level test timeout is refused; the build bounds each test" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_timeout\":\"--test-timeout 120s\"}", .{})).value;
+    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, true));
+    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, false));
+    for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, true)) |job|
+        try std.testing.expect(std.mem.indexOf(u8, job.args, "test-timeout") == null);
 }
 
 test "fast shards split Linux Debug, and only the first checks sources and compiles other targets" {

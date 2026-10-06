@@ -17,6 +17,7 @@ pub const attest = @import("checks/attest.zig");
 test {
     _ = @import("structure/check.zig");
     _ = @import("consumer.zig");
+    _ = @import("record.zig");
     _ = source;
     _ = policy;
     _ = imports;

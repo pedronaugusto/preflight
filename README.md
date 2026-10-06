@@ -17,9 +17,15 @@ preflight.addCi(b, .{ .tests = test_step });
 ```
 
 `zig build lint` runs source checks. `zig build ci` checks sources before running
-tests. `.test_timeout = .fromSeconds(60)` arms a watchdog in the shared test
-runner: a test that runs longer, its Io teardown included, fails by name and
-phase, in local runs too. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
+tests. A watchdog in the shared test runner fails a test that runs longer than
+120 s, its Io teardown included, by name, phase and seed, in local runs too. A
+package that needs another bound says why: `.test_timeout = .{ .bound = .{ .limit =
+.fromSeconds(30), .reason = "..." } }`, or `.{ .off = "..." }` for a test runner of its
+own or a single-threaded build, which otherwise fail the build by name. preflight
+also bounds the build runner's per-test timeout past the watchdog's, by a quarter and
+at least 15 s, in place of `--test-timeout`, so the watchdog's report always comes
+first. `.test_log_level = .info` prints a library's `std.log.info` lines in its tests,
+where Zig's runner prints `.warn` and above. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
 `-Dci-lint=false` lets the hosted optimization and shard jobs use the source job's
 result; the default local gate always checks sources.
 Compiled caches never skip test execution: each gate runs the test binaries even
@@ -29,8 +35,10 @@ when their build products are already available.
 adds `check-consumer`: it builds a generated project that depends on the package
 by path with fetching off, so the build a consumer gets cannot reach the
 package's CI dependencies. `.modules` names the modules the program imports,
-`.packages` the dependencies the package itself needs, and `.use_llvm` is passed
-to the program's compilation. `preflight.addCheck(b, name, source)` builds a
+`.packages` the dependencies the package itself needs, and `.use_llvm` names a
+public function of the package's `build.zig`, `fn (std.Build.ResolvedTarget,
+std.builtin.OptimizeMode) ?bool`, which the consumer's build calls for the target
+and mode it builds, as a user's build would. The consumer builds for the host in Debug. `preflight.addCheck(b, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
@@ -42,8 +50,13 @@ The shared runner checks layers, cycles and entries over the production graph,
 the edges a non-test build compiles, and refuses a production file with zero or
 multiple layers. Test code is in no layer, so a test file may import anything;
 no production edge may reach test code, and an import in an inline test may not
-reach a higher layer than its file. Required paths, reference rules and owned
-tokens hold for every file. Gantry remains the language-neutral graph library;
+reach a higher layer than its file. A glob such as `src/report/**` covers the
+production files under it and passes over the test files beside them; a literal
+pattern naming a test file fails. An entry that is test code fails too, since the
+entry rule reads only the production graph. Required paths, reference rules and owned
+tokens hold for every file. The runner walks the `sources` roots, as lint does. An
+import gantry marks dead, in a declaration nothing reaches from a public, exported
+or comptime member, a field, `main` or a test, is unused and fails. Gantry remains the language-neutral graph library;
 these runners belong here.
 
 Test code has one definition, shared by the source checks and the structure
@@ -64,8 +77,7 @@ A namespace containing two or more implementation files has one adjacent entry:
 `src/parser.zig` beside `src/parser/`. Case-insensitive matching accommodates
 existing Zig type namespaces; tests and configured test support do not count.
 Tests must be reachable from a configured root through imports or aliases named
-inside test blocks. An import in a declaration nothing reaches, from a public,
-exported or comptime member, a field, `main` or a test, is unused and fails.
+inside test blocks.
 
 Generated Markdown blocks retain their visible generator labels. Their source,
 region, module import and whether that import is shown are facts in the JSON
@@ -88,8 +100,9 @@ caller in this repository shows the trigger and concurrency policy:
 - The caller owns one concurrency group per branch, with cancellation enabled
   for work branches and disabled for main's status job. No scheduled runs are enabled.
 
-`ci/workflow.json` names cross targets and optional CPUs, the compile step, test
-timeout, sanitizer step and shard counts. The full tier
+`ci/workflow.json` names cross targets and optional CPUs, the compile step,
+sanitizer step and shard counts. A `test_timeout` there is refused: the build
+bounds each test. The full tier
 adds ReleaseSafe on each host, ReleaseFast on Linux, ReleaseSmall, every cross
 target and TSan where supported. Static full-tier matrices are generated locally from `ci/workflow.json` with
 `zig build plan -- --full true --output <file>` and passed as `full-matrix`,

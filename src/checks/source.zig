@@ -145,12 +145,19 @@ pub const Source = struct {
     }
 };
 
+/// The source directories `sources` names, `src` when it names none: what
+/// lint and the structure check both walk.
+pub fn roots(a: std.mem.Allocator, config: Value) ![]const []const u8 {
+    const named = get(config, "sources");
+    if (named == .null) return &.{"src"};
+    const out = try a.alloc([]const u8, items(named).len);
+    for (items(named), out) |root, *path| path.* = string(root, "src");
+    return out;
+}
+
 pub fn collect(c: Context, config: Value) ![]Source {
     var out: std.ArrayList(Source) = .empty;
-    const roots = get(config, "sources");
-    if (roots == .null) try collectRoot(c, "src", &out) else {
-        for (items(roots)) |root| try collectRoot(c, string(root, "src"), &out);
-    }
+    for (try roots(c.a, config)) |root| try collectRoot(c, root, &out);
     std.mem.sort(Source, out.items, {}, struct {
         fn less(_: void, a: Source, b: Source) bool {
             return std.mem.lessThan(u8, a.path, b.path);

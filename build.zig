@@ -2,6 +2,7 @@ const std = @import("std");
 const ci = @import("src/build.zig");
 pub const addCi = ci.addCi;
 pub const Config = ci.Config;
+pub const TestTimeout = ci.TestTimeout;
 pub const addCheck = ci.addCheck;
 pub const addConsumerCheck = ci.consumer.add;
 pub const ConsumerOptions = ci.consumer.Options;
@@ -17,20 +18,12 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .imports = &.{.{ .name = "gantry", .module = gantry }},
     }) });
-    tests.test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .server };
-    tests.root_module.addAnonymousImport("preflight_timings", .{ .root_source_file = b.path("src/timings.zig") });
-    tests.root_module.addAnonymousImport("preflight_order", .{ .root_source_file = b.path("src/order.zig") });
-    tests.root_module.addAnonymousImport("preflight_default_test_runner", .{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ b.graph.zig_lib_directory.path.?, "compiler", "test_runner.zig" }) },
-    });
-    const runner = b.addOptions();
-    runner.addOption(u64, "test_timeout_ns", 0);
-    tests.root_module.addOptions("preflight_runner_options", runner);
     const options = b.addOptions();
     options.addOption([]const u8, "root", b.pathFromRoot("."));
     tests.root_module.addOptions("test_options", options);
-    // The gate below instruments every test it reaches, so the order module,
-    // which that instrumentation imports, runs its own tests beside it.
+    // The gate below gives the suite preflight's runner, as it does a
+    // consumer's tests; the order module the runner imports runs its own
+    // tests beside it.
     const suite = b.allocator.create(std.Build.Step) catch @panic("OOM");
     suite.* = .init(.{ .id = .custom, .name = "check suite", .owner = b });
     suite.dependOn(&b.addRunArtifact(tests).step);

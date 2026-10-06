@@ -59,6 +59,29 @@ test "structure runner rejects undeclared imports, production reaching tests and
     try std.testing.expect(std.mem.indexOf(u8, duplicate.stderr, "multiple layers") != null);
 }
 
+test "structure runner walks every configured source root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDirPath(io, "lib");
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/preflight.json", .data = "{\"sources\":[\"src\",\"lib\"],\"test_roots\":[\"src/sample.zig\"]}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "lib/foo.zig", .data = "pub const helper = @import(\"foo_test.zig\");\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "lib/foo_test.zig", .data = "test {}\n" });
+    const input = try std.fs.path.join(a, &.{ root, "sample/ci/layers.zig" });
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, input, a, .limited(1024 * 1024));
+    const layered = try std.mem.replaceOwned(u8, a, text, "&.{\"src/sample.zig\"}", "&.{ \"src/sample.zig\", \"lib/foo.zig\" }");
+    try std.testing.expect(!std.mem.eql(u8, text, layered));
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/layers.zig", .data = layered });
+    const result = try run(a, tmp.dir);
+    try std.testing.expect(result.term == .exited and result.term.exited != 0);
+    if (std.mem.indexOf(u8, result.stderr, "production reaches tests: lib/foo.zig -> lib/foo_test.zig") == null) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "production reaches tests: lib/foo.zig -> lib/foo_test.zig") != null);
+}
+
 fn fixtureLayers(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const input = try std.fs.path.join(a, &.{ root, "sample/ci/layers.zig" });
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, input, a, .limited(1024 * 1024));
@@ -187,7 +210,7 @@ test "initial adoption requires exact base findings and cannot grow an existing 
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, "src");
     try tmp.dir.createDirPath(io, "ci");
-    const code = "const std = @import(\"std\");\nfn work() void {\n    std.debug.print(\"hi\", .{});\n}\n";
+    const code = "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\n";
     try tmp.dir.writeFile(io, .{ .sub_path = "src/value.zig", .data = code });
     try fixtureGit(a, tmp.dir, &.{ "init", "-b", "main" });
     try fixtureGit(a, tmp.dir, &.{ "add", "src" });
@@ -244,7 +267,7 @@ test "sample rejects each new source rule and passes clean code" {
     try fixture(a, tmp.dir);
     const examples = [_][]const u8{
         "fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n",
-        "const std = @import(\"std\");\nfn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n",
+        "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n",
         "field: u8,\ntest {}\n",
     };
     for (examples, quality.rules) |text, rule| {
@@ -446,7 +469,7 @@ test "the watchdog fails a stalled test by name and phase" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     const script = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
-    const bounded = try std.mem.replaceOwned(u8, a, script, ".test_timeout = .fromSeconds(60)", ".test_timeout = .fromMilliseconds(300)");
+    const bounded = try std.mem.replaceOwned(u8, a, script, ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a stall test\" } }");
     try std.testing.expect(!std.mem.eql(u8, script, bounded));
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = bounded });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"stalls\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);\n}\n" });
@@ -475,4 +498,95 @@ test "the consumer check builds the package as a dependency with nothing fetched
     const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!ledger.success(broken));
     try std.testing.expect(std.mem.indexOf(u8, broken.stderr, "no member named 'missing'") != null);
+}
+
+fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u8, to: []const u8) !void {
+    const io = std.testing.io;
+    const text = try dir.readFileAlloc(io, path, a, .limited(1024 * 1024));
+    const changed = try std.mem.replaceOwned(u8, a, text, from, to);
+    try std.testing.expect(!std.mem.eql(u8, text, changed));
+    try dir.writeFile(io, .{ .sub_path = path, .data = changed });
+}
+
+fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.process.RunResult {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "zig", "build", "ci", "-Dci-lint=false" });
+    try argv.appendSlice(a, extra);
+    return std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
+}
+
+test "a test runner of its own or a single-threaded build fails by name while the watchdog is on" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const tests = "const tests = b.addTest(.{ .root_module = module });\n";
+    try edit(a, tmp.dir, "build.zig", tests, tests ++ "    tests.test_runner = .{ .path = .{ .cwd_relative = b.pathJoin(&.{ b.graph.zig_lib_directory.path.?, \"compiler\", \"test_runner.zig\" }) }, .mode = .server };\n");
+    const own = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!ledger.success(own));
+    try std.testing.expect(std.mem.indexOf(u8, own.stderr, "test: a test runner of its own arms no watchdog") != null);
+    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .off = \"the upstream runner\" }");
+    const off = try gate(a, tmp.dir, &.{});
+    if (!ledger.success(off)) std.debug.print("{s}\n", .{off.stderr});
+    try std.testing.expect(ledger.success(off));
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", ".optimize = optimize,\n    });", ".optimize = optimize,\n        .single_threaded = true,\n    });");
+    const single = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!ledger.success(single));
+    try std.testing.expect(std.mem.indexOf(u8, single.stderr, "test: a single-threaded build has no watchdog") != null);
+}
+
+test "preflight bounds the build runner's per-test timeout past the watchdog's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"takes a second\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(1), .awake);\n}\n" });
+    const result = try gate(a, tmp.dir, &.{ "--test-timeout", "200ms" });
+    if (!ledger.success(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+}
+
+test "the test log level is a preflight option" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"logs\" {\n    std.log.info(\"preflight-log-marker\", .{});\n}\n" });
+    const quiet = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(ledger.success(quiet));
+    try std.testing.expect(std.mem.indexOf(u8, quiet.stderr, "preflight-log-marker") == null);
+    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_log_level = .info");
+    const loud = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(ledger.success(loud));
+    try std.testing.expect(std.mem.indexOf(u8, loud.stderr, "preflight-log-marker") != null);
+}
+
+test "timing records of two test runs with one name stay apart" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const run_line = "step.dependOn(&b.addRunArtifact(tests).step);\n";
+    try edit(a, tmp.dir, "build.zig", run_line, run_line ++ "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);\n");
+    const result = try gate(a, tmp.dir, &.{"-Dci-timings=true"});
+    if (!ledger.success(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+    var dir = try tmp.dir.openDir(io, ".zig-cache/preflight-timings", .{ .iterate = true });
+    defer dir.close(io);
+    var files: usize = 0;
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".ndjson")) files += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), files);
 }

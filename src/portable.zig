@@ -4,7 +4,8 @@ const record = @import("record.zig");
 
 pub const Command = struct { argv: []const []const u8, test_runner: bool, timings: ?[]const u8 = null, cwd: ?[]const u8 = null };
 
-pub fn add(b: *std.Build, tests: *std.Build.Step, durations: []const u8) void {
+/// `outer_ns` bounds each replayed test in the build runner, as `record` does natively.
+pub fn add(b: *std.Build, tests: *std.Build.Step, durations: []const u8, outer_ns: ?u64) void {
     const compile = b.step("ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
@@ -32,6 +33,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, durations: []const u8) void {
             run.setEnvironmentVariable("PREFLIGHT_TIMINGS", b.fmt("{s}-{s}.ndjson", .{ stem, record.part(b) }));
         }
         if (record.shard(b) != null) run.setEnvironmentVariable("PREFLIGHT_DURATIONS", b.pathFromRoot(durations));
+        if (command.test_runner) record.bound(run, outer_ns);
         RestorePermissions.original = run.step.makeFn;
         run.step.makeFn = RestorePermissions.make;
         execute.dependOn(&run.step);

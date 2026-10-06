@@ -210,10 +210,8 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     }
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, &.{ "zig", "build", env.get("STEP") orelse "ci" });
-    for ([_][]const u8{ "BUILD_ARGS", "TEST_TIMEOUT" }) |name| {
-        var tokens = std.mem.tokenizeAny(u8, env.get(name) orelse "", " \t\r\n");
-        while (tokens.next()) |token| try argv.append(c.a, token);
-    }
+    var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
+    while (tokens.next()) |token| try argv.append(c.a, token);
     // PREFLIGHT_SHARD reaches the test runners through the environment.
     try execute(c, argv.items);
 }

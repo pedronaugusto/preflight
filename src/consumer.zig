@@ -11,8 +11,12 @@ pub const Options = struct {
     modules: []const []const u8 = &.{},
     /// Packages the consumer's build may read: what the package needs to build.
     packages: []const *std.Build.Dependency = &.{},
-    /// Forwarded to the program's compilation, for code Zig's own backend cannot build.
-    use_llvm: ?bool = null,
+    /// A public function of the package's `build.zig` that decides
+    /// `use_llvm` for a target and mode, `fn (std.Build.ResolvedTarget,
+    /// std.builtin.OptimizeMode) ?bool`, for code Zig's own backend cannot
+    /// build. The consumer's build calls it with the target and mode it
+    /// builds for, as a user's build does.
+    use_llvm: ?[]const u8 = null,
 };
 
 /// Adds `check-consumer`. The project is generated under the cache, so the
@@ -90,7 +94,7 @@ fn script(a: std.mem.Allocator, options: Options) ![]const u8 {
     );
     try w.print("    const package = b.dependency(\"{f}\", .{{ .target = target, .optimize = optimize }});\n", .{std.zig.fmtString(options.package)});
     try w.writeAll("    const exe = b.addExecutable(.{ .name = \"consumer\", ");
-    if (options.use_llvm) |use_llvm| try w.print(".use_llvm = {}, ", .{use_llvm});
+    if (options.use_llvm) |decide| try w.print(".use_llvm = @import(\"{f}\").{f}(target, optimize), ", .{ std.zig.fmtString(options.package), std.zig.fmtId(decide) });
     try w.writeAll(".root_module = b.createModule(.{\n        .root_source_file = b.path(\"src/main.zig\"),\n        .target = target,\n        .optimize = optimize,\n        .imports = &.{\n");
     const modules: []const []const u8 = if (options.modules.len > 0) options.modules else &.{options.package};
     for (modules) |module| try w.print("            .{{ .name = \"{f}\", .module = package.module(\"{f}\") }},\n", .{ std.zig.fmtString(module), std.zig.fmtString(module) });
@@ -103,10 +107,10 @@ test "the generated consumer imports each named module from the package" {
     defer arena.deinit();
     const a = arena.allocator();
     const program: std.Build.LazyPath = .{ .cwd_relative = "unused" };
-    const text = try script(a, .{ .package = "conduit", .program = program, .modules = &.{ "conduit", "conduit.tty" }, .use_llvm = true });
+    const text = try script(a, .{ .package = "conduit", .program = program, .modules = &.{ "conduit", "conduit.tty" }, .use_llvm = "needsLlvm" });
     try std.testing.expect(std.mem.indexOf(u8, text, "b.dependency(\"conduit\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, ".{ .name = \"conduit.tty\", .module = package.module(\"conduit.tty\") }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, ".use_llvm = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, ".use_llvm = @import(\"conduit\").needsLlvm(target, optimize)") != null);
     const single = try script(a, .{ .package = "strand", .program = program });
     try std.testing.expect(std.mem.indexOf(u8, single, ".{ .name = \"strand\", .module = package.module(\"strand\") }") != null);
     try std.testing.expect(std.mem.indexOf(u8, single, "use_llvm") == null);

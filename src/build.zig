@@ -33,12 +33,15 @@ pub fn addCi(b: *std.Build, config: Config) void {
     const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
     const dep = b.lazyDependency("preflight", .{}) orelse return;
     const host = ciTarget(b);
+    const gantry_dep = dep.builder.lazyDependency("gantry", .{ .target = host, .optimize = .Debug }) orelse return;
+    const gantry = gantry_dep.module("gantry");
     const executable = b.addExecutable(.{
         .name = "preflight-checks",
         .root_module = b.createModule(.{
             .root_source_file = dep.path("src/main.zig"),
             .target = host,
             .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "gantry", .module = gantry }},
         }),
     });
     const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next full-tier shard plan") orelse false);
@@ -58,8 +61,6 @@ pub fn addCi(b: *std.Build, config: Config) void {
     docs.addArgs(b.args orelse &.{"usage"});
     docs.setCwd(b.path("."));
     b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
-    const gantry_dep = dep.builder.lazyDependency("gantry", .{ .target = host, .optimize = .Debug }) orelse return;
-    const gantry = gantry_dep.module("gantry");
     const layers = b.createModule(.{
         .root_source_file = b.path(config.layers),
         .target = host,
@@ -81,10 +82,12 @@ pub fn addCi(b: *std.Build, config: Config) void {
     }
     const format = b.addFmt(.{ .paths = format_paths.items, .check = true });
     const structure = b.addRunArtifact(checker);
+    structure.addArgs(&.{ "--config", config.config });
     structure.setCwd(b.path("."));
     b.step("check-imports", "Check declared source structure").dependOn(&structure.step);
     if (b.args) |args| structure.addArgs(args);
     const lint_structure = b.addRunArtifact(checker);
+    lint_structure.addArgs(&.{ "--config", config.config });
     lint_structure.setCwd(b.path("."));
     lint_structure.step.dependOn(&format.step);
     const ziglint_dep = dep.builder.lazyDependency("ziglint", .{ .target = host, .optimize = .ReleaseSafe }) orelse return;

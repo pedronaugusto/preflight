@@ -3,8 +3,8 @@ const root = @import("test_options").root;
 
 fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const io = std.testing.io;
-    for ([_][]const u8{ "src", "ci" }) |path| try dir.createDirPath(io, path);
-    for ([_][]const u8{ "build.zig", "src/sample.zig", "ci/layers.zig", "ci/preflight.json" }) |path| {
+    for ([_][]const u8{ "src/testing", "ci" }) |path| try dir.createDirPath(io, path);
+    for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "ci/layers.zig", "ci/preflight.json" }) |path| {
         const input = try std.fs.path.join(a, &.{ root, "sample", path });
         defer a.free(input);
         const text = try std.Io.Dir.cwd().readFileAlloc(io, input, a, .limited(1024 * 1024));
@@ -24,7 +24,7 @@ fn run(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
     return std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "check-imports" }, .cwd = .{ .dir = dir } });
 }
 
-test "structure runner rejects undeclared imports and duplicate layer owners" {
+test "structure runner rejects undeclared imports, production reaching tests and duplicate layer owners" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -39,6 +39,15 @@ test "structure runner rejects undeclared imports and duplicate layer owners" {
     const unknown = try run(a, tmp.dir);
     try std.testing.expect(unknown.term == .exited and unknown.term.exited != 0);
     try std.testing.expect(std.mem.indexOf(u8, unknown.stderr, "named dependencies") != null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "pub const cases = @import(\"testing/cases.zig\");\n" });
+    const reaches = try run(a, tmp.dir);
+    try std.testing.expect(reaches.term == .exited and reaches.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, reaches.stderr, "production reaches tests: src/sample.zig -> src/testing/cases.zig") != null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/preflight.json", .data = "{\"sources\":[\"src\"],\"test_roots\":[\"src/sample.zig\"],\"test_support\":[\"src/other/**\"]}\n" });
+    const configured = try run(a, tmp.dir);
+    try std.testing.expect(configured.term == .exited and configured.term.exited != 0);
+    try std.testing.expect(std.mem.indexOf(u8, configured.stderr, "src/testing/cases.zig: source has no named layer") != null);
     try fixtureLayers(a, tmp.dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
     const duplicate = try run(a, tmp.dir);
@@ -49,7 +58,7 @@ test "structure runner rejects undeclared imports and duplicate layer owners" {
 fn fixtureLayers(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const input = try std.fs.path.join(a, &.{ root, "sample/ci/layers.zig" });
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, input, a, .limited(1024 * 1024));
-    const changed = try std.mem.replaceOwned(u8, a, text, "[_][]const u8{\"src/sample.zig\"}", "[_][]const u8{ \"src/sample.zig\", \"src/sample.zig\" }");
+    const changed = try std.mem.replaceOwned(u8, a, text, ".{ .name = \"sample\", .patterns = &.{\"src/sample.zig\"} }", ".{ .name = \"sample\", .patterns = &.{\"src/sample.zig\"} }, .{ .name = \"again\", .patterns = &.{\"src/*.zig\"} }");
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = changed });
 }
 
@@ -261,7 +270,7 @@ test "sample branch rejects a newly added exact exception and main rejects stale
     try fixtureGit(a, tmp.dir, &.{ "commit", "-m", "Clean sample" });
     try fixtureGit(a, tmp.dir, &.{ "switch", "-c", "gate" });
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/preflight.json", .data = "{\"sources\":[\"src\"],\"test_roots\":[\"src/sample.zig\"],\"debug_print_exceptions\":\"ci/debug.json\"}\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\nfn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/debug.json", .data = "[{\"rule\":\"debug-print\",\"path\":\"src/sample.zig\",\"source\":\"std.debug.print(\\\"hi\\\", .{});\",\"detail\":\"std.debug.print outside tests and src/testing/\",\"reason\":\"seeded debt\"}]\n" });
     try fixtureGit(a, tmp.dir, &.{ "add", "src", "ci" });
     try fixtureGit(a, tmp.dir, &.{ "commit", "-m", "Add seeded debt" });

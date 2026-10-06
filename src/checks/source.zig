@@ -1,4 +1,5 @@
 const std = @import("std");
+const gantry = @import("gantry");
 
 pub const Value = std.json.Value;
 pub const Context = struct {
@@ -49,27 +50,10 @@ pub fn items(v: Value) []const Value {
     return if (v == .array) v.array.items else &.{};
 }
 
+/// Path patterns in gantry's dialect: `*` and `?` stay within one component,
+/// `**` spans components, and a pattern without `/` matches the basename.
 pub fn glob(pattern: []const u8, path: []const u8) bool {
-    var p: usize = 0;
-    var s: usize = 0;
-    var star: ?usize = null;
-    var retry: usize = 0;
-    while (s < path.len) {
-        if (p < pattern.len and (pattern[p] == '?' or pattern[p] == path[s])) {
-            p += 1;
-            s += 1;
-        } else if (p < pattern.len and pattern[p] == '*') {
-            star = p;
-            p += 1;
-            retry = s;
-        } else if (star) |index| {
-            p = index + 1;
-            retry += 1;
-            s = retry;
-        } else return false;
-    }
-    while (p < pattern.len and pattern[p] == '*') : (p += 1) {}
-    return p == pattern.len;
+    return gantry.rules.matches(pattern, path);
 }
 
 pub fn excluded(path: []const u8, patterns: Value) bool {
@@ -77,19 +61,43 @@ pub fn excluded(path: []const u8, patterns: Value) bool {
     return false;
 }
 
-pub fn testFile(path: []const u8) bool {
-    const name = std.fs.path.basename(path);
-    return std.mem.endsWith(u8, name, "_test.zig") or
-        std.mem.startsWith(u8, name, "test_") or std.mem.eql(u8, name, "tests.zig");
-}
+/// Test files by name, wherever they sit.
+pub const test_files = [_][]const u8{ "*_test.zig", "test_*.zig", "tests.zig" };
+/// Test support when `test_support` is not configured.
+pub const default_support = [_][]const u8{"src/testing/**"};
 
-pub fn outsideTests(s: Source, token: std.zig.Ast.TokenIndex) bool {
-    return !testFile(s.path) and !glob("src/testing/*", s.path) and !s.inTest(token);
+pub fn testFile(path: []const u8) bool {
+    for (test_files) |pattern| if (glob(pattern, path)) return true;
+    return false;
 }
 
 pub fn support(path: []const u8, config: Value) bool {
     const patterns = get(config, "test_support");
-    return if (patterns == .null) glob("src/testing/*", path) else excluded(path, patterns);
+    if (patterns != .null) return excluded(path, patterns);
+    for (default_support) |pattern| if (glob(pattern, path)) return true;
+    return false;
+}
+
+/// The one definition of test code, shared by lint and the structure check:
+/// a test file by name or a `test_support` file.
+pub fn testCode(path: []const u8, config: Value) bool {
+    return testFile(path) or support(path, config);
+}
+
+/// The patterns `testCode` matches, for gantry's `Options.test_paths`.
+pub fn testPaths(a: std.mem.Allocator, config: Value) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    try out.appendSlice(a, &test_files);
+    const patterns = get(config, "test_support");
+    if (patterns == .null) try out.appendSlice(a, &default_support) else for (items(patterns)) |pattern| {
+        if (pattern != .string) return error.InvalidTestSupport;
+        try out.append(a, pattern.string);
+    }
+    return out.items;
+}
+
+pub fn outsideTests(s: Source, config: Value, token: std.zig.Ast.TokenIndex) bool {
+    return !testCode(s.path, config) and !s.inTest(token);
 }
 
 pub const Source = struct {
@@ -165,6 +173,30 @@ test "parser ignores imports and braces in literals, finds named test blocks" {
     for (s.tree.tokens.items(.tag), 0..) |tag, i| {
         if (tag == .builtin) try std.testing.expect(s.inTest(@intCast(i)));
     }
-    try std.testing.expect(glob("src/*", "src/a/b.zig"));
     try std.testing.expect(!glob("src/*.zig", "ci/a.zig"));
+}
+
+test "one dialect: a component star stays in its directory, test code has one definition" {
+    try std.testing.expect(!glob("src/*", "src/a/b.zig"));
+    try std.testing.expect(glob("src/**", "src/a/b.zig"));
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const defaults: Value = .null;
+    try std.testing.expect(testCode("src/deep/x_test.zig", defaults));
+    try std.testing.expect(testCode("src/test_x.zig", defaults));
+    try std.testing.expect(testCode("src/tests.zig", defaults));
+    try std.testing.expect(testCode("src/testing/lfs/transfer.zig", defaults));
+    try std.testing.expect(!testCode("src/testing.zig", defaults));
+    try std.testing.expect(!testCode("src/contest.zig", defaults));
+    const flat = (try std.json.parseFromSlice(Value, a, "{\"test_support\":[\"src/testing/*\"]}", .{})).value;
+    try std.testing.expect(testCode("src/testing/clock.zig", flat));
+    try std.testing.expect(!testCode("src/testing/lfs/transfer.zig", flat));
+    const patterns = try testPaths(a, flat);
+    try std.testing.expectEqual(@as(usize, test_files.len + 1), patterns.len);
+    for ([_][]const u8{ "src/a_test.zig", "src/testing/clock.zig", "src/testing/lfs/transfer.zig", "src/a.zig" }) |path| {
+        var matched = false;
+        for (patterns) |pattern| matched = matched or glob(pattern, path);
+        try std.testing.expectEqual(testCode(path, flat), matched);
+    }
 }

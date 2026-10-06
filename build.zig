@@ -3,11 +3,15 @@ pub const addCi = @import("src/build.zig").addCi;
 pub const Config = @import("src/build.zig").Config;
 
 pub fn build(b: *std.Build) void {
+    const target = @import("src/build.zig").ciTarget(b);
+    const gantry_dep = b.lazyDependency("gantry", .{ .target = target, .optimize = .Debug }) orelse return;
+    const gantry = gantry_dep.module("gantry");
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/checks.zig"),
-        .target = @import("src/build.zig").ciTarget(b),
+        .target = target,
         .optimize = .Debug,
+        .imports = &.{.{ .name = "gantry", .module = gantry }},
     }) });
     tests.test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .server };
     tests.root_module.addAnonymousImport("preflight_timings", .{ .root_source_file = b.path("src/timings.zig") });
@@ -22,8 +26,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run.step);
     const executable = b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
-        .target = @import("src/build.zig").ciTarget(b),
+        .target = target,
         .optimize = .ReleaseSafe,
+        .imports = &.{.{ .name = "gantry", .module = gantry }},
     }) });
     b.installArtifact(executable);
     const verify = b.step("verify", "Check format, checker regressions and the hosted runner");

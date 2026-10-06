@@ -26,9 +26,21 @@ when their build products are already available.
 ## Repository facts
 
 `ci/layers.zig` declares gantry's layers, required paths, entries, named modules,
-reference rules and optional owned tokens. The shared runner checks the graph,
-reports scan failures and refuses a file with zero or multiple layer owners.
-Gantry remains the language-neutral graph library; these runners belong here.
+reference rules and optional owned tokens. Layers order production sources only.
+The shared runner checks layers, cycles and entries over the production graph,
+the edges a non-test build compiles, and refuses a production file with zero or
+multiple layers. Test code is in no layer, so a test file may import anything;
+no production edge may reach test code, and an import in an inline test may not
+reach a higher layer than its file. Required paths, reference rules and owned
+tokens hold for every file. Gantry remains the language-neutral graph library;
+these runners belong here.
+
+Test code has one definition, shared by the source checks and the structure
+runner: files named `*_test.zig`, `test_*.zig` or `tests.zig`, and the
+`test_support` patterns (`src/testing/**` by default). Gantry classifies the
+rest: an import inside a test block, or in a declaration only tests reach, is a
+test edge. Every path pattern uses gantry's dialect: `*` stays within one path
+component, `**` spans components, and a pattern without `/` matches the file name.
 
 `ci/preflight.json` names source directories, test roots, test support, README
 regions and extra repository checks. A `vendored` exemption must name its upstream
@@ -41,7 +53,8 @@ A namespace containing two or more implementation files has one adjacent entry:
 `src/parser.zig` beside `src/parser/`. Case-insensitive matching accommodates
 existing Zig type namespaces; tests and configured test support do not count.
 Tests must be reachable from a configured root through imports or aliases named
-inside test blocks. Production declarations cannot import test files.
+inside test blocks. An import in a declaration nothing reaches, from a public,
+exported or comptime member, a field, `main` or a test, is unused and fails.
 
 Generated Markdown blocks retain their visible generator labels. Their source,
 region, module import and whether that import is shown are facts in the JSON
@@ -121,7 +134,7 @@ source and diagnostic still match exactly. Hosted checks fetch the base history;
 
 Zig sources also reject `catch unreachable` without a nonempty
 `// unreachable: <why>` on the same or preceding line, and `std.debug.print`
-outside test blocks, test files and `src/testing/`. Files with top-level fields
+outside test blocks and test code. Files with top-level fields
 use TitleCase; other files use snake_case or lowercase. Existing findings use
 independent `unreachable_exceptions`, `debug_print_exceptions` and
 `file_name_exceptions` JSON ledgers with the same five fields and shrinking

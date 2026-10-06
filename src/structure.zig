@@ -2,24 +2,8 @@
 const std = @import("std");
 const gantry = @import("gantry");
 const declared = @import("layers");
-
-const owned: []const gantry.rules.TokenRule = if (@hasDecl(declared, "owned")) declared.owned else &.{};
-
-pub const rules: gantry.rules.Rules = .{
-    .ordered = &.{.{ .name = "layers", .layers = declared.layers }},
-    .required = &.{.{ .name = "named sources", .paths = &declared.required }},
-    .nothing_imports = &entry_rules,
-    .references = declared.references,
-    .tokens = owned,
-    .no_cycles = "cycles",
-};
-
-const entry_rules = blk: {
-    var result: [declared.entries.len + 1]gantry.rules.EdgeRule = undefined;
-    result[0] = .{ .name = "entry files", .to = "**/main.zig" };
-    for (declared.entries, 1..) |path, index| result[index] = .{ .name = "entry files", .to = path };
-    break :blk result;
-};
+const source = @import("checks/source.zig");
+const structure = @import("structure/check.zig");
 
 fn keep(_: void, path: []const u8, kind: std.Io.File.Kind) bool {
     if (kind == .directory) return std.mem.eql(u8, path, "src") or std.mem.startsWith(u8, path, "src/");
@@ -30,55 +14,49 @@ pub fn main(init: std.process.Init) !void {
     var arena: std.heap.ArenaAllocator = .init(init.gpa);
     defer arena.deinit();
     const a = arena.allocator();
+    const args = try init.minimal.args.toSlice(a);
+    var config_path: []const u8 = "ci/preflight.json";
+    var audit = false;
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        if (std.mem.eql(u8, args[index], "--audit")) {
+            audit = true;
+        } else if (std.mem.eql(u8, args[index], "--config") and index + 1 < args.len) {
+            index += 1;
+            config_path = args[index];
+        } else return error.UnknownArgument;
+    }
+    const text = try std.Io.Dir.cwd().readFileAlloc(init.io, config_path, a, .limited(64 * 1024 * 1024));
+    const config = try std.json.parseFromSliceLeaky(source.Value, a, text, .{});
+    const d: structure.Declared = .{
+        .layers = declared.layers,
+        .required = &declared.required,
+        .entries = declared.entries,
+        .modules = declared.modules,
+        .references = declared.references,
+        .owned = if (@hasDecl(declared, "owned")) declared.owned else &.{},
+        .test_paths = try source.testPaths(a, config),
+    };
     var paths = try gantry.walk(a, init.io, .cwd(), {}, keep);
     defer paths.deinit();
     const reader: gantry.DirReader = .{ .io = init.io, .dir = .cwd() };
     var diagnostic = gantry.ScanDiagnostic.init(a);
     defer diagnostic.deinit();
-    var graph = gantry.scanWithDiagnostic(a, paths.items(), reader, gantry.DirReader.read, .{
-        .manifests = false,
-        .strict_imports = true,
-        .named_modules = declared.modules,
-        .tokens = owned,
-    }, &diagnostic) catch |err| {
+    var graph = gantry.scanWithDiagnostic(a, paths.items(), reader, gantry.DirReader.read, structure.options(d), &diagnostic) catch |err| {
         if (diagnostic.failure) |failure| std.debug.print("imports: {s}: {s}: {s}\n", .{ failure.path orelse "<scan>", @tagName(failure.phase), @errorName(failure.cause) });
         return err;
     };
     defer graph.deinit();
-    const args = try init.minimal.args.toSlice(a);
-    if (args.len == 2 and std.mem.eql(u8, args[1], "--audit")) {
-        var buffer: [4096]u8 = undefined;
+    var buffer: [4096]u8 = undefined;
+    if (audit) {
         var out = std.Io.File.stdout().writer(init.io, &buffer);
         try std.json.Stringify.value(.{ .paths = graph.paths(), .edges = graph.edges(), .references = graph.references() }, .{}, &out.interface);
         try out.interface.writeByte('\n');
         try out.interface.flush();
         return;
     }
-    const findings = try graph.check(a, rules);
-    defer a.free(findings);
-    for (graph.paths()) |path| {
-        var owners: usize = 0;
-        for (declared.required) |source| if (std.mem.eql(u8, path, source)) {
-            owners += 1;
-        };
-        if (owners > 1) {
-            std.debug.print("imports: {s}: source belongs to multiple layers\n", .{path});
-            return error.AmbiguousSource;
-        }
-        if (owners == 0) {
-            std.debug.print("imports: {s}: source has no named layer\n", .{path});
-            return error.UnnamedSource;
-        }
-    }
-    for (graph.unread()) |path| std.debug.print("imports: {s}: unread\n", .{path});
-    for (findings) |finding| {
-        if (finding.edge) |edge| {
-            std.debug.print("imports: {s}: {s} -> {s} ({s})\n", .{ finding.rule, edge.from, edge.to, @tagName(finding.reason) });
-        } else if (finding.reference) |ref| {
-            std.debug.print("imports: {s}: {s}: @import(\"{s}\")\n", .{ finding.rule, ref.from, ref.name });
-        } else if (finding.token) |token| {
-            std.debug.print("imports: {s}: {s}:{d}:{d}: {t} \"{f}\"\n", .{ finding.rule, token.path, token.line, token.column, token.kind, std.zig.fmtString(token.text) });
-        } else if (finding.path) |path| std.debug.print("imports: {s}: {s}\n", .{ finding.rule, path });
-    }
-    if (graph.unread().len != 0 or findings.len != 0) return error.ImportBoundary;
+    var out = std.Io.File.stderr().writer(init.io, &buffer);
+    const problems = try structure.report(a, &graph, d, &out.interface);
+    try out.interface.flush();
+    if (problems != 0) return error.ImportBoundary;
 }

@@ -15,6 +15,7 @@ pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 
 test {
+    _ = @import("structure/check.zig");
     _ = source;
     _ = policy;
     _ = imports;

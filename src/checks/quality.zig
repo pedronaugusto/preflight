@@ -9,8 +9,8 @@ pub const rules = [_][]const u8{ "catch-unreachable", "debug-print", "file-name-
 pub const keys = [_][]const u8{ "unreachable_exceptions", "debug_print_exceptions", "file_name_exceptions" };
 
 pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
-    const found = try findings(c.a, sources);
-    const baseline = if (c.adopt and c.ledger_base != null) try baseFindings(c, sources) else src.Value.null;
+    const found = try findings(c.a, sources, config);
+    const baseline = if (c.adopt and c.ledger_base != null) try baseFindings(c, sources, config) else src.Value.null;
     for (rules, keys) |rule, key| {
         var allowed = try ledger.Ledger.loadWithBaseline(c, config, key, baseline);
         for (found) |f| {
@@ -21,7 +21,7 @@ pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !v
     }
 }
 
-fn baseFindings(c: *src.Context, sources: []const src.Source) !src.Value {
+fn baseFindings(c: *src.Context, sources: []const src.Source, config: src.Value) !src.Value {
     const prefix = try ledger.git(c, &.{ "rev-parse", "--show-prefix" });
     if (!ledger.success(prefix)) return error.MissingRepository;
     var old_sources: std.ArrayList(src.Source) = .empty;
@@ -31,11 +31,11 @@ fn baseFindings(c: *src.Context, sources: []const src.Source) !src.Value {
         if (!ledger.success(shown)) continue;
         try old_sources.append(c.a, try src.Source.parse(c.a, s.path, shown.stdout));
     }
-    const json = try std.json.Stringify.valueAlloc(c.a, try findings(c.a, old_sources.items), .{});
+    const json = try std.json.Stringify.valueAlloc(c.a, try findings(c.a, old_sources.items, config), .{});
     return (try std.json.parseFromSlice(src.Value, c.a, json, .{})).value;
 }
 
-pub fn findings(a: std.mem.Allocator, sources: []const src.Source) ![]Finding {
+pub fn findings(a: std.mem.Allocator, sources: []const src.Source, config: src.Value) ![]Finding {
     var result: std.ArrayList(Finding) = .empty;
     for (sources) |s| {
         if (s.tree.errors.len != 0) return error.InvalidZigSource;
@@ -45,13 +45,13 @@ pub fn findings(a: std.mem.Allocator, sources: []const src.Source) ![]Finding {
             const token = s.tree.nodeMainToken(node);
             var rhs = s.tree.nodeData(node).node_and_node[1];
             while (s.tree.nodeTag(rhs) == .grouped_expression) rhs = s.tree.nodeData(rhs).node_and_token[0];
-            if (s.tree.nodeTag(rhs) == .unreachable_literal and src.outsideTests(s, token) and !unreachableReason(s, token))
+            if (s.tree.nodeTag(rhs) == .unreachable_literal and src.outsideTests(s, config, token) and !unreachableReason(s, token))
                 try add(a, &result, s, token, rules[0], "catch unreachable needs // unreachable: <why> on the same or previous line");
         }
         const tags = s.tree.tokens.items(.tag);
         for (tags, 0..) |tag, i| {
             const token: std.zig.Ast.TokenIndex = @intCast(i);
-            if (!src.outsideTests(s, token)) continue;
+            if (!src.outsideTests(s, config, token)) continue;
             if (tag == .identifier and debugPrint(s, token))
                 try add(a, &result, s, token, rules[1], "std.debug.print outside tests and src/testing/");
         }
@@ -182,22 +182,27 @@ test "each source policy finds code and ignores literals, tests and justified un
     defer arena.deinit();
     const a = arena.allocator();
     const bad = try src.Source.parse(a, "src/value.zig", "field: u8,\nfn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 3), (try findings(a, &.{bad})).len);
+    try std.testing.expectEqual(@as(usize, 3), (try findings(a, &.{bad}, .null)).len);
     const clean = try src.Source.parse(a, "src/Value.zig", "field: u8,\nfn work() void {\n // unreachable: checked earlier\n foo() catch unreachable;\n foo() catch unreachable; // unreachable: invariant\n const literal = \"std.debug.print catch unreachable // unreachable: fake\";\n}\ntest { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{clean})).len);
+    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{clean}, .null)).len);
     for ([_][]const u8{ "src/work_test.zig", "src/test_work.zig", "src/tests.zig", "src/testing/helper.zig" }) |path| {
         const ignored = try src.Source.parse(a, path, "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-        try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{ignored})).len);
+        try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{ignored}, .null)).len);
     }
     const plural = try src.Source.parse(a, "src/work_tests.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{plural})).len);
+    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{plural}, .null)).len);
     try std.testing.expect(!commentReason("foo(\"// unreachable: fake\") catch unreachable;"));
     try std.testing.expect(!commentReason("foo() catch unreachable; // unreachable: "));
     try std.testing.expect(!commentReason("\\\\ // unreachable: fake"));
     const grouped = try src.Source.parse(a, "src/value.zig", "fn work() void { foo() catch |err| (unreachable); }\n");
-    try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{grouped})).len);
+    try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{grouped}, .null)).len);
     const namespace = try src.Source.parse(a, "src/Namespace.zig", "const S = struct { field: u8 };\n");
-    try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{namespace})).len);
+    try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{namespace}, .null)).len);
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_support\":[\"src/fixtures/**\"]}", .{})).value;
+    const configured = try src.Source.parse(a, "src/fixtures/deep/helper.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
+    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{configured}, config)).len);
+    const unconfigured = try src.Source.parse(a, "src/testing/helper.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
+    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{unconfigured}, config)).len);
 }
 
 test "assertion density counts per function without comments or nested double counting" {

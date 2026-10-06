@@ -11,8 +11,8 @@
             .lazy = true,
         },
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry#b5b991bcc590a8f7032444287465269acda4fdaa",
-            .hash = "gantry-0.1.0-1iNrkcw4BwBD3pRucqF5FkGsGSOPIhkPh0rLr1u4EMDW",
+            .url = "git+https://github.com/pedronaugusto/gantry#441accef3879905cbffc1cc3f8b6dd185ec2a184",
+            .hash = "gantry-0.1.0-1iNrkfv2DABkxXtmW84RKinYp-ifPRhWuao6UZG3R0ws",
             .lazy = true,
         },
     },

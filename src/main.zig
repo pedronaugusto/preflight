@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "findings")) {
         const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
         const sources = try qualitySources(&c, try src.collect(c, config), config);
-        try stdout(c, try std.json.Stringify.valueAlloc(a, try checks.quality.findings(a, sources), .{}));
+        try stdout(c, try std.json.Stringify.valueAlloc(a, try checks.quality.findings(a, sources, config), .{}));
     } else if (std.mem.eql(u8, command, "lint")) {
         const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
         c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");

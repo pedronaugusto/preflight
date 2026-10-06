@@ -101,7 +101,7 @@ fn typeBody(s: src.Source, node: std.zig.Ast.Node.Index, proto: std.zig.Ast.full
 pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
     var directories: std.StringHashMap(std.ArrayList([]const u8)) = .init(c.a);
     for (sources) |s| {
-        if (src.testFile(s.path) or src.support(s.path, config)) continue;
+        if (src.testCode(s.path, config)) continue;
         const directory = std.fs.path.dirname(s.path) orelse continue;
         const group = try directories.getOrPut(directory);
         if (!group.found_existing) group.value_ptr.* = .empty;
@@ -130,7 +130,7 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
 fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
     var groups = std.StringHashMap(std.ArrayList([]const u8)).init(c.a);
     for (sources) |s| {
-        if (src.testFile(s.path) or src.support(s.path, config)) continue;
+        if (src.testCode(s.path, config)) continue;
         const parent = std.fs.path.dirname(s.path) orelse ".";
         const base = std.fs.path.basename(s.path);
         const stem = base[0 .. base.len - 4];

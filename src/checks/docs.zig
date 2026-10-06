@@ -63,7 +63,7 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     const argv = try zigCommand(c.a, command);
     const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = .{ .dir = c.directory() } });
     if (result.term != .exited or result.term.exited != 0) {
-        std.debug.print("docs: generator failed: {s}\n", .{result.stderr});
+        c.report("docs: generator failed: {s}\n", .{result.stderr});
         return error.GeneratorFailed;
     }
     const text = try c.a.dupe(u8, result.stdout);
@@ -90,11 +90,11 @@ pub fn check(c: *src.Context, config: src.Value) !void {
         const text = try c.read(entry.name);
         var offset: usize = 0;
         const begin = "<!-- BEGIN GENERATED ";
-        while (std.mem.indexOfPos(u8, text, offset, begin)) |start| {
-            const label_end = std.mem.indexOfPos(u8, text, start + begin.len, " -->\n") orelse return error.MalformedGeneratedBlock;
+        while (std.mem.findPos(u8, text, offset, begin)) |start| {
+            const label_end = std.mem.findPos(u8, text, start + begin.len, " -->\n") orelse return error.MalformedGeneratedBlock;
             const label = std.mem.trim(u8, text[start + begin.len .. label_end], " \t");
             const body_start = label_end + 5;
-            const end = std.mem.indexOfPos(u8, text, body_start, "<!-- END GENERATED") orelse return error.MissingGeneratedBlockEnd;
+            const end = std.mem.findPos(u8, text, body_start, "<!-- END GENERATED") orelse return error.MissingGeneratedBlockEnd;
             offset = end + "<!-- END GENERATED".len;
             const generator = src.get(generators, label);
             if (generator == .null) {

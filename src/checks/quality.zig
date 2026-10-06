@@ -100,8 +100,8 @@ fn fileCase(stem: []const u8, fields: bool) bool {
 fn unreachableReason(s: src.Source, token: std.zig.Ast.TokenIndex) bool {
     if (commentReason(s.lineText(token))) return true;
     const offset = s.tree.tokens.items(.start)[token];
-    const end = std.mem.lastIndexOfScalar(u8, s.text[0..offset], '\n') orelse return false;
-    const start = if (std.mem.lastIndexOfScalar(u8, s.text[0..end], '\n')) |n| n + 1 else 0;
+    const end = std.mem.findScalarLast(u8, s.text[0..offset], '\n') orelse return false;
+    const start = if (std.mem.findScalarLast(u8, s.text[0..end], '\n')) |n| n + 1 else 0;
     return commentReason(s.text[start..end]);
 }
 
@@ -165,7 +165,7 @@ pub fn summary(c: *src.Context, sources: []const src.Source, output: ?[]const u8
         try text.writer.print("| `{s}:{s}` | {d} | {d} |\n", .{ row.path, row.function, row.asserts, row.lines });
     }
     try text.writer.print("\nPackage: {d} assertions in {d} functions.\n", .{ total, records.len });
-    std.debug.print("preflight: assertion density: {d} assertions in {d} functions\n", .{ total, records.len });
+    c.report("preflight: assertion density: {d} assertions in {d} functions\n", .{ total, records.len });
     if (output) |path| {
         const file = try c.directory().createFile(c.io, path, .{ .truncate = false, .read = true });
         defer file.close(c.io);

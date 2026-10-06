@@ -11,9 +11,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 2) return error.MissingCommand;
     const command = args[1];
     if (std.mem.eql(u8, command, "plan")) {
-        var config = try c.json(option(args, "--config") orelse "ci/workflow.json");
-        const measurements = option(args, "--measurements") orelse ".preflight-timings/summary.json";
-        if (c.exists(measurements)) config = try checks.profile.apply(a, config, try c.json(measurements));
+        const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
         const full = std.mem.eql(u8, option(args, "--full") orelse "false", "true");
         const jobs = try checks.matrix.plan(a, config, full);
         const tiers = try checks.matrix.split(a, config, jobs, full);
@@ -34,9 +32,10 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "setup")) {
         try setup(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "profile")) {
-        const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
-        const summary = try checks.profile.summarize(c, config, option(args, "--input") orelse ".preflight-timings");
-        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse ".preflight-timings/summary.json", .data = try std.json.Stringify.valueAlloc(a, summary, .{}) });
+        const durations = option(args, "--durations") orelse "ci/durations.json";
+        const previous = if (c.exists(durations)) try c.json(durations) else .null;
+        const summary = try checks.profile.summarize(c, option(args, "--input") orelse ".preflight-timings", previous);
+        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse durations, .data = try checks.profile.render(a, summary) });
     } else if (std.mem.eql(u8, command, "fetch")) {
         try retry(c, &.{ "zig", "build", "--fetch=all" });
     } else if (std.mem.eql(u8, command, "run")) {
@@ -90,24 +89,24 @@ fn lint(c: *src.Context, config: src.Value, ziglint: []const u8) !void {
     if (c.errors != 0) return;
     const cast_sources = try qualitySources(c, sources, config);
     try checks.quality.summary(c, sources, c.summary_path);
-    std.debug.print("preflight: source quality\n", .{});
+    c.report("preflight: source quality\n", .{});
     try checks.quality.check(c, cast_sources, config);
-    std.debug.print("preflight: ziglint\n", .{});
+    c.report("preflight: ziglint\n", .{});
     try checks.ziglint.check(c, ziglint, config);
     if (c.errors != 0) return;
-    std.debug.print("preflight: namespace layout\n", .{});
+    c.report("preflight: namespace layout\n", .{});
     try checks.policy.layout(c, sources, config);
     if (c.errors != 0) return;
-    std.debug.print("preflight: cast reasons\n", .{});
+    c.report("preflight: cast reasons\n", .{});
     checks.policy.casts(c, cast_sources, config);
     if (c.errors != 0) return;
-    std.debug.print("preflight: function length\n", .{});
+    c.report("preflight: function length\n", .{});
     try checks.policy.lengths(c, sources, config);
     if (c.errors != 0) return;
-    std.debug.print("preflight: documentation\n", .{});
+    c.report("preflight: documentation\n", .{});
     try checks.docs.check(c, config);
     if (c.errors != 0) return;
-    std.debug.print("preflight: test imports\n", .{});
+    c.report("preflight: test imports\n", .{});
     try checks.imports.check(c, sources, config);
     if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| try execute(c.*, try checks.docs.zigCommand(c.a, command));
@@ -155,7 +154,7 @@ fn retry(c: src.Context, argv: []const []const u8) !void {
     for (0..3) |attempt| {
         execute(c, argv) catch |err| {
             if (attempt == 2) return err;
-            std.debug.print("preflight: fetch failed; retry {d}/3\n", .{attempt + 2});
+            c.report("preflight: fetch failed; retry {d}/3\n", .{attempt + 2});
             try std.Io.sleep(c.io, .fromSeconds(@as(i64, 5) << @intCast(attempt)), .awake);
             continue;
         };
@@ -187,7 +186,7 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         if (std.mem.eql(u8, env.get("FAST_COMPILE") orelse "true", "true")) {
             for (try checks.matrix.fastTargets(c.a, config)) |target| {
                 const argv = try checks.matrix.fastCrossArgs(c.a, config, target);
-                std.debug.print("preflight fast compile: {s}\n", .{argv[4]});
+                c.report("preflight fast compile: {s}\n", .{argv[4]});
                 try execute(c, argv);
             }
         }
@@ -198,7 +197,7 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         if (targets.len == 0) return error.MissingCrossTargets;
         for (targets) |target| {
             const argv = try checks.matrix.crossArgs(c.a, config, target);
-            std.debug.print("preflight cross: {s}\n", .{argv[4]});
+            c.report("preflight cross: {s}\n", .{argv[4]});
             try execute(c, argv);
         }
         return;
@@ -215,19 +214,6 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         var tokens = std.mem.tokenizeAny(u8, env.get(name) orelse "", " \t\r\n");
         while (tokens.next()) |token| try argv.append(c.a, token);
     }
-    const length = argv.items.len;
-    var cases = std.mem.tokenizeAny(u8, env.get("CASES") orelse "", " \t\r\n");
-    var count: usize = 0;
-    while (cases.next()) |case| {
-        argv.shrinkRetainingCapacity(length);
-        try argv.append(c.a, try std.fmt.allocPrint(c.a, "-Dtest-case={s}", .{case}));
-        var case_env = try env.clone(c.a);
-        defer case_env.deinit();
-        try case_env.put("PREFLIGHT_SHARD", case);
-        var child = try std.process.spawn(c.io, .{ .argv = argv.items, .environ_map = &case_env });
-        const term = try child.wait(c.io);
-        if (term != .exited or term.exited != 0) return error.CommandFailed;
-        count += 1;
-    }
-    if (count == 0) try execute(c, argv.items);
+    // PREFLIGHT_SHARD reaches the test runners through the environment.
+    try execute(c, argv.items);
 }

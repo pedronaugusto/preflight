@@ -1,14 +1,15 @@
-//! Zig's test protocol with per-test timing records. Fuzzing stays upstream's.
+//! Zig's test protocol with per-test timing records, shard selection and a
+//! watchdog. Fuzzing stays upstream's.
 const std = @import("std");
 const builtin = @import("builtin");
 const upstream = @import("preflight_default_test_runner");
 const timings = @import("preflight_timings");
-const shuffle = @import("preflight_order");
+const order_module = @import("preflight_order");
+const options = @import("preflight_runner_options");
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
 var errors: std.atomic.Value(usize) = .init(0);
-var fuzz_test: bool = false;
 var order: []usize = &.{};
 
 pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
@@ -16,10 +17,48 @@ pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), compti
     upstream.log(level, scope, format, args);
 }
 
-pub fn fuzz(context: anytype, comptime testOne: fn (@TypeOf(context), *testing.Smith) anyerror!void, input: testing.FuzzInputOptions) anyerror!void {
-    fuzz_test = true;
-    return upstream.fuzz(context, testOne, input);
-}
+// A fuzz test reports itself only to a build with fuzzing, which upstream's runner serves.
+pub const fuzz = upstream.fuzz;
+
+/// Ends the process when one test, its Io teardown included, outlasts the
+/// package's `test_timeout`, and says which test and phase it was in.
+const Watchdog = struct {
+    name: []const u8,
+    phase: std.atomic.Value(Phase) = .init(.body),
+    done: std.atomic.Value(u32) = .init(0),
+    thread: ?std.Thread = null,
+
+    const Phase = enum(u8) { body, io_teardown, reporting };
+
+    fn start(watchdog: *Watchdog) !void {
+        if (builtin.single_threaded or options.test_timeout_ns == 0) return;
+        watchdog.thread = try std.Thread.spawn(.{}, watch, .{watchdog});
+    }
+
+    fn stop(watchdog: *Watchdog) void {
+        const thread = watchdog.thread orelse return;
+        watchdog.done.store(1, .release);
+        io.futexWake(u32, &watchdog.done.raw, 1);
+        thread.join();
+    }
+
+    fn watch(watchdog: *Watchdog) void {
+        const limit: std.Io.Clock.Duration = .{ .raw = .fromNanoseconds(options.test_timeout_ns), .clock = .awake };
+        const deadline: std.Io.Clock.Timestamp = .fromNow(io, limit);
+        while (watchdog.done.load(.acquire) == 0) {
+            if (deadline.untilNow(io).raw.nanoseconds >= 0) {
+                std.debug.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
+                    watchdog.name, options.test_timeout_ns / std.time.ns_per_ms, watchdog.phase.load(.acquire), testing.random_seed,
+                });
+                std.process.exit(1);
+            }
+            // The global single-threaded Io never cancels; a cancel would end the watch.
+            io.futexWaitTimeout(u32, &watchdog.done.raw, 0, .{ .deadline = deadline }) catch |err| switch (err) {
+                error.Canceled => return,
+            };
+        }
+    }
+};
 
 pub fn main(init: std.process.Init.Minimal) void {
     @disableInstrumentation();
@@ -31,7 +70,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--listen=-")) listen = true;
     }
-    order = shuffle.init(io, init, args, builtin.test_functions.len) catch @panic("test runner seed and order");
+    order = order_module.init(io, init, args, builtin.test_functions) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
     serve(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
 }
@@ -60,9 +99,9 @@ fn metadata(server: *std.zig.Server) !void {
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(a);
     try bytes.append(a, 0);
-    const names = try a.alloc(u32, builtin.test_functions.len);
+    const names = try a.alloc(u32, order.len);
     defer a.free(names);
-    const panics = try a.alloc(u32, builtin.test_functions.len);
+    const panics = try a.alloc(u32, order.len);
     defer a.free(panics);
     @memset(panics, 0);
     for (order, names) |index, *name| {
@@ -77,11 +116,13 @@ fn metadata(server: *std.zig.Server) !void {
 fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.process.Init.Minimal) !void {
     const index = try server.receiveBody_u32();
     const test_fn = builtin.test_functions[order[index]];
+    var watchdog: Watchdog = .{ .name = test_fn.name };
+    try watchdog.start();
+    defer watchdog.stop();
     testing.environ = init.environ;
     testing.allocator_instance = .{};
     testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
     errors.store(0, .monotonic);
-    fuzz_test = false;
     try server.serveStringMessage(.test_started, &.{});
     const start: std.Io.Clock.Timestamp = .now(io, .awake);
     const status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
@@ -92,15 +133,17 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
             break :failure .fail;
         },
     };
+    watchdog.phase.store(.io_teardown, .release);
     testing.io_instance.deinit();
     const leaks = testing.allocator_instance.detectLeaks();
     if (leaks != 0 or errors.load(.monotonic) != 0) std.debug.print("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
     testing.allocator_instance.deinitWithoutLeakChecks();
+    watchdog.phase.store(.reporting, .release);
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     try recorder.record(test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{
         .status = status,
-        .fuzz = fuzz_test,
+        .fuzz = false,
         .log_err_count = std.math.lossyCast(@FieldType(std.zig.Server.Message.TestResults.Flags, "log_err_count"), errors.load(.monotonic)),
         .leak_count = std.math.lossyCast(@FieldType(std.zig.Server.Message.TestResults.Flags, "leak_count"), leaks),
     } });
@@ -112,6 +155,9 @@ fn terminal(init: std.process.Init.Minimal) !void {
     var failures: usize = 0;
     for (order) |index| {
         const test_fn = builtin.test_functions[index];
+        var watchdog: Watchdog = .{ .name = test_fn.name };
+        try watchdog.start();
+        defer watchdog.stop();
         testing.environ = init.environ;
         testing.allocator_instance = .{};
         testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
@@ -125,9 +171,11 @@ fn terminal(init: std.process.Init.Minimal) !void {
                 break :failed "fail";
             },
         };
+        watchdog.phase.store(.io_teardown, .release);
         testing.io_instance.deinit();
         const leaks = testing.allocator_instance.detectLeaks();
         testing.allocator_instance.deinitWithoutLeakChecks();
+        watchdog.phase.store(.reporting, .release);
         try recorder.record(test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
     }

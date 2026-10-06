@@ -29,13 +29,13 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
             const artifacts = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/runs/{d}/artifacts?per_page=100", .{ prefix, src.get(candidate, "id").integer }));
             for (src.items(src.get(artifacts, "artifacts"))) |artifact| {
                 if (!verified(candidate, src.string(src.get(artifact, "name"), ""), proof, current)) continue;
-                std.debug.print("Full gate passed for {s}: {s}\n", .{ sha, src.string(src.get(candidate, "html_url"), "") });
+                c.report("Full gate passed for {s}: {s}\n", .{ sha, src.string(src.get(candidate, "html_url"), "") });
                 return;
             }
         }
         if (candidates.len < 100) break;
     }
-    std.debug.print("No successful full gate recorded for exact commit {s}; dispatch the full gate for this commit.\n", .{sha});
+    c.report("No successful full gate recorded for exact commit {s}; dispatch the full gate for this commit.\n", .{sha});
     return error.NoSuccessfulFullGate;
 }
 

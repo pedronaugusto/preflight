@@ -1,5 +1,9 @@
 //! Timing evidence is recorded by the test runner, never asserted by a test.
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// The `ci/durations.json` column these records refresh.
+pub const key = @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.mode);
 
 pub const Recorder = struct {
     io: std.Io,
@@ -23,6 +27,7 @@ pub const Recorder = struct {
             .name = name,
             .seconds = @as(f64, @floatFromInt(nanoseconds)) / std.time.ns_per_s,
             .status = status,
+            .key = key,
         }, .{});
         defer std.heap.page_allocator.free(json);
         var buffer: [4096]u8 = undefined;

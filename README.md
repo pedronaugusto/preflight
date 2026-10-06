@@ -17,11 +17,22 @@ preflight.addCi(b, .{ .tests = test_step });
 ```
 
 `zig build lint` runs source checks. `zig build ci` checks sources before running
-tests. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
+tests. `.test_timeout = .fromSeconds(60)` arms a watchdog in the shared test
+runner: a test that runs longer, its Io teardown included, fails by name and
+phase, in local runs too. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
 `-Dci-lint=false` lets the hosted optimization and shard jobs use the source job's
 result; the default local gate always checks sources.
 Compiled caches never skip test execution: each gate runs the test binaries even
 when their build products are already available.
+
+`preflight.addConsumerCheck(b, .{ .package = "name", .program = b.path("ci/consumer.zig") })`
+adds `check-consumer`: it builds a generated project that depends on the package
+by path with fetching off, so the build a consumer gets cannot reach the
+package's CI dependencies. `.modules` names the modules the program imports,
+`.packages` the dependencies the package itself needs, and `.use_llvm` is passed
+to the program's compilation. `preflight.addCheck(b, name, source)` builds a
+repository check program, runs its tests, then runs it from the repository root
+as step `name`.
 
 ## Repository facts
 
@@ -78,30 +89,30 @@ caller in this repository shows the trigger and concurrency policy:
   for work branches and disabled for main's status job. No scheduled runs are enabled.
 
 `ci/workflow.json` names cross targets and optional CPUs, the compile step, test
-timeout, sanitizer step and Windows cases with duration weights. The full tier
+timeout, sanitizer step and shard counts. The full tier
 adds ReleaseSafe on each host, ReleaseFast on Linux, ReleaseSmall, every cross
 target and TSan where supported. Static full-tier matrices are generated locally from `ci/workflow.json` with
 `zig build plan -- --full true --output <file>` and passed as `full-matrix`,
 `compile-matrix` and `run-matrix` inputs; `compile-once` enables the latter two.
-Regenerate these inputs when changing the configuration. Only callers whose
-Windows shards use measured weights set `measured-plan: true`, retaining the
-full-tier planning job. Fast runs execute only on Linux. `ci-check` compiles the test graph without
+Regenerate these inputs when changing the configuration. Fast runs execute only on Linux. `ci-check` compiles the test graph without
 executing it, including packages whose full-tier cross step only builds a library.
 Callers generate `fast-matrix` with `zig build plan -- --full false --output <file>`.
-`fast_linux_shards` and `fast_linux_jobs` balance measured families across Ubuntu
-jobs; exactly one shard owns source checks and the other-target compile bundle.
-Shards may record timings for the next measured balance.
+`fast_shards` splits Linux Debug across that many Ubuntu jobs; the first owns
+source checks and the other-target compile bundle.
 
 A shared `skip` job filters changes before FAST. Changes touching only Markdown
 outside `src`, LICENSE or images run the documented-snippet check alone. Mixed
 changes, source Markdown and unavailable diff bases retain the test gate. FULL
 merge candidates always keep the complete gate, including docs-only candidates.
 
-Named Windows cases are assigned once per mode
-using longest-processing-time-first balancing. Repository-specific jobs stay in
-the caller and use the same full-tier condition.
-An optional shard `priority` runs a core family before its bundled comparisons
-while preserving the measured load balance.
+`"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
+jobs. Every job compiles the whole suite once, or downloads it with
+`compile_once`, and the test runner picks its share of the test cases: longest
+first onto the least-loaded shard, by the seconds recorded for that target in
+`ci/durations.json`. A test with no record weighs the mean of those with one;
+without records the split is by count. Every shard computes the same split, so
+each test runs exactly once. Repository-specific jobs stay in the caller and use
+the same full-tier condition.
 Cross targets run in one Linux job, retaining each target and optional CPU while
 sharing setup and compiled products. The checker uses its host's baseline CPU
 target so its cached executable is reusable across hosted runner CPU models.
@@ -117,6 +128,8 @@ repository facts stay with the caller and common mechanics have one owner.
 
 Requires Zig 0.16.0. Run `zig build test` for the check regression
 suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
+preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
+structure, and `zig build verify` runs its lint, tests and format check.
 ziglint is pinned to v0.5.3's commit, with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
 
@@ -161,12 +174,18 @@ fixtures compiled with absolute runner paths must be made relocatable first.
 Upload permissions are restored by Zig before execution. The native matrix stays
 available for comparing elapsed time and runner minutes against this path.
 
-The full tier records each test's duration through Zig's test protocol, caches
-the summary and balances the next full Windows shards using the measured totals.
+The full tier records each test's duration through Zig's test protocol. Its
+profile job folds the records into `ci/durations.json`, keeping targets the run
+did not measure, and uploads it as the `preflight-full-<sha>` proof artifact.
+`gh run download <run> -n preflight-full-<sha> -D ci` refreshes the package's
+copy. From a package root, `zig build --build-file <preflight>/build.zig
+-Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
+`ci/durations.json` in place.
 The shared runner shuffles test order using the test seed on full, fast and local
 CI gates. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
 reproduce an order. Direct test binaries also accept `--seed=<number>`.
-Custom runners retain their watchdogs and can import `preflight_order` to use
-the same seeded permutation, and `preflight_timings` to record durations.
-`zig build ci-linux -- --musl --optimize ReleaseSafe` runs the package's Dockerfile
-when explicitly requested; `--cgroup true` requests its privileged cgroup gate.
+Custom runners can import `preflight_order`, whose `init` seeds, selects the
+shard's tests and orders them, and `preflight_timings` to record durations.
+`zig build ci-linux -- --musl --optimize ReleaseSafe` runs the package's
+`ci/linux.Dockerfile`, or preflight's Debian image with the pinned Zig when the
+package keeps none, only when explicitly requested; `--cgroup true` requests its privileged cgroup gate.

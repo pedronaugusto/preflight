@@ -1,0 +1,4 @@
+{
+  "sources": ["src"],
+  "test_roots": ["src/checks.zig", "src/order.zig"]
+}

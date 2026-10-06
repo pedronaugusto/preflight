@@ -15,8 +15,16 @@ pub const Context = struct {
         return c.dir orelse .cwd();
     }
 
+    /// Writes to stderr, as a command-line tool reports; a failed write loses only the message.
+    pub fn report(c: Context, comptime fmt: []const u8, args: anytype) void {
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.File.stderr().writerStreaming(c.io, &buffer);
+        writer.interface.print(fmt, args) catch return;
+        writer.interface.flush() catch return;
+    }
+
     pub fn fail(c: *Context, comptime fmt: []const u8, args: anytype) void {
-        std.debug.print(fmt ++ "\n", args);
+        c.report(fmt ++ "\n", args);
         c.errors += 1;
     }
 
@@ -131,8 +139,8 @@ pub const Source = struct {
 
     pub fn lineText(s: Source, token: std.zig.Ast.TokenIndex) []const u8 {
         const offset = s.tree.tokens.items(.start)[token];
-        const begin = if (std.mem.lastIndexOfScalar(u8, s.text[0..offset], '\n')) |n| n + 1 else 0;
-        const end = if (std.mem.indexOfScalarPos(u8, s.text, offset, '\n')) |n| n else s.text.len;
+        const begin = if (std.mem.findScalarLast(u8, s.text[0..offset], '\n')) |n| n + 1 else 0;
+        const end = if (std.mem.findScalarPos(u8, s.text, offset, '\n')) |n| n else s.text.len;
         return s.text[begin..end];
     }
 };

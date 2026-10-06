@@ -1,9 +1,10 @@
 //! Export relocatable test executables for Linux compilation and native execution.
 const std = @import("std");
+const record = @import("record.zig");
 
 pub const Command = struct { argv: []const []const u8, test_runner: bool, timings: ?[]const u8 = null, cwd: ?[]const u8 = null };
 
-pub fn add(b: *std.Build, tests: *std.Build.Step) void {
+pub fn add(b: *std.Build, tests: *std.Build.Step, durations: []const u8) void {
     const compile = b.step("ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
@@ -25,7 +26,12 @@ pub fn add(b: *std.Build, tests: *std.Build.Step) void {
         run.setCwd(b.path(command.cwd orelse "."));
         run.has_side_effects = true;
         if (command.test_runner) run.enableTestRunnerMode();
-        if (command.timings) |path| run.setEnvironmentVariable("PREFLIGHT_TIMINGS", path);
+        if (command.timings) |path| {
+            // One compilation serves every shard; each names its own records.
+            const stem = path[0 .. std.mem.findScalarLast(u8, path, '-') orelse path.len];
+            run.setEnvironmentVariable("PREFLIGHT_TIMINGS", b.fmt("{s}-{s}.ndjson", .{ stem, record.part(b) }));
+        }
+        if (record.shard(b) != null) run.setEnvironmentVariable("PREFLIGHT_DURATIONS", b.pathFromRoot(durations));
         RestorePermissions.original = run.step.makeFn;
         run.step.makeFn = RestorePermissions.make;
         execute.dependOn(&run.step);
@@ -52,7 +58,7 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
         if (run.environ_map) |env| {
             var iterator = env.iterator();
             while (iterator.next()) |item| {
-                if (std.mem.eql(u8, item.key_ptr.*, "PREFLIGHT_TIMINGS")) continue;
+                if (std.mem.eql(u8, item.key_ptr.*, "PREFLIGHT_TIMINGS") or std.mem.eql(u8, item.key_ptr.*, "PREFLIGHT_DURATIONS")) continue;
                 const inherited = b.graph.environ_map.get(item.key_ptr.*) orelse @panic("portable tests must not contain runner-specific environment paths");
                 if (!std.mem.eql(u8, inherited, item.value_ptr.*)) @panic("portable tests must not contain runner-specific environment paths");
             }

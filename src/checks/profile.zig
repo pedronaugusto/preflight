@@ -1,83 +1,133 @@
-//! The last successful full run supplies measured weights to the next plan.
+//! A full run's per-test records refresh the durations the next shards balance by.
 const std = @import("std");
 const src = @import("source.zig");
 
-pub const Weight = struct { name: []const u8, seconds: f64 };
-pub const Summary = struct { windows_shards: []Weight, test_records: usize };
+/// Seconds per test name, per target column (`windows-Debug`).
+pub const Durations = struct {
+    tests: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(f64)) = .empty,
+    keys: std.StringArrayHashMapUnmanaged(void) = .empty,
+    records: usize = 0,
+
+    fn put(d: *Durations, a: std.mem.Allocator, name: []const u8, column: []const u8, seconds: f64) !void {
+        try d.keys.put(a, column, {});
+        const row = try d.tests.getOrPut(a, name);
+        if (!row.found_existing) row.value_ptr.* = .empty;
+        const cell = try row.value_ptr.getOrPut(a, column);
+        cell.value_ptr.* = if (cell.found_existing) @max(cell.value_ptr.*, seconds) else seconds;
+    }
+};
 
 pub fn reset(c: src.Context, root: []const u8) !void {
     try c.directory().deleteTree(c.io, root);
 }
 
-pub fn summarize(c: src.Context, config: src.Value, root: []const u8) !Summary {
+/// Reads every `.ndjson` record under `root`. A column this run measured
+/// replaces the one in `previous`; columns it did not measure are kept.
+pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Durations {
+    var result: Durations = .{};
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walk(c.a);
     defer walker.deinit();
-    const shards = src.items(src.get(config, "windows_shards"));
-    const weights = try c.a.alloc(Weight, shards.len);
-    for (shards, weights) |shard, *weight| weight.* = .{ .name = src.string(src.get(shard, "name"), ""), .seconds = 0 };
-    var records: usize = 0;
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ndjson")) continue;
         const text = try dir.readFileAlloc(c.io, entry.path, c.a, .limited(64 * 1024 * 1024));
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        var seconds: f64 = 0;
         while (lines.next()) |line| {
             const value = (try std.json.parseFromSlice(src.Value, c.a, line, .{})).value;
-            const duration = src.get(value, "seconds");
-            seconds += switch (duration) {
-                .float => duration.float,
-                .integer => @floatFromInt(duration.integer),
-                else => return error.InvalidTestDuration,
-            };
-            records += 1;
-        }
-        if (std.mem.indexOf(u8, entry.path, "-windows-") == null) continue;
-        for (weights) |*weight| {
-            const suffix = try std.fmt.allocPrint(c.a, "-{s}.ndjson", .{weight.name});
-            if (std.mem.endsWith(u8, entry.path, suffix)) weight.seconds = @max(weight.seconds, seconds);
+            const seconds = try number(src.get(value, "seconds"));
+            result.records += 1;
+            const column = src.string(src.get(value, "key"), "");
+            if (column.len == 0) continue;
+            try result.put(c.a, try c.a.dupe(u8, src.string(src.get(value, "name"), "")), try c.a.dupe(u8, column), seconds);
         }
     }
-    return .{ .windows_shards = weights, .test_records = records };
-}
-
-pub fn apply(a: std.mem.Allocator, config: src.Value, summary: src.Value) !src.Value {
-    var result = config;
-    if (result != .object) return result;
-    var shards: std.array_list.Managed(src.Value) = .init(a);
-    for (src.items(src.get(config, "windows_shards"))) |original| {
-        var shard = original;
-        const name = src.string(src.get(original, "name"), "");
-        for (src.items(src.get(summary, "windows_shards"))) |measured| {
-            if (!std.mem.eql(u8, name, src.string(src.get(measured, "name"), ""))) continue;
-            const duration = src.get(measured, "seconds");
-            if ((duration == .float and duration.float > 0) or (duration == .integer and duration.integer > 0))
-                try shard.object.put(a, "seconds", duration);
+    const measured = try result.keys.clone(c.a);
+    const keys = src.items(src.get(previous, "keys"));
+    const tests = src.get(previous, "tests");
+    if (tests == .object) {
+        var rows = tests.object.iterator();
+        while (rows.next()) |row| {
+            const cells = src.items(row.value_ptr.*);
+            if (cells.len != keys.len) return error.InvalidDurations;
+            for (keys, cells) |column, cell| {
+                if (column != .string or measured.contains(column.string) or cell == .null) continue;
+                try result.put(c.a, row.key_ptr.*, column.string, try number(cell));
+            }
         }
-        try shards.append(shard);
     }
-    if (shards.items.len > 0) try result.object.put(a, "windows_shards", .{ .array = shards });
     return result;
 }
 
-test "profiles use complete recorded durations, keep new cases and ignore unrelated hosts" {
+fn number(value: src.Value) !f64 {
+    const seconds: f64 = switch (value) {
+        .float => value.float,
+        .integer => @floatFromInt(value.integer),
+        else => return error.InvalidTestDuration,
+    };
+    if (!(seconds >= 0)) return error.InvalidTestDuration;
+    return seconds;
+}
+
+/// One line per test, names and columns sorted, so a refresh diffs by test.
+pub fn render(a: std.mem.Allocator, d: Durations) ![]const u8 {
+    const columns = try a.dupe([]const u8, d.keys.keys());
+    std.mem.sort([]const u8, columns, {}, lessThan);
+    const names = try a.dupe([]const u8, d.tests.keys());
+    std.mem.sort([]const u8, names, {}, lessThan);
+    var out: std.Io.Writer.Allocating = .init(a);
+    const w = &out.writer;
+    try w.writeAll("{\n  \"keys\": ");
+    try std.json.Stringify.value(columns, .{}, w);
+    try w.writeAll(",\n  \"tests\": {");
+    for (names, 0..) |name, i| {
+        try w.writeAll(if (i == 0) "\n    " else ",\n    ");
+        try std.json.Stringify.value(name, .{}, w);
+        try w.writeAll(": [");
+        const row = d.tests.get(name).?;
+        for (columns, 0..) |column, j| {
+            if (j > 0) try w.writeAll(", ");
+            if (row.get(column)) |seconds| try w.print("{d:.2}", .{seconds}) else try w.writeAll("null");
+        }
+        try w.writeByte(']');
+    }
+    try w.writeAll("\n  }\n}\n");
+    return out.written();
+}
+
+fn lessThan(_: void, x: []const u8, y: []const u8) bool {
+    return std.mem.lessThan(u8, x, y);
+}
+
+test "a refresh replaces the columns it measured, keeps the rest, and takes the longest record" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
-    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-history-0.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\"}\n{\"name\":\"second\",\"seconds\":4,\"status\":\"pass\"}\n" });
-    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-Debug-history-0.ndjson", .data = "{\"name\":\"first\",\"seconds\":100,\"status\":\"pass\"}\n" });
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"windows_shards\":[{\"name\":\"history-0\",\"seconds\":1},{\"name\":\"new-case\",\"seconds\":2}]}", .{})).value;
-    const summary = try summarize(c, config, ".");
-    try std.testing.expectEqual(@as(usize, 3), summary.test_records);
     // Fixed fixture weights exercise arithmetic, not a machine's timing.
-    try std.testing.expectEqual(@as(f64, 7), summary.windows_shards[0].seconds);
-    const json = try std.json.Stringify.valueAlloc(a, summary, .{});
-    const updated = try apply(a, config, (try std.json.parseFromSlice(src.Value, a, json, .{})).value);
-    try std.testing.expectEqual(@as(i64, 2), src.get(src.items(src.get(updated, "windows_shards"))[1], "seconds").integer);
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-1of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"windows-Debug\"}\n{\"name\":\"first\",\"seconds\":4.5,\"status\":\"pass\",\"key\":\"windows-Debug\"}\n" });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-Debug-all.ndjson", .data = "{\"name\":\"second\",\"seconds\":0.25,\"status\":\"skip\",\"key\":\"linux-Debug\"}\n{\"name\":\"untargeted\",\"seconds\":1,\"status\":\"pass\"}\n" });
+    const previous = (try std.json.parseFromSlice(src.Value, a,
+        \\{"keys":["macos-Debug","windows-Debug"],"tests":{"first":[2,9],"gone":[1,1],"kept":[3,null]}}
+    , .{})).value;
+    const durations = try summarize(c, ".", previous);
+    try std.testing.expectEqual(@as(usize, 4), durations.records);
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  "keys": ["linux-Debug","macos-Debug","windows-Debug"],
+        \\  "tests": {
+        \\    "first": [null, 2.00, 4.50],
+        \\    "gone": [null, 1.00, null],
+        \\    "kept": [null, 3.00, null],
+        \\    "second": [0.25, null, null]
+        \\  }
+        \\}
+        \\
+    , try render(a, durations));
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "bad.ndjson", .data = "{\"name\":\"x\",\"seconds\":-1,\"key\":\"k\"}\n" });
+    try std.testing.expectError(error.InvalidTestDuration, summarize(c, ".", .null));
 }
 
 test "restored timings are discarded before a gate records this run" {

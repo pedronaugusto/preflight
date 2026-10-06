@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     var diagnostic = gantry.ScanDiagnostic.init(a);
     defer diagnostic.deinit();
     var graph = gantry.scanWithDiagnostic(a, paths.items(), reader, gantry.DirReader.read, structure.options(d), &diagnostic) catch |err| {
-        if (diagnostic.failure) |failure| std.debug.print("imports: {s}: {s}: {s}\n", .{ failure.path orelse "<scan>", @tagName(failure.phase), @errorName(failure.cause) });
+        if (diagnostic.failure) |failure| (source.Context{ .a = a, .io = init.io }).report("imports: {s}: {s}: {s}\n", .{ failure.path orelse "<scan>", @tagName(failure.phase), @errorName(failure.cause) });
         return err;
     };
     defer graph.deinit();

@@ -47,7 +47,7 @@ fn parseFindings(c: *src.Context, output: []const u8, allowed: *ledger.Ledger) !
         const rest = remaining[rule_end + 2 ..];
         const header_end = std.mem.indexOf(u8, rest, ": ") orelse return error.InvalidZiglintDiagnostic;
         const header = rest[0..header_end];
-        const line_separator = std.mem.lastIndexOfScalar(u8, header, ':') orelse return error.InvalidZiglintDiagnostic;
+        const line_separator = std.mem.findScalarLast(u8, header, ':') orelse return error.InvalidZiglintDiagnostic;
         const path = try c.a.dupe(u8, header[0..line_separator]);
         std.mem.replaceScalar(u8, path, '\\', '/');
         const line = try std.fmt.parseInt(usize, header[line_separator + 1 ..], 10);
@@ -63,7 +63,7 @@ fn parseFindings(c: *src.Context, output: []const u8, allowed: *ledger.Ledger) !
 
 fn nextDiagnostic(text: []const u8, start: usize) usize {
     var cursor = start;
-    while (std.mem.indexOfPos(u8, text, cursor, "\nZ")) |index| {
+    while (std.mem.findPos(u8, text, cursor, "\nZ")) |index| {
         var end = index + 2;
         while (end < text.len and std.ascii.isDigit(text[end])) : (end += 1) {}
         if (end > index + 2 and std.mem.startsWith(u8, text[end..], ": ")) return index + 1;

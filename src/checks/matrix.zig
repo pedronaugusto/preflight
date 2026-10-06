@@ -172,7 +172,7 @@ fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) 
         .os = hosts[0],
         .name = "ThreadSanitizer (Linux)",
         .step = sanitizer.string,
-        .args = "-Dthread-sanitizer -Doptimize=Debug",
+        .args = "-Dthread-sanitizer -Doptimize=Debug -Dci-lint=false",
         .timeout = "--test-timeout 120s",
         .setup = true,
         .job_timeout = src.number(src.get(config, "sanitizer_job_timeout"), 20),
@@ -257,7 +257,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":3,\"macos\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":3,\"macos\":2},\"sanitizer\":\"test\"}", .{})).value;
     const jobs = try plan(a, config, true);
     var windows: usize = 0;
     var macos: usize = 0;
@@ -278,6 +278,8 @@ test "each host's shards run every mode, split by count, with the lint and compi
         try std.testing.expectEqualStrings("3/3", job.shard);
     };
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
+    // The source checks job owns lint in the full tier; no test job repeats it.
+    for (jobs) |job| if (!std.mem.eql(u8, job.step, "lint") and job.setup) try std.testing.expect(std.mem.indexOf(u8, job.args, "-Dci-lint=false") != null);
     try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, true));
 }
 

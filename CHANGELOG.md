@@ -33,4 +33,5 @@
 
 ### Fixed
 
+- The full tier's ThreadSanitizer job leaves the source checks to their own job, as every other test job does.
 - `catch unreachable` and `std.debug.print` checks skip the configured `test_support`, not always `src/testing/`.

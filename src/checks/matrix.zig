@@ -42,38 +42,68 @@ fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
     return std.fmt.allocPrint(a, "{x}", .{hash[0..8]});
 }
 
-pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
+/// How much of the gate a run executes.
+pub const Tier = enum {
+    /// Linux Debug and the source checks; every other host and target compiles only.
+    fast,
+    /// The candidate for main: fast, and the Debug suite on macOS and Windows.
+    merge,
+    /// Before a release: every mode on every host, cross targets and TSan.
+    release,
+};
+
+pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     for (obsolete) |name| if (src.get(config, name) != .null) return error.ObsoleteShardConfig;
     // The watchdog bounds each test (`Config.test_timeout`).
     if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
-    if (!full) return fastPlan(a, config);
+    switch (tier) {
+        .fast => return fastPlan(a, config, false),
+        .merge => return mergePlan(a, config),
+        .release => {},
+    }
     var jobs: std.ArrayList(Job) = .empty;
     for (hosts, host_names) |host, host_name| {
         const modes: []const []const u8 = if (std.mem.eql(u8, host, hosts[0])) &.{ "Debug", "ReleaseSafe", "ReleaseFast" } else &.{ "Debug", "ReleaseSafe" };
-        const count = try shardCount(src.get(src.get(config, "shards"), host_name));
-        for (modes) |mode| for (0..count) |i| {
-            const shard = try shardName(a, i, count);
-            try jobs.append(a, .{
-                .os = host,
-                .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}{s}", .{ host, mode, if (count > 1) " shard " else "", shard }),
-                .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false -Dci-timings=true", .{mode}),
-                .shard = shard,
-                .setup = true,
-                .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
-            });
-        };
+        try hostJobs(a, config, &jobs, host, host_name, modes);
     }
     try jobs.append(a, .{ .os = hosts[0], .name = "source checks and documented snippets", .step = "lint", .job_timeout = src.number(src.get(config, "source_job_timeout"), 20) });
-    try fullJobs(a, config, &jobs);
+    try releaseJobs(a, config, &jobs);
     for (jobs.items) |*job| job.cache_key = try key(a, job.*);
     return jobs.items;
+}
+
+/// The fast tier's Linux jobs, recording durations, and the Debug suite
+/// executed on macOS and Windows.
+fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
+    var jobs: std.ArrayList(Job) = .empty;
+    try jobs.appendSlice(a, try fastPlan(a, config, true));
+    const start = jobs.items.len;
+    for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{"Debug"});
+    for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
+    return jobs.items;
+}
+
+/// The test jobs of one host: each mode in the host's shard count.
+fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), host: []const u8, host_name: []const u8, modes: []const []const u8) !void {
+    const count = try shardCount(src.get(src.get(config, "shards"), host_name));
+    for (modes) |mode| for (0..count) |i| {
+        const shard = try shardName(a, i, count);
+        try jobs.append(a, .{
+            .os = host,
+            .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}{s}", .{ host, mode, if (count > 1) " shard " else "", shard }),
+            .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false -Dci-timings=true", .{mode}),
+            .shard = shard,
+            .setup = true,
+            .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
+        });
+    };
 }
 
 pub const Tiers = struct { native: []Job, compile: []Job, run: []Job };
 
 /// Portable hosts compile once on Linux per host and mode; every shard of
 /// that host and mode runs the same binaries.
-pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, full: bool) !Tiers {
+pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: Tier) !Tiers {
     var native: std.ArrayList(Job) = .empty;
     var compile: std.ArrayList(Job) = .empty;
     var run: std.ArrayList(Job) = .empty;
@@ -84,7 +114,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, full: b
         for (src.items(portable_hosts)) |host| if (std.mem.eql(u8, src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (!full or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
+        if (tier == .fast or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
             try native.append(a, job);
             continue;
         }
@@ -118,8 +148,9 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, full: b
 }
 
 /// Linux Debug in `fast_shards` jobs; the first also checks sources and
-/// compiles the other targets.
-fn fastPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
+/// compiles the other targets. They record durations when `timing` is set
+/// or they are shards.
+fn fastPlan(a: std.mem.Allocator, config: src.Value, timing: bool) ![]Job {
     const count = try shardCount(src.get(config, "fast_shards"));
     const jobs = try a.alloc(Job, count);
     for (jobs, 0..) |*job, i| {
@@ -128,7 +159,7 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
             .os = hosts[0],
             .name = try std.fmt.allocPrint(a, "Linux Debug{s}{s}", .{ if (count > 1) " shard " else "", shard }),
             .step = "preflight-fast",
-            .args = try std.fmt.allocPrint(a, "-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (count > 1) " -Dci-timings=true" else "" }),
+            .args = try std.fmt.allocPrint(a, "-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "" }),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
@@ -161,7 +192,7 @@ pub fn fastCrossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value)
     return result;
 }
 
-fn fullJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
+fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     const compile = src.string(src.get(config, "compile_step"), "check");
     try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=ReleaseSmall" });
     if (src.items(src.get(config, "targets")).len > 0)
@@ -195,7 +226,7 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     const config = (try std.json.parseFromSlice(src.Value, a,
         \\{"compile_step":"install","targets":["x86_64-windows-gnu",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
     , .{})).value;
-    const jobs = try plan(a, config, true);
+    const jobs = try plan(a, config, .release);
     var bundles: usize = 0;
     for (jobs) |job| if (std.mem.eql(u8, job.step, "preflight-cross")) {
         bundles += 1;
@@ -218,7 +249,7 @@ test "fast gate executes only Linux Debug and compiles all other test targets" {
     const config = (try std.json.parseFromSlice(src.Value, a,
         \\{"compile_step":"install","compile_once":true,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
     , .{})).value;
-    const jobs = try plan(a, config, false);
+    const jobs = try plan(a, config, .fast);
     try std.testing.expectEqual(@as(usize, 1), jobs.len);
     try std.testing.expectEqualStrings(hosts[0], jobs[0].os);
     try std.testing.expectEqualStrings("-Doptimize=Debug", jobs[0].args);
@@ -228,7 +259,7 @@ test "fast gate executes only Linux Debug and compiles all other test targets" {
     try std.testing.expectEqualStrings("ci-check", args[2]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", args[5]);
     try std.testing.expectEqualStrings("-Doptimize=Debug", args[6]);
-    const tiers = try split(a, config, jobs, false);
+    const tiers = try split(a, config, jobs, .fast);
     try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
 }
@@ -238,8 +269,8 @@ test "portable matrix builds macOS and Windows binaries on Linux without losing 
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"unit\"}", .{})).value;
-    const jobs = try plan(a, config, true);
-    const tiers = try split(a, config, jobs, true);
+    const jobs = try plan(a, config, .release);
+    const tiers = try split(a, config, jobs, .release);
     try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 4), tiers.run.len);
     try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);
@@ -256,7 +287,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":3,\"macos\":2},\"sanitizer\":\"test\"}", .{})).value;
-    const jobs = try plan(a, config, true);
+    const jobs = try plan(a, config, .release);
     var windows: usize = 0;
     var macos: usize = 0;
     var linux: usize = 0;
@@ -276,9 +307,9 @@ test "each host's shards run every mode, split by count, with the lint and compi
         try std.testing.expectEqualStrings("3/3", job.shard);
     };
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
-    // The source checks job owns lint in the full tier; no test job repeats it.
+    // The source checks job owns lint in the release tier; no test job repeats it.
     for (jobs) |job| if (!std.mem.eql(u8, job.step, "lint") and job.setup) try std.testing.expect(std.mem.indexOf(u8, job.args, "-Dci-lint=false") != null);
-    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, true));
+    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, .release));
 }
 
 test "named weighted cases are refused, naming the per-test shards that replace them" {
@@ -287,19 +318,19 @@ test "named weighted cases are refused, naming the per-test shards that replace 
     const a = arena.allocator();
     for ([_][]const u8{ "{\"windows_shards\":[{\"name\":\"core\",\"seconds\":3}]}", "{\"fast_linux_jobs\":2}", "{\"shard_jobs\":5}" }) |text| {
         const config = (try std.json.parseFromSlice(src.Value, a, text, .{})).value;
-        try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, true));
-        try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, false));
+        try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, .release));
+        try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, .fast));
     }
 }
 
-test "a workflow-level test timeout is refused; the build bounds each test" {
+test "a workflow-level test timeout is refused; the watchdog bounds each test" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_timeout\":\"--test-timeout 120s\"}", .{})).value;
-    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, true));
-    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, false));
-    for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, true)) |job|
+    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .release));
+    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .fast));
+    for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release)) |job|
         try std.testing.expect(std.mem.indexOf(u8, job.args, "test-timeout") == null);
 }
 
@@ -308,7 +339,7 @@ test "fast shards split Linux Debug, and only the first checks sources and compi
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"fast_shards\":3}", .{})).value;
-    const jobs = try plan(a, config, false);
+    const jobs = try plan(a, config, .fast);
     try std.testing.expectEqual(@as(usize, 3), jobs.len);
     try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-timings=true", jobs[0].args);
     try std.testing.expectEqualStrings("1/3", jobs[0].shard);
@@ -322,8 +353,8 @@ test "portable shards share one compilation per host and mode" {
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":3}}", .{})).value;
-    const jobs = try plan(a, config, true);
-    const tiers = try split(a, config, jobs, true);
+    const jobs = try plan(a, config, .release);
+    const tiers = try split(a, config, jobs, .release);
     try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 2 + 6), tiers.run.len);
     for (tiers.compile) |builder| {
@@ -337,4 +368,35 @@ test "portable shards share one compilation per host and mode" {
         };
     };
     try std.testing.expectEqual(@as(usize, 3), sharing);
+}
+
+test "the merge tier adds the Debug suite on macOS and Windows to the fast tier, and nothing more" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":2},\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
+    const jobs = try plan(a, config, .merge);
+    try std.testing.expectEqual(@as(usize, 4), jobs.len);
+    try std.testing.expectEqualStrings("preflight-fast", jobs[0].step);
+    try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-timings=true", jobs[0].args);
+    try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[1].name);
+    try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", jobs[3].name);
+    for (jobs[1..]) |job| {
+        try std.testing.expectEqualStrings("ci", job.step);
+        try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-lint=false -Dci-timings=true", job.args);
+        try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
+    }
+    for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
+}
+
+test "the merge tier compiles macOS and Windows Debug once on Linux and runs every shard of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":2}}", .{})).value;
+    const tiers = try split(a, config, try plan(a, config, .merge), .merge);
+    try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
+    try std.testing.expectEqual(@as(usize, 2), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 3), tiers.run.len);
+    for (tiers.compile) |builder| try std.testing.expect(std.mem.indexOf(u8, builder.args, "-Doptimize=Debug") != null);
 }

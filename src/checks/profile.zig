@@ -1,4 +1,4 @@
-//! A full run's per-test records refresh the durations the next shards balance by.
+//! A merge or release run's per-test records refresh the durations the next shards balance by.
 const std = @import("std");
 const src = @import("source.zig");
 

@@ -2,9 +2,10 @@ name: Documentation filter
 on:
   workflow_call:
     inputs:
-      full:
-        type: boolean
-        default: false
+      tier:
+        description: fast, merge or release; merge and release keep the whole gate for docs-only changes
+        type: string
+        default: fast
       preflight-ref:
         type: string
         required: true
@@ -36,6 +37,6 @@ jobs:
       - name: Filter paths and check documentation when it is the only change
         id: paths
         env:
-          PREFLIGHT_FULL: ${{ inputs.full }}
+          PREFLIGHT_TIER: ${{ inputs.tier }}
           PREFLIGHT_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" skip -- --config "${{ inputs.working-directory }}/ci/preflight.json"

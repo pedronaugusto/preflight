@@ -2,9 +2,10 @@ name: Zig
 on:
   workflow_call:
     inputs:
-      full:
-        type: boolean
-        default: false
+      tier:
+        description: fast, merge or release
+        type: string
+        default: fast
       adopt:
         description: Initialize absent source ledgers from exact findings already on main
         type: boolean
@@ -22,14 +23,24 @@ on:
         description: Static Linux Debug shards generated from ci/workflow.json
         type: string
         default: '{"include":[{"name":"Linux Debug","args":"-Doptimize=Debug","shard":"","job_timeout":20,"cache_key":"fast-linux-debug-0"}]}'
-      full-matrix:
-        description: Static native full-tier matrix generated from ci/workflow.json
+      merge-matrix:
+        description: Static native merge-tier matrix, zig build plan -- --tier merge
         type: string
         default: '{"include":[]}'
-      compile-matrix:
+      merge-compile-matrix:
         type: string
         default: '{"include":[]}'
-      run-matrix:
+      merge-run-matrix:
+        type: string
+        default: '{"include":[]}'
+      release-matrix:
+        description: Static native release-tier matrix, zig build plan -- --tier release
+        type: string
+        default: '{"include":[]}'
+      release-compile-matrix:
+        type: string
+        default: '{"include":[]}'
+      release-run-matrix:
         type: string
         default: '{"include":[]}'
       compile-once:
@@ -49,6 +60,13 @@ permissions:
   contents: read
   actions: read
 jobs:
+  tier:
+    if: '!contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TIER: ${{ inputs.tier }}
+        run: echo "tier must be fast, merge or release, not '$TIER'" && exit 1
   main:
     if: inputs.attest
     runs-on: ubuntu-latest
@@ -67,12 +85,12 @@ jobs:
           key: preflight-main-${{ runner.os }}-0.17.0-${{ inputs.preflight-ref }}
           restore-keys: |
             preflight-main-${{ runner.os }}-0.17.0-
-      - name: Confirm the full gate for this commit
+      - name: Confirm a merge or release tier passed for this commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" attest
   fast:
-    if: '!inputs.attest && !inputs.full'
+    if: '!inputs.attest && inputs.tier == ''fast'''
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.job_timeout }}
@@ -113,13 +131,13 @@ jobs:
           include-hidden-files: true
           retention-days: 7
   gate:
-    if: '!inputs.attest && inputs.full'
+    if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'')'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.full-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.merge-matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -142,22 +160,23 @@ jobs:
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_ADOPT: ${{ inputs.adopt }}
           PREFLIGHT_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}
+          FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - uses: actions/upload-artifact@v4
-        if: inputs.full && matrix.step == 'ci'
+        if: contains(matrix.args, '-Dci-timings=true')
         with:
           name: timings-${{ matrix.cache_key }}
           path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
           include-hidden-files: true
           retention-days: 7
   compile:
-    if: '!inputs.attest && inputs.full && inputs.compile-once'
+    if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'') && inputs.compile-once'
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.compile-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-compile-matrix || inputs.merge-compile-matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -182,13 +201,13 @@ jobs:
           retention-days: 1
   execute:
     needs: compile
-    if: always() && !inputs.attest && inputs.full && needs.compile.result == 'success'
+    if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.compile.result == 'success'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.run-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-run-matrix || inputs.merge-run-matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -213,7 +232,7 @@ jobs:
           PREFLIGHT_SETUP: ${{ matrix.setup }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - uses: actions/upload-artifact@v4
-        if: inputs.full
+        if: contains(matrix.args, '-Dci-timings=true')
         with:
           name: timings-${{ matrix.cache_key }}
           path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
@@ -221,7 +240,7 @@ jobs:
           retention-days: 7
   profile:
     needs: [gate, compile, execute]
-    if: always() && inputs.full && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
+    if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -242,6 +261,6 @@ jobs:
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" profile -- --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json
       - uses: actions/upload-artifact@v4
         with:
-          name: preflight-full-${{ github.sha }}
+          name: preflight-${{ inputs.tier }}-${{ github.sha }}
           path: .preflight-timings/durations.json
           retention-days: 90

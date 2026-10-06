@@ -85,37 +85,47 @@ Missing markers, stale blocks and failed generators fail the gate.
 
 ## Hosted gate
 
-Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
-that commit as `preflight-ref`, and `full: true` for a merge candidate. The sample
-caller in this repository shows the trigger and concurrency policy:
+The gate has four tiers. Each one runs more than the one before it:
 
-- Work-branch pushes start no run. Dispatch requests source checks and the full Linux Debug suite in one Ubuntu
-  job, then compiles the test binaries for macOS, Windows and every configured
-  cross target; its `full`
-  input requests the entire gate.
-- PR merge candidates and merge queue candidates run the full tier. A main push
-  verifies a successful full run for its exact SHA and its full-tier proof artifact.
-  It reports green without repeating tests; absent evidence fails visibly.
+- **local**: the tests a change touches, run by hand while working. Not CI.
+- **fast**: the source checks and the Linux Debug suite in one Ubuntu job, which
+  also compiles the test binaries for macOS, Windows and every configured cross
+  target without running them.
+- **merge**: fast, plus the Debug suite run on macOS and Windows, sharded as
+  configured. It runs once per wave, on the candidate for main.
+- **release**: every mode on every host (Debug and ReleaseSafe everywhere,
+  ReleaseFast on Linux), ReleaseSmall, every cross target and TSan where
+  supported. It runs before a release cut, or by hand when a wave touched
+  threading or platform code.
+
+Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
+that commit as `preflight-ref` and the tier as `tier`. The sample caller in this
+repository shows the trigger and concurrency policy:
+
+- Work-branch pushes start no run. Dispatch runs the tier it names, fast by default.
+- PR merge candidates and merge queue candidates run the merge tier. A main push
+  checks for a successful merge or release run on its exact SHA, with its proof
+  artifact. It reports green without repeating tests; if there is no proof, it fails.
 - The caller owns one concurrency group per branch, with cancellation enabled
   for work branches and disabled for main's status job. No scheduled runs are enabled.
 
 `ci/workflow.json` names cross targets and optional CPUs, the compile step,
 sanitizer step and shard counts. A `test_timeout` there is refused: the watchdog
-bounds each test. The full tier
-adds ReleaseSafe on each host, ReleaseFast on Linux, ReleaseSmall, every cross
-target and TSan where supported. Static full-tier matrices are generated locally from `ci/workflow.json` with
-`zig build plan -- --full true --output <file>` and passed as `full-matrix`,
-`compile-matrix` and `run-matrix` inputs; `compile-once` enables the latter two.
-Regenerate these inputs when changing the configuration. Fast runs execute only on Linux. `ci-check` compiles the test graph without
-executing it, including packages whose full-tier cross step only builds a library.
-Callers generate `fast-matrix` with `zig build plan -- --full false --output <file>`.
-`fast_shards` splits Linux Debug across that many Ubuntu jobs; the first owns
-source checks and the other-target compile bundle.
+bounds each test. The matrices are static, generated locally from
+`ci/workflow.json` with `zig build plan -- --tier <tier> --output <file>`:
+`fast-matrix` for fast; `merge-matrix`, `merge-compile-matrix` and
+`merge-run-matrix` for merge; `release-matrix`, `release-compile-matrix` and
+`release-run-matrix` for release. `compile-once` enables the compile and run
+matrices. Regenerate them when the configuration changes. `ci-check` compiles the
+test graph without executing it, including packages whose release-tier cross step
+only builds a library. `fast_shards` splits Linux Debug across that many Ubuntu
+jobs, in the fast and merge tiers. The first job owns the source checks and the
+compile bundle for the other targets.
 
-A shared `skip` job filters changes before FAST. Changes touching only Markdown
-outside `src`, LICENSE or images run the documented-snippet check alone. Mixed
-changes, source Markdown and unavailable diff bases retain the test gate. FULL
-merge candidates always keep the complete gate, including docs-only candidates.
+A shared `skip` job filters changes before the fast tier. Changes touching only
+Markdown outside `src`, LICENSE or images run the documented-snippet check alone.
+Mixed changes, source Markdown and unavailable diff bases keep the test gate.
+Merge and release candidates always keep the whole gate, docs-only or not.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
 jobs. Every job compiles the whole suite once, or downloads it with
@@ -123,8 +133,8 @@ jobs. Every job compiles the whole suite once, or downloads it with
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`. A test with no record weighs the mean of those with one;
 without records the split is by count. Every shard computes the same split, so
-each test runs exactly once. Repository-specific jobs stay in the caller and use
-the same full-tier condition.
+each test runs exactly once. Repository-specific jobs stay in the caller and run
+on the tiers they belong to.
 Cross targets run in one Linux job, retaining each target and optional CPU while
 sharing setup and compiled products. The checker uses its host's baseline CPU
 target so its cached executable is reusable across hosted runner CPU models.
@@ -187,15 +197,16 @@ fixtures compiled with absolute runner paths must be made relocatable first.
 An artifact upload drops the permission to run; preflight restores it before execution. The native matrix stays
 available for comparing elapsed time and runner minutes against this path.
 
-The full tier records each test's duration through Zig's test protocol. Its
-profile job folds the records into `ci/durations.json`, keeping targets the run
-did not measure, and uploads it as the `preflight-full-<sha>` proof artifact.
-`gh run download <run> -n preflight-full-<sha> -D ci` refreshes the package's
+A tier records the durations of every host and mode it executes, through Zig's
+test protocol. In the merge and release tiers, the profile job folds the records
+into `ci/durations.json`, keeping the columns the run did not measure. It uploads
+the result as the proof artifact, `preflight-merge-<sha>` or `preflight-release-<sha>`.
+`gh run download <run> -n preflight-merge-<sha> -D ci` refreshes the package's
 copy. From a package root, `zig build --build-file <preflight>/build.zig
 -Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
 `ci/durations.json` in place.
-The shared runner shuffles test order using the test seed on full, fast and local
-CI gates. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
+The shared runner shuffles test order using the test seed in every tier and in local
+runs. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
 reproduce an order. Direct test binaries also accept `--seed=<number>`.
 Custom runners can import `preflight_order`, whose `init` seeds, selects the
 shard's tests and orders them, and `preflight_timings` to record durations;

@@ -12,9 +12,10 @@ pub fn main(init: std.process.Init) !void {
     const command = args[1];
     if (std.mem.eql(u8, command, "plan")) {
         const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
-        const full = std.mem.eql(u8, option(args, "--full") orelse "false", "true");
-        const jobs = try checks.matrix.plan(a, config, full);
-        const tiers = try checks.matrix.split(a, config, jobs, full);
+        if (option(args, "--full") != null) return error.FullReplacedByTier;
+        const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
+        const jobs = try checks.matrix.plan(a, config, tier);
+        const tiers = try checks.matrix.split(a, config, jobs, tier);
         const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
         const output = option(args, "--output") orelse init.environ_map.get("GITHUB_OUTPUT");
         if (output) |path| {
@@ -45,7 +46,8 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
-        const only_docs = !std.mem.eql(u8, init.environ_map.get("PREFLIGHT_FULL") orelse "false", "true") and try checks.paths.run(c, init.environ_map.get("PREFLIGHT_BASE") orelse "HEAD^");
+        // A merge or release candidate keeps the whole gate, docs-only or not.
+        const only_docs = std.mem.eql(u8, init.environ_map.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c, init.environ_map.get("PREFLIGHT_BASE") orelse "HEAD^");
         if (init.environ_map.get("GITHUB_OUTPUT")) |path| try append(c, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
         if (only_docs) {
             const config = try c.json(option(args, "--config") orelse "ci/preflight.json");

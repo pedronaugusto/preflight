@@ -41,7 +41,7 @@ pub fn findings(a: std.mem.Allocator, sources: []const src.Source, config: src.V
         if (s.tree.errors.len != 0) return error.InvalidZigSource;
         for (s.tree.nodes.items(.tag), 0..) |tag, i| {
             if (tag != .@"catch") continue;
-            const node: std.zig.Ast.Node.Index = @enumFromInt(i);
+            const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
             const token = s.tree.nodeMainToken(node);
             var rhs = s.tree.nodeData(node).node_and_node[1];
             while (s.tree.nodeTag(rhs) == .grouped_expression) rhs = s.tree.nodeData(rhs).node_and_token[0];
@@ -129,7 +129,7 @@ pub fn density(a: std.mem.Allocator, sources: []const src.Source) ![]Density {
     for (sources) |s| {
         for (s.tree.nodes.items(.tag), 0..) |tag, i| {
             if (tag != .fn_decl) continue;
-            const node: std.zig.Ast.Node.Index = @enumFromInt(i);
+            const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
             var buffer: [1]std.zig.Ast.Node.Index = undefined;
             const proto = s.tree.fullFnProto(&buffer, node).?;
             const name = s.tree.tokenSlice(proto.name_token orelse continue);
@@ -144,7 +144,7 @@ pub fn density(a: std.mem.Allocator, sources: []const src.Source) ![]Density {
                 var nested = false;
                 for (s.tree.nodes.items(.tag), 0..) |inner_tag, k| {
                     if (inner_tag != .fn_decl or k == i) continue;
-                    const inner: std.zig.Ast.Node.Index = @enumFromInt(k);
+                    const inner: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(k));
                     if (s.tree.firstToken(inner) > first and token >= s.tree.firstToken(inner) and token <= s.tree.lastToken(inner)) nested = true;
                 }
                 if (!nested) count += 1;

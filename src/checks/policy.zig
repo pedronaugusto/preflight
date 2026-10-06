@@ -52,7 +52,7 @@ pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) 
         if (src.get(src.get(config, "vendored"), s.path) != .null) continue;
         for (s.tree.nodes.items(.tag), 0..) |tag, i| {
             if (tag != .fn_decl) continue;
-            const node: std.zig.Ast.Node.Index = @enumFromInt(i);
+            const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
             var buffer: [1]std.zig.Ast.Node.Index = undefined;
             const proto = s.tree.fullFnProto(&buffer, node).?;
             const name = s.tree.tokenSlice(proto.name_token orelse continue);
@@ -88,7 +88,7 @@ fn typeBody(s: src.Source, node: std.zig.Ast.Node.Index, proto: std.zig.Ast.full
     var widest: usize = 0;
     var buffer: [2]std.zig.Ast.Node.Index = undefined;
     for (0..s.tree.nodes.len) |i| {
-        const inner: std.zig.Ast.Node.Index = @enumFromInt(i);
+        const inner: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
         if (s.tree.fullContainerDecl(&buffer, inner) == null) continue;
         const from = s.tree.firstToken(inner);
         const to = s.tree.lastToken(inner);

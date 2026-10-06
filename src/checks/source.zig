@@ -121,7 +121,7 @@ pub const Source = struct {
     pub fn inTest(s: Source, token: std.zig.Ast.TokenIndex) bool {
         for (s.tree.nodes.items(.tag), 0..) |tag, i| {
             if (tag != .test_decl) continue;
-            const node: std.zig.Ast.Node.Index = @enumFromInt(i);
+            const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
             if (token >= s.tree.firstToken(node) and token <= s.tree.lastToken(node)) return true;
         }
         return false;

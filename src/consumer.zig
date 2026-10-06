@@ -1,5 +1,6 @@
 //! A project that depends on the package by path, built with fetching off and
 //! only the packages the package itself needs: the build a consumer gets.
+//! The build runs this file as a program to write the project.
 const std = @import("std");
 
 pub const Options = struct {
@@ -19,54 +20,70 @@ pub const Options = struct {
     use_llvm: ?[]const u8 = null,
 };
 
+/// What the generated build script depends on and imports.
+const Shape = struct {
+    package: []const u8,
+    modules: []const []const u8,
+    use_llvm: ?[]const u8 = null,
+};
+
 /// Adds `check-consumer`. The project is generated under the cache, so the
 /// package keeps no consumer files of its own.
 pub fn add(b: *std.Build, options: Options) void {
     if (b.pkg_hash.len != 0) return;
-    const project = b.allocator.create(Project) catch @panic("OOM");
-    project.* = .{
-        .step = .init(.{ .id = .custom, .name = "generate consumer project", .owner = b, .makeFn = Project.make }),
-        .options = options,
-        .directory = .{ .step = &project.step },
-    };
-    options.program.addStepDependencies(&project.step);
+    const pkg = (b.lazyDependency("preflight", .{}) orelse return).builder;
+    const consumer = b.addExecutable(.{ .name = "preflight-consumer", .root_module = b.createModule(.{
+        .root_source_file = pkg.path("src/consumer.zig"),
+        .target = b.graph.host,
+        .optimize = .debug,
+    }) });
     const packages = b.addWriteFiles();
     _ = packages.add("README", "No packages.\n");
     for (options.packages) |dependency| _ = packages.addCopyDirectory(dependency.path(""), dependency.builder.pkg_hash, .{});
-    const build = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--system" });
-    build.addDirectoryArg(packages.getDirectory());
-    build.setCwd(.{ .generated = .{ .file = &project.directory } });
+    const build = b.addRunArtifact(consumer);
+    build.addArg(b.graph.zig_exe);
+    build.addDirectoryArg2(b.graph.path(.local_cache, "preflight-consumer"), .{});
+    build.addDirectoryArg2(packages.getDirectory(), .{});
+    build.addDirectoryArg2(b.path("."), .{});
+    build.addFileArg(options.program);
+    build.addArgs(&.{ options.package, options.use_llvm orelse "" });
+    build.addArgs(if (options.modules.len > 0) options.modules else &.{options.package});
     build.has_side_effects = true;
-    build.expectExitCode(0);
     b.step("check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
 }
 
-const Project = struct {
-    step: std.Build.Step,
-    options: Options,
-    directory: std.Build.GeneratedFile,
-
-    fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
-        const project: *Project = @fieldParentPtr("step", step);
-        const b = step.owner;
-        const io = b.graph.io;
-        const a = b.allocator;
-        const sub_path = "preflight-consumer";
-        try b.cache_root.handle.createDirPath(io, sub_path ++ "/src");
-        const directory = try b.cache_root.handle.realPathFileAlloc(io, sub_path, a);
-        const root = try b.build_root.handle.realPathFileAlloc(io, ".", a);
-        const relative = try std.fs.path.relative(a, directory, null, directory, root);
-        std.mem.replaceScalar(u8, relative, '\\', '/');
-        var dir = try b.cache_root.handle.openDir(io, sub_path, .{});
-        defer dir.close(io);
-        const program = project.options.program.getPath3(b, step);
-        const text = try program.root_dir.handle.readFileAlloc(io, program.sub_path, a, .limited(16 * 1024 * 1024));
-        try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
-        try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, project.options.package, relative) });
-        try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, project.options) });
-        project.directory.path = directory;
-    }
-};
+/// Writes the project and builds it: `<zig> <project> <packages> <package
+/// root> <program> <package> <use_llvm function or empty> <module>...`.
+/// The build has a Zig cache of its own: a consumer has none of the
+/// package's cached packages, and Zig 0.17's `--system` asserts on a lazy
+/// package it finds only in the global cache.
+pub fn main(init: std.process.Init) !void {
+    var arena: std.heap.ArenaAllocator = .init(init.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(a);
+    if (args.len < 8) return error.MissingConsumerArguments;
+    const cwd = std.Io.Dir.cwd();
+    var dir = try cwd.createDirPathOpen(io, args[2], .{});
+    defer dir.close(io);
+    try dir.createDirPath(io, "src");
+    const directory = try cwd.realPathFileAlloc(io, args[2], a);
+    const root = try cwd.realPathFileAlloc(io, args[4], a);
+    const relative = try std.fs.path.relative(a, directory, null, directory, root);
+    std.mem.replaceScalar(u8, relative, '\\', '/');
+    const text = try cwd.readFileAlloc(io, args[5], a, .limited(16 * 1024 * 1024));
+    const shape: Shape = .{ .package = args[6], .use_llvm = if (args[7].len > 0) args[7] else null, .modules = args[8..] };
+    try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
+    try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
+    try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });
+    var env = try init.environ_map.clone(a);
+    try env.put("ZIG_GLOBAL_CACHE_DIR", try std.fs.path.join(a, &.{ directory, ".zig-global-cache" }));
+    const packages = try cwd.realPathFileAlloc(io, args[3], a);
+    var child = try std.process.spawn(io, .{ .argv = &.{ args[1], "build", "--system", packages }, .cwd = .{ .path = directory }, .environ_map = &env });
+    const term = try child.wait(io);
+    if (term != .exited or term.exited != 0) std.process.exit(1);
+}
 
 fn manifest(a: std.mem.Allocator, package: []const u8, path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(a,
@@ -74,7 +91,7 @@ fn manifest(a: std.mem.Allocator, package: []const u8, path: []const u8) ![]cons
         \\    .name = .consumer,
         \\    .version = "0.0.0",
         \\    .fingerprint = 0x705b37272f017aed,
-        \\    .minimum_zig_version = "0.16.0",
+        \\    .minimum_zig_version = "0.17.0",
         \\    .dependencies = .{{ .{f} = .{{ .path = "{f}" }} }},
         \\    .paths = .{{""}},
         \\}}
@@ -82,7 +99,7 @@ fn manifest(a: std.mem.Allocator, package: []const u8, path: []const u8) ![]cons
     , .{ std.zig.fmtId(package), std.zig.fmtString(path) });
 }
 
-fn script(a: std.mem.Allocator, options: Options) ![]const u8 {
+fn script(a: std.mem.Allocator, shape: Shape) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     const w = &out.writer;
     try w.writeAll(
@@ -92,12 +109,11 @@ fn script(a: std.mem.Allocator, options: Options) ![]const u8 {
         \\    const optimize = b.standardOptimizeOption(.{});
         \\
     );
-    try w.print("    const package = b.dependency(\"{f}\", .{{ .target = target, .optimize = optimize }});\n", .{std.zig.fmtString(options.package)});
+    try w.print("    const package = b.dependency(\"{f}\", .{{ .target = target, .optimize = optimize }});\n", .{std.zig.fmtString(shape.package)});
     try w.writeAll("    const exe = b.addExecutable(.{ .name = \"consumer\", ");
-    if (options.use_llvm) |decide| try w.print(".use_llvm = @import(\"{f}\").{f}(target, optimize), ", .{ std.zig.fmtString(options.package), std.zig.fmtId(decide) });
+    if (shape.use_llvm) |decide| try w.print(".use_llvm = @import(\"{f}\").{f}(target, optimize), ", .{ std.zig.fmtString(shape.package), std.zig.fmtId(decide) });
     try w.writeAll(".root_module = b.createModule(.{\n        .root_source_file = b.path(\"src/main.zig\"),\n        .target = target,\n        .optimize = optimize,\n        .imports = &.{\n");
-    const modules: []const []const u8 = if (options.modules.len > 0) options.modules else &.{options.package};
-    for (modules) |module| try w.print("            .{{ .name = \"{f}\", .module = package.module(\"{f}\") }},\n", .{ std.zig.fmtString(module), std.zig.fmtString(module) });
+    for (shape.modules) |module| try w.print("            .{{ .name = \"{f}\", .module = package.module(\"{f}\") }},\n", .{ std.zig.fmtString(module), std.zig.fmtString(module) });
     try w.writeAll("        },\n    }) });\n    b.installArtifact(exe);\n}\n");
     return out.written();
 }
@@ -106,12 +122,11 @@ test "the generated consumer imports each named module from the package" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const program: std.Build.LazyPath = .{ .cwd_relative = "unused" };
-    const text = try script(a, .{ .package = "conduit", .program = program, .modules = &.{ "conduit", "conduit.tty" }, .use_llvm = "needsLlvm" });
+    const text = try script(a, .{ .package = "conduit", .modules = &.{ "conduit", "conduit.tty" }, .use_llvm = "needsLlvm" });
     try std.testing.expect(std.mem.indexOf(u8, text, "b.dependency(\"conduit\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, ".{ .name = \"conduit.tty\", .module = package.module(\"conduit.tty\") }") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, ".use_llvm = @import(\"conduit\").needsLlvm(target, optimize)") != null);
-    const single = try script(a, .{ .package = "strand", .program = program });
+    const single = try script(a, .{ .package = "strand", .modules = &.{"strand"} });
     try std.testing.expect(std.mem.indexOf(u8, single, ".{ .name = \"strand\", .module = package.module(\"strand\") }") != null);
     try std.testing.expect(std.mem.indexOf(u8, single, "use_llvm") == null);
     const zon = try manifest(a, "strand", "../..");

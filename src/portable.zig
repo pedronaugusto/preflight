@@ -1,11 +1,14 @@
 //! Export relocatable test executables for Linux compilation and native execution.
 const std = @import("std");
-const record = @import("record.zig");
+const configure = @import("configure.zig");
 
-pub const Command = struct { argv: []const []const u8, test_runner: bool, timings: ?[]const u8 = null, cwd: ?[]const u8 = null };
+pub const Command = struct { argv: []const []const u8, test_runner: bool, cwd: ?[]const u8 = null };
 
-/// `outer_ns` bounds each replayed test in the build runner, as `record` does natively.
-pub fn add(b: *std.Build, tests: *std.Build.Step, durations: []const u8, outer_ns: ?u64) void {
+const manifest_path = "zig-out/preflight/tests.json";
+
+/// `checker` is preflight's command program, which restores the executables'
+/// permission to run that an artifact upload drops.
+pub fn add(b: *std.Build, tests: *std.Build.Step, checker: *std.Build.Step.Compile) void {
     const compile = b.step("ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
@@ -14,44 +17,27 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, durations: []const u8, outer_n
     const manifest = b.addWriteFiles().add("tests.json", json);
     compile.dependOn(&b.addInstallFile(manifest, "preflight/tests.json").step);
     const execute = b.step("ci-run", "Run the previously compiled test executables");
-    const bytes = b.build_root.handle.readFileAlloc(b.graph.io, "zig-out/preflight/tests.json", b.allocator, .limited(1024 * 1024)) catch {
+    const bytes = configure.read(b, manifest_path, .limited(1024 * 1024)) orelse {
         execute.dependOn(&b.addFail("portable test manifest missing; run ci-build or download its artifact first").step);
         return;
     };
     const stored = std.json.parseFromSlice([]Command, b.allocator, bytes, .{}) catch @panic("invalid portable test manifest");
     if (stored.value.len == 0) @panic("portable test manifest contains no tests");
+    const executable = b.addRunArtifact(checker);
+    executable.addArg("executable");
+    executable.setCwd(b.path("."));
+    executable.has_side_effects = true;
     for (stored.value) |command| {
-        const argv = b.allocator.dupe([]const u8, command.argv) catch @panic("OOM");
-        argv[0] = b.pathFromRoot(argv[0]);
-        const run = b.addSystemCommand(argv);
+        executable.addArg(command.argv[0]);
+        const run = b.addRunFile(b.path(command.argv[0]));
+        run.addArgs(command.argv[1..]);
         run.setCwd(b.path(command.cwd orelse "."));
         run.has_side_effects = true;
         if (command.test_runner) run.enableTestRunnerMode();
-        if (command.timings) |path| {
-            // One compilation serves every shard; each names its own records.
-            const stem = path[0 .. std.mem.findScalarLast(u8, path, '-') orelse path.len];
-            run.setEnvironmentVariable("PREFLIGHT_TIMINGS", b.fmt("{s}-{s}.ndjson", .{ stem, record.part(b) }));
-        }
-        if (record.shard(b) != null) run.setEnvironmentVariable("PREFLIGHT_DURATIONS", b.pathFromRoot(durations));
-        if (command.test_runner) record.bound(run, outer_ns);
-        RestorePermissions.original = run.step.makeFn;
-        run.step.makeFn = RestorePermissions.make;
+        run.step.dependOn(&executable.step);
         execute.dependOn(&run.step);
     }
 }
-
-const RestorePermissions = struct {
-    var original: std.Build.Step.MakeFn = undefined;
-
-    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) !void {
-        const run = step.cast(std.Build.Step.Run).?;
-        const io = step.owner.graph.io;
-        const file = try step.owner.build_root.handle.openFile(io, run.argv.items[0].bytes, .{});
-        defer file.close(io);
-        if (std.Io.File.Permissions.has_executable_bit) try file.setPermissions(io, .executable_file);
-        try original(step, options);
-    }
-};
 
 fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, commands: *std.ArrayList(Command), seen: *std.AutoHashMap(*std.Build.Step, void)) void {
     const entry = seen.getOrPut(step) catch @panic("OOM");
@@ -60,7 +46,6 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
         if (run.environ_map) |env| {
             var iterator = env.iterator();
             while (iterator.next()) |item| {
-                if (std.mem.eql(u8, item.key_ptr.*, "PREFLIGHT_TIMINGS") or std.mem.eql(u8, item.key_ptr.*, "PREFLIGHT_DURATIONS")) continue;
                 const inherited = b.graph.environ_map.get(item.key_ptr.*) orelse @panic("portable tests must not contain runner-specific environment paths");
                 if (!std.mem.eql(u8, inherited, item.value_ptr.*)) @panic("portable tests must not contain runner-specific environment paths");
             }
@@ -84,18 +69,17 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
             },
             else => @panic("portable tests must not contain generated arguments"),
         };
-        const timings = if (run.environ_map) |env| env.get("PREFLIGHT_TIMINGS") else null;
         const cwd = if (run.cwd) |path| switch (path) {
             .src_path => |source| if (source.owner == b) source.sub_path else @panic("portable tests must use a repository-relative directory"),
             else => @panic("portable tests must use a repository-relative directory"),
         } else null;
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test, .timings = timings, .cwd = cwd }) catch @panic("OOM");
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }
         return;
     }
-    if (step.id == .compile or step.id == .install_artifact) {
+    if (step.tag == .compile or step.tag == .install_artifact) {
         compile.dependOn(step);
         return;
     }

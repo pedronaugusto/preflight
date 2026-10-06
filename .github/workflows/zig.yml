@@ -60,13 +60,13 @@ jobs:
           path: .preflight
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: .preflight/.zig-cache
-          key: preflight-main-${{ runner.os }}-0.16.0-${{ inputs.preflight-ref }}
+          key: preflight-main-${{ runner.os }}-0.17.0-${{ inputs.preflight-ref }}
           restore-keys: |
-            preflight-main-${{ runner.os }}-0.16.0-
+            preflight-main-${{ runner.os }}-0.17.0-
       - name: Confirm the full gate for this commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -232,7 +232,7 @@ jobs:
           path: .preflight
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/download-artifact@v4
         with:
           pattern: timings-*

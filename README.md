@@ -22,9 +22,8 @@ tests. A watchdog in the shared test runner fails a test that runs longer than
 package that needs another bound says why: `.test_timeout = .{ .bound = .{ .limit =
 .fromSeconds(30), .reason = "..." } }`, or `.{ .off = "..." }` for a test runner of its
 own or a single-threaded build, which otherwise fail the build by name. preflight
-also bounds the build runner's per-test timeout past the watchdog's, by a quarter and
-at least 15 s, in place of `--test-timeout`, so the watchdog's report always comes
-first. `.test_log_level = .info` prints a library's `std.log.info` lines in its tests,
+passes the build runner no `--test-timeout`; one given by hand bounds each test there
+too. `.test_log_level = .info` prints a library's `std.log.info` lines in its tests,
 where Zig's runner prints `.warn` and above. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
 `-Dci-lint=false` lets the hosted optimization and shard jobs use the source job's
 result; the default local gate always checks sources.
@@ -33,8 +32,8 @@ when their build products are already available.
 
 `preflight.addConsumerCheck(b, .{ .package = "name", .program = b.path("ci/consumer.zig") })`
 adds `check-consumer`: it builds a generated project that depends on the package
-by path with fetching off, so the build a consumer gets cannot reach the
-package's CI dependencies. `.modules` names the modules the program imports,
+by path with fetching off and a Zig cache of its own, so the build a consumer gets
+cannot reach the package's CI dependencies or anything cached for them. `.modules` names the modules the program imports,
 `.packages` the dependencies the package itself needs, and `.use_llvm` names a
 public function of the package's `build.zig`, `fn (std.Build.ResolvedTarget,
 std.builtin.OptimizeMode) ?bool`, which the consumer's build calls for the target
@@ -101,7 +100,7 @@ caller in this repository shows the trigger and concurrency policy:
   for work branches and disabled for main's status job. No scheduled runs are enabled.
 
 `ci/workflow.json` names cross targets and optional CPUs, the compile step,
-sanitizer step and shard counts. A `test_timeout` there is refused: the build
+sanitizer step and shard counts. A `test_timeout` there is refused: the watchdog
 bounds each test. The full tier
 adds ReleaseSafe on each host, ReleaseFast on Linux, ReleaseSmall, every cross
 target and TSan where supported. Static full-tier matrices are generated locally from `ci/workflow.json` with
@@ -139,11 +138,12 @@ repository facts stay with the caller and common mechanics have one owner.
 
 ## Development
 
-Requires Zig 0.16.0. Run `zig build test` for the check regression
+Requires Zig 0.17.0. Run `zig build test` for the check regression
 suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
-ziglint is pinned to v0.5.3's commit, with all rules except Z024 as in tycho;
+ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
+`zig-0.17`), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
 
 MIT licensed.
@@ -184,7 +184,7 @@ build helper and `compile_once: true` in `ci/workflow.json`. Linux then builds
 macOS and Windows tests; those runners download and execute the binaries through
 Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers or
 fixtures compiled with absolute runner paths must be made relocatable first.
-Upload permissions are restored by Zig before execution. The native matrix stays
+An artifact upload drops the permission to run; preflight restores it before execution. The native matrix stays
 available for comparing elapsed time and runner minutes against this path.
 
 The full tier records each test's duration through Zig's test protocol. Its
@@ -198,7 +198,8 @@ The shared runner shuffles test order using the test seed on full, fast and loca
 CI gates. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
 reproduce an order. Direct test binaries also accept `--seed=<number>`.
 Custom runners can import `preflight_order`, whose `init` seeds, selects the
-shard's tests and orders them, and `preflight_timings` to record durations.
-`zig build ci-linux -- --musl --optimize ReleaseSafe` runs the package's
-`ci/linux.Dockerfile`, or preflight's Debian image with the pinned Zig when the
-package keeps none, only when explicitly requested; `--cgroup true` requests its privileged cgroup gate.
+shard's tests and orders them, and `preflight_timings` to record durations;
+`preflight_runner_options` carries the recorded durations and the record's name.
+Test runs carry no environment from the build: Zig keeps a run's environment in
+its cached configuration, so the runner reads the shard and seed when it runs.
+Test artifacts that share a root module share its runner options and timing record.

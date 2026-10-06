@@ -44,7 +44,7 @@ fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
 
 pub fn plan(a: std.mem.Allocator, config: src.Value, full: bool) ![]Job {
     for (obsolete) |name| if (src.get(config, name) != .null) return error.ObsoleteShardConfig;
-    // The build bounds each test past its watchdog (`Config.test_timeout`).
+    // The watchdog bounds each test (`Config.test_timeout`).
     if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
     if (!full) return fastPlan(a, config);
     var jobs: std.ArrayList(Job) = .empty;

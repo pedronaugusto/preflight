@@ -1,18 +1,18 @@
 .{
     .name = .preflight,
     .version = "0.1.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "LICENSE" },
     .dependencies = .{
         .ziglint = .{
-            .url = "https://codeload.github.com/rockorager/ziglint/tar.gz/80d2b08a7eb4aa9c96e2b2183716b347dcacb64b",
-            .hash = "ziglint-0.5.3-t0bwLwHRBQC5VCdOCq3C7P-y81sE5PaDYJwnapDuPdWC",
+            .url = "git+https://github.com/pedronaugusto/ziglint#6adecff956f4f53de66ddc6ec7600191e672915f",
+            .hash = "ziglint-0.5.3-t0bwL9ALBgBPhZjpSKMCvdYuSjyU2huCriVCp_Dw2lm2",
             .lazy = true,
         },
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry#665538e08016703828f03c46b0e98f149a220a4f",
-            .hash = "gantry-0.1.0-1iNrkZocDQCv8GxlwL_Ve7Ee2WMwmdasATmz1WdiDKZo",
+            .url = "git+https://github.com/pedronaugusto/gantry#e8ed868c10f9bae3a3eb532dbbea458811c2dda9",
+            .hash = "gantry-0.1.0-1iNrkZEaDQBHxGXykHluLIeFwMwfq1zosg2gfn7FugQG",
             .lazy = true,
         },
     },

@@ -25,7 +25,7 @@ runs:
         git --version
     - uses: mlugg/setup-zig@v2
       with:
-        version: 0.16.0
+        version: 0.17.0
         use-cache: false
       if: inputs.install-zig == 'true'
     - name: Cache fetched Zig packages
@@ -33,9 +33,9 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
-        key: zig-packages-${{ runner.os }}-0.16.0-${{ hashFiles('**/build.zig.zon') }}
+        key: zig-packages-${{ runner.os }}-0.17.0-${{ hashFiles('**/build.zig.zon') }}
         restore-keys: |
-          zig-packages-${{ runner.os }}-0.16.0-
+          zig-packages-${{ runner.os }}-0.17.0-
     - name: Cache compiled builds
       id: builds
       uses: actions/cache@v4
@@ -46,15 +46,15 @@ runs:
           ${{ env.ZIG_GLOBAL_CACHE_DIR }}/o
           ${{ env.ZIG_GLOBAL_CACHE_DIR }}/h
           ${{ env.ZIG_GLOBAL_CACHE_DIR }}/z
-        key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
+        key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
         restore-keys: |
-          zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ inputs.build-key }}-
-          zig-build-${{ runner.os }}-${{ runner.arch }}-0.16.0-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ inputs.build-key }}-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-0.17.0-
     - name: Cache external tools
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/preflight-tools
-        key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ hashFiles('**/ci/setup.zig') }}
+        key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ hashFiles('**/ci/setup.zig') }}
     - name: Fetch dependencies with retries
       run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" fetch
       shell: bash

@@ -17,9 +17,12 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     }
     const fixture_root = try dir.realPathFileAlloc(io, ".", a);
     defer a.free(fixture_root);
-    const relative = try std.fs.path.relative(a, root, null, fixture_root, root);
+    // `root` is the build's path to preflight, relative to where the tests run.
+    const package_root = try std.Io.Dir.cwd().realPathFileAlloc(io, root, a);
+    defer a.free(package_root);
+    const relative = try std.fs.path.relative(a, package_root, null, fixture_root, package_root);
     defer a.free(relative);
-    const manifest = try std.fmt.allocPrint(a, ".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.16.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }} }} }}", .{std.zig.fmtString(relative)});
+    const manifest = try std.fmt.allocPrint(a, ".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }} }} }}", .{std.zig.fmtString(relative)});
     defer a.free(manifest);
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = manifest });
 }
@@ -186,6 +189,7 @@ test "sample test protocol and portable replay shuffle reproducibly with an expl
     const first = try recordedOrder(a, tmp.dir);
     const compile = try std.process.run(a, std.testing.io, .{ .argv = commands[1], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(ledger.success(compile));
+    try dropExecutable(tmp.dir);
     const replay = try std.process.run(a, std.testing.io, .{ .argv = commands[2], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(ledger.success(replay));
     try std.testing.expectEqualStrings(first, try recordedOrder(a, tmp.dir));
@@ -193,6 +197,21 @@ test "sample test protocol and portable replay shuffle reproducibly with an expl
     const other = try std.process.run(a, std.testing.io, .{ .argv = commands[2], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(ledger.success(other));
     try std.testing.expect(!std.mem.eql(u8, first, try recordedOrder(a, tmp.dir)));
+}
+
+/// Takes the permission to run from the compiled test executables, as an
+/// artifact download does.
+fn dropExecutable(dir: std.Io.Dir) !void {
+    if (!std.Io.File.Permissions.has_executable_bit) return;
+    const io = std.testing.io;
+    var bin = try dir.openDir(io, "zig-out/preflight/bin", .{ .iterate = true });
+    defer bin.close(io);
+    var entries = bin.iterate();
+    while (try entries.next(io)) |entry| {
+        const file = try bin.openFile(io, entry.name, .{});
+        defer file.close(io);
+        try file.setPermissions(io, .fromMode(0o644));
+    }
 }
 
 fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !void {
@@ -423,7 +442,7 @@ test "shards split the tests once between them by recorded duration, natively an
     // One test outweighs the rest together, so its shard runs it alone.
     var heavy: []const u8 = "";
     var durations: std.Io.Writer.Allocating = .init(a);
-    try durations.writer.print("{{\"keys\":[\"{s}-Debug\"],\"tests\":{{", .{@tagName(builtin.os.tag)});
+    try durations.writer.print("{{\"keys\":[\"{s}-debug\"],\"tests\":{{", .{@tagName(builtin.os.tag)});
     for (all, 0..) |name, i| {
         if (std.mem.endsWith(u8, name, "case-0")) heavy = name;
         try durations.writer.print("{s}{f}:[{d}]", .{ if (i == 0) "" else ",", std.json.fmt(name, .{}), @as(u32, if (std.mem.endsWith(u8, name, "case-0")) 100 else 1) });
@@ -515,7 +534,7 @@ fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.p
     return std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
 }
 
-test "a test runner of its own or a single-threaded build fails by name while the watchdog is on" {
+test "a test runner of its own fails by name while the watchdog is on or the tests are sharded, a single-threaded build while the watchdog is on" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -523,7 +542,7 @@ test "a test runner of its own or a single-threaded build fails by name while th
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     const tests = "const tests = b.addTest(.{ .root_module = module });\n";
-    try edit(a, tmp.dir, "build.zig", tests, tests ++ "    tests.test_runner = .{ .path = .{ .cwd_relative = b.pathJoin(&.{ b.graph.zig_lib_directory.path.?, \"compiler\", \"test_runner.zig\" }) }, .mode = .server };\n");
+    try edit(a, tmp.dir, "build.zig", tests, tests ++ "    tests.test_runner = .{ .path = b.graph.path(.zig_lib, \"compiler/test_runner.zig\"), .mode = .server };\n");
     const own = try gate(a, tmp.dir, &.{});
     try std.testing.expect(!ledger.success(own));
     try std.testing.expect(std.mem.indexOf(u8, own.stderr, "test: a test runner of its own arms no watchdog") != null);
@@ -531,24 +550,18 @@ test "a test runner of its own or a single-threaded build fails by name while th
     const off = try gate(a, tmp.dir, &.{});
     if (!ledger.success(off)) std.debug.print("{s}\n", .{off.stderr});
     try std.testing.expect(ledger.success(off));
+    // The shard is read when the tests run, so the same configuration refuses it.
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("PREFLIGHT_SHARD", "1/2");
+    const sharded = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "ci", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    try std.testing.expect(!ledger.success(sharded));
+    try std.testing.expect(std.mem.indexOf(u8, sharded.stderr, "test: a test runner of its own runs every shard's tests") != null);
     try fixture(a, tmp.dir);
     try edit(a, tmp.dir, "build.zig", ".optimize = optimize,\n    });", ".optimize = optimize,\n        .single_threaded = true,\n    });");
     const single = try gate(a, tmp.dir, &.{});
     try std.testing.expect(!ledger.success(single));
     try std.testing.expect(std.mem.indexOf(u8, single.stderr, "test: a single-threaded build has no watchdog") != null);
-}
-
-test "preflight bounds the build runner's per-test timeout past the watchdog's" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"takes a second\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(1), .awake);\n}\n" });
-    const result = try gate(a, tmp.dir, &.{ "--test-timeout", "200ms" });
-    if (!ledger.success(result)) std.debug.print("{s}\n", .{result.stderr});
-    try std.testing.expect(ledger.success(result));
 }
 
 test "the test log level is a preflight option" {
@@ -577,7 +590,11 @@ test "timing records of two test runs with one name stay apart" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     const run_line = "step.dependOn(&b.addRunArtifact(tests).step);\n";
-    try edit(a, tmp.dir, "build.zig", run_line, run_line ++ "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);\n");
+    // A second module whose test artifact takes the same default name, and a
+    // run that shares the first module and so its record.
+    const second = "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(\"src/sample.zig\"), .target = target, .optimize = optimize }) })).step);\n";
+    const shared = "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);\n";
+    try edit(a, tmp.dir, "build.zig", run_line, run_line ++ second ++ shared);
     const result = try gate(a, tmp.dir, &.{"-Dci-timings=true"});
     if (!ledger.success(result)) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(ledger.success(result));

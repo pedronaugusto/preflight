@@ -1,5 +1,6 @@
 //! Build-only CI checks. Consumers never acquire the checker's dependencies.
 const std = @import("std");
+const configure = @import("configure.zig");
 const portable = @import("portable.zig");
 const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
@@ -13,8 +14,7 @@ pub const Config = struct {
     portable_tests: bool = false,
     timings_enabled: ?bool = null,
     /// The watchdog: one test, its Io teardown included, fails by name,
-    /// phase and seed once it runs this long, in local runs too. preflight
-    /// also bounds the build runner's `--test-timeout` past it.
+    /// phase and seed once it runs this long, in local runs too.
     test_timeout: TestTimeout = .default,
     /// The `std.log` level a test prints at. Zig's runner prints `.warn`
     /// and above; a library that logs what it does can ask for `.info`.
@@ -50,7 +50,7 @@ pub fn addOwnCi(b: *std.Build, config: Config) void {
 /// Builds and runs a repository check program and its tests as one step.
 /// The program runs from the repository root.
 pub fn addCheck(b: *std.Build, name: []const u8, source: []const u8) *std.Build.Step.Compile {
-    const module = b.createModule(.{ .root_source_file = b.path(source), .target = b.graph.host, .optimize = .Debug });
+    const module = b.createModule(.{ .root_source_file = b.path(source), .target = b.graph.host, .optimize = .debug });
     const executable = b.addExecutable(.{ .name = name, .root_module = module });
     const tests = b.addTest(.{ .root_module = module });
     const run = b.addRunArtifact(executable);
@@ -80,14 +80,14 @@ const Steps = struct {
     /// `pkg` is the preflight package whose sources and tools the gate runs.
     fn install(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
-        const gantry_dep = pkg.lazyDependency("gantry", .{ .target = host, .optimize = .Debug }) orelse return;
+        const gantry_dep = pkg.lazyDependency("gantry", .{ .target = host, .optimize = .debug }) orelse return;
         const gantry = gantry_dep.module("gantry");
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
             .root_module = b.createModule(.{
                 .root_source_file = pkg.path("src/main.zig"),
                 .target = host,
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
                 .imports = &.{.{ .name = "gantry", .module = gantry }},
             }),
         });
@@ -96,21 +96,15 @@ const Steps = struct {
             config.tests.dependOn(&b.addFail("test_timeout: a bound other than the default, or none, needs its reason").step);
             break :fail 0;
         };
-        record.add(b, config.tests, pkg, .{ .timing = timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
-        if (config.portable_tests) portable.add(b, config.tests, config.durations, record.outerTimeout(timeout));
+        record.add(b, config.tests, pkg, executable, .{ .timing = timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        if (config.portable_tests) portable.add(b, config.tests, executable);
         const cache = b.addRunArtifact(executable);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));
         b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
-        const linux = b.addRunArtifact(executable);
-        linux.addArgs(&.{ "container", "--default-image" });
-        linux.addFileArg(pkg.path("src/checks/linux.Dockerfile"));
-        if (b.args) |args| linux.addArgs(args);
-        linux.setCwd(b.path("."));
-        b.step("ci-linux", "Run the explicit Linux container gate").dependOn(&linux.step);
         const docs = b.addRunArtifact(executable);
-        docs.addArgs(&.{ "docs", "--config", config.config, "--region" });
-        docs.addArgs(b.args orelse &.{"usage"});
+        docs.addArgs(&.{ "docs", "--config", config.config });
+        docs.addPassthruArgs();
         docs.setCwd(b.path("."));
         b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
         steps.addLint(b, pkg, config, executable, gantry);
@@ -128,26 +122,25 @@ const Steps = struct {
             .root_module = b.createModule(.{
                 .root_source_file = pkg.path("src/structure.zig"),
                 .target = host,
-                .optimize = .Debug,
+                .optimize = .debug,
                 .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "layers", .module = layers } },
             }),
         });
         var format_paths: std.ArrayList([]const u8) = .empty;
         for ([_][]const u8{ "build.zig", "build.zig.zon", "src", "examples", "ci", "conformance", "bench" }) |path| {
-            b.build_root.handle.access(b.graph.io, path, .{}) catch continue;
-            format_paths.append(b.allocator, path) catch @panic("OOM");
+            if (configure.exists(b, path)) format_paths.append(b.allocator, path) catch @panic("OOM");
         }
-        const format = b.addFmt(.{ .paths = format_paths.items, .check = true });
+        const format = b.addFmt(.{ .paths = b.pathList(format_paths.items), .check = true });
         const structure = b.addRunArtifact(checker);
         structure.addArgs(&.{ "--config", config.config });
         structure.setCwd(b.path("."));
         b.step("check-imports", "Check declared source structure").dependOn(&structure.step);
-        if (b.args) |args| structure.addArgs(args);
+        structure.addPassthruArgs();
         const lint_structure = b.addRunArtifact(checker);
         lint_structure.addArgs(&.{ "--config", config.config });
         lint_structure.setCwd(b.path("."));
         lint_structure.step.dependOn(&format.step);
-        const ziglint_dep = pkg.lazyDependency("ziglint", .{ .target = host, .optimize = .ReleaseSafe }) orelse return;
+        const ziglint_dep = pkg.lazyDependency("ziglint", .{ .target = host, .optimize = .safe }) orelse return;
         const checks = b.addRunArtifact(executable);
         checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
         checks.addArtifactArg(ziglint_dep.artifact("ziglint"));
@@ -172,7 +165,7 @@ fn forceTests(step: *std.Build.Step) void {
 
 // Only run steps acquire the lint prerequisite. Test compilation may overlap it.
 fn orderTests(step: *std.Build.Step, lint: *std.Build.Step) void {
-    if (step.id == .run) {
+    if (step.tag == .run) {
         step.dependOn(lint);
         return;
     }
@@ -180,7 +173,7 @@ fn orderTests(step: *std.Build.Step, lint: *std.Build.Step) void {
 }
 
 fn compileTests(step: *std.Build.Step, compile: *std.Build.Step) void {
-    if (step.id == .compile) {
+    if (step.tag == .compile) {
         compile.dependOn(step);
         return;
     }

@@ -4,7 +4,7 @@ const gantry = @import("gantry");
 pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
-    .{ .name = "build helper", .patterns = &.{ "src/record.zig", "src/portable.zig", "src/consumer.zig", "src/build.zig" } },
+    .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/record.zig", "src/portable.zig", "src/consumer.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{"src/checks/*.zig"} },
     .{ .name = "structure rules", .patterns = &.{"src/structure/check.zig"} },
     .{ .name = "check index", .patterns = &.{"src/checks.zig"} },

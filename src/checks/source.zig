@@ -15,6 +15,11 @@ pub const Context = struct {
         return c.dir orelse .cwd();
     }
 
+    /// Where a child process runs: `dir`, or this process's own directory.
+    pub fn childCwd(c: Context) std.process.Child.Cwd {
+        return if (c.dir) |dir| .{ .dir = dir } else .inherit;
+    }
+
     /// Writes to stderr, as a command-line tool reports; a failed write loses only the message.
     pub fn report(c: Context, comptime fmt: []const u8, args: anytype) void {
         var buffer: [1024]u8 = undefined;
@@ -114,8 +119,8 @@ pub const Source = struct {
     tree: std.zig.Ast,
 
     pub fn parse(a: std.mem.Allocator, path: []const u8, text: []const u8) !Source {
-        const z = try a.dupeZ(u8, text);
-        return .{ .path = path, .text = z, .tree = try std.zig.Ast.parse(a, z, .zig) };
+        const z = try a.dupeSentinel(u8, text, 0);
+        return .{ .path = path, .text = z, .tree = try std.zig.Ast.parse(a, z, .{ .mode = .zig }) };
     }
 
     pub fn inTest(s: Source, token: std.zig.Ast.TokenIndex) bool {

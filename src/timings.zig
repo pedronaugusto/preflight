@@ -9,16 +9,23 @@ pub const Recorder = struct {
     /// The shard that ran the tests, `i/n`, or empty for all of them.
     shard: []const u8 = "",
 
-    pub fn init(io: std.Io, environ: std.process.Environ, key: []const u8) !Recorder {
-        var env = try environ.createMap(std.heap.page_allocator);
+    /// `stem` names the records without their shard, or is null for none:
+    /// the file ends `-2of5.ndjson` for the shard `PREFLIGHT_SHARD` names,
+    /// or `-all.ndjson`.
+    pub fn init(io: std.Io, environ: std.process.Environ, stem: ?[]const u8, key: []const u8) !Recorder {
+        const prefix = stem orelse return .{ .io = io, .key = key };
+        const a = std.heap.page_allocator;
+        var env = try environ.createMap(a);
         defer env.deinit();
-        const path = env.get("PREFLIGHT_TIMINGS") orelse return .{ .io = io, .key = key };
+        const shard = env.get("PREFLIGHT_SHARD") orelse "";
+        const part = if (shard.len == 0) "all" else try std.mem.replaceOwned(u8, a, shard, "/", "of");
+        const path = try a.print("{s}-{s}.ndjson", .{ prefix, part });
         if (std.fs.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
         return .{
             .io = io,
             .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true }),
             .key = key,
-            .shard = try std.heap.page_allocator.dupe(u8, env.get("PREFLIGHT_SHARD") orelse ""),
+            .shard = try a.dupe(u8, shard),
         };
     }
 

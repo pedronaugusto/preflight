@@ -28,9 +28,9 @@ pub const Shard = struct {
 };
 
 /// Seeds std.testing and returns the indices of this shard's tests in seeded
-/// order. `PREFLIGHT_SHARD` (`i/n`) selects the shard; `PREFLIGHT_DURATIONS`
-/// names the recorded durations that balance the split.
-pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.builtin.TestFn) ![]usize {
+/// order. `PREFLIGHT_SHARD` (`i/n`) selects the shard; `durations`, the text of
+/// the package's `ci/durations.json` or empty, balances the split.
+pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.builtin.TestFn, durations: []const u8) ![]usize {
     const a = std.heap.page_allocator;
     var bytes: [4]u8 = undefined;
     std.Io.random(io, &bytes);
@@ -46,7 +46,7 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     const names = try a.alloc([]const u8, tests.len);
     defer a.free(names);
     for (tests, names) |test_fn, *name| name.* = test_fn.name;
-    const weights = try load(a, io, if (shard.count > 1) env.get("PREFLIGHT_DURATIONS") else null, names);
+    const weights = try weigh(a, if (shard.count > 1 and durations.len > 0) durations else "{}", names, key);
     defer a.free(weights);
     const selected = try assign(a, names, weights, shard);
     var random = std.Random.DefaultPrng.init(seed);
@@ -57,17 +57,6 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     if (shard.count > 1) try stderr.interface.print("preflight: shard {d}/{d} runs {d} of {d} tests\n", .{ shard.index + 1, shard.count, selected.len, tests.len });
     try stderr.interface.flush();
     return selected;
-}
-
-/// Each test's weight from the durations file at `path`, or by count when
-/// there is no file.
-pub fn load(a: std.mem.Allocator, io: std.Io, path: ?[]const u8, names: []const []const u8) ![]f64 {
-    const text: ?[]u8 = if (path) |file| std.Io.Dir.cwd().readFileAlloc(io, file, a, .limited(256 * 1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => return err,
-    } else null;
-    defer if (text) |bytes| a.free(bytes);
-    return weigh(a, text orelse "{}", names, key);
 }
 
 /// Each test's recorded seconds in `column`. A test without a record weighs

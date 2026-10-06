@@ -61,7 +61,7 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     const command = src.get(generator, "command");
     if (command == .null) return snippet(c, generator);
     const argv = try zigCommand(c.a, command);
-    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = .{ .dir = c.directory() } });
+    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd() });
     if (result.term != .exited or result.term.exited != 0) {
         c.report("docs: generator failed: {s}\n", .{result.stderr});
         return error.GeneratorFailed;
@@ -150,4 +150,22 @@ test "documentation matches examples and refuses drift and missing markers" {
     try std.testing.expectEqual(@as(usize, 1), c.errors);
     try tmp.dir.writeFile(c.io, .{ .sub_path = "usage.zig", .data = "// marker missing\n" });
     try std.testing.expectError(error.MissingReadmeMarker, snippet(c, src.get(src.get(config, "docs"), "usage")));
+}
+
+/// The region `zig build docs -- <region>` names, after the options the build
+/// passes: `usage` when there is none.
+pub fn region(args: []const []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--config")) {
+            i += 1;
+        } else return args[i];
+    }
+    return "usage";
+}
+
+test "the docs region is the first argument after the options, else usage" {
+    try std.testing.expectEqualStrings("usage", region(&.{ "--config", "ci/preflight.json" }));
+    try std.testing.expectEqualStrings("api", region(&.{ "--config", "ci/preflight.json", "api" }));
+    try std.testing.expectEqualStrings("api", region(&.{"api"}));
 }

@@ -27,8 +27,12 @@ pub fn main(init: std.process.Init) !void {
         } else try stdout(c, value);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
-    } else if (std.mem.eql(u8, command, "container")) {
-        try checks.container.run(c, try c.json("ci/workflow.json"), try checks.container.options(args[2..]));
+    } else if (std.mem.eql(u8, command, "executable")) {
+        for (args[2..]) |path| try executable(c, path);
+    } else if (std.mem.eql(u8, command, "unsharded")) {
+        if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
+            c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{if (args.len > 2) args[2] else "test"});
+        }
     } else if (std.mem.eql(u8, command, "setup")) {
         try setup(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "profile")) {
@@ -51,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
         try checks.attest.run(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "docs")) {
         const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
-        const label = try std.fmt.allocPrint(a, "zig build docs -- {s}", .{option(args, "--region") orelse "usage"});
+        const label = try std.fmt.allocPrint(a, "zig build docs -- {s}", .{checks.docs.region(args[2..])});
         const generator = src.get(src.get(config, "docs"), label);
         if (generator == .null) return error.UnknownDocumentationRegion;
         try stdout(c, try checks.docs.generate(c, generator));
@@ -79,6 +83,18 @@ fn environment(env: *std.process.Environ.Map, key: []const u8) ?[]const u8 {
 fn option(args: []const []const u8, name: []const u8) ?[]const u8 {
     for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, name) and i + 1 < args.len) return args[i + 1];
     return null;
+}
+
+/// Gives a downloaded test executable back the permission to run that an
+/// artifact upload drops.
+fn executable(c: src.Context, path: []const u8) !void {
+    if (std.Io.File.Permissions.has_executable_bit) {
+        const file = try std.Io.Dir.cwd().openFile(c.io, path, .{});
+        defer file.close(c.io);
+        // Whoever may read it may run it, as `chmod +x` gives.
+        const mode = (try file.stat(c.io)).permissions.toMode();
+        try file.setPermissions(c.io, .fromMode(mode | (mode & 0o444) >> 2));
+    }
 }
 
 fn lint(c: *src.Context, config: src.Value, ziglint: []const u8) !void {
@@ -166,7 +182,14 @@ fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
     const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "zig", "env" } });
     if (result.term != .exited or result.term.exited != 0) return error.ZigEnvironmentFailed;
     const Env = struct { global_cache_dir: []const u8 };
-    const zig_env = try std.zon.parse.fromSliceAlloc(Env, c.a, try c.a.dupeZ(u8, result.stdout), null, .{ .ignore_unknown_fields = true });
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const zig_env = try std.zon.parse.fromSlice(Env, .{
+        .gpa = c.a,
+        .arena = c.a,
+        .source = try c.a.dupeSentinel(u8, result.stdout, 0),
+        .diagnostics = &diagnostics,
+        .ignore_unknown_fields = true,
+    });
     if (env.get("GITHUB_OUTPUT")) |path| try append(c, path, try std.fmt.allocPrint(c.a, "global={s}\n", .{zig_env.global_cache_dir}));
     if (env.get("GITHUB_STEP_SUMMARY")) |path| {
         if (env.get("PREFLIGHT_PACKAGE_HIT")) |hit| try append(c, path, try std.fmt.allocPrint(c.a, "Zig package cache hit: {s}; compiled build cache hit: {s}\n", .{ hit, env.get("PREFLIGHT_BUILD_HIT") orelse "false" }));

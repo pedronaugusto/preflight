@@ -1,5 +1,10 @@
 //! Seed, shard, bound and watch every CI test runner; record timing evidence only when requested.
+//! A test run carries no environment of the build's: Zig bakes a run's
+//! environment into the cached configuration, so the shard and seed would go
+//! stale. The runner reads them when it runs, and its options module carries
+//! the rest.
 const std = @import("std");
+const configure = @import("configure.zig");
 
 pub const Options = struct {
     timing: bool,
@@ -31,102 +36,84 @@ pub const TestTimeout = union(enum) {
     }
 };
 
-pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, options: Options) void {
+/// `checker` is preflight's command program, which refuses a shard at run
+/// time for a test runner that cannot honour one.
+pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, checker: *std.Build.Step.Compile, options: Options) void {
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
     var names = std.StringHashMap(void).init(b.allocator);
-    visit(b, tests, pkg, options, &seen, &names);
+    const durations = configure.read(b, options.durations, .limited(64 * 1024 * 1024)) orelse "";
+    const context: Context = .{ .pkg = pkg, .checker = checker, .options = options, .durations = durations };
+    visit(b, tests, context, &seen, &names);
 }
 
-/// The shard this build runs, `i/n`, or null for every test.
-pub fn shard(b: *std.Build) ?[]const u8 {
-    const value = b.graph.environ_map.get("PREFLIGHT_SHARD") orelse return null;
-    return if (value.len > 0) value else null;
-}
-
-/// The shard in a timing file's name: `2of5`, or `all`.
-pub fn part(b: *std.Build) []const u8 {
-    const value = shard(b) orelse return "all";
-    return std.mem.replaceOwned(u8, b.allocator, value, "/", "of") catch @panic("OOM");
-}
-
-/// The build runner's bound on one test: the watchdog's and a margin, a
-/// quarter of it and at least 15 s, so the watchdog, which names the test,
-/// its phase and its seed, always fires first. Null without a watchdog.
-pub fn outerTimeout(test_timeout_ns: u64) ?u64 {
-    if (test_timeout_ns == 0) return null;
-    return test_timeout_ns +| @max(test_timeout_ns / 4, 15 * std.time.ns_per_s);
-}
-
-/// Has the build runner bound each test `run` runs by `outer_ns`, in place
-/// of `--test-timeout`. Call it before anything else wraps the step.
-pub fn bound(run: *std.Build.Step.Run, outer_ns: ?u64) void {
-    const ns = outer_ns orelse return;
-    if (Bounded.original) |original| std.debug.assert(original == run.step.makeFn) else Bounded.original = run.step.makeFn;
-    Bounded.ns = ns;
-    run.step.makeFn = Bounded.make;
-}
-
-const Bounded = struct {
-    /// Every run step's own make, the same function for all of them.
-    var original: ?std.Build.Step.MakeFn = null;
-    /// One package's gate per build, so one bound.
-    var ns: u64 = 0;
-
-    fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
-        var bounded = options;
-        bounded.unit_test_timeout_ns = ns;
-        return original.?(step, bounded);
-    }
+const Context = struct {
+    pkg: *std.Build,
+    checker: *std.Build.Step.Compile,
+    options: Options,
+    /// The recorded durations' text, built into each runner.
+    durations: []const u8,
 };
 
-fn visit(b: *std.Build, step: *std.Build.Step, pkg: *std.Build, options: Options, seen: *std.AutoHashMap(*std.Build.Step, void), names: *std.StringHashMap(void)) void {
+fn visit(b: *std.Build, step: *std.Build.Step, context: Context, seen: *std.AutoHashMap(*std.Build.Step, void), names: *std.StringHashMap(void)) void {
     const entry = seen.getOrPut(step) catch @panic("OOM");
     if (entry.found_existing) return;
     if (step.cast(std.Build.Step.Run)) |run| {
         if (run.argv.items.len == 0 or run.argv.items[0] != .artifact) return;
         if (run.argv.items[0].artifact.artifact.kind != .@"test") return;
-        instrument(b, run, pkg, options, names);
+        instrument(b, run, context, names);
         return;
     }
-    for (step.dependencies.items) |child| visit(b, child, pkg, options, seen, names);
+    for (step.dependencies.items) |child| visit(b, child, context, seen, names);
 }
 
 /// Gives the test artifact `run` runs preflight's runner and its modules,
-/// and the run its bound, shard and timing record. `names` holds the timing
-/// record names already given out.
-fn instrument(b: *std.Build, run: *std.Build.Step.Run, pkg: *std.Build, options: Options, names: *std.StringHashMap(void)) void {
+/// and the run its watchdog, durations and timing record. `names` holds the
+/// timing record names already given out.
+fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: *std.StringHashMap(void)) void {
+    const options = context.options;
     const artifact = run.argv.items[0].artifact.artifact;
-    const module = b.createModule(.{ .root_source_file = pkg.path("src/timings.zig") });
-    artifact.root_module.addImport("preflight_timings", module);
-    artifact.root_module.addAnonymousImport("preflight_order", .{ .root_source_file = pkg.path("src/order.zig") });
-    if (artifact.test_runner != null) {
-        // That runner neither arms the watchdog nor reads the shard.
-        if (options.test_timeout_ns != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
-        if (shard(b) != null) refuse("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", b, run, .{artifact.name});
-    } else {
-        const path = pkg.path("src/runner.zig");
-        artifact.test_runner = .{ .path = path, .mode = .server };
-        path.addStepDependencies(&artifact.step);
-        artifact.root_module.addAnonymousImport("preflight_default_test_runner", .{
-            .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ b.graph.zig_lib_directory.path.?, "compiler", "test_runner.zig" }) },
-        });
+    // The runner's modules and options are the test module's imports, so
+    // artifacts that share a root module share them, timing record included.
+    if (artifact.root_module.import_table.get("preflight_runner_options") == null) {
+        const module = b.createModule(.{ .root_source_file = context.pkg.path("src/timings.zig") });
+        artifact.root_module.addImport("preflight_timings", module);
+        artifact.root_module.addAnonymousImport("preflight_order", .{ .root_source_file = context.pkg.path("src/order.zig") });
         const runner = b.addOptions();
         runner.addOption(u64, "test_timeout_ns", options.test_timeout_ns);
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
+        runner.addOption(?[]const u8, "timings", if (options.timing) timings(b, artifact, names) else null);
+        runner.addOption([]const u8, "durations", context.durations);
         artifact.root_module.addOptions("preflight_runner_options", runner);
+    }
+    if (artifact.test_runner != null) {
+        // That runner neither arms the watchdog nor reads the shard.
+        if (options.test_timeout_ns != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
+        const unsharded = b.addRunArtifact(context.checker);
+        unsharded.addArgs(&.{ "unsharded", artifact.name });
+        unsharded.has_side_effects = true;
+        run.step.dependOn(&unsharded.step);
+    } else {
+        const path = context.pkg.path("src/runner.zig");
+        artifact.test_runner = .{ .path = path, .mode = .server };
+        path.addStepDependencies(&artifact.step);
+        artifact.root_module.addAnonymousImport("preflight_default_test_runner", .{
+            .root_source_file = b.graph.path(.zig_lib, "compiler/test_runner.zig"),
+        });
         if (run.stdio != .zig_test) run.enableTestRunnerMode();
     }
     if (options.test_timeout_ns != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
-    bound(run, outerTimeout(options.test_timeout_ns));
-    if (shard(b) != null) run.setEnvironmentVariable("PREFLIGHT_DURATIONS", b.pathFromRoot(options.durations));
-    if (!options.timing) return;
+}
+
+/// The run's timing record, without its shard: the runner appends the shard
+/// it runs, `-2of5.ndjson`, or `-all.ndjson`.
+fn timings(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringHashMap(void)) []const u8 {
     const target = artifact.root_module.resolved_target.?.result;
     const stem = b.fmt("{s}-{s}-{s}", .{ artifact.name, @tagName(target.os.tag), @tagName(artifact.root_module.optimize.?) });
     // Two runs that share a name would truncate each other's records.
     var name = stem;
     var count: usize = 2;
     while ((names.getOrPut(name) catch @panic("OOM")).found_existing) : (count += 1) name = b.fmt("{s}-{d}", .{ stem, count });
-    run.setEnvironmentVariable("PREFLIGHT_TIMINGS", b.fmt(".zig-cache/preflight-timings/{s}-{s}.ndjson", .{ name, part(b) }));
+    return b.fmt(".zig-cache/preflight-timings/{s}", .{name});
 }
 
 /// Fails `run`, when the build gets to it, with a message naming why.
@@ -138,14 +125,6 @@ fn singleThreaded(artifact: *std.Build.Step.Compile) bool {
     if (artifact.root_module.single_threaded) |single| return single;
     const target = artifact.root_module.resolved_target.?.result;
     return target.cpu.arch.isWasm() and !target.cpu.has(.wasm, .atomics);
-}
-
-test "the build runner's bound outlasts the watchdog's by a quarter, at least 15 s" {
-    try std.testing.expectEqual(@as(?u64, null), outerTimeout(0));
-    try std.testing.expectEqual(@as(?u64, 45 * std.time.ns_per_s), outerTimeout(30 * std.time.ns_per_s));
-    try std.testing.expectEqual(@as(?u64, 150 * std.time.ns_per_s), outerTimeout(120 * std.time.ns_per_s));
-    try std.testing.expectEqual(@as(?u64, 15 * std.time.ns_per_s + 300 * std.time.ns_per_ms), outerTimeout(300 * std.time.ns_per_ms));
-    try std.testing.expectEqual(@as(?u64, std.math.maxInt(u64)), outerTimeout(std.math.maxInt(u64)));
 }
 
 test "the default test timeout needs no reason, any other one does" {

@@ -112,7 +112,7 @@ fn movedCode(c: *src.Context, prefix: []const u8, entry: src.Value) !bool {
 
 pub fn git(c: *src.Context, args: []const []const u8) !std.process.RunResult {
     const argv = try std.mem.concat(c.a, []const u8, &.{ &.{"git"}, args });
-    return std.process.run(c.a, c.io, .{ .argv = argv, .cwd = .{ .dir = c.directory() } });
+    return std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd() });
 }
 
 pub fn success(result: std.process.RunResult) bool {

@@ -43,6 +43,10 @@ pub fn report(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, out
     var problems = try ownership(graph, d, out);
     problems += graph.unread().len;
     for (graph.unread()) |path| try out.print("imports: {s}: unread\n", .{path});
+    // A file gantry could not read gave the graph none of its imports, so
+    // every rule below would pass over them.
+    problems += graph.invalid().len;
+    for (graph.invalid()) |file| try out.print("imports: {s}: invalid ({t}: {t})\n", .{ file.path, file.phase, file.cause });
     problems += try unused(graph, out);
     // The entry rule reads the production graph, which holds no test code.
     for (d.entries) |path| if (d.testCode(path)) {
@@ -352,4 +356,11 @@ test "an entry that is test code is reported, since no production rule reads it"
         \\imports: entry files: src/test_runner.zig: test code, never checked
         \\
     , out.written());
+}
+
+test "a file gantry could not read as Zig fails" {
+    try expectReport(&.{
+        .{ .path = "src/low.zig", .text = "pub const x = 1;\n" },
+        .{ .path = "src/high.zig", .text = "pub const low = @import(\"lo\\qw.zig\");\n" },
+    }, two_layers, "imports: src/high.zig: invalid (imports: InvalidLiteral)\n");
 }

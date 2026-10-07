@@ -61,7 +61,7 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     const command = src.get(generator, "command");
     if (command == .null) return snippet(c, generator);
     const argv = try zigCommand(c.a, command);
-    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd() });
+    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
     if (result.term != .exited or result.term.exited != 0) {
         c.report("docs: generator failed: {s}\n", .{result.stderr});
         return error.GeneratorFailed;

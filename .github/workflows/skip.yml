@@ -38,5 +38,5 @@ jobs:
         id: paths
         env:
           PREFLIGHT_TIER: ${{ inputs.tier }}
-          PREFLIGHT_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}
+          PREFLIGHT_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" skip -- --config "${{ inputs.working-directory }}/ci/preflight.json"

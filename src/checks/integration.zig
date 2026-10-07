@@ -4,6 +4,7 @@ const root = @import("test_options").root;
 const ledger = @import("ledger.zig");
 const quality = @import("quality.zig");
 const src = @import("source.zig");
+const paths = @import("paths.zig");
 
 fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const io = std.testing.io;
@@ -145,6 +146,7 @@ fn lintFixture(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     for ([_][]const u8{ "GITHUB_HEAD_REF", "GITHUB_REF_NAME", "GITHUB_BASE_REF", "PREFLIGHT_LEDGER_BASE", "GITHUB_STEP_SUMMARY", "PREFLIGHT_ADOPT" }) |key| _ = env.swapRemove(key);
+    try withoutUserGit(&env);
     return std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
 
@@ -214,9 +216,19 @@ fn dropExecutable(dir: std.Io.Dir) !void {
     }
 }
 
+/// Keeps the user's and the system's git configuration out of a test's
+/// git: no hook, signing key or alias of theirs runs on a fixture.
+fn withoutUserGit(env: *std.process.Environ.Map) !void {
+    try env.put("GIT_CONFIG_NOSYSTEM", "1");
+    try env.put("GIT_CONFIG_GLOBAL", "/dev/null");
+}
+
 fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !void {
     const argv = try std.mem.concat(a, []const u8, &.{ &.{ "git", "-c", "user.name=Preflight", "-c", "user.email=preflight@example.invalid" }, args });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir } });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try withoutUserGit(&env);
+    const result = try std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
     if (result.term != .exited or result.term.exited != 0) return error.FixtureGitFailed;
 }
 
@@ -239,7 +251,9 @@ test "initial adoption requires exact base findings and cannot grow an existing 
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/debug.json", .data = debt });
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"debug_print_exceptions\":\"ci/debug.json\"}", .{})).value;
     const s = try src.Source.parse(a, "src/value.zig", code);
-    var c: src.Context = .{ .a = a, .io = io, .dir = tmp.dir, .ledger_base = "main", .adopt = true };
+    var env = try std.testing.environ.createMap(a);
+    try withoutUserGit(&env);
+    var c: src.Context = .{ .a = a, .io = io, .dir = tmp.dir, .ledger_base = "main", .adopt = true, .environ_map = &env };
     try quality.check(&c, &.{s}, config);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     const changed_code = try std.mem.replaceOwned(u8, a, code, "hi", "new debt");
@@ -621,4 +635,41 @@ test "timing records of two test runs with one name stay apart" {
         if (std.mem.endsWith(u8, entry.name, ".ndjson")) files += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), files);
+}
+
+test "a dispatched run compares the branch with main, so a docs-only last commit keeps the gate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "upstream/src");
+    var upstream = try tmp.dir.openDir(io, "upstream", .{});
+    defer upstream.close(io);
+    try upstream.writeFile(io, .{ .sub_path = "src/value.zig", .data = "pub const x = 1;\n" });
+    try fixtureGit(a, upstream, &.{ "init", "-b", "main" });
+    try fixtureGit(a, upstream, &.{ "add", "src" });
+    try fixtureGit(a, upstream, &.{ "commit", "-m", "Main" });
+    try fixtureGit(a, tmp.dir, &.{ "clone", "-q", "upstream", "work" });
+    var work = try tmp.dir.openDir(io, "work", .{});
+    defer work.close(io);
+    try fixtureGit(a, work, &.{ "switch", "-c", "wave" });
+    try work.writeFile(io, .{ .sub_path = "src/value.zig", .data = "pub const x = 2;\n" });
+    try fixtureGit(a, work, &.{ "commit", "-am", "Code" });
+    try work.writeFile(io, .{ .sub_path = "README.md", .data = "# value\n" });
+    try fixtureGit(a, work, &.{ "add", "README.md" });
+    try fixtureGit(a, work, &.{ "commit", "-m", "Docs" });
+    var env = try std.testing.environ.createMap(a);
+    try withoutUserGit(&env);
+    const c: src.Context = .{ .a = a, .io = io, .dir = work, .environ_map = &env };
+    // The last commit alone is documentation; the branch is not.
+    try std.testing.expect(try paths.run(c, "HEAD^"));
+    try std.testing.expect(!try paths.run(c, null));
+    try fixtureGit(a, work, &.{ "switch", "-c", "notes", "origin/main" });
+    try work.writeFile(io, .{ .sub_path = "README.md", .data = "# notes\n" });
+    try fixtureGit(a, work, &.{ "add", "README.md" });
+    try fixtureGit(a, work, &.{ "commit", "-m", "Notes" });
+    try std.testing.expect(try paths.run(c, null));
+    try std.testing.expect(!try paths.run(c, "no-such-base"));
 }

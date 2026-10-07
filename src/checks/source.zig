@@ -10,6 +10,8 @@ pub const Context = struct {
     ledger_base: ?[]const u8 = null,
     summary_path: ?[]const u8 = null,
     adopt: bool = false,
+    /// The environment a child process gets; null passes this process's own.
+    environ_map: ?*const std.process.Environ.Map = null,
 
     pub fn directory(c: Context) std.Io.Dir {
         return c.dir orelse .cwd();

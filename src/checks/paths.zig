@@ -22,8 +22,17 @@ pub fn onlyDocs(paths: []const u8) bool {
     return count > 0;
 }
 
-pub fn run(c: src.Context, base: []const u8) !bool {
-    const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "git", "diff", "--name-only", "--no-renames", "-z", base, "HEAD", "--" } });
+/// The branch every other is compared with when a run names no base.
+pub const default_base = "origin/main";
+
+/// Whether the commits HEAD adds since it left `base` touch documentation
+/// alone: the diff from their merge base, as a pull request shows it. A
+/// run that names no base (a dispatch) compares with main, never with the
+/// last commit alone, so an earlier commit's code keeps the gate. An
+/// unknown base keeps it too.
+pub fn run(c: src.Context, base: ?[]const u8) !bool {
+    const range = try c.a.print("{s}...HEAD", .{base orelse default_base});
+    const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "git", "diff", "--name-only", "--no-renames", "-z", range, "--" }, .cwd = c.childCwd(), .environ_map = c.environ_map });
     if (result.term != .exited or result.term.exited != 0) return false;
     return onlyDocs(result.stdout);
 }

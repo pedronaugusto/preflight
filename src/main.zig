@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
         // A merge or release candidate keeps the whole gate, docs-only or not.
-        const only_docs = std.mem.eql(u8, init.environ_map.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c, init.environ_map.get("PREFLIGHT_BASE") orelse "HEAD^");
+        const only_docs = std.mem.eql(u8, init.environ_map.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c, environment(init.environ_map, "PREFLIGHT_BASE"));
         if (init.environ_map.get("GITHUB_OUTPUT")) |path| try append(c, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
         if (only_docs) {
             const config = try c.json(option(args, "--config") orelse "ci/preflight.json");

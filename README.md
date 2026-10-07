@@ -88,8 +88,11 @@ Test code has one definition, shared by the source checks and the structure
 runner: files named `*_test.zig`, `test_*.zig` or `tests.zig`, and the
 `test_support` patterns (`src/testing/**` by default). Gantry classifies the
 rest: an import inside a test block, or in a declaration only tests reach, is a
-test edge. Every path pattern uses gantry's dialect: `*` stays within one path
-component, `**` spans components, and a pattern without `/` matches the file name.
+test edge. Every path pattern uses gantry's dialect, git's globs as sweep reads them: `*`,
+`?` and brackets stay within one path component, `**` standing as a whole component
+spans components (`src/**` is what lies under `src`), `\` escapes, and a pattern without
+`/` matches the file name. A layer pattern with no wildcard, bracket or escape names one
+file. The structure check compiles each pattern once.
 
 `ci/preflight.json` names source directories, test roots, test support, README
 regions and extra repository checks. A `vendored` exemption must name its upstream
@@ -335,6 +338,9 @@ is built from.
 Run `zig build test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
+`zig build check-toolchain` holds the toolchain rule: preflight, gantry and sweep name
+no other package of the family in their manifests, only each other, ziglint and the
+test-only shakedown.
 ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
 `zig-0.17`, commit 924b6b5), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.

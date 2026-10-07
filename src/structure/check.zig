@@ -4,6 +4,7 @@
 //! layer than its file. An import no build compiles is unused.
 const std = @import("std");
 const gantry = @import("gantry");
+const sweep = @import("sweep");
 const source = @import("../checks/source.zig");
 
 /// A package's declared structure, from its `ci/layers.zig` and the test
@@ -25,12 +26,35 @@ pub const Declared = struct {
     reexports: []const Reexport = &.{},
     /// Packages only tests may import, such as a library of test doubles.
     test_dependencies: []const []const u8 = &.{},
+};
 
-    pub fn testCode(d: Declared, path: []const u8) bool {
-        for (d.test_paths) |pattern| if (gantry.rules.matches(pattern, path)) return true;
+/// Which paths are test code, each graph path matched once against the
+/// compiled test patterns.
+const TestCode = struct {
+    patterns: []const sweep.Pattern,
+    paths: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn init(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared) !TestCode {
+        var t: TestCode = .{ .patterns = try compileAll(a, d.test_paths) };
+        for (graph.paths()) |path| if (t.matches(path)) try t.paths.put(a, path, {});
+        return t;
+    }
+    fn matches(t: *const TestCode, path: []const u8) bool {
+        for (t.patterns) |*p| if (p.matches(path)) return true;
         return false;
     }
+    /// A graph path, looked up rather than matched.
+    fn has(t: *const TestCode, path: []const u8) bool {
+        return t.paths.contains(path);
+    }
 };
+
+/// `patterns` compiled in gantry's path dialect, into `a`.
+fn compileAll(a: std.mem.Allocator, patterns: []const []const u8) ![]const sweep.Pattern {
+    const out = try a.alloc(sweep.Pattern, patterns.len);
+    for (patterns, out) |pattern, *p| p.* = try .compile(a, pattern, gantry.rules.patternOptions(.path));
+    return out;
+}
 
 /// A namespace file publishing a file of its own directory: `src/odb.zig`
 /// re-exporting `src/odb/bitmap.zig`. The namespace is the package's face
@@ -52,7 +76,8 @@ pub fn options(d: Declared) gantry.Options {
 /// Writes one line per problem and returns how many there are. The graph is
 /// a full scan with `options(d)`; `a` should be an arena.
 pub fn report(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usize {
-    var problems = try ownership(graph, d, out);
+    const tests: TestCode = try .init(a, graph, d);
+    var problems = try ownership(a, graph, d, &tests, out);
     problems += graph.unread().len;
     for (graph.unread()) |path| try out.print("imports: {s}: unread\n", .{path});
     // A file gantry could not read gave the graph none of its imports, so
@@ -61,20 +86,20 @@ pub fn report(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, out
     for (graph.invalid()) |file| try out.print("imports: {s}: invalid ({t}: {t})\n", .{ file.path, file.phase, file.cause });
     problems += try unused(graph, out);
     // The entry rule reads the production graph, which holds no test code.
-    for (d.entries) |path| if (d.testCode(path)) {
+    for (d.entries) |path| if (tests.matches(path)) {
         try out.print("imports: entry files: {s}: test code, never checked\n", .{path});
         problems += 1;
     };
-    problems += try namespaces(graph, d, out);
+    problems += try namespaces(graph, d, &tests, out);
 
     // Entries read every production edge; layers and cycles read the
     // implementation, which leaves out the namespaces' re-exports.
-    var production = try productionGraph(a, graph, d, false);
+    var production = try productionGraph(a, graph, d, &tests, false);
     defer production.deinit();
     var entered = try production.check(a, try entryRules(a, d));
     defer entered.deinit();
     problems += try print(out, entered.items());
-    var implementation = if (d.reexports.len == 0) null else try productionGraph(a, graph, d, true);
+    var implementation = if (d.reexports.len == 0) null else try productionGraph(a, graph, d, &tests, true);
     defer if (implementation) |*g| g.deinit();
     var layered = try (if (implementation) |*g| g else &production).check(a, try layerRules(a, d));
     defer layered.deinit();
@@ -89,19 +114,29 @@ pub fn report(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, out
 /// Every production source is in exactly one layer, every test source in
 /// none. A glob over a directory covers its production files and passes
 /// over the tests beside them; a literal pattern naming a test file fails.
-fn ownership(graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usize {
+fn ownership(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, tests: *const TestCode, out: *std.Io.Writer) !usize {
+    // Every layer pattern compiled once, with whether it names one file.
+    const Owner = struct { layer: usize, pattern: sweep.Pattern, literal: bool };
+    var owners_list: std.ArrayList(Owner) = .empty;
+    const syntax = gantry.rules.patternOptions(.path).syntax;
+    for (d.layers, 0..) |layer, i| for (layer.patterns) |pattern| try owners_list.append(a, .{
+        .layer = i,
+        .pattern = try .compile(a, pattern, gantry.rules.patternOptions(.path)),
+        .literal = sweep.literalPrefix(pattern, syntax) == pattern.len,
+    });
     var problems: usize = 0;
     for (graph.paths()) |path| {
-        const test_code = d.testCode(path);
+        const test_code = tests.has(path);
         var owners: usize = 0;
         var owner: []const u8 = "";
-        for (d.layers) |layer| for (layer.patterns) |pattern| {
-            if (test_code and std.mem.findAny(u8, pattern, "*?") != null) continue;
-            if (!gantry.rules.matches(pattern, path)) continue;
+        var layer: ?usize = null;
+        for (owners_list.items) |*o| {
+            if (test_code and !o.literal) continue;
+            if (layer == o.layer or !o.pattern.matches(path)) continue;
             owners += 1;
-            owner = layer.name;
-            break;
-        };
+            owner = d.layers[o.layer].name;
+            layer = o.layer;
+        }
         if (test_code) {
             if (owners == 0) continue;
             try out.print("imports: {s}: test source in a layer ({s})\n", .{ path, owner });
@@ -129,7 +164,7 @@ fn unused(graph: *const gantry.Graph, out: *std.Io.Writer) !usize {
 /// Every declared re-export is an import the production graph has, into a
 /// file inside the namespace's own directory: `src/odb.zig` publishes only
 /// what lies under `src/odb/`.
-fn namespaces(graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usize {
+fn namespaces(graph: *const gantry.Graph, d: Declared, tests: *const TestCode, out: *std.Io.Writer) !usize {
     var problems: usize = 0;
     for (d.reexports) |r| {
         const stem = r.from[0 .. r.from.len - @min(r.from.len, ".zig".len)];
@@ -137,7 +172,7 @@ fn namespaces(graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usi
             std.mem.startsWith(u8, r.to, stem) and r.to[stem.len] == '/';
         if (!inside) {
             try out.print("imports: reexports: {s} -> {s}: not a file inside {s}/\n", .{ r.from, r.to, stem });
-        } else if (!imports(graph, d, r)) {
+        } else if (!imports(graph, tests, r)) {
             try out.print("imports: reexports: {s} -> {s}: no such import\n", .{ r.from, r.to });
         } else continue;
         problems += 1;
@@ -145,8 +180,8 @@ fn namespaces(graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usi
     return problems;
 }
 
-fn imports(graph: *const gantry.Graph, d: Declared, r: Reexport) bool {
-    for (graph.edges()) |edge| if (compiled(d, edge) and std.mem.eql(u8, edge.from, r.from) and std.mem.eql(u8, edge.to, r.to)) return true;
+fn imports(graph: *const gantry.Graph, tests: *const TestCode, r: Reexport) bool {
+    for (graph.edges()) |edge| if (compiled(tests, edge) and std.mem.eql(u8, edge.from, r.from) and std.mem.eql(u8, edge.to, r.to)) return true;
     return false;
 }
 
@@ -157,20 +192,20 @@ fn reexported(d: Declared, edge: gantry.Edge) bool {
 
 /// An edge a non-test build compiles. An edge from production into test
 /// code is the full graph's to report.
-fn compiled(d: Declared, edge: gantry.Edge) bool {
-    return edge.kind != .@"test" and !d.testCode(edge.from) and !d.testCode(edge.to);
+fn compiled(tests: *const TestCode, edge: gantry.Edge) bool {
+    return edge.kind != .@"test" and !tests.has(edge.from) and !tests.has(edge.to);
 }
 
 /// Production sources and the edges between them that are not test edges;
 /// the implementation, without the namespaces' re-exports, when asked.
-fn productionGraph(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, implementation: bool) !gantry.Graph {
+fn productionGraph(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, tests: *const TestCode, implementation: bool) !gantry.Graph {
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(a);
-    for (graph.paths()) |path| if (!d.testCode(path)) try paths.append(a, path);
+    for (graph.paths()) |path| if (!tests.has(path)) try paths.append(a, path);
     var edges: std.ArrayList(gantry.Edge) = .empty;
     defer edges.deinit(a);
     for (graph.edges()) |edge| {
-        if (!compiled(d, edge) or (implementation and reexported(d, edge))) continue;
+        if (!compiled(tests, edge) or (implementation and reexported(d, edge))) continue;
         try edges.append(a, edge);
     }
     return gantry.Graph.fromEdges(a, paths.items, edges.items);

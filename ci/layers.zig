@@ -24,6 +24,7 @@ pub const references: []const gantry.rules.ReferenceRule = &.{.{ .name = "named 
     "std",
     "builtin",
     "gantry",
+    "sweep",
     "layers",
     "test_options",
     "preflight_default_test_runner",

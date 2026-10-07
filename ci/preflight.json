@@ -1,5 +1,6 @@
 {
   "sources": ["src"],
   "test_roots": ["src/checks.zig", "src/order.zig", "src/watchdog_test.zig"],
-  "test_dependencies": ["shakedown"]
+  "test_dependencies": ["shakedown"],
+  "extra_checks": [["zig", "build", "check-toolchain"]]
 }

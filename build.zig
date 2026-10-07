@@ -23,6 +23,8 @@ pub fn build(b: *std.Build) void {
     const target = ci.ciTarget(b);
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
     const gantry = gantry_dep.module("gantry");
+    const sweep_dep = b.dependencyLazy("sweep", .{ .target = target, .optimize = .debug }) catch return;
+    const sweep = sweep_dep.module("sweep");
     // The test doubles are shakedown's, which only preflight's own suite
     // imports: a build that runs preflight for another repository never
     // fetches it.
@@ -32,7 +34,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{.{ .name = "gantry", .module = gantry }},
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "sweep", .module = sweep } },
     }), .filters = test_filters });
     if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
@@ -74,6 +76,20 @@ pub fn build(b: *std.Build) void {
         if (watch_run) |run| verify.dependOn(run);
         verify.dependOn(&b.addFmt(.{ .paths = b.pathList(&.{"."}), .check = true }).step);
         verify.dependOn(&executable.step);
+        // preflight, gantry and sweep name no other package of the family.
+        const toolchain = b.createModule(.{ .root_source_file = b.path("ci/toolchain.zig"), .target = target, .optimize = .debug, .imports = &.{.{ .name = "gantry", .module = gantry }} });
+        const closure = b.addRunArtifact(b.addExecutable(.{ .name = "check-toolchain", .root_module = toolchain }));
+        for ([_]struct { []const u8, std.Build.LazyPath }{
+            .{ "preflight", b.path("build.zig.zon") },
+            .{ "gantry", gantry_dep.path("build.zig.zon") },
+            .{ "sweep", sweep_dep.path("build.zig.zon") },
+        }) |package| {
+            closure.addArg(package[0]);
+            closure.addFileArg(package[1]);
+        }
+        const check_toolchain = b.step("check-toolchain", "Check that the toolchain names no other package of the family");
+        check_toolchain.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = toolchain })).step);
+        check_toolchain.dependOn(&closure.step);
     }
     const root = repo_root orelse ".";
     for ([_][]const u8{ "plan", "setup", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "findings" }) |name| {

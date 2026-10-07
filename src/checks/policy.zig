@@ -1,4 +1,5 @@
 const std = @import("std");
+const gantry = @import("gantry");
 const src = @import("source.zig");
 
 pub fn casts(c: *src.Context, sources: []const src.Source, config: src.Value) void {
@@ -63,7 +64,7 @@ pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) 
             if (limits == .object) {
                 var iterator = limits.object.iterator();
                 while (iterator.next()) |entry| {
-                    if (src.glob(entry.key_ptr.*, s.path)) limit = @min(limit, src.number(entry.value_ptr.*, limit));
+                    if (gantry.rules.matches(entry.key_ptr.*, s.path)) limit = @min(limit, src.number(entry.value_ptr.*, limit));
                 }
             }
             const label = try c.a.print("{s}:{s}", .{ s.path, name });

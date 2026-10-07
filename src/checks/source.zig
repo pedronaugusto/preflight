@@ -72,14 +72,8 @@ pub fn strings(a: std.mem.Allocator, v: Value) ![]const []const u8 {
     return out;
 }
 
-/// Path patterns in gantry's dialect: `*` and `?` stay within one component,
-/// `**` spans components, and a pattern without `/` matches the basename.
-pub fn glob(pattern: []const u8, path: []const u8) bool {
-    return gantry.rules.matches(pattern, path);
-}
-
 pub fn excluded(path: []const u8, patterns: Value) bool {
-    for (items(patterns)) |pattern| if (glob(string(pattern, ""), path)) return true;
+    for (items(patterns)) |pattern| if (gantry.rules.matches(string(pattern, ""), path)) return true;
     return false;
 }
 
@@ -89,14 +83,14 @@ pub const test_files = [_][]const u8{ "*_test.zig", "test_*.zig", "tests.zig" };
 pub const default_support = [_][]const u8{"src/testing/**"};
 
 pub fn testFile(path: []const u8) bool {
-    for (test_files) |pattern| if (glob(pattern, path)) return true;
+    for (test_files) |pattern| if (gantry.rules.matches(pattern, path)) return true;
     return false;
 }
 
 pub fn support(path: []const u8, config: Value) bool {
     const patterns = get(config, "test_support");
     if (patterns != .null) return excluded(path, patterns);
-    for (default_support) |pattern| if (glob(pattern, path)) return true;
+    for (default_support) |pattern| if (gantry.rules.matches(pattern, path)) return true;
     return false;
 }
 
@@ -202,12 +196,12 @@ test "parser ignores imports and braces in literals, finds named test blocks" {
     for (s.tree.tokens.items(.tag), 0..) |tag, i| {
         if (tag == .builtin) try std.testing.expect(s.inTest(@intCast(i)));
     }
-    try std.testing.expect(!glob("src/*.zig", "ci/a.zig"));
+    try std.testing.expect(!gantry.rules.matches("src/*.zig", "ci/a.zig"));
 }
 
 test "one dialect: a component star stays in its directory, test code has one definition" {
-    try std.testing.expect(!glob("src/*", "src/a/b.zig"));
-    try std.testing.expect(glob("src/**", "src/a/b.zig"));
+    try std.testing.expect(!gantry.rules.matches("src/*", "src/a/b.zig"));
+    try std.testing.expect(gantry.rules.matches("src/**", "src/a/b.zig"));
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -225,7 +219,7 @@ test "one dialect: a component star stays in its directory, test code has one de
     try std.testing.expectEqual(@as(usize, test_files.len + 1), patterns.len);
     for ([_][]const u8{ "src/a_test.zig", "src/testing/clock.zig", "src/testing/lfs/transfer.zig", "src/a.zig" }) |path| {
         var matched = false;
-        for (patterns) |pattern| matched = matched or glob(pattern, path);
+        for (patterns) |pattern| matched = matched or gantry.rules.matches(pattern, path);
         try std.testing.expectEqual(testCode(path, flat), matched);
     }
 }

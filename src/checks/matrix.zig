@@ -42,6 +42,19 @@ fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
     return a.print("{x}", .{hash[0..8]});
 }
 
+/// The optimize modes the gate runs, spelled as `-Doptimize` takes them.
+const Mode = std.lang.Optimize;
+
+/// The name a job shows for `mode`.
+fn title(mode: Mode) []const u8 {
+    return switch (mode) {
+        .debug => "Debug",
+        .safe => "ReleaseSafe",
+        .fast => "ReleaseFast",
+        .small => "ReleaseSmall",
+    };
+}
+
 /// How much of the gate a run executes.
 pub const Tier = enum {
     /// Linux Debug and the source checks; every other host and target compiles only.
@@ -63,7 +76,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     }
     var jobs: std.ArrayList(Job) = .empty;
     for (hosts, host_names) |host, host_name| {
-        const modes: []const []const u8 = if (std.mem.eql(u8, host, hosts[0])) &.{ "Debug", "ReleaseSafe", "ReleaseFast" } else &.{ "Debug", "ReleaseSafe" };
+        const modes: []const Mode = if (std.mem.eql(u8, host, hosts[0])) &.{ .debug, .safe, .fast } else &.{ .debug, .safe };
         try hostJobs(a, config, &jobs, host, host_name, modes);
     }
     try jobs.append(a, .{ .os = hosts[0], .name = "source checks and documented snippets", .step = "lint", .job_timeout = src.number(src.get(config, "source_job_timeout"), 20) });
@@ -78,20 +91,20 @@ fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.appendSlice(a, try fastPlan(a, config, true));
     const start = jobs.items.len;
-    for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{"Debug"});
+    for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{.debug});
     for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
     return jobs.items;
 }
 
 /// The test jobs of one host: each mode in the host's shard count.
-fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), host: []const u8, host_name: []const u8, modes: []const []const u8) !void {
+fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), host: []const u8, host_name: []const u8, modes: []const Mode) !void {
     const count = try shardCount(src.get(src.get(config, "shards"), host_name));
     for (modes) |mode| for (0..count) |i| {
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
             .os = host,
-            .name = try a.print("test ({s}, {s}){s}{s}", .{ host, mode, if (count > 1) " shard " else "", shard }),
-            .args = try a.print("-Doptimize={s} -Dci-lint=false -Dci-timings=true", .{mode}),
+            .name = try a.print("test ({s}, {s}){s}{s}", .{ host, title(mode), if (count > 1) " shard " else "", shard }),
+            .args = try a.print("-Doptimize={t} -Dci-lint=false -Dci-timings=true", .{mode}),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
@@ -159,7 +172,7 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, timing: bool) ![]Job {
             .os = hosts[0],
             .name = try a.print("Linux Debug{s}{s}", .{ if (count > 1) " shard " else "", shard }),
             .step = "preflight-fast",
-            .args = try a.print("-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "" }),
+            .args = try a.print("-Doptimize=debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "" }),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
@@ -188,13 +201,13 @@ pub fn fastCrossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value)
     const result = try a.alloc([]const u8, args.len + 1);
     @memcpy(result[0..args.len], args);
     result[2] = "ci-check";
-    result[args.len] = "-Doptimize=Debug";
+    result[args.len] = "-Doptimize=debug";
     return result;
 }
 
 fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     const compile = src.string(src.get(config, "compile_step"), "check");
-    try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=ReleaseSmall" });
+    try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=small" });
     if (src.items(src.get(config, "targets")).len > 0)
         try jobs.append(a, .{ .os = hosts[0], .name = "cross (all configured targets)", .step = "preflight-cross", .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20) });
     const sanitizer = src.get(config, "sanitizer");
@@ -202,7 +215,7 @@ fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
         .os = hosts[0],
         .name = "ThreadSanitizer (Linux)",
         .step = sanitizer.string,
-        .args = "-Dthread-sanitizer -Doptimize=Debug -Dci-lint=false",
+        .args = "-Dthread-sanitizer -Doptimize=debug -Dci-lint=false",
         .setup = true,
         .job_timeout = src.number(src.get(config, "sanitizer_job_timeout"), 20),
     });
@@ -252,13 +265,13 @@ test "fast gate executes only Linux Debug and compiles all other test targets" {
     const jobs = try plan(a, config, .fast);
     try std.testing.expectEqual(@as(usize, 1), jobs.len);
     try std.testing.expectEqualStrings(hosts[0], jobs[0].os);
-    try std.testing.expectEqualStrings("-Doptimize=Debug", jobs[0].args);
+    try std.testing.expectEqualStrings("-Doptimize=debug", jobs[0].args);
     const targets = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 3), targets.len);
     const args = try fastCrossArgs(a, config, targets[0]);
     try std.testing.expectEqualStrings("ci-check", args[2]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", args[5]);
-    try std.testing.expectEqualStrings("-Doptimize=Debug", args[6]);
+    try std.testing.expectEqualStrings("-Doptimize=debug", args[6]);
     const tiers = try split(a, config, jobs, .fast);
     try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
@@ -341,10 +354,10 @@ test "fast shards split Linux Debug, and only the first checks sources and compi
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"fast_shards\":3}", .{})).value;
     const jobs = try plan(a, config, .fast);
     try std.testing.expectEqual(@as(usize, 3), jobs.len);
-    try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-timings=true", jobs[0].args);
+    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-timings=true", jobs[0].args);
     try std.testing.expectEqualStrings("1/3", jobs[0].shard);
     try std.testing.expectEqualStrings("Linux Debug shard 2/3", jobs[1].name);
-    try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
+    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
     try std.testing.expectEqualStrings("3/3", jobs[2].shard);
 }
 
@@ -378,12 +391,12 @@ test "the merge tier adds the Debug suite on macOS and Windows to the fast tier,
     const jobs = try plan(a, config, .merge);
     try std.testing.expectEqual(@as(usize, 4), jobs.len);
     try std.testing.expectEqualStrings("preflight-fast", jobs[0].step);
-    try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-timings=true", jobs[0].args);
+    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-timings=true", jobs[0].args);
     try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[1].name);
     try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", jobs[3].name);
     for (jobs[1..]) |job| {
         try std.testing.expectEqualStrings("ci", job.step);
-        try std.testing.expectEqualStrings("-Doptimize=Debug -Dci-lint=false -Dci-timings=true", job.args);
+        try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", job.args);
         try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
     }
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
@@ -398,7 +411,7 @@ test "the merge tier compiles macOS and Windows Debug once on Linux and runs eve
     try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 2), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 3), tiers.run.len);
-    for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=Debug") != null);
+    for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=debug") != null);
 }
 
 test "the release tier is the full matrix: every mode on every host, ReleaseSmall, cross targets, TSan and the source checks" {

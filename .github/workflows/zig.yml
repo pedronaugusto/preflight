@@ -22,7 +22,7 @@ on:
       fast-matrix:
         description: Static Linux Debug shards generated from ci/workflow.json
         type: string
-        default: '{"include":[{"name":"Linux Debug","args":"-Doptimize=Debug","shard":"","job_timeout":20,"cache_key":"fast-linux-debug-0"}]}'
+        default: '{"include":[{"name":"Linux Debug","args":"-Doptimize=debug","shard":"","job_timeout":20,"cache_key":"fast-linux-debug-0"}]}'
       merge-matrix:
         description: Static native merge-tier matrix, zig build plan -- --tier merge
         type: string
@@ -169,6 +169,43 @@ jobs:
           path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
           include-hidden-files: true
           retention-days: 7
+  master:
+    # Zig master (the next release in development) never blocks: its result is
+    # read at each merge, and a break is a note for the next port's codemod table.
+    if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'')'
+    name: Zig master (Linux Debug, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: ${{ inputs.test-job-timeout }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/setup
+        with:
+          zig-version: master
+          working-directory: ${{ inputs.working-directory }}
+          build-key: master-linux-debug
+      - name: Run the Debug suite on Zig master
+        id: suite
+        env:
+          STEP: ci
+          BUILD_ARGS: -Doptimize=debug -Dci-lint=false
+          PREFLIGHT_SETUP: 'true'
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - name: Report
+        if: always()
+        env:
+          OUTCOME: ${{ steps.suite.outcome }}
+        run: |
+          version=$(zig version 2>/dev/null || echo unknown)
+          echo "Zig master $version: $OUTCOME (non-blocking)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass; a note for the next port"; fi
   compile:
     if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'') && inputs.compile-once'
     name: ${{ matrix.name }}

@@ -7,9 +7,9 @@ inputs:
   build-key:
     description: Stable cache scope without commas
     default: extras
-  install-zig:
-    description: Install Zig unless the container already supplies it
-    default: 'true'
+  zig-version:
+    description: The Zig to install, 0.17.0 or master; cache keys carry it
+    default: 0.17.0
   windows-git-latest:
     description: Upgrade Git for Windows to the latest release
     default: 'false'
@@ -25,17 +25,16 @@ runs:
         git --version
     - uses: mlugg/setup-zig@v2
       with:
-        version: 0.17.0
+        version: ${{ inputs.zig-version }}
         use-cache: false
-      if: inputs.install-zig == 'true'
     - name: Cache fetched Zig packages
       id: packages
       uses: actions/cache@v4
       with:
         path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
-        key: zig-packages-${{ runner.os }}-0.17.0-${{ hashFiles('**/build.zig.zon') }}
+        key: zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-${{ hashFiles('**/build.zig.zon') }}
         restore-keys: |
-          zig-packages-${{ runner.os }}-0.17.0-
+          zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-
     - name: Cache compiled builds
       id: builds
       uses: actions/cache@v4
@@ -46,15 +45,15 @@ runs:
           ${{ env.ZIG_GLOBAL_CACHE_DIR }}/o
           ${{ env.ZIG_GLOBAL_CACHE_DIR }}/h
           ${{ env.ZIG_GLOBAL_CACHE_DIR }}/z
-        key: zig-build-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
+        key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
         restore-keys: |
-          zig-build-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ inputs.build-key }}-
-          zig-build-${{ runner.os }}-${{ runner.arch }}-0.17.0-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-
+          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-
     - name: Cache external tools
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/preflight-tools
-        key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ hashFiles('**/ci/setup.zig') }}
+        key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ hashFiles('**/ci/setup.zig') }}
     - name: Fetch dependencies with retries
       run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" fetch
       shell: bash

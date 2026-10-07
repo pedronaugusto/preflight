@@ -36,10 +36,37 @@ by path with fetching off and a Zig cache of its own, so the build a consumer ge
 cannot reach the package's CI dependencies or anything cached for them. `.modules` names the modules the program imports,
 `.packages` the dependencies the package itself needs, and `.use_llvm` names a
 public function of the package's `build.zig`, `fn (std.Build.ResolvedTarget,
-std.builtin.OptimizeMode) ?bool`, which the consumer's build calls for the target
+std.lang.Optimize) ?bool`, which the consumer's build calls for the target
 and mode it builds, as a user's build would. The consumer builds for the host in Debug. `preflight.addCheck(b, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
+
+## Following std's deprecations
+
+`zig build deprecations` lists every reference to something the Zig release
+that builds the package deprecated, with the rewrite that replaces it, and
+`zig build deprecations -- --write` applies them and formats the files it
+changed. It reads std's source from that Zig. A deprecated alias, such as
+`pub const indexOf = find;`, needs nothing more: `std.mem.indexOf` becomes
+`std.mem.find`. The rest are in a table per release, checked against that std
+before anything is rewritten:
+
+- `std.fmt.allocPrint(a, ...)` becomes `a.print(...)`, its sentinel variant
+  `a.printSentinel(...)`. A first argument that is not a plain name or call
+  keeps the function form, `std.mem.Allocator.print(...)`.
+- `std.fmt.bufPrint` becomes `std.mem.print`, `bufPrintSentinel`
+  `std.mem.printSentinel`, and `std.fs.path` becomes `std.Io.Dir.path`.
+- `std.mem.copyForwards(T, dest, source)` and `copyBackwards` become
+  `@memmove(dest[0..source.len], source)` when `source` is a name.
+- `b.lazyDependency(...) orelse x` becomes `b.dependencyLazy(...) catch x` for
+  `b` declared as `*std.Build`.
+
+Names resolve through the file's own aliases (`const mem = std.mem;`); an
+alias the rewrites leave unused is removed. A rewrite that would delete a
+comment is left for a person, as is any deprecated reference the table cannot
+move; both are listed as `by hand`. Files that do not parse are skipped and
+named. Build output, `zig-pkg` and hidden directories are not read; name files
+or directories after `--` to read only those.
 
 ## Repository facts
 

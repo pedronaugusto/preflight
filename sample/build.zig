@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
 }
 
 /// Whether the sample needs LLVM for a target and mode: never.
-pub fn needsLlvm(target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) ?bool {
+pub fn needsLlvm(target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) ?bool {
     _ = target;
     _ = optimize;
     return null;

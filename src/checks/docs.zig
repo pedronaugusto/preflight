@@ -4,7 +4,7 @@ const src = @import("source.zig");
 pub fn snippet(c: src.Context, generator: src.Value) ![]const u8 {
     const source = src.string(src.get(generator, "source"), "");
     const text = try c.read(source);
-    const marker = try std.fmt.allocPrint(c.a, "// --- README:{s} ---", .{src.string(src.get(generator, "region"), "usage")});
+    const marker = try c.a.print("// --- README:{s} ---", .{src.string(src.get(generator, "region"), "usage")});
     var parts = std.mem.splitSequence(u8, text, marker);
     _ = parts.next();
     const body = parts.next() orelse return error.MissingReadmeMarker;
@@ -27,7 +27,7 @@ pub fn snippet(c: src.Context, generator: src.Value) ![]const u8 {
 }
 
 fn appendImport(a: std.mem.Allocator, writer: *std.Io.Writer, text: []const u8, name: []const u8) !void {
-    const prefix = try std.fmt.allocPrint(a, "const {s} = @import(", .{name});
+    const prefix = try a.print("const {s} = @import(", .{name});
     var lines = std.mem.splitScalar(u8, text, '\n');
     var count: usize = 0;
     while (lines.next()) |line| {
@@ -68,7 +68,7 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     }
     const text = try c.a.dupe(u8, result.stdout);
     const normalized = try std.mem.replaceOwned(u8, c.a, text, "\r\n", "\n");
-    return std.fmt.allocPrint(c.a, "{s}\n", .{std.mem.trimEnd(u8, normalized, "\n")});
+    return c.a.print("{s}\n", .{std.mem.trimEnd(u8, normalized, "\n")});
 }
 
 pub fn zigCommand(a: std.mem.Allocator, command: src.Value) ![]const []const u8 {
@@ -141,7 +141,7 @@ test "documentation matches examples and refuses drift and missing markers" {
     try tmp.dir.writeFile(c.io, .{ .sub_path = "usage.zig", .data = "const example = @import(\"example\");\nfn main() void {\n // --- README:usage ---\n const x = 1;\n // --- README:usage ---\n}\n" });
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"docs\":{\"usage\":{\"source\":\"usage.zig\",\"region\":\"usage\",\"module\":\"example\"}}}", .{})).value;
     const wanted = try snippet(c, src.get(src.get(config, "docs"), "usage"));
-    const readme = try std.fmt.allocPrint(a, "<!-- BEGIN GENERATED usage -->\n{s}<!-- END GENERATED -->\n", .{wanted});
+    const readme = try a.print("<!-- BEGIN GENERATED usage -->\n{s}<!-- END GENERATED -->\n", .{wanted});
     try tmp.dir.writeFile(c.io, .{ .sub_path = "README.md", .data = readme });
     try check(&c, config);
     try std.testing.expectEqual(@as(usize, 0), c.errors);

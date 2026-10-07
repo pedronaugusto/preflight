@@ -178,7 +178,7 @@ pub fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !v
     defer walker.deinit();
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
-        const path = try std.fs.path.join(c.a, &.{ root, entry.path });
+        const path = try std.Io.Dir.path.join(c.a, &.{ root, entry.path });
         const normalized = try c.a.dupe(u8, path);
         std.mem.replaceScalar(u8, normalized, '\\', '/');
         try out.append(c.a, try Source.parse(c.a, normalized, try c.read(path)));

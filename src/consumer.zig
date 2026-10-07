@@ -14,7 +14,7 @@ pub const Options = struct {
     packages: []const *std.Build.Dependency = &.{},
     /// A public function of the package's `build.zig` that decides
     /// `use_llvm` for a target and mode, `fn (std.Build.ResolvedTarget,
-    /// std.builtin.OptimizeMode) ?bool`, for code Zig's own backend cannot
+    /// std.lang.Optimize) ?bool`, for code Zig's own backend cannot
     /// build. The consumer's build calls it with the target and mode it
     /// builds for, as a user's build does.
     use_llvm: ?[]const u8 = null,
@@ -31,7 +31,7 @@ const Shape = struct {
 /// package keeps no consumer files of its own.
 pub fn add(b: *std.Build, options: Options) void {
     if (b.pkg_hash.len != 0) return;
-    const pkg = (b.lazyDependency("preflight", .{}) orelse return).builder;
+    const pkg = (b.dependencyLazy("preflight", .{}) catch return).builder;
     const consumer = b.addExecutable(.{ .name = "preflight-consumer", .root_module = b.createModule(.{
         .root_source_file = pkg.path("src/consumer.zig"),
         .target = b.graph.host,
@@ -70,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
     try dir.createDirPath(io, "src");
     const directory = try cwd.realPathFileAlloc(io, args[2], a);
     const root = try cwd.realPathFileAlloc(io, args[4], a);
-    const relative = try std.fs.path.relative(a, directory, null, directory, root);
+    const relative = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
     std.mem.replaceScalar(u8, relative, '\\', '/');
     const text = try cwd.readFileAlloc(io, args[5], a, .limited(16 * 1024 * 1024));
     const shape: Shape = .{ .package = args[6], .use_llvm = if (args[7].len > 0) args[7] else null, .modules = args[8..] };
@@ -78,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
     try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });
     var env = try init.environ_map.clone(a);
-    try env.put("ZIG_GLOBAL_CACHE_DIR", try std.fs.path.join(a, &.{ directory, ".zig-global-cache" }));
+    try env.put("ZIG_GLOBAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ directory, ".zig-global-cache" }));
     const packages = try cwd.realPathFileAlloc(io, args[3], a);
     var child = try std.process.spawn(io, .{ .argv = &.{ args[1], "build", "--system", packages }, .cwd = .{ .path = directory }, .environ_map = &env });
     const term = try child.wait(io);
@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn manifest(a: std.mem.Allocator, package: []const u8, path: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(a,
+    return a.print(
         \\.{{
         \\    .name = .consumer,
         \\    .version = "0.0.0",
@@ -123,12 +123,12 @@ test "the generated consumer imports each named module from the package" {
     defer arena.deinit();
     const a = arena.allocator();
     const text = try script(a, .{ .package = "conduit", .modules = &.{ "conduit", "conduit.tty" }, .use_llvm = "needsLlvm" });
-    try std.testing.expect(std.mem.indexOf(u8, text, "b.dependency(\"conduit\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, ".{ .name = \"conduit.tty\", .module = package.module(\"conduit.tty\") }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, ".use_llvm = @import(\"conduit\").needsLlvm(target, optimize)") != null);
+    try std.testing.expect(std.mem.find(u8, text, "b.dependency(\"conduit\"") != null);
+    try std.testing.expect(std.mem.find(u8, text, ".{ .name = \"conduit.tty\", .module = package.module(\"conduit.tty\") }") != null);
+    try std.testing.expect(std.mem.find(u8, text, ".use_llvm = @import(\"conduit\").needsLlvm(target, optimize)") != null);
     const single = try script(a, .{ .package = "strand", .modules = &.{"strand"} });
-    try std.testing.expect(std.mem.indexOf(u8, single, ".{ .name = \"strand\", .module = package.module(\"strand\") }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, single, "use_llvm") == null);
+    try std.testing.expect(std.mem.find(u8, single, ".{ .name = \"strand\", .module = package.module(\"strand\") }") != null);
+    try std.testing.expect(std.mem.find(u8, single, "use_llvm") == null);
     const zon = try manifest(a, "strand", "../..");
-    try std.testing.expect(std.mem.indexOf(u8, zon, ".dependencies = .{ .strand = .{ .path = \"../..\" } }") != null);
+    try std.testing.expect(std.mem.find(u8, zon, ".dependencies = .{ .strand = .{ .path = \"../..\" } }") != null);
 }

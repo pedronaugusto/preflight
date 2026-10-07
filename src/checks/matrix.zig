@@ -28,7 +28,7 @@ fn shardCount(value: src.Value) !usize {
 }
 
 fn shardName(a: std.mem.Allocator, index: usize, count: usize) ![]const u8 {
-    return if (count > 1) std.fmt.allocPrint(a, "{d}/{d}", .{ index + 1, count }) else "";
+    return if (count > 1) a.print("{d}/{d}", .{ index + 1, count }) else "";
 }
 
 /// A job's cache scope: everything that changes what it builds and runs.
@@ -39,7 +39,7 @@ fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
     const text = try std.json.Stringify.valueAlloc(a, plain, .{});
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(text, &hash, .{});
-    return std.fmt.allocPrint(a, "{x}", .{hash[0..8]});
+    return a.print("{x}", .{hash[0..8]});
 }
 
 /// How much of the gate a run executes.
@@ -90,8 +90,8 @@ fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), 
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
             .os = host,
-            .name = try std.fmt.allocPrint(a, "test ({s}, {s}){s}{s}", .{ host, mode, if (count > 1) " shard " else "", shard }),
-            .args = try std.fmt.allocPrint(a, "-Doptimize={s} -Dci-lint=false -Dci-timings=true", .{mode}),
+            .name = try a.print("test ({s}, {s}){s}{s}", .{ host, mode, if (count > 1) " shard " else "", shard }),
+            .args = try a.print("-Doptimize={s} -Dci-lint=false -Dci-timings=true", .{mode}),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
@@ -120,9 +120,9 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         }
         var whole = job;
         whole.shard = "";
-        whole.name = job.name[0 .. std.mem.indexOf(u8, job.name, " shard ") orelse job.name.len];
+        whole.name = job.name[0 .. std.mem.find(u8, job.name, " shard ") orelse job.name.len];
         const whole_key = try key(a, whole);
-        const artifact = try std.fmt.allocPrint(a, "preflight-{s}", .{whole_key});
+        const artifact = try a.print("preflight-{s}", .{whole_key});
         var built = false;
         for (compile.items) |existing| if (std.mem.eql(u8, existing.artifact, artifact)) {
             built = true;
@@ -133,9 +133,9 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
             builder.os = hosts[0];
             builder.step = "ci-build";
             builder.setup = false;
-            builder.args = try std.fmt.allocPrint(a, "{s} -Dtarget={s}", .{ job.args, target });
-            builder.name = try std.fmt.allocPrint(a, "compile for {s}", .{whole.name});
-            builder.cache_key = try std.fmt.allocPrint(a, "compile-{s}", .{whole_key});
+            builder.args = try a.print("{s} -Dtarget={s}", .{ job.args, target });
+            builder.name = try a.print("compile for {s}", .{whole.name});
+            builder.cache_key = try a.print("compile-{s}", .{whole_key});
             builder.artifact = artifact;
             try compile.append(a, builder);
         }
@@ -157,13 +157,13 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, timing: bool) ![]Job {
         const shard = try shardName(a, i, count);
         job.* = .{
             .os = hosts[0],
-            .name = try std.fmt.allocPrint(a, "Linux Debug{s}{s}", .{ if (count > 1) " shard " else "", shard }),
+            .name = try a.print("Linux Debug{s}{s}", .{ if (count > 1) " shard " else "", shard }),
             .step = "preflight-fast",
-            .args = try std.fmt.allocPrint(a, "-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "" }),
+            .args = try a.print("-Doptimize=Debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "" }),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
-            .cache_key = try std.fmt.allocPrint(a, "fast-linux-debug-{d}", .{i}),
+            .cache_key = try a.print("fast-linux-debug-{d}", .{i}),
         };
     }
     return jobs;
@@ -214,8 +214,8 @@ pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]
     const cpu = src.get(target, "cpu");
     var args: std.ArrayList([]const u8) = .empty;
     try args.appendSlice(a, &.{ "zig", "build", src.string(src.get(config, "compile_step"), "check"), "-Dci-lint=false" });
-    try args.append(a, try std.fmt.allocPrint(a, "-Dtarget={s}", .{name}));
-    if (cpu == .string) try args.append(a, try std.fmt.allocPrint(a, "-Dcpu={s}", .{cpu.string}));
+    try args.append(a, try a.print("-Dtarget={s}", .{name}));
+    if (cpu == .string) try args.append(a, try a.print("-Dcpu={s}", .{cpu.string}));
     return args.toOwnedSlice(a);
 }
 
@@ -279,7 +279,7 @@ test "portable matrix builds macOS and Windows binaries on Linux without losing 
         try std.testing.expectEqualStrings(builder.artifact, executor.artifact);
         try std.testing.expect(!std.mem.eql(u8, executor.os, hosts[0]));
     }
-    try std.testing.expect(std.mem.indexOf(u8, tiers.compile[0].args, "aarch64-macos") != null);
+    try std.testing.expect(std.mem.find(u8, tiers.compile[0].args, "aarch64-macos") != null);
 }
 
 test "each host's shards run every mode, split by count, with the lint and compile jobs once" {
@@ -308,7 +308,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     };
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
     // The source checks job owns lint in the release tier; no test job repeats it.
-    for (jobs) |job| if (!std.mem.eql(u8, job.step, "lint") and job.setup) try std.testing.expect(std.mem.indexOf(u8, job.args, "-Dci-lint=false") != null);
+    for (jobs) |job| if (!std.mem.eql(u8, job.step, "lint") and job.setup) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-lint=false") != null);
     try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, .release));
 }
 
@@ -331,7 +331,7 @@ test "a workflow-level test timeout is refused; the watchdog bounds each test" {
     try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .release));
     try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .fast));
     for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release)) |job|
-        try std.testing.expect(std.mem.indexOf(u8, job.args, "test-timeout") == null);
+        try std.testing.expect(std.mem.find(u8, job.args, "test-timeout") == null);
 }
 
 test "fast shards split Linux Debug, and only the first checks sources and compiles other targets" {
@@ -359,7 +359,7 @@ test "portable shards share one compilation per host and mode" {
     try std.testing.expectEqual(@as(usize, 2 + 6), tiers.run.len);
     for (tiers.compile) |builder| {
         try std.testing.expectEqualStrings("", builder.shard);
-        try std.testing.expect(std.mem.indexOf(u8, builder.name, "shard") == null);
+        try std.testing.expect(std.mem.find(u8, builder.name, "shard") == null);
     }
     var sharing: usize = 0;
     for (tiers.run) |executor| if (std.mem.eql(u8, executor.name, "test (windows-latest, Debug) shard 2/3")) {
@@ -398,5 +398,5 @@ test "the merge tier compiles macOS and Windows Debug once on Linux and runs eve
     try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 2), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 3), tiers.run.len);
-    for (tiers.compile) |builder| try std.testing.expect(std.mem.indexOf(u8, builder.args, "-Doptimize=Debug") != null);
+    for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=Debug") != null);
 }

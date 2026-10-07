@@ -19,7 +19,7 @@ pub const Shard = struct {
     /// Reads `i/n`, one-based, as the hosted matrix writes it. Empty is all.
     pub fn parse(text: []const u8) error{InvalidShard}!Shard {
         if (text.len == 0) return all;
-        const slash = std.mem.indexOfScalar(u8, text, '/') orelse return error.InvalidShard;
+        const slash = std.mem.findScalar(u8, text, '/') orelse return error.InvalidShard;
         const number = std.fmt.parseUnsigned(usize, text[0..slash], 10) catch return error.InvalidShard;
         const count = std.fmt.parseUnsigned(usize, text[slash + 1 ..], 10) catch return error.InvalidShard;
         if (number == 0 or number > count) return error.InvalidShard;
@@ -30,7 +30,7 @@ pub const Shard = struct {
 /// Seeds std.testing and returns the indices of this shard's tests in seeded
 /// order. `PREFLIGHT_SHARD` (`i/n`) selects the shard; `durations`, the text of
 /// the package's `ci/durations.json` or empty, balances the split.
-pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.builtin.TestFn, durations: []const u8) ![]usize {
+pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.lang.TestFn, durations: []const u8) ![]usize {
     const a = std.heap.page_allocator;
     var bytes: [4]u8 = undefined;
     std.Io.random(io, &bytes);

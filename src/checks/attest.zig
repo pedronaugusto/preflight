@@ -30,16 +30,16 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
     const current = env.get("GITHUB_RUN_ID") orelse return error.MissingRun;
     var client: std.http.Client = .{ .allocator = c.a, .io = c.io };
     defer client.deinit();
-    const prefix = try std.fmt.allocPrint(c.a, "https://api.github.com/repos/{s}/actions", .{repo});
+    const prefix = try c.a.print("https://api.github.com/repos/{s}/actions", .{repo});
     // PR metadata names the branch head; GITHUB_SHA and the proof name the
     // tested merge commit. Search the proof rather than filtering head_sha.
     var page: usize = 1;
     while (true) : (page += 1) {
-        const runs = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/workflows/ci.yml/runs?status=success&per_page=100&page={d}", .{ prefix, page }));
+        const runs = try get(c, &client, token, try c.a.print("{s}/workflows/ci.yml/runs?status=success&per_page=100&page={d}", .{ prefix, page }));
         const candidates = src.items(src.get(runs, "workflow_runs"));
         for (candidates) |candidate| {
             if (!passed(candidate, current)) continue;
-            const artifacts = try get(c, &client, token, try std.fmt.allocPrint(c.a, "{s}/runs/{d}/artifacts?per_page=100", .{ prefix, src.get(candidate, "id").integer }));
+            const artifacts = try get(c, &client, token, try c.a.print("{s}/runs/{d}/artifacts?per_page=100", .{ prefix, src.get(candidate, "id").integer }));
             for (src.items(src.get(artifacts, "artifacts"))) |artifact| {
                 const name = src.string(src.get(artifact, "name"), "");
                 if (!proves(name, sha)) continue;
@@ -60,7 +60,7 @@ fn get(c: src.Context, client: *std.http.Client, token: []const u8, url: []const
         .location = .{ .url = url },
         .response_writer = &output.writer,
         .extra_headers = &.{ .{ .name = "Accept", .value = "application/vnd.github+json" }, .{ .name = "User-Agent", .value = "preflight" } },
-        .privileged_headers = &.{.{ .name = "Authorization", .value = try std.fmt.allocPrint(c.a, "Bearer {s}", .{token}) }},
+        .privileged_headers = &.{.{ .name = "Authorization", .value = try c.a.print("Bearer {s}", .{token}) }},
     });
     if (result.status != .ok) return error.GithubRequestFailed;
     return (try std.json.parseFromSlice(src.Value, c.a, output.written(), .{ .allocate = .alloc_always })).value;

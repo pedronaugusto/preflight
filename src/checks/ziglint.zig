@@ -31,7 +31,7 @@ pub fn findings(c: *src.Context, output: []const u8, exceptions: src.Value) !voi
 fn parseFindings(c: *src.Context, output: []const u8, allowed: *ledger.Ledger) !void {
     var remaining = std.mem.trim(u8, output, " \t\r\n");
     while (remaining.len > 0) {
-        const rule_end = std.mem.indexOf(u8, remaining, ": ") orelse {
+        const rule_end = std.mem.find(u8, remaining, ": ") orelse {
             c.fail("ziglint: {s}", .{remaining});
             return;
         };
@@ -45,7 +45,7 @@ fn parseFindings(c: *src.Context, output: []const u8, allowed: *ledger.Ledger) !
             return;
         };
         const rest = remaining[rule_end + 2 ..];
-        const header_end = std.mem.indexOf(u8, rest, ": ") orelse return error.InvalidZiglintDiagnostic;
+        const header_end = std.mem.find(u8, rest, ": ") orelse return error.InvalidZiglintDiagnostic;
         const header = rest[0..header_end];
         const line_separator = std.mem.findScalarLast(u8, header, ':') orelse return error.InvalidZiglintDiagnostic;
         const path = try c.a.dupe(u8, header[0..line_separator]);

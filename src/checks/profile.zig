@@ -4,8 +4,8 @@ const src = @import("source.zig");
 
 /// Seconds per test name, per target column (`windows-Debug`).
 pub const Durations = struct {
-    tests: std.StringArrayHashMapUnmanaged(std.StringArrayHashMapUnmanaged(f64)) = .empty,
-    keys: std.StringArrayHashMapUnmanaged(void) = .empty,
+    tests: std.array_hash_map.String(std.array_hash_map.String(f64)) = .empty,
+    keys: std.array_hash_map.String(void) = .empty,
     records: usize = 0,
 
     fn put(d: *Durations, a: std.mem.Allocator, name: []const u8, column: []const u8, seconds: f64) !void {
@@ -45,7 +45,7 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
             if (column.len == 0) continue;
             const name = src.string(src.get(value, "name"), "");
             const shard = src.string(src.get(value, "shard"), "");
-            const seen = try shards.getOrPut(c.a, try std.fmt.allocPrint(c.a, "{s}\x00{s}", .{ name, column }));
+            const seen = try shards.getOrPut(c.a, try c.a.print("{s}\x00{s}", .{ name, column }));
             if (!seen.found_existing) {
                 seen.value_ptr.* = try c.a.dupe(u8, shard);
             } else if (!std.mem.eql(u8, seen.value_ptr.*, shard)) {

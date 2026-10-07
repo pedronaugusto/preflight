@@ -30,7 +30,7 @@ test "cache pruning keeps fetched packages and tools, missing cache stays missin
     defer a.free(path);
     for ([_][]const u8{ "o", "h", "z", "tmp", "p", "ziglint" }) |name| {
         try tmp.dir.createDir(io, name, .default_dir);
-        const file = try std.fs.path.join(a, &.{ name, "kept" });
+        const file = try std.Io.Dir.path.join(a, &.{ name, "kept" });
         defer a.free(file);
         try tmp.dir.writeFile(io, .{ .sub_path = file, .data = &(@as([16384]u8, @splat('x'))) });
     }
@@ -42,7 +42,7 @@ test "cache pruning keeps fetched packages and tools, missing cache stays missin
     try tmp.dir.access(io, "p/kept", .{});
     try tmp.dir.access(io, "ziglint/kept", .{});
     try trim(c, path, 1);
-    const missing = try std.fs.path.join(a, &.{ path, "absent" });
+    const missing = try std.Io.Dir.path.join(a, &.{ path, "absent" });
     defer a.free(missing);
     try trim(c, missing, 1);
 }

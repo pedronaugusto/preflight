@@ -54,7 +54,7 @@ pub const Ledger = struct {
         if (l.allowed.len == 0) return;
         const prefix = try git(l.c, &.{ "rev-parse", "--show-prefix" });
         const path = try std.mem.concat(l.c.a, u8, &.{ std.mem.trim(u8, prefix.stdout, "\r\n"), file });
-        const spec = try std.fmt.allocPrint(l.c.a, "{s}:{s}", .{ base, path });
+        const spec = try l.c.a.print("{s}:{s}", .{ base, path });
         const shown = try git(l.c, &.{ "show", spec });
         const base_exists = try git(l.c, &.{ "rev-parse", "--verify", base });
         if (!success(base_exists)) return error.MissingLedgerBase;

@@ -9,7 +9,7 @@ pub const ConsumerOptions = ci.consumer.Options;
 
 pub fn build(b: *std.Build) void {
     const target = ci.ciTarget(b);
-    const gantry_dep = b.lazyDependency("gantry", .{ .target = target, .optimize = .debug }) orelse return;
+    const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
     const gantry = gantry_dep.module("gantry");
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
     }) });
     const options = b.addOptions();
     options.addOptionPathUntracked("root", b.path("."));
+    options.addOptionPathUntracked("zig_std", b.graph.path(.zig_lib, "std"));
     tests.root_module.addOptions("test_options", options);
     // The gate below gives the suite preflight's runner, as it does a
     // consumer's tests; the order module the runner imports runs its own

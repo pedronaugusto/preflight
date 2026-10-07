@@ -30,4 +30,5 @@ test {
     _ = profile;
     _ = attest;
     _ = paths;
+    _ = @import("deprecations.zig");
 }

@@ -26,7 +26,7 @@ fn baseFindings(c: *src.Context, sources: []const src.Source, config: src.Value)
     if (!ledger.success(prefix)) return error.MissingRepository;
     var old_sources: std.ArrayList(src.Source) = .empty;
     for (sources) |s| {
-        const spec = try std.fmt.allocPrint(c.a, "{s}:{s}{s}", .{ c.ledger_base.?, std.mem.trim(u8, prefix.stdout, "\r\n"), s.path });
+        const spec = try c.a.print("{s}:{s}{s}", .{ c.ledger_base.?, std.mem.trim(u8, prefix.stdout, "\r\n"), s.path });
         const shown = try ledger.git(c, &.{ "show", spec });
         if (!ledger.success(shown)) continue;
         try old_sources.append(c.a, try src.Source.parse(c.a, s.path, shown.stdout));
@@ -60,7 +60,7 @@ pub fn findings(a: std.mem.Allocator, sources: []const src.Source, config: src.V
             .container_field, .container_field_init, .container_field_align => fields = true,
             else => {},
         };
-        const base = std.fs.path.basename(s.path);
+        const base = std.Io.Dir.path.basename(s.path);
         const stem = base[0 .. base.len - 4];
         if (!fileCase(stem, fields)) try result.append(a, .{
             .rule = rules[2],

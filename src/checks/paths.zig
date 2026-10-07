@@ -3,9 +3,9 @@ const std = @import("std");
 const src = @import("source.zig");
 
 pub fn documentation(path: []const u8) bool {
-    if (std.mem.startsWith(u8, path, "src/") or std.mem.indexOf(u8, path, "/src/") != null) return false;
+    if (std.mem.startsWith(u8, path, "src/") or std.mem.find(u8, path, "/src/") != null) return false;
     if (std.mem.eql(u8, path, "LICENSE")) return true;
-    const extension = std.fs.path.extension(path);
+    const extension = std.Io.Dir.path.extension(path);
     for ([_][]const u8{ ".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".avif" }) |allowed| {
         if (std.ascii.eqlIgnoreCase(extension, allowed)) return true;
     }

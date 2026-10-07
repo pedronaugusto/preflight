@@ -66,7 +66,7 @@ pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) 
                     if (src.glob(entry.key_ptr.*, s.path)) limit = @min(limit, src.number(entry.value_ptr.*, limit));
                 }
             }
-            const label = try std.fmt.allocPrint(c.a, "{s}:{s}", .{ s.path, name });
+            const label = try c.a.print("{s}:{s}", .{ s.path, name });
             const exception = src.get(src.get(config, "function_exceptions"), label);
             if (exception != .null) {
                 if (std.mem.trim(u8, src.string(src.get(exception, "reason"), ""), " \t\r\n").len == 0 or count > src.number(src.get(exception, "lines"), 0))
@@ -102,7 +102,7 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
     var directories: std.StringHashMap(std.ArrayList([]const u8)) = .init(c.a);
     for (sources) |s| {
         if (src.testCode(s.path, config)) continue;
-        const directory = std.fs.path.dirname(s.path) orelse continue;
+        const directory = std.Io.Dir.path.dirname(s.path) orelse continue;
         const group = try directories.getOrPut(directory);
         if (!group.found_existing) group.value_ptr.* = .empty;
         try group.value_ptr.append(c.a, s.path);
@@ -114,12 +114,12 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
         if (members.len < 2 or rootDirectory(directory, config)) continue;
         const exception = src.get(src.get(config, "layout_exceptions"), directory);
         if (layoutException(members, exception)) continue;
-        const parent = std.fs.path.dirname(directory) orelse ".";
-        const name = std.fs.path.basename(directory);
+        const parent = std.Io.Dir.path.dirname(directory) orelse ".";
+        const name = std.Io.Dir.path.basename(directory);
         var count: usize = 0;
         for (sources) |s| {
-            if (!std.mem.eql(u8, std.fs.path.dirname(s.path) orelse ".", parent)) continue;
-            const base = std.fs.path.basename(s.path);
+            if (!std.mem.eql(u8, std.Io.Dir.path.dirname(s.path) orelse ".", parent)) continue;
+            const base = std.Io.Dir.path.basename(s.path);
             if (std.ascii.eqlIgnoreCase(base[0 .. base.len - 4], name)) count += 1;
         }
         if (count != 1) c.fail("{s}: namespace has {d} files; give it one adjacent {s}.zig entry", .{ directory, members.len, name });
@@ -131,14 +131,14 @@ fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Valu
     var groups = std.StringHashMap(std.ArrayList([]const u8)).init(c.a);
     for (sources) |s| {
         if (src.testCode(s.path, config)) continue;
-        const parent = std.fs.path.dirname(s.path) orelse ".";
-        const base = std.fs.path.basename(s.path);
+        const parent = std.Io.Dir.path.dirname(s.path) orelse ".";
+        const base = std.Io.Dir.path.basename(s.path);
         const stem = base[0 .. base.len - 4];
-        const prefix = stem[0..(std.mem.indexOfScalar(u8, stem, '_') orelse stem.len)];
+        const prefix = stem[0..(std.mem.findScalar(u8, stem, '_') orelse stem.len)];
         // Members already inside their namespace may retain descriptive prefixes.
-        if (std.ascii.eqlIgnoreCase(std.fs.path.basename(parent), prefix)) continue;
+        if (std.ascii.eqlIgnoreCase(std.Io.Dir.path.basename(parent), prefix)) continue;
         const lower = try std.ascii.allocLowerString(c.a, prefix);
-        const namespace = try std.fmt.allocPrint(c.a, "{s}/{s}", .{ parent, lower });
+        const namespace = try c.a.print("{s}/{s}", .{ parent, lower });
         const group = try groups.getOrPut(namespace);
         if (!group.found_existing) group.value_ptr.* = .empty;
         try group.value_ptr.append(c.a, s.path);

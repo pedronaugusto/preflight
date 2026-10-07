@@ -20,7 +20,7 @@ pub const Recorder = struct {
         const shard = env.get("PREFLIGHT_SHARD") orelse "";
         const part = if (shard.len == 0) "all" else try std.mem.replaceOwned(u8, a, shard, "/", "of");
         const path = try a.print("{s}-{s}.ndjson", .{ prefix, part });
-        if (std.fs.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
+        if (std.Io.Dir.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
         return .{
             .io = io,
             .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true }),

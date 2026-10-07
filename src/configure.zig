@@ -8,7 +8,7 @@ pub fn exists(b: *std.Build, sub_path: []const u8) bool {
     const io = b.graph.io;
     b.dependOnDirectoryMetadata(b.path("."));
     var start: usize = 0;
-    while (std.mem.indexOfScalarPos(u8, sub_path, start, '/')) |slash| : (start = slash + 1) {
+    while (std.mem.findScalarPos(u8, sub_path, start, '/')) |slash| : (start = slash + 1) {
         const parent = sub_path[0..slash];
         b.root.access(io, parent, .{}) catch return false;
         b.dependOnDirectoryMetadata(b.path(parent));

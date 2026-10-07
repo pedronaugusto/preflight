@@ -37,7 +37,7 @@ pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
 pub fn addCi(b: *std.Build, config: Config) void {
     if (b.pkg_hash.len != 0) return;
     const steps: Steps = .create(b, config);
-    const dep = b.lazyDependency("preflight", .{}) orelse return;
+    const dep = b.dependencyLazy("preflight", .{}) catch return;
     steps.install(b, dep.builder, config);
 }
 
@@ -80,7 +80,7 @@ const Steps = struct {
     /// `pkg` is the preflight package whose sources and tools the gate runs.
     fn install(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
-        const gantry_dep = pkg.lazyDependency("gantry", .{ .target = host, .optimize = .debug }) orelse return;
+        const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug }) catch return;
         const gantry = gantry_dep.module("gantry");
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
@@ -107,6 +107,12 @@ const Steps = struct {
         docs.addPassthruArgs();
         docs.setCwd(b.path("."));
         b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
+        const deprecations = b.addRunArtifact(executable);
+        deprecations.addArgs(&.{ "deprecations", "--std" });
+        deprecations.addDirectoryArg(b.graph.path(.zig_lib, "std"));
+        deprecations.addPassthruArgs();
+        deprecations.setCwd(b.path("."));
+        b.step("deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
         steps.addLint(b, pkg, config, executable, gantry);
     }
 
@@ -140,7 +146,7 @@ const Steps = struct {
         lint_structure.addArgs(&.{ "--config", config.config });
         lint_structure.setCwd(b.path("."));
         lint_structure.step.dependOn(&format.step);
-        const ziglint_dep = pkg.lazyDependency("ziglint", .{ .target = host, .optimize = .safe }) orelse return;
+        const ziglint_dep = pkg.dependencyLazy("ziglint", .{ .target = host, .optimize = .safe }) catch return;
         const checks = b.addRunArtifact(executable);
         checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
         checks.addArtifactArg(ziglint_dep.artifact("ziglint"));

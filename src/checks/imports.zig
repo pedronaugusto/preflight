@@ -31,7 +31,7 @@ fn aliasUsed(s: src.Source, alias: []const u8) bool {
 
 fn resolve(a: std.mem.Allocator, path: []const u8, target: []const u8) ![]const u8 {
     // Resolve dot components lexically without depending on host separators.
-    const joined = try std.fmt.allocPrint(a, "{s}/{s}", .{ std.fs.path.dirname(path) orelse ".", target });
+    const joined = try a.print("{s}/{s}", .{ std.Io.Dir.path.dirname(path) orelse ".", target });
     var parts: std.ArrayList([]const u8) = .empty;
     var iterator = std.mem.tokenizeAny(u8, joined, "/\\");
     while (iterator.next()) |part| {

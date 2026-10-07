@@ -72,7 +72,7 @@ fn ownership(graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usiz
         var owners: usize = 0;
         var owner: []const u8 = "";
         for (d.layers) |layer| for (layer.patterns) |pattern| {
-            if (test_code and std.mem.indexOfAny(u8, pattern, "*?") != null) continue;
+            if (test_code and std.mem.findAny(u8, pattern, "*?") != null) continue;
             if (!gantry.rules.matches(pattern, path)) continue;
             owners += 1;
             owner = layer.name;

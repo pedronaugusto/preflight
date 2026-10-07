@@ -8,6 +8,9 @@ pub const addConsumerCheck = ci.consumer.add;
 pub const ConsumerOptions = ci.consumer.Options;
 
 pub fn build(b: *std.Build) void {
+    // Declared before the lazy gantry can end the script, so the first
+    // pass on an empty package cache accepts it.
+    const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
     const target = ci.ciTarget(b);
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
     const gantry = gantry_dep.module("gantry");
@@ -37,7 +40,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "gantry", .module = gantry }},
     }) });
     b.installArtifact(executable);
-    const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
     if (repo_root == null) {
         // preflight gates its own sources with the checks it ships.
         ci.addOwnCi(b, .{ .tests = suite });

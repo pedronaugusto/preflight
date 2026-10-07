@@ -65,6 +65,7 @@ const Steps = struct {
     lint: *std.Build.Step,
     ci: *std.Build.Step,
     lint_enabled: bool,
+    timing: bool,
 
     fn create(b: *std.Build, config: Config) Steps {
         const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
@@ -73,8 +74,12 @@ const Steps = struct {
         forceTests(config.tests);
         const compile = b.step("ci-check", "Compile every test and its helpers without executing tests");
         compileTests(config.tests, compile);
+        // Options are declared before any lazy dependency can end the
+        // build script: Zig 0.17 rejects a -D option the first pass never
+        // declared, even while it only discovers what to fetch.
         const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
-        return .{ .lint = lint, .ci = ci, .lint_enabled = enabled };
+        const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false);
+        return .{ .lint = lint, .ci = ci, .lint_enabled = enabled, .timing = timing };
     }
 
     /// `pkg` is the preflight package whose sources and tools the gate runs.
@@ -91,12 +96,11 @@ const Steps = struct {
                 .imports = &.{.{ .name = "gantry", .module = gantry }},
             }),
         });
-        const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false);
         const timeout = config.test_timeout.nanoseconds() orelse fail: {
             config.tests.dependOn(&b.addFail("test_timeout: a bound other than the default, or none, needs its reason").step);
             break :fail 0;
         };
-        record.add(b, config.tests, pkg, executable, .{ .timing = timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
         if (config.portable_tests) portable.add(b, config.tests, executable);
         const cache = b.addRunArtifact(executable);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });

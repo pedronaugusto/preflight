@@ -34,6 +34,15 @@ result; the default local gate always checks sources.
 Compiled caches never skip test execution: each gate runs the test binaries even
 when their build products are already available.
 
+A package with benchmarks gives them to `addCi` as `.bench = .{ .programs = &.{.{ .name
+= "scan", .source = "bench/scan.zig" }}, .imports = imports, .target = target,
+.optimize = optimize }`, where `imports(b, target, optimize)` builds the modules a
+program imports in that mode. `zig build bench` builds every program in ReleaseFast
+under `zig-out/bench` and runs them one after another, passing on `-- <args>`;
+`zig build test` runs each once with `--smoke`, built in the test's mode, where a
+program runs every point once and reads no clock. A repository with a `bench/`
+directory and no `.bench` fails its tests by name.
+
 `preflight.addConsumerCheck(b, .{ .package = "name", .program = b.path("ci/consumer.zig") })`
 adds `check-consumer`: it builds a generated project that depends on the package
 by path with fetching off and a Zig cache of its own, so the build a consumer gets
@@ -59,8 +68,18 @@ pattern naming a test file fails. An entry that is test code fails too, since th
 entry rule reads only the production graph. Required paths, reference rules and owned
 tokens hold for every file. The runner walks the `sources` roots, as lint does. An
 import gantry marks dead, in a declaration nothing reaches from a public, exported
-or comptime member, a field, `main` or a test, is unused and fails. Gantry remains the language-neutral graph library;
-these runners belong here.
+or comptime member, a field, `main` or a test, is unused and fails. A file gantry
+could not read as its language fails too, since it gave the graph none of its imports.
+Gantry remains the language-neutral graph library; these runners belong here.
+
+A namespace file that publishes the files of its own directory declares those
+imports in `ci/layers.zig` as `reexports`, each a `.{ .from = "src/odb.zig", .to =
+"src/odb/bitmap.zig" }`. Layers and cycles read the implementation without them;
+every other rule reads them. A declared re-export that is no production import, or
+whose file lies outside the namespace's directory, fails. A package names the
+packages only its tests may import in `ci/preflight.json` `test_dependencies`, such
+as a library of test doubles taken as a lazy dependency; an import of one outside
+test code fails.
 
 Test code has one definition, shared by the source checks and the structure
 runner: files named `*_test.zig`, `test_*.zig` or `tests.zig`, and the
@@ -79,8 +98,16 @@ with lower per-path `function_limits` for shared folds. Casts require a nonempty
 A namespace containing two or more implementation files has one adjacent entry:
 `src/parser.zig` beside `src/parser/`. Case-insensitive matching accommodates
 existing Zig type namespaces; tests and configured test support do not count.
-Tests must be reachable from a configured root through imports or aliases named
-inside test blocks.
+Every file with tests is named by a test block a configured root reaches: the
+alias itself (`_ = corpus;`), a whole `@import("corpus.zig")`, or
+`refAllDecls(@This())` over a public alias. A member a test happens to use
+(`corpus.seed()`) does not name the file: its tests would last only as long as that
+use.
+
+`build.zig.zon`'s `.paths` ships exactly what a fetched package needs: `build.zig`,
+`build.zig.zon`, the source roots, `LICENSE`, `README.md` and `CHANGELOG.md`.
+Benchmarks, CI, examples and workflows stay in the repository. A further path a
+consumer's build reads is named in `ci/preflight.json` `shipped` with its reason.
 
 Generated Markdown blocks retain their visible generator labels. Their source,
 region, module import and whether that import is shown are facts in the JSON
@@ -195,7 +222,10 @@ compile bundle for the other targets.
 
 A shared `skip` job filters changes before the fast tier. Changes touching only
 Markdown outside `src`, LICENSE or images run the documented-snippet check alone.
-Mixed changes, source Markdown and unavailable diff bases keep the test gate.
+The change is the branch since it left its base, as a pull request shows it:
+the pull request's or merge queue's base, or `origin/main` for a dispatch, never
+the last commit alone. Mixed changes, source Markdown and unavailable diff bases
+keep the test gate.
 Merge and release candidates always keep the whole gate, docs-only or not.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
@@ -211,7 +241,13 @@ sharing setup and compiled products. The checker uses its host's baseline CPU
 target so its cached executable is reusable across hosted runner CPU models.
 
 Fetched packages, compiled builds and pinned external tools have separate caches.
-Dependency fetches and tool setup retry three times with backoff. `zig build ci-setup`
+Each job fetches what its own build asks for: it configures the build with the
+job's arguments (`zig build --list-steps`) and builds nothing, retrying three times
+with backoff, as tool setup does. Zig compiles the build script of every package in
+its cache, so a lazy dependency only another job asks for never reaches the Zig
+master leg. A package asks for such a dependency only behind an option that job
+sets (`-Dconformance` for an emulator its conformance job feeds), since Zig marks a
+lazy dependency needed for the whole invocation, whichever step asked for it. `zig build ci-setup`
 may install a repository's external tools into the cached runner temp directory.
 
 The design uses GitHub's standard [reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows):
@@ -266,7 +302,7 @@ or directories after `--` to read only those.
 | Declaration | What it does |
 |---|---|
 | `addCi(b, Config)` | Adds `lint`, `ci`, `ci-check`, `check-imports`, `docs`, `cache` and `deprecations` |
-| `Config`, `TestTimeout` | The gate's paths, shard records, watchdog and test log level |
+| `Config`, `TestTimeout`, `Bench` | The gate's paths, shard records, watchdog, test log level and benchmarks |
 | `addConsumerCheck(b, ConsumerOptions)` | Adds `check-consumer` |
 | `addCheck(b, name, source)` | Builds, tests and runs a repository check program as step `name` |
 
@@ -297,7 +333,7 @@ Run `zig build test` for the check regression suite, and `cd sample && zig build
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
 ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
-`zig-0.17`), with all rules except Z024 as in tycho;
+`zig-0.17`, commit 924b6b5), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
 
 ## Licence

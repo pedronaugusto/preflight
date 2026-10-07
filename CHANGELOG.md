@@ -8,11 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `build.zig.zon`'s `.paths` ships exactly `build.zig`, `build.zig.zon`, the source roots, `LICENSE`, `README.md` and `CHANGELOG.md`; lint fails any other path, and any it names that does not exist. Name a further path a consumer's build reads in `ci/preflight.json` `shipped` with its reason.
+- A file with tests is reached only when a test block names it: the alias itself (`_ = corpus;`), a whole `@import`, or `refAllDecls(@This())` over a public alias. A member a test uses (`corpus.seed()`, `@import("event.zig").Key`) no longer reaches the file's tests.
+- A repository with a `bench/` directory gives `addCi` its `.bench`; without it the tests fail by name.
+- Pin ziglint 924b6b5: Z015 counts a merged error set (`A || B`) as named and finds public declarations in every enclosing container, tagged unions included; Z023 finds the receiver of a struct nested in another. An exception `ziglint_exceptions` records for one of those findings is now unused and fails; drop it.
 - `preflight_timings.Recorder` keeps no `Io`: `deinit(io)` and `record(io, name, nanoseconds, status)` take it. `init` returns `Recorder.InitError` and `record` `Recorder.RecordError`.
 - `preflight_order.init` returns `InitError`: a seed that is no `u32` is `InvalidSeed` (it was `Overflow` or `InvalidCharacter`), and durations that do not parse are `InvalidDurations`, as from `weigh`, which returns `WeighError`. `assign` returns `std.mem.Allocator.Error`.
 - Pin gantry 6599037, where a reader is `read(context, scratch, io, path)` and `manifests` names its error sets after their functions; before it, gantry dc53715, where `scan` takes an `io` and hands it to the reader, `Options.diagnostics` replaces `scanWithDiagnostic`, and every public error set is named. A package's `ci/layers.zig` needs no change.
 - The hosted gate has tiers: `fast`, `merge` (fast plus the Debug suite on macOS and Windows; pull requests and the merge queue run it) and `release` (the former full matrix). `zig.yml` takes `tier` in place of `full`, and `merge-*` and `release-*` matrices in place of `full-matrix`, `compile-matrix` and `run-matrix`; `zig build plan` takes `--tier` in place of `--full`, and `skip.yml` takes `tier`. The proof artifact is `preflight-merge-<sha>` or `preflight-release-<sha>`, and a main push accepts either for its exact commit.
-- Requires Zig 0.17.0. ziglint is pinned at 6adecff of pedronaugusto/ziglint, v0.5.3 ported to 0.17.
+- Requires Zig 0.17.0. ziglint is pinned at pedronaugusto/ziglint, v0.5.3 ported to 0.17.
 - `zig build ci-linux`, its Debian image `src/checks/linux.Dockerfile` and the `container` command are removed; preflight starts no containers.
 - Timing keys and record names use Zig 0.17's mode names: `linux-debug`, `windows-safe`, `test-linux-debug-all.ndjson`. Rename the columns of `ci/durations.json` (`-Debug` to `-debug`, `-ReleaseSafe` to `-safe`, `-ReleaseFast` to `-fast`, `-ReleaseSmall` to `-small`).
 - Test runs carry no environment from the build, since Zig 0.17 keeps a run's environment in its cached configuration: the runner reads `PREFLIGHT_SHARD` and `PREFLIGHT_TEST_SEED` when it runs, and `preflight_runner_options` carries the recorded durations and the timing record's name. `PREFLIGHT_TIMINGS` and `PREFLIGHT_DURATIONS` are gone; `preflight_order.init` takes the durations' text and `preflight_timings.Recorder.init` the record's name. Test artifacts that share a root module share its runner options and timing record.
@@ -42,6 +46,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Config.bench`: `zig build bench` builds every program in ReleaseFast under `zig-out/bench` and runs them one after another; `zig build test` runs each once with `--smoke`.
+- `ci/layers.zig` `reexports`: a namespace file's imports of the files in its own directory, which layers and cycles do not read.
+- `ci/preflight.json` `test_dependencies`: packages only tests may import; an import of one outside test code fails the structure check.
 - `zig build deprecations` follows std's deprecations: it rewrites every reference to what the building Zig release deprecated, through std's own aliases and a table per release checked against that std, and lists what needs a person. `-- --write` applies it.
 - `Config.test_timeout`: a watchdog in the shared runner fails a test that outlasts it, Io teardown included, with its name, phase and seed.
 - `Config.test_log_level`: the `std.log` level tests print at, so a library sets it here rather than writing `std.testing.log_level`.
@@ -59,12 +66,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Each job fetches what its own build asks for, configuring it with the job's arguments, instead of every dependency: a lazy dependency only another job asks for, such as a terminal emulator that builds with exactly one Zig, no longer stops the Zig master leg. The package cache key changes with it.
 - The package ships its CHANGELOG, beside the README and LICENSE.
 - The README reads in the packages' order: install, usage, design, API, scope, built with, testing, licence.
 - The generated matrices pass Zig 0.17's `-Doptimize=debug`, `safe`, `fast` and `small`; regenerate a caller's with `zig build plan`.
 
 ### Fixed
 
+- A dispatched fast tier compares the branch with `origin/main` from their merge base, not with `HEAD^`: a docs-only last commit no longer skips the gate for the code before it.
+- The structure check fails on a source gantry could not read, which gave the graph none of its imports.
+- Tests run git without the user's or the system's configuration.
 - The full tier's ThreadSanitizer job leaves the source checks to their own job, as every other test job does.
 - `catch unreachable` and `std.debug.print` checks skip the configured `test_support`, not always `src/testing/`.
 

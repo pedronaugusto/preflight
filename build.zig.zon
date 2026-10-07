@@ -6,8 +6,8 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .ziglint = .{
-            .url = "git+https://github.com/pedronaugusto/ziglint#6adecff956f4f53de66ddc6ec7600191e672915f",
-            .hash = "ziglint-0.5.3-t0bwL9ALBgBPhZjpSKMCvdYuSjyU2huCriVCp_Dw2lm2",
+            .url = "git+https://github.com/pedronaugusto/ziglint#924b6b5dbc5848ceef77ebccc42470efdf7a1dc4",
+            .hash = "ziglint-0.5.3-t0bwL9gkBgDJkTIUhKe70dqGDYevrZK1XGTdjnHfwURT",
             .lazy = true,
         },
         .gantry = .{

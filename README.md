@@ -40,7 +40,8 @@ A package with benchmarks gives them to `addCi` as `.bench = .{ .programs = &.{.
 program imports in that mode. `zig build bench` builds every program in ReleaseFast
 under `zig-out/bench` and runs the timed ones one after another with no arguments
 (`.timed = false` leaves out a tool such as a fixture writer); a program's own
-arguments are for running it from `zig-out/bench` by hand;
+arguments are for running it from `zig-out/bench` by hand, and each run has a
+fresh, empty working directory for the fixtures it writes;
 `zig build test` runs each once with `--smoke`, built in the test's mode, where a
 program runs every point once and reads no clock. A repository with a `bench/`
 directory and no `.bench` fails its tests by name.

@@ -2,7 +2,8 @@
 //! built in ReleaseFast under `zig-out/bench`, the timed ones run with no
 //! arguments one after another, and each run once with `--smoke` by `zig
 //! build test`, so it keeps working with the API. A program's own arguments
-//! are for running it from `zig-out/bench` by hand.
+//! are for running it from `zig-out/bench` by hand. Each run has a fresh, empty
+//! working directory of its own, where a program writes the fixtures it needs.
 const std = @import("std");
 const configure = @import("configure.zig");
 
@@ -50,6 +51,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, bench: ?Bench) void {
         step.dependOn(&b.addInstallArtifact(compile, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
         if (!program.timed) continue;
         const run = b.addRunArtifact(compile);
+        run.setCwd(b.tmpPath());
         run.has_side_effects = true;
         if (previous) |before| run.step.dependOn(before);
         previous = &run.step;
@@ -58,6 +60,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, bench: ?Bench) void {
     for (given.programs) |program| {
         const run = b.addRunArtifact(executable(b, given, program, given.optimize));
         run.addArg(smoke_flag);
+        run.setCwd(b.tmpPath());
         // Captured, not printed: numbers from a smoke run mean nothing.
         run.expectExitCode(0);
         tests.dependOn(&run.step);

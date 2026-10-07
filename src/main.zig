@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         const summary = try checks.profile.summarize(c, option(args, "--input") orelse ".preflight-timings", previous);
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse durations, .data = try checks.profile.render(a, summary) });
     } else if (std.mem.eql(u8, command, "fetch")) {
-        try checks.command.retry(c, try checks.command.fetchArgs(a, init.environ_map.get("BUILD_ARGS") orelse ""));
+        for (try checks.command.fetches(a, init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv);
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {

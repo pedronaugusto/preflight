@@ -27,17 +27,21 @@ pub fn retry(c: src.Context, argv: []const []const u8) !void {
     }
 }
 
-/// The fetch a job makes: configure the build it runs, with the job's
-/// arguments, and build nothing. Zig fetches what that configuration asks
-/// for and no more, so a lazy dependency only another job asks for is never
-/// fetched and its build script never compiles here (a Zig it does not
-/// support cannot stop this job's tests).
-pub fn fetchArgs(a: std.mem.Allocator, build_args: []const u8) ![]const []const u8 {
+/// The fetch a job makes: configure the build it runs and build nothing.
+/// Zig fetches what that configuration asks for and no more, so a lazy
+/// dependency only another job asks for is never fetched and its build
+/// script never compiles here (a Zig it does not support cannot stop this
+/// job's tests). The first pass takes no arguments: an option a lazy
+/// dependency declares (`-Dci-lint`) is unknown until it is fetched, and Zig
+/// refuses an unknown option before it fetches anything. The second takes
+/// the job's, for what they ask for besides.
+pub fn fetches(a: std.mem.Allocator, build_args: []const u8) ![]const []const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ "zig", "build", "--list-steps" });
     var tokens = std.mem.tokenizeAny(u8, build_args, " \t\r\n");
     while (tokens.next()) |token| try argv.append(a, token);
-    return argv.items;
+    if (argv.items.len == 3) return a.dupe([]const []const u8, &.{argv.items});
+    return a.dupe([]const []const u8, &.{ argv.items[0..3], argv.items });
 }
 
 test "a fetch is retried twice, after 5 s and then 10 s, on the context's clock" {
@@ -70,11 +74,14 @@ test "a fetch is retried twice, after 5 s and then 10 s, on the context's clock"
     try std.testing.expectEqual(null, clock.nextDeadline());
 }
 
-test "the fetch configures the job's build with the job's arguments" {
+test "the fetch configures the job's build, first with no options, then with its own" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const argv = try fetchArgs(arena.allocator(), " -Doptimize=debug\t-Dci-lint=false\n");
-    try std.testing.expectEqual(@as(usize, 5), argv.len);
-    try std.testing.expectEqualStrings("--list-steps", argv[2]);
-    try std.testing.expectEqualStrings("-Dci-lint=false", argv[4]);
+    const passes = try fetches(arena.allocator(), " -Doptimize=debug\t-Dci-lint=false\n");
+    try std.testing.expectEqual(@as(usize, 2), passes.len);
+    try std.testing.expectEqual(@as(usize, 3), passes[0].len);
+    try std.testing.expectEqualStrings("--list-steps", passes[0][2]);
+    try std.testing.expectEqual(@as(usize, 5), passes[1].len);
+    try std.testing.expectEqualStrings("-Dci-lint=false", passes[1][4]);
+    try std.testing.expectEqual(@as(usize, 1), (try fetches(arena.allocator(), "")).len);
 }

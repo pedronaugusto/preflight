@@ -180,7 +180,9 @@ pub const Library = struct {
                 return try append(lib.a, base, tree.tokenSlice(field));
             },
             .builtin_call_two, .builtin_call_two_comma => {
-                return if (importsStd(tree, node)) &.{"std"} else null;
+                // std's own files import their root as "std.zig".
+                const root_import = importsStd(tree, node) or std.mem.eql(u8, try lib.importPath(owner.file, node) orelse "", "std.zig");
+                return if (root_import) &.{"std"} else null;
             },
             else => return null,
         }

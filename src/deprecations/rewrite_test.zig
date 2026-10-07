@@ -65,8 +65,11 @@ const fixture = [_][2][]const u8{
     },
     .{
         "fs.zig",
+        \\const std = @import("std.zig");
         \\/// Deprecated, use `std.Io.Dir.path`.
         \\pub const path = @import("fs/path.zig");
+        \\/// Deprecated, use `std.Io.Dir.max_path_bytes`.
+        \\pub const max_path_bytes = std.Io.Dir.max_path_bytes;
         \\
     },
     .{
@@ -84,7 +87,7 @@ const fixture = [_][2][]const u8{
         \\
     },
     .{ "Io.zig", "pub const Dir = @import(\"Io/Dir.zig\");\n" },
-    .{ "Io/Dir.zig", "const std = @import(\"std\");\npub const path = std.fs.path;\n" },
+    .{ "Io/Dir.zig", "const std = @import(\"std\");\npub const path = std.fs.path;\npub const max_path_bytes = 4096;\n" },
     .{ "array_hash_map.zig", "pub fn Auto(comptime K: type, comptime V: type) type {}\n" },
     .{
         "Build.zig",
@@ -154,6 +157,7 @@ test "aliases: std's and the file's own resolve to what they stand for" {
         \\    _ = std.fs.path.resolve;
         \\    _ = path.resolve;
         \\    _ = @import("std").fmt.BufPrintError;
+        \\    _ = std.fs.max_path_bytes;
         \\    return mem.indexOf(u8, s, "c");
         \\}
         \\
@@ -170,6 +174,7 @@ test "aliases: std's and the file's own resolve to what they stand for" {
         \\    _ = std.Io.Dir.path.resolveAlloc;
         \\    _ = path.resolveAlloc;
         \\    _ = @import("std").mem.PrintError;
+        \\    _ = std.Io.Dir.max_path_bytes;
         \\    return mem.find(u8, s, "c");
         \\}
         \\

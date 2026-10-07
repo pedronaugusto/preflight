@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         const summary = try checks.profile.summarize(c, option(args, "--input") orelse ".preflight-timings", previous);
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse durations, .data = try checks.profile.render(a, summary) });
     } else if (std.mem.eql(u8, command, "fetch")) {
-        try retry(c, &.{ "zig", "build", "--fetch=all" });
+        try retry(c, try fetchArgs(a, init.environ_map));
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
@@ -259,4 +259,17 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     while (tokens.next()) |token| try argv.append(c.a, token);
     // PREFLIGHT_SHARD reaches the test runners through the environment.
     try execute(c, argv.items);
+}
+
+/// Configures the build a job runs, with the job's arguments, and builds
+/// nothing: Zig fetches what that configuration asks for and no more. A
+/// lazy dependency only another job asks for is never fetched, so its
+/// build script never compiles here (a Zig it does not support cannot stop
+/// this job's tests).
+fn fetchArgs(a: std.mem.Allocator, env: *std.process.Environ.Map) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "zig", "build", "--list-steps" });
+    var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
+    while (tokens.next()) |token| try argv.append(a, token);
+    return argv.items;
 }

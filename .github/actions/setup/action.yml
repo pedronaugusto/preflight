@@ -7,6 +7,9 @@ inputs:
   build-key:
     description: Stable cache scope without commas
     default: extras
+  build-args:
+    description: The arguments the job builds with; the fetch configures that build and fetches what it asks for
+    default: ''
   zig-version:
     description: The Zig to install, 0.17.0 or master; cache keys carry it
     default: 0.17.0
@@ -32,9 +35,12 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
-        key: zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-${{ hashFiles('**/build.zig.zon') }}
+        # Zig compiles the build script of every package it finds here, asked
+        # for or not, so a job restores only what a configured fetch saved:
+        # the Zig master leg never meets a script written for another Zig.
+        key: zig-packages-configured-${{ runner.os }}-${{ inputs.zig-version }}-${{ hashFiles('**/build.zig.zon') }}
         restore-keys: |
-          zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-
+          zig-packages-configured-${{ runner.os }}-${{ inputs.zig-version }}-
     - name: Cache compiled builds
       id: builds
       uses: actions/cache@v4
@@ -54,7 +60,9 @@ runs:
       with:
         path: ${{ runner.temp }}/preflight-tools
         key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ hashFiles('**/ci/setup.zig') }}
-    - name: Fetch dependencies with retries
+    - name: Fetch what the job's build asks for, with retries
+      env:
+        BUILD_ARGS: ${{ inputs.build-args }}
       run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" fetch
       shell: bash
     - name: Record cache hits

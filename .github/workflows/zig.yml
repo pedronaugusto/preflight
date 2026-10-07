@@ -110,6 +110,7 @@ jobs:
         with:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
+          build-args: ${{ matrix.args }}
           build-key: ${{ matrix.cache_key }}
       - name: Check sources, run Linux Debug and compile other test targets
         env:
@@ -151,6 +152,7 @@ jobs:
         with:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
+          build-args: ${{ matrix.args }}
           build-key: ${{ matrix.cache_key }}
       - name: Run the gate
         env:
@@ -189,6 +191,7 @@ jobs:
       - uses: ./.preflight/.github/actions/setup
         with:
           zig-version: master
+          build-args: -Doptimize=debug -Dci-lint=false
           working-directory: ${{ inputs.working-directory }}
           build-key: master-linux-debug
       - name: Run the Debug suite on Zig master
@@ -225,6 +228,7 @@ jobs:
         with:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
+          build-args: ${{ matrix.args }}
           build-key: ${{ matrix.cache_key }}
       - name: Compile test executables
         env:
@@ -256,6 +260,7 @@ jobs:
         with:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
+          build-args: ${{ matrix.args }}
           build-key: execute-${{ matrix.cache_key }}
       - uses: actions/download-artifact@v4
         with:

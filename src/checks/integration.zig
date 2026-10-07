@@ -689,3 +689,54 @@ test "structure runner reads the namespaces' re-exports from ci/layers.zig" {
     try std.testing.expect(stale.term == .exited and stale.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, stale.stderr, "imports: reexports: src/sample.zig -> src/sample/part.zig: no such import") != null);
 }
+
+const bench_build =
+    \\const std = @import("std");
+    \\const preflight = @import("preflight");
+    \\
+    \\pub fn build(b: *std.Build) void {
+    \\    const target = b.standardTargetOptions(.{});
+    \\    const optimize = b.standardOptimizeOption(.{});
+    \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+    \\    const step = b.step("test", "Run the sample tests");
+    \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
+    \\    preflight.addCi(b, .{ .tests = step, .bench = BENCH });
+    \\}
+    \\
+    \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+    \\    const module = b.createModule(.{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+    \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "preflight_sample", .module = module }}) catch @panic("OOM");
+    \\}
+    \\
+;
+
+test "the bench contract: ReleaseFast under zig-out/bench, and each program run once by the tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDirPath(io, "bench");
+    const program = "const std = @import(\"std\");\nconst sample = @import(\"preflight_sample\");\npub fn main(init: std.process.Init) !void {\n    const args = try init.minimal.args.toSlice(init.arena.allocator());\n    if (args.len > 1 and !std.mem.eql(u8, args[1], \"--smoke\")) return error.UnknownArgument;\n    _ = sample;\n}\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = program });
+    // A bench/ directory the build gives no programs fails the tests by name.
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", "null") });
+    const missing = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!ledger.success(missing));
+    try std.testing.expect(std.mem.find(u8, missing.stderr, "bench/: give addCi its .bench") != null);
+    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = imports, .target = target, .optimize = optimize }";
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
+    const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(tested)) std.debug.print("{s}\n", .{tested.stderr});
+    try std.testing.expect(ledger.success(tested));
+    const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "bench" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(timed)) std.debug.print("{s}\n", .{timed.stderr});
+    try std.testing.expect(ledger.success(timed));
+    try tmp.dir.access(io, if (builtin.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
+    // The tests run the program: one that fails fails them.
+    try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "pub fn main() !void {\n    return error.Broken;\n}\n" });
+    const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!ledger.success(broken));
+}

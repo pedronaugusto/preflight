@@ -4,6 +4,8 @@ const ci = @import("src/build.zig");
 pub const addCi = ci.addCi;
 /// What `addCi` checks and how its tests run.
 pub const Config = ci.Config;
+/// The benchmarks `addCi` builds, runs and smoke-tests.
+pub const Bench = ci.Bench;
 /// The watchdog's bound on one test: the default, another with its reason, or none.
 pub const TestTimeout = ci.TestTimeout;
 /// Builds, tests and runs a repository check program as one step.

@@ -4,6 +4,7 @@ const configure = @import("configure.zig");
 const portable = @import("portable.zig");
 const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
+const bench = @import("bench.zig");
 
 pub const Config = struct {
     tests: *std.Build.Step,
@@ -19,7 +20,14 @@ pub const Config = struct {
     /// The `std.log` level a test prints at. Zig's runner prints `.warn`
     /// and above; a library that logs what it does can ask for `.info`.
     test_log_level: std.log.Level = .warn,
+    /// The programs in `bench/`: `zig build bench` builds each in ReleaseFast
+    /// under `zig-out/bench` and runs them one after another, and `zig build
+    /// test` runs each once with `--smoke`. A repository with a `bench/`
+    /// directory and none given fails its tests.
+    bench: ?Bench = null,
 };
+
+pub const Bench = bench.Bench;
 
 pub const TestTimeout = record.TestTimeout;
 
@@ -69,6 +77,7 @@ const Steps = struct {
 
     fn create(b: *std.Build, config: Config) Steps {
         const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
+        bench.add(b, config.tests, config.bench);
         const ci = b.step("ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);

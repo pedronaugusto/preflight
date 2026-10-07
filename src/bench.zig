@@ -1,6 +1,8 @@
 //! The family's contract for `zig build bench`: every program in `bench/`
-//! built in ReleaseFast under `zig-out/bench` and run one after another, and
-//! each run once by `zig build test`, so it keeps working with the API.
+//! built in ReleaseFast under `zig-out/bench`, the timed ones run with no
+//! arguments one after another, and each run once with `--smoke` by `zig
+//! build test`, so it keeps working with the API. A program's own arguments
+//! are for running it from `zig-out/bench` by hand.
 const std = @import("std");
 const configure = @import("configure.zig");
 
@@ -21,6 +23,10 @@ pub const Bench = struct {
         name: []const u8,
         /// The root source, under `bench/`.
         source: []const u8,
+        /// Whether `zig build bench` runs it, with no arguments: false for a
+        /// tool the benchmarks need, such as a fixture writer, which is
+        /// still built there and run once by `zig build test`.
+        timed: bool = true,
     };
 };
 
@@ -36,15 +42,14 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, bench: ?Bench) void {
         if (configure.exists(b, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench, so zig build bench builds the programs and zig build test runs each once").step);
         return;
     };
-    const step = b.step("bench", "Build the benchmarks in ReleaseFast under zig-out/bench and run them, one after another");
-    const timed = b.allocator.alloc(*std.Build.Step.Compile, given.programs.len) catch @panic("OOM");
-    for (given.programs, timed) |program, *compile| compile.* = executable(b, given, program, .fast);
+    const step = b.step("bench", "Build the benchmarks in ReleaseFast under zig-out/bench and run the timed ones, one after another");
     // One after another: a measurement taken beside another is of both.
     var previous: ?*std.Build.Step = null;
-    for (timed) |compile| {
+    for (given.programs) |program| {
+        const compile = executable(b, given, program, .fast);
         step.dependOn(&b.addInstallArtifact(compile, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
+        if (!program.timed) continue;
         const run = b.addRunArtifact(compile);
-        run.addPassthruArgs();
         run.has_side_effects = true;
         if (previous) |before| run.step.dependOn(before);
         previous = &run.step;

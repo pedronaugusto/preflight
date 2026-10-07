@@ -21,8 +21,8 @@ pub const Config = struct {
     /// and above; a library that logs what it does can ask for `.info`.
     test_log_level: std.log.Level = .warn,
     /// The programs in `bench/`: `zig build bench` builds each in ReleaseFast
-    /// under `zig-out/bench` and runs them one after another, and `zig build
-    /// test` runs each once with `--smoke`. A repository with a `bench/`
+    /// under `zig-out/bench` and runs the timed ones one after another, and
+    /// `zig build test` runs each once with `--smoke`. A repository with a `bench/`
     /// directory and none given fails its tests.
     bench: ?Bench = null,
 };

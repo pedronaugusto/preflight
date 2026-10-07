@@ -46,7 +46,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `Config.bench`: `zig build bench` builds every program in ReleaseFast under `zig-out/bench` and runs them one after another; `zig build test` runs each once with `--smoke`.
+- `Config.bench`: `zig build bench` builds every program in ReleaseFast under `zig-out/bench` and runs the timed ones one after another with no arguments; `zig build test` runs each once with `--smoke`.
 - `ci/layers.zig` `reexports`: a namespace file's imports of the files in its own directory, which layers and cycles do not read.
 - `ci/preflight.json` `test_dependencies`: packages only tests may import; an import of one outside test code fails the structure check.
 - `zig build deprecations` follows std's deprecations: it rewrites every reference to what the building Zig release deprecated, through std's own aliases and a table per release checked against that std, and lists what needs a person. `-- --write` applies it.

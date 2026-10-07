@@ -49,8 +49,23 @@ pub fn safeReason(line: []const u8) bool {
 }
 
 pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+    var globs: gantry.rules.Globs = .{ .arena = c.a };
+    const Limit = struct { pattern: *const gantry.rules.Pattern, lines: usize };
+    var limits: std.ArrayList(Limit) = .empty;
+    const configured = src.get(config, "function_limits");
+    if (configured == .object) {
+        var iterator = configured.object.iterator();
+        while (iterator.next()) |entry| try limits.append(c.a, .{
+            .pattern = try globs.get(.path, entry.key_ptr.*),
+            .lines = src.number(entry.value_ptr.*, std.math.maxInt(usize)),
+        });
+    }
     for (sources) |s| {
         if (src.get(src.get(config, "vendored"), s.path) != .null) continue;
+        var limit = src.number(src.get(config, "function_limit"), 120);
+        for (limits.items) |entry| if (entry.pattern.matches(s.path)) {
+            limit = @min(limit, entry.lines);
+        };
         for (s.tree.nodes.items(.tag), 0..) |tag, i| {
             if (tag != .fn_decl) continue;
             const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
@@ -59,14 +74,6 @@ pub fn lengths(c: *src.Context, sources: []const src.Source, config: src.Value) 
             const name = s.tree.tokenSlice(proto.name_token orelse continue);
             const line = s.line(s.tree.firstToken(node));
             const count = s.line(s.tree.lastToken(node)) - line + 1 - typeBody(s, node, proto);
-            var limit = src.number(src.get(config, "function_limit"), 120);
-            const limits = src.get(config, "function_limits");
-            if (limits == .object) {
-                var iterator = limits.object.iterator();
-                while (iterator.next()) |entry| {
-                    if (gantry.rules.matches(entry.key_ptr.*, s.path)) limit = @min(limit, src.number(entry.value_ptr.*, limit));
-                }
-            }
             const label = try c.a.print("{s}:{s}", .{ s.path, name });
             const exception = src.get(src.get(config, "function_exceptions"), label);
             if (exception != .null) {
@@ -100,9 +107,11 @@ fn typeBody(s: src.Source, node: std.zig.Ast.Node.Index, proto: std.zig.Ast.full
 }
 
 pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+    var globs: gantry.rules.Globs = .{ .arena = c.a };
+    const tests = try globs.list(.path, try src.testPaths(c.a, config));
     var directories: std.StringHashMap(std.ArrayList([]const u8)) = .init(c.a);
     for (sources) |s| {
-        if (src.testCode(s.path, config)) continue;
+        if (gantry.rules.anyOf(tests, s.path)) continue;
         const directory = std.Io.Dir.path.dirname(s.path) orelse continue;
         const group = try directories.getOrPut(directory);
         if (!group.found_existing) group.value_ptr.* = .empty;
@@ -125,13 +134,13 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
         }
         if (count != 1) c.fail("{s}: namespace has {d} files; give it one adjacent {s}.zig entry", .{ directory, members.len, name });
     }
-    try flatNamespaces(c, sources, config);
+    try flatNamespaces(c, sources, config, tests);
 }
 
-fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Value, tests: []const *const gantry.rules.Pattern) !void {
     var groups = std.StringHashMap(std.ArrayList([]const u8)).init(c.a);
     for (sources) |s| {
-        if (src.testCode(s.path, config)) continue;
+        if (gantry.rules.anyOf(tests, s.path)) continue;
         const parent = std.Io.Dir.path.dirname(s.path) orelse ".";
         const base = std.Io.Dir.path.basename(s.path);
         const stem = base[0 .. base.len - 4];
@@ -249,4 +258,12 @@ test "flat sibling namespaces must move into their directory" {
     const moved = try src.Source.parse(a, "src/parser/parser_options.zig", "");
     try layout(&c, &.{ s, moved }, .null);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
+}
+
+test "function limit patterns fail even with no sources" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
+    const config = (try std.json.parseFromSlice(src.Value, c.a, "{\"function_limits\":{\"[\":120}}", .{})).value;
+    try std.testing.expectError(error.InvalidPattern, lengths(&c, &.{}, config));
 }

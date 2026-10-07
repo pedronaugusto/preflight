@@ -1,12 +1,13 @@
 //! Zig source checks share exact ledgers, with independent budgets per rule.
 const std = @import("std");
+const gantry = @import("gantry");
 const src = @import("source.zig");
 const ledger = @import("ledger.zig");
 
 pub const Finding = struct { rule: []const u8, path: []const u8, source: []const u8, detail: []const u8, line: usize };
 pub const Density = struct { path: []const u8, function: []const u8, asserts: usize, lines: usize };
-pub const rules = [_][]const u8{ "catch-unreachable", "debug-print", "file-name-case" };
-pub const keys = [_][]const u8{ "unreachable_exceptions", "debug_print_exceptions", "file_name_exceptions" };
+pub const rules = [_][]const u8{ "catch-unreachable", "debug-print" };
+pub const keys = [_][]const u8{ "unreachable_exceptions", "debug_print_exceptions" };
 
 pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
     const found = try findings(c.a, sources, config);
@@ -37,38 +38,27 @@ fn baseFindings(c: *src.Context, sources: []const src.Source, config: src.Value)
 
 pub fn findings(a: std.mem.Allocator, sources: []const src.Source, config: src.Value) ![]Finding {
     var result: std.ArrayList(Finding) = .empty;
+    var globs: gantry.rules.Globs = .{ .arena = a };
+    const tests = try globs.list(.path, try src.testPaths(a, config));
     for (sources) |s| {
         if (s.tree.errors.len != 0) return error.InvalidZigSource;
+        const test_file = gantry.rules.anyOf(tests, s.path);
         for (s.tree.nodes.items(.tag), 0..) |tag, i| {
             if (tag != .@"catch") continue;
             const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
             const token = s.tree.nodeMainToken(node);
             var rhs = s.tree.nodeData(node).node_and_node[1];
             while (s.tree.nodeTag(rhs) == .grouped_expression) rhs = s.tree.nodeData(rhs).node_and_token[0];
-            if (s.tree.nodeTag(rhs) == .unreachable_literal and src.outsideTests(s, config, token) and !unreachableReason(s, token))
+            if (s.tree.nodeTag(rhs) == .unreachable_literal and !test_file and !s.inTest(token) and !unreachableReason(s, token))
                 try add(a, &result, s, token, rules[0], "catch unreachable needs // unreachable: <why> on the same or previous line");
         }
         const tags = s.tree.tokens.items(.tag);
         for (tags, 0..) |tag, i| {
             const token: std.zig.Ast.TokenIndex = @intCast(i);
-            if (!src.outsideTests(s, config, token)) continue;
+            if (test_file or s.inTest(token)) continue;
             if (tag == .identifier and debugPrint(s, token))
                 try add(a, &result, s, token, rules[1], "std.debug.print outside tests and src/testing/");
         }
-        var fields = false;
-        for (s.tree.rootDecls()) |node| switch (s.tree.nodeTag(node)) {
-            .container_field, .container_field_init, .container_field_align => fields = true,
-            else => {},
-        };
-        const base = std.Io.Dir.path.basename(s.path);
-        const stem = base[0 .. base.len - 4];
-        if (!fileCase(stem, fields)) try result.append(a, .{
-            .rule = rules[2],
-            .path = s.path,
-            .source = if (fields) "top-level fields" else "no top-level fields",
-            .detail = if (fields) "struct file must use TitleCase" else "namespace file must use snake_case/lowercase",
-            .line = 1,
-        });
     }
     return result.items;
 }
@@ -82,17 +72,6 @@ fn debugPrint(s: src.Source, token: std.zig.Ast.TokenIndex) bool {
     if (token + parts.len > s.tree.tokens.len) return false;
     for (parts, 0..) |part, j| {
         if (!std.mem.eql(u8, s.tree.tokenSlice(token + @as(u32, @intCast(j))), part)) return false;
-    }
-    return true;
-}
-
-fn fileCase(stem: []const u8, fields: bool) bool {
-    if (stem.len == 0 or !(if (fields) std.ascii.isUpper(stem[0]) else std.ascii.isLower(stem[0]))) return false;
-    for (stem) |char| {
-        if (std.ascii.isDigit(char) or std.ascii.isLower(char)) continue;
-        if (fields and std.ascii.isUpper(char)) continue;
-        if (!fields and char == '_') continue;
-        return false;
     }
     return true;
 }
@@ -182,7 +161,7 @@ test "each source policy finds code and ignores literals, tests and justified un
     defer arena.deinit();
     const a = arena.allocator();
     const bad = try src.Source.parse(a, "src/value.zig", "field: u8,\nfn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 3), (try findings(a, &.{bad}, .null)).len);
+    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{bad}, .null)).len);
     const clean = try src.Source.parse(a, "src/Value.zig", "field: u8,\nfn work() void {\n // unreachable: checked earlier\n foo() catch unreachable;\n foo() catch unreachable; // unreachable: invariant\n const literal = \"std.debug.print catch unreachable // unreachable: fake\";\n}\ntest { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
     try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{clean}, .null)).len);
     for ([_][]const u8{ "src/work_test.zig", "src/test_work.zig", "src/tests.zig", "src/testing/helper.zig" }) |path| {
@@ -197,7 +176,7 @@ test "each source policy finds code and ignores literals, tests and justified un
     const grouped = try src.Source.parse(a, "src/value.zig", "fn work() void { foo() catch |err| (unreachable); }\n");
     try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{grouped}, .null)).len);
     const namespace = try src.Source.parse(a, "src/Namespace.zig", "const S = struct { field: u8 };\n");
-    try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{namespace}, .null)).len);
+    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{namespace}, .null)).len);
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_support\":[\"src/fixtures/**\"]}", .{})).value;
     const configured = try src.Source.parse(a, "src/fixtures/deep/helper.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
     try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{configured}, config)).len);
@@ -216,4 +195,12 @@ test "assertion density counts per function without comments or nested double co
     try std.testing.expectEqual(@as(usize, 1), rows[1].asserts);
     try std.testing.expectEqual(@as(usize, 0), rows[2].asserts);
     try std.testing.expectEqual(@as(usize, 0), rows[3].asserts);
+}
+
+test "source quality validates test path patterns with no sources" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_support\":[\"[\"]}", .{})).value;
+    try std.testing.expectError(error.InvalidPattern, findings(a, &.{}, config));
 }

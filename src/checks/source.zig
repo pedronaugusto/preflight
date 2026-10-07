@@ -73,32 +73,23 @@ pub fn strings(a: std.mem.Allocator, v: Value) ![]const []const u8 {
     return out;
 }
 
-pub fn excluded(path: []const u8, patterns: Value) bool {
-    for (items(patterns)) |pattern| if (gantry.rules.matches(string(pattern, ""), path)) return true;
-    return false;
-}
-
 /// Test files by name, wherever they sit.
 pub const test_files = [_][]const u8{ "*_test.zig", "test_*.zig", "tests.zig" };
 /// Test support when `test_support` is not configured.
 pub const default_support = [_][]const u8{"src/testing/**"};
 
+/// Test file names are fixed package data; malformed caller patterns are
+/// compiled separately by `testCode`.
 pub fn testFile(path: []const u8) bool {
-    for (test_files) |pattern| if (gantry.rules.matches(pattern, path)) return true;
+    for (test_files) |pattern| if (gantry.rules.matches(pattern, path) catch unreachable) return true; // unreachable: the fixed test file patterns are valid
     return false;
 }
 
-pub fn support(path: []const u8, config: Value) bool {
-    const patterns = get(config, "test_support");
-    if (patterns != .null) return excluded(path, patterns);
-    for (default_support) |pattern| if (gantry.rules.matches(pattern, path)) return true;
-    return false;
-}
-
-/// The one definition of test code, shared by lint and the structure check:
-/// a test file by name or a `test_support` file.
-pub fn testCode(path: []const u8, config: Value) bool {
-    return testFile(path) or support(path, config);
+/// The shared compiled definition of test code. Every pattern compiles before
+/// matching, so an invalid later pattern fails even if an earlier one matches.
+pub fn testCode(a: std.mem.Allocator, path: []const u8, config: Value) !bool {
+    var globs: gantry.rules.Globs = .{ .arena = a };
+    return gantry.rules.anyOf(try globs.list(.path, try testPaths(a, config)), path);
 }
 
 /// The patterns `testCode` matches, for gantry's `Options.test_paths`.
@@ -111,10 +102,6 @@ pub fn testPaths(a: std.mem.Allocator, config: Value) ![]const []const u8 {
         try out.append(a, pattern.string);
     }
     return out.items;
-}
-
-pub fn outsideTests(s: Source, config: Value, token: std.zig.Ast.TokenIndex) bool {
-    return !testCode(s.path, config) and !s.inTest(token);
 }
 
 pub const Source = struct {
@@ -202,30 +189,38 @@ test "parser ignores imports and braces in literals, finds named test blocks" {
     for (s.tree.tokens.items(.tag), 0..) |tag, i| {
         if (tag == .builtin) try std.testing.expect(s.inTest(@intCast(i)));
     }
-    try std.testing.expect(!gantry.rules.matches("src/*.zig", "ci/a.zig"));
+    try std.testing.expect(!try gantry.rules.matches("src/*.zig", "ci/a.zig"));
 }
 
 test "one dialect: a component star stays in its directory, test code has one definition" {
-    try std.testing.expect(!gantry.rules.matches("src/*", "src/a/b.zig"));
-    try std.testing.expect(gantry.rules.matches("src/**", "src/a/b.zig"));
+    try std.testing.expect(!try gantry.rules.matches("src/*", "src/a/b.zig"));
+    try std.testing.expect(try gantry.rules.matches("src/**", "src/a/b.zig"));
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const defaults: Value = .null;
-    try std.testing.expect(testCode("src/deep/x_test.zig", defaults));
-    try std.testing.expect(testCode("src/test_x.zig", defaults));
-    try std.testing.expect(testCode("src/tests.zig", defaults));
-    try std.testing.expect(testCode("src/testing/lfs/transfer.zig", defaults));
-    try std.testing.expect(!testCode("src/testing.zig", defaults));
-    try std.testing.expect(!testCode("src/contest.zig", defaults));
+    try std.testing.expect(try testCode(a, "src/deep/x_test.zig", defaults));
+    try std.testing.expect(try testCode(a, "src/test_x.zig", defaults));
+    try std.testing.expect(try testCode(a, "src/tests.zig", defaults));
+    try std.testing.expect(try testCode(a, "src/testing/lfs/transfer.zig", defaults));
+    try std.testing.expect(!try testCode(a, "src/testing.zig", defaults));
+    try std.testing.expect(!try testCode(a, "src/contest.zig", defaults));
     const flat = (try std.json.parseFromSlice(Value, a, "{\"test_support\":[\"src/testing/*\"]}", .{})).value;
-    try std.testing.expect(testCode("src/testing/clock.zig", flat));
-    try std.testing.expect(!testCode("src/testing/lfs/transfer.zig", flat));
+    try std.testing.expect(try testCode(a, "src/testing/clock.zig", flat));
+    try std.testing.expect(!try testCode(a, "src/testing/lfs/transfer.zig", flat));
     const patterns = try testPaths(a, flat);
     try std.testing.expectEqual(@as(usize, test_files.len + 1), patterns.len);
     for ([_][]const u8{ "src/a_test.zig", "src/testing/clock.zig", "src/testing/lfs/transfer.zig", "src/a.zig" }) |path| {
         var matched = false;
-        for (patterns) |pattern| matched = matched or gantry.rules.matches(pattern, path);
-        try std.testing.expectEqual(testCode(path, flat), matched);
+        for (patterns) |pattern| matched = matched or try gantry.rules.matches(pattern, path);
+        try std.testing.expectEqual(try testCode(a, path, flat), matched);
     }
+}
+
+test "malformed test support fails even after a matching pattern or with no sources" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(Value, a, "{\"test_support\":[\"**\",\"[\"]}", .{})).value;
+    try std.testing.expectError(error.InvalidPattern, testCode(a, "src/a.zig", config));
 }

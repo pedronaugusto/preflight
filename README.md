@@ -134,10 +134,8 @@ source and diagnostic still match exactly. Hosted checks fetch the base history;
 
 Zig sources also reject `catch unreachable` without a nonempty
 `// unreachable: <why>` on the same or preceding line, and `std.debug.print`
-outside test blocks and test code. Files with top-level fields
-use TitleCase; other files use snake_case or lowercase. Existing findings use
-independent `unreachable_exceptions`, `debug_print_exceptions` and
-`file_name_exceptions` JSON ledgers with the same five fields and shrinking
+outside test blocks and test code. File naming is ziglint Z009's rule. Existing source findings use
+independent `unreachable_exceptions` and `debug_print_exceptions` JSON ledgers with the same five fields and shrinking
 budget as ziglint. Assertion counts per function and package appear in the run
 summary as a report, without affecting the gate.
 
@@ -348,6 +346,34 @@ test-only shakedown.
 ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
 `zig-0.17`, commit 924b6b5), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
+
+## Family rules
+
+`addCi` makes `preflight_rules` available to `ci/layers.zig`. Import the family's policies once:
+
+```zig
+const gantry = @import("gantry");
+const family = @import("preflight_rules");
+// package_references is the package's array of gantry ReferenceRules.
+pub const owned: []const gantry.rules.TokenRule = &(family.durability ++ family.no_async);
+pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ family.shakedown);
+```
+
+`durability` forbids raw sync calls and `createFileAtomic`; adopt it outside airlock,
+which owns durability. `no_async` forbids `io.async(` in packages whose callers own
+asynchronous work; omit it in packages that permit spawning. `shakedown` forbids
+production imports while allowing test blocks, test-only declarations and configured
+test paths. These are ordinary gantry rules, so each package composes the applicable
+sets with its own rules. The sample adopts all three. The preflight dependency also
+exports a `rules` module for direct use in a build.
+
+Gantry owns path syntax, compilation and matching. Preflight compiles configured
+patterns through `gantry.rules.Globs`, returning malformed-pattern errors even for
+empty sources or after an earlier pattern matches. It has no direct sweep dependency.
+Generic Zig lint rules belong to the pinned ziglint fork: Z009 owns file-name case
+and Z011 gates deprecations. Gantry's declaration liveness is the deeper unused-import
+check, so the gate disables Z013. The `deprecations` command remains a separately
+invoked codemod and does not run as a lint gate.
 
 ## Licence
 

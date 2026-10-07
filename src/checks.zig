@@ -16,6 +16,7 @@ pub const manifest = @import("checks/manifest.zig");
 pub const command = @import("checks/command.zig");
 
 test {
+    _ = @import("rules.zig");
     _ = @import("structure/check.zig");
     _ = @import("consumer.zig");
     _ = @import("record.zig");

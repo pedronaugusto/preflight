@@ -310,13 +310,15 @@ test "sample rejects each new source rule and passes clean code" {
         "fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n",
         "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n",
         "field: u8,\ntest {}\n",
+        "const std = @import(\"std\");\npub fn old() ?usize { return std.mem.indexOfScalar(u8, \"x\", 'x'); }\ntest {}\n",
     };
-    for (examples, quality.rules) |text, rule| {
+    for (examples, quality.rules ++ [_][]const u8{ "Z009", "Z011" }) |text, rule| {
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text });
         const result = try lintFixture(a, tmp.dir);
         if (std.mem.find(u8, result.stderr, rule) == null) std.debug.print("{s}\n", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try std.testing.expect(std.mem.find(u8, result.stderr, rule) != null);
+        try std.testing.expect(std.mem.find(u8, result.stderr, "file-name-case") == null);
     }
     try fixture(a, tmp.dir);
     const clean = try lintFixture(a, tmp.dir);

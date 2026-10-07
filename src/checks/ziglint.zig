@@ -4,7 +4,7 @@ const ledger = @import("ledger.zig");
 
 pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(c.a, &.{ executable, "--ignore", "Z024" });
+    try argv.appendSlice(c.a, &.{ executable, "--ignore", "Z013", "--ignore", "Z024" });
     const paths = src.get(config, "ziglint_paths");
     if (paths == .null) {
         for ([_][]const u8{ "src", "examples", "ci", "build.zig" }) |path|

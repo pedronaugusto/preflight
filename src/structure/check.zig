@@ -4,7 +4,6 @@
 //! layer than its file. An import no build compiles is unused.
 const std = @import("std");
 const gantry = @import("gantry");
-const sweep = @import("sweep");
 const source = @import("../checks/source.zig");
 
 /// A package's declared structure, from its `ci/layers.zig` and the test
@@ -31,7 +30,7 @@ pub const Declared = struct {
 /// Which paths are test code, each graph path matched once against the
 /// compiled test patterns.
 const TestCode = struct {
-    patterns: []const sweep.Pattern,
+    patterns: []const *const gantry.rules.Pattern,
     paths: std.StringHashMapUnmanaged(void) = .empty,
 
     fn init(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared) !TestCode {
@@ -40,8 +39,7 @@ const TestCode = struct {
         return t;
     }
     fn matches(t: *const TestCode, path: []const u8) bool {
-        for (t.patterns) |*p| if (p.matches(path)) return true;
-        return false;
+        return gantry.rules.anyOf(t.patterns, path);
     }
     /// A graph path, looked up rather than matched.
     fn has(t: *const TestCode, path: []const u8) bool {
@@ -50,10 +48,9 @@ const TestCode = struct {
 };
 
 /// `patterns` compiled in gantry's path dialect, into `a`.
-fn compileAll(a: std.mem.Allocator, patterns: []const []const u8) ![]const sweep.Pattern {
-    const out = try a.alloc(sweep.Pattern, patterns.len);
-    for (patterns, out) |pattern, *p| p.* = try .compile(a, pattern, gantry.rules.patternOptions(.path));
-    return out;
+fn compileAll(a: std.mem.Allocator, patterns: []const []const u8) ![]const *const gantry.rules.Pattern {
+    var globs: gantry.rules.Globs = .{ .arena = a };
+    return globs.list(.path, patterns);
 }
 
 /// A namespace file publishing a file of its own directory: `src/odb.zig`
@@ -116,13 +113,13 @@ pub fn report(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, out
 /// over the tests beside them; a literal pattern naming a test file fails.
 fn ownership(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, tests: *const TestCode, out: *std.Io.Writer) !usize {
     // Every layer pattern compiled once, with whether it names one file.
-    const Owner = struct { layer: usize, pattern: sweep.Pattern, literal: bool };
+    const Owner = struct { layer: usize, pattern: *const gantry.rules.Pattern, literal: bool };
     var owners_list: std.ArrayList(Owner) = .empty;
-    const syntax = gantry.rules.patternOptions(.path).syntax;
+    var globs: gantry.rules.Globs = .{ .arena = a };
     for (d.layers, 0..) |layer, i| for (layer.patterns) |pattern| try owners_list.append(a, .{
         .layer = i,
-        .pattern = try .compile(a, pattern, gantry.rules.patternOptions(.path)),
-        .literal = sweep.literalPrefix(pattern, syntax) == pattern.len,
+        .pattern = try globs.get(.path, pattern),
+        .literal = gantry.rules.literal(pattern),
     });
     var problems: usize = 0;
     for (graph.paths()) |path| {
@@ -228,15 +225,18 @@ fn layerRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
 /// an import of it outside test code. Inside a test block it is a test
 /// reference, which the rule passes over.
 fn references(a: std.mem.Allocator, d: Declared) ![]const gantry.rules.ReferenceRule {
-    const rules = try a.alloc(gantry.rules.ReferenceRule, d.references.len + d.test_dependencies.len);
-    @memcpy(rules[0..d.references.len], d.references);
-    for (d.test_dependencies, rules[d.references.len..]) |name, *rule| rule.* = .{
-        .name = "test dependencies",
-        .target = name,
-        .kind = .import,
-        .except_from = d.test_paths,
-    };
-    return rules;
+    var rules: std.ArrayList(gantry.rules.ReferenceRule) = .empty;
+    try rules.appendSlice(a, d.references);
+    for (d.test_dependencies) |name| {
+        // A package importing the family policy already declares this full
+        // production restriction. Do not report the same import twice.
+        for (d.references) |rule| {
+            if (rule.kind == .import and std.mem.eql(u8, rule.from, "**") and std.mem.eql(u8, rule.target, name) and rule.member == null and rule.suffix == null and !rule.relative and !rule.unresolved_only and rule.except_targets.len == 0 and rule.except_from.len == 0) break;
+        } else {
+            try rules.append(a, .{ .name = "test dependencies", .target = name, .kind = .import, .except_from = d.test_paths });
+        }
+    }
+    return rules.items;
 }
 
 fn fullRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
@@ -542,4 +542,15 @@ test "a test-only dependency imported by production code fails" {
     var out: std.Io.Writer.Allocating = .init(a);
     try std.testing.expectEqual(@as(usize, 1), try report(a, &graph, d, &out.writer));
     try std.testing.expectEqualStrings("imports: test dependencies: src/low.zig: @import(\"shakedown\")\n", out.written());
+}
+
+test "a declared test dependency restriction is reported once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const restriction = [_]gantry.rules.ReferenceRule{.{ .name = "support policy", .target = "support", .kind = .import }};
+    const declared: Declared = .{ .layers = &.{}, .test_paths = &.{}, .references = &restriction, .test_dependencies = &.{ "support", "another" } };
+    const found = try references(arena.allocator(), declared);
+    try std.testing.expectEqual(@as(usize, 2), found.len);
+    try std.testing.expectEqualStrings(restriction[0].name, found[0].name);
+    try std.testing.expectEqualStrings("another", found[1].target);
 }

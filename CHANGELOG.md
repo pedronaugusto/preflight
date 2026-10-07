@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- File-name case is owned by ziglint Z009; preflight's `file-name-case` check and `file_name_exceptions` ledger are removed. Move any needed naming exceptions to the Z009 ziglint ledger. Gantry's deeper declaration liveness owns unused imports, so the ziglint invocation disables Z013. Z011 remains the deprecation gate; the separate codemod stays.
+- Path compilation and matching use gantry's exported `Globs` exclusively, with malformed patterns returned as errors even on empty inputs. The direct sweep dependency is removed.
+
 - Pin gantry ce7061e, which reads path patterns as git's globs through sweep: in layers, `test_support`, `function_limits` and every other path pattern `src/**` no longer matches `src` itself, brackets (`[ch]`) and `\` escapes are syntax, and a pattern sweep refuses fails the check. A layer pattern with a bracket or escape is a glob, not one file's name.
 - `build.zig.zon`'s `.paths` ships exactly `build.zig`, `build.zig.zon`, the source roots, `LICENSE`, `README.md` and `CHANGELOG.md`; lint fails any other path, and any it names that does not exist. Name a further path a consumer's build reads in `ci/preflight.json` `shipped` with its reason.
 - A file with tests is reached only when a test block names it: the alias itself (`_ = corpus;`), a whole `@import`, or `refAllDecls(@This())` over a public alias. A member a test uses (`corpus.seed()`, `@import("event.zig").Key`) no longer reaches the file's tests.
@@ -46,6 +49,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Timing records carry a `key` (`windows-Debug`), and shard timing files end `-2of5.ndjson` rather than with a case name.
 
 ### Added
+
+- Family rule sets imported as `preflight_rules` in `ci/layers.zig`: `durability` outside airlock, `shakedown` for test-only imports, and `no_async` for packages whose callers own spawning. The dependency exports them as its `rules` module too. The sample and preflight adopt them.
 
 - `Config.bench`: `zig build bench` builds every program in ReleaseFast under `zig-out/bench` and runs the timed ones one after another with no arguments; `zig build test` runs each once with `--smoke`.
 - `ci/layers.zig` `reexports`: a namespace file's imports of the files in its own directory, which layers and cycles do not read.

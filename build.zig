@@ -23,8 +23,10 @@ pub fn build(b: *std.Build) void {
     const target = ci.ciTarget(b);
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
     const gantry = gantry_dep.module("gantry");
-    const sweep_dep = b.dependencyLazy("sweep", .{ .target = target, .optimize = .debug }) catch return;
-    const sweep = sweep_dep.module("sweep");
+    _ = b.addModule("rules", .{ .root_source_file = b.path("src/rules.zig"), .target = target, .imports = &.{.{ .name = "gantry", .module = gantry }} });
+    // A package consumer needs only the family policies. Its gate installs
+    // the tools through addCi; our suite and benchmarks belong to this checkout.
+    if (b.pkg_hash.len != 0) return;
     // The test doubles are shakedown's, which only preflight's own suite
     // imports: a build that runs preflight for another repository never
     // fetches it.
@@ -34,7 +36,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "sweep", .module = sweep } },
+        .imports = &.{.{ .name = "gantry", .module = gantry }},
     }), .filters = test_filters });
     if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
@@ -69,7 +71,16 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(executable);
     if (repo_root == null) {
         // preflight gates its own sources with the checks it ships.
-        ci.addOwnCi(b, .{ .tests = suite });
+        ci.addOwnCi(b, .{ .tests = suite, .bench = .{
+            .programs = &.{.{ .name = "source", .source = "bench/source.zig" }},
+            .imports = benchImports,
+            .target = target,
+            .optimize = .debug,
+        } });
+        const check = b.step("check", "Compile the shared checks and runner without running tests");
+        check.dependOn(&tests.step);
+        check.dependOn(&order.step);
+        check.dependOn(&executable.step);
         const verify = b.step("verify", "Check format, sources, checker regressions and the hosted runner");
         verify.dependOn(&b.top_level_steps.get("ci").?.step);
         verify.dependOn(&order_run.step);
@@ -82,7 +93,7 @@ pub fn build(b: *std.Build) void {
         for ([_]struct { []const u8, std.Build.LazyPath }{
             .{ "preflight", b.path("build.zig.zon") },
             .{ "gantry", gantry_dep.path("build.zig.zon") },
-            .{ "sweep", sweep_dep.path("build.zig.zon") },
+            .{ "sweep", gantry_dep.builder.dependency("sweep", .{ .target = target, .optimize = .debug }).path("build.zig.zon") },
         }) |package| {
             closure.addArg(package[0]);
             closure.addFileArg(package[1]);
@@ -100,4 +111,14 @@ pub fn build(b: *std.Build) void {
         command.addPassthruArgs();
         b.step(name, name).dependOn(&command.step);
     }
+}
+
+fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+    const gantry = (b.dependencyLazy("gantry", .{ .target = target, .optimize = optimize }) catch unreachable).module("gantry"); // unreachable: build returns before addOwnCi if gantry is not available
+    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "checks", .module = b.createModule(.{
+        .root_source_file = b.path("src/checks.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "gantry", .module = gantry }},
+    }) }}) catch @panic("OOM");
 }

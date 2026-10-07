@@ -96,7 +96,6 @@ const Steps = struct {
         const host = ciTarget(b);
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug }) catch return;
         const gantry = gantry_dep.module("gantry");
-        const sweep = (pkg.dependencyLazy("sweep", .{ .target = host, .optimize = .debug }) catch return).module("sweep");
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
             .root_module = b.createModule(.{
@@ -127,15 +126,15 @@ const Steps = struct {
         deprecations.addPassthruArgs();
         deprecations.setCwd(b.path("."));
         b.step("deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
-        steps.addLint(b, pkg, config, executable, gantry, sweep);
+        steps.addLint(b, pkg, config, executable, gantry);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry: *std.Build.Module, sweep: *std.Build.Module) void {
+    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry: *std.Build.Module) void {
         const host = ciTarget(b);
         const layers = b.createModule(.{
             .root_source_file = b.path(config.layers),
             .target = host,
-            .imports = &.{.{ .name = "gantry", .module = gantry }},
+            .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "preflight_rules", .module = b.createModule(.{ .root_source_file = pkg.path("src/rules.zig"), .target = host, .imports = &.{.{ .name = "gantry", .module = gantry }} }) } },
         });
         const checker = b.addExecutable(.{
             .name = "preflight-structure",
@@ -143,7 +142,7 @@ const Steps = struct {
                 .root_source_file = pkg.path("src/structure.zig"),
                 .target = host,
                 .optimize = .debug,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "sweep", .module = sweep }, .{ .name = "layers", .module = layers } },
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "layers", .module = layers } },
             }),
         });
         var format_paths: std.ArrayList([]const u8) = .empty;

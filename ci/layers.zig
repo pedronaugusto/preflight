@@ -1,8 +1,9 @@
 //! preflight's own source layers, lowest first. Test code is in no layer.
+const family = @import("preflight_rules");
 const gantry = @import("gantry");
 
 pub const layers: []const gantry.rules.Layer = &.{
-    .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig" } },
+    .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig", "src/rules.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
     .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/record.zig", "src/portable.zig", "src/consumer.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{"src/checks/*.zig"} },
@@ -20,14 +21,17 @@ pub const modules: []const gantry.NamedModule = &.{
     .{ .name = "preflight_order", .path = "src/order.zig" },
     .{ .name = "preflight_timings", .path = "src/timings.zig" },
 };
-pub const references: []const gantry.rules.ReferenceRule = &.{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{
+const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{
     "std",
     "builtin",
     "gantry",
-    "sweep",
     "layers",
     "test_options",
     "preflight_default_test_runner",
     "preflight_runner_options",
     "shakedown",
+    "preflight_rules",
 } }};
+pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ family.shakedown);
+
+pub const owned: []const gantry.rules.TokenRule = &(family.durability ++ family.no_async);

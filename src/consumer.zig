@@ -12,19 +12,12 @@ pub const Options = struct {
     modules: []const []const u8 = &.{},
     /// Packages the consumer's build may read: what the package needs to build.
     packages: []const *std.Build.Dependency = &.{},
-    /// A public function of the package's `build.zig` that decides
-    /// `use_llvm` for a target and mode, `fn (std.Build.ResolvedTarget,
-    /// std.lang.Optimize) ?bool`, for code Zig's own backend cannot
-    /// build. The consumer's build calls it with the target and mode it
-    /// builds for, as a user's build does.
-    use_llvm: ?[]const u8 = null,
 };
 
 /// What the generated build script depends on and imports.
 const Shape = struct {
     package: []const u8,
     modules: []const []const u8,
-    use_llvm: ?[]const u8 = null,
 };
 
 /// Adds `check-consumer`. The project is generated under the cache, so the
@@ -46,14 +39,14 @@ pub fn add(b: *std.Build, options: Options) void {
     build.addDirectoryArg2(packages.getDirectory(), .{});
     build.addDirectoryArg2(b.path("."), .{});
     build.addFileArg(options.program);
-    build.addArgs(&.{ options.package, options.use_llvm orelse "" });
+    build.addArg(options.package);
     build.addArgs(if (options.modules.len > 0) options.modules else &.{options.package});
     build.has_side_effects = true;
     b.step("check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
 }
 
 /// Writes the project and builds it: `<zig> <project> <packages> <package
-/// root> <program> <package> <use_llvm function or empty> <module>...`.
+/// root> <program> <package> <module>...`.
 /// The build has a Zig cache of its own: a consumer has none of the
 /// package's cached packages, and Zig 0.17's `--system` asserts on a lazy
 /// package it finds only in the global cache.
@@ -73,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
     const relative = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
     std.mem.replaceScalar(u8, relative, '\\', '/');
     const text = try cwd.readFileAlloc(io, args[5], a, .limited(16 * 1024 * 1024));
-    const shape: Shape = .{ .package = args[6], .use_llvm = if (args[7].len > 0) args[7] else null, .modules = args[8..] };
+    const shape: Shape = .{ .package = args[6], .modules = args[7..] };
     try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
     try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });
@@ -111,7 +104,6 @@ fn script(a: std.mem.Allocator, shape: Shape) ![]const u8 {
     );
     try w.print("    const package = b.dependency(\"{f}\", .{{ .target = target, .optimize = optimize }});\n", .{std.zig.fmtString(shape.package)});
     try w.writeAll("    const exe = b.addExecutable(.{ .name = \"consumer\", ");
-    if (shape.use_llvm) |decide| try w.print(".use_llvm = @import(\"{f}\").{f}(target, optimize), ", .{ std.zig.fmtString(shape.package), std.zig.fmtId(decide) });
     try w.writeAll(".root_module = b.createModule(.{\n        .root_source_file = b.path(\"src/main.zig\"),\n        .target = target,\n        .optimize = optimize,\n        .imports = &.{\n");
     for (shape.modules) |module| try w.print("            .{{ .name = \"{f}\", .module = package.module(\"{f}\") }},\n", .{ std.zig.fmtString(module), std.zig.fmtString(module) });
     try w.writeAll("        },\n    }) });\n    b.installArtifact(exe);\n}\n");
@@ -122,13 +114,11 @@ test "the generated consumer imports each named module from the package" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const text = try script(a, .{ .package = "conduit", .modules = &.{ "conduit", "conduit.tty" }, .use_llvm = "needsLlvm" });
+    const text = try script(a, .{ .package = "conduit", .modules = &.{ "conduit", "conduit.tty" } });
     try std.testing.expect(std.mem.find(u8, text, "b.dependency(\"conduit\"") != null);
     try std.testing.expect(std.mem.find(u8, text, ".{ .name = \"conduit.tty\", .module = package.module(\"conduit.tty\") }") != null);
-    try std.testing.expect(std.mem.find(u8, text, ".use_llvm = @import(\"conduit\").needsLlvm(target, optimize)") != null);
     const single = try script(a, .{ .package = "strand", .modules = &.{"strand"} });
     try std.testing.expect(std.mem.find(u8, single, ".{ .name = \"strand\", .module = package.module(\"strand\") }") != null);
-    try std.testing.expect(std.mem.find(u8, single, "use_llvm") == null);
     const zon = try manifest(a, "strand", "../..");
     try std.testing.expect(std.mem.find(u8, zon, ".dependencies = .{ .strand = .{ .path = \"../..\" } }") != null);
 }

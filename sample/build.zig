@@ -14,12 +14,5 @@ pub fn build(b: *std.Build) void {
     step.dependOn(&b.addRunArtifact(tests).step);
     b.step("check", "Compile the sample").dependOn(&tests.step);
     preflight.addCi(b, .{ .tests = step, .portable_tests = true });
-    preflight.addConsumerCheck(b, .{ .package = "preflight_sample", .program = b.path("ci/consumer.zig"), .use_llvm = "needsLlvm" });
-}
-
-/// Whether the sample needs LLVM for a target and mode: never.
-pub fn needsLlvm(target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) ?bool {
-    _ = target;
-    _ = optimize;
-    return null;
+    preflight.addConsumerCheck(b, .{ .package = "preflight_sample", .program = b.path("ci/consumer.zig") });
 }

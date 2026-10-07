@@ -400,3 +400,49 @@ test "the merge tier compiles macOS and Windows Debug once on Linux and runs eve
     try std.testing.expectEqual(@as(usize, 3), tiers.run.len);
     for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=Debug") != null);
 }
+
+test "the release tier is the full matrix: every mode on every host, ReleaseSmall, cross targets, TSan and the source checks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
+    const jobs = try plan(a, config, .release);
+    const expected = [_][]const u8{
+        "test (ubuntu-latest, Debug)",        "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
+        "test (macos-latest, Debug)",         "test (macos-latest, ReleaseSafe)",      "test (windows-latest, Debug)",
+        "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
+        "cross (all configured targets)",     "ThreadSanitizer (Linux)",
+    };
+    try std.testing.expectEqual(expected.len, jobs.len);
+    for (expected) |name| {
+        var found: usize = 0;
+        for (jobs) |job| if (std.mem.eql(u8, job.name, name)) {
+            found += 1;
+        };
+        try std.testing.expectEqual(@as(usize, 1), found);
+    }
+    // Every host the tier executes records its durations; none of it is the fast job.
+    for (jobs) |job| {
+        try std.testing.expect(!std.mem.eql(u8, job.step, "preflight-fast"));
+        if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
+    }
+}
+
+test "only the merge and release tiers execute macOS and Windows" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"macos\":2}}", .{})).value;
+    for ([_]Tier{ .fast, .merge, .release }) |tier| {
+        const tiers = try split(a, config, try plan(a, config, tier), tier);
+        var executed: usize = 0;
+        for ([_][]const Job{ tiers.native, tiers.run }) |group| for (group) |job| {
+            if (!std.mem.eql(u8, job.os, hosts[0])) executed += 1;
+        };
+        try std.testing.expectEqual(@as(usize, switch (tier) {
+            .fast => 0,
+            .merge => 2 + 1,
+            .release => 2 * 2 + 2,
+        }), executed);
+    }
+}

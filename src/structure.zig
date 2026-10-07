@@ -48,10 +48,12 @@ pub fn main(init: std.process.Init) !void {
     };
     var paths = try gantry.walk(a, init.io, .cwd(), try source.roots(a, config), keep);
     defer paths.deinit();
-    const reader: gantry.DirReader = .{ .io = init.io, .dir = .cwd() };
-    var diagnostic = gantry.ScanDiagnostic.init(a);
+    const reader: gantry.DirReader = .{ .dir = .cwd() };
+    var diagnostic = gantry.Diagnostics.init(a);
     defer diagnostic.deinit();
-    var graph = gantry.scanWithDiagnostic(a, paths.items(), reader, gantry.DirReader.read, structure.options(d), &diagnostic) catch |err| {
+    var options = structure.options(d);
+    options.diagnostics = &diagnostic;
+    var graph = gantry.scan(a, init.io, paths.items(), reader, gantry.DirReader.read, options) catch |err| {
         if (diagnostic.failure) |failure| (source.Context{ .a = a, .io = init.io }).report("imports: {s}: {s}: {s}\n", .{ failure.path orelse "<scan>", @tagName(failure.phase), @errorName(failure.cause) });
         return err;
     };

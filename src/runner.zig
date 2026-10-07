@@ -96,7 +96,7 @@ fn serve(init: std.process.Init.Minimal) !void {
     var server: std.zig.Server = .{ .in = &reader.interface, .out = &writer.interface };
     try server.serveStringMessage(.zig_version, builtin.zig_version_string);
     const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
-    defer recorder.deinit();
+    defer recorder.deinit(io);
     while (true) {
         const header = try server.receiveMessage();
         switch (header.tag) {
@@ -154,7 +154,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     if (leaks != 0 or errors.load(.monotonic) != 0) report("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
     watchdog.phase.store(.reporting, .release);
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
-    try recorder.record(test_fn.name, elapsed, @tagName(status));
+    try recorder.record(io, test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{
         .status = status,
         .fuzz = false,
@@ -165,7 +165,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
 
 fn terminal(init: std.process.Init.Minimal) !void {
     const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
-    defer recorder.deinit();
+    defer recorder.deinit(io);
     var failures: usize = 0;
     for (order) |index| {
         const test_fn = builtin.test_functions[index];
@@ -190,7 +190,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         testing.io_instance.deinit();
         const leaks = testing.allocator_instance.deinit();
         watchdog.phase.store(.reporting, .release);
-        try recorder.record(test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
+        try recorder.record(io, test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
     }
     if (failures != 0) {

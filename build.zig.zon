@@ -3,7 +3,7 @@
     .version = "0.1.0",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x52c46579c2597d2d,
-    .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "LICENSE" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .ziglint = .{
             .url = "git+https://github.com/pedronaugusto/ziglint#6adecff956f4f53de66ddc6ec7600191e672915f",
@@ -11,8 +11,8 @@
             .lazy = true,
         },
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry#5b04dbfcd7f6909f423838a08aca7b5354c43920",
-            .hash = "gantry-0.1.0-1iNrkR8jDQBRYBXs7OeeCK-13N009aHRPGYrbii1vSVP",
+            .url = "git+https://github.com/pedronaugusto/gantry#dc537151cf6ae2a68f12ff7eb9e518102ea94ae9",
+            .hash = "gantry-0.1.0-1iNrkUlZDQBZdJYMxxXhuOrcM5jjqVeRSqzdqg5cCbmT",
             .lazy = true,
         },
     },

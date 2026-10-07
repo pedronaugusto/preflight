@@ -166,7 +166,7 @@ fn print(out: *std.Io.Writer, findings: []const gantry.rules.Violation) !usize {
 
 const File = struct { path: []const u8, text: []const u8 };
 
-fn readFile(_: std.mem.Allocator, files: []const File, path: []const u8) error{}!?[]const u8 {
+fn readFile(_: std.mem.Allocator, _: std.Io, files: []const File, path: []const u8) error{}!?[]const u8 {
     for (files) |file| if (std.mem.eql(u8, file.path, path)) return file.text;
     return null;
 }
@@ -183,7 +183,7 @@ fn expectReport(files: []const File, layers: []const gantry.rules.Layer, expecte
     const d: Declared = .{ .layers = layers, .entries = &.{"src/tool.zig"}, .test_paths = try source.testPaths(a, .null) };
     var paths: std.ArrayList([]const u8) = .empty;
     for (files) |file| try paths.append(a, file.path);
-    var graph = try gantry.scan(a, paths.items, files, readFile, options(d));
+    var graph = try gantry.scan(a, std.testing.io, paths.items, files, readFile, options(d));
     defer graph.deinit();
     var out: std.Io.Writer.Allocating = .init(a);
     const problems = try report(a, &graph, d, &out.writer);
@@ -338,7 +338,7 @@ test "an entry that is test code is reported, since no production rule reads it"
     };
     var paths: std.ArrayList([]const u8) = .empty;
     for (files) |file| try paths.append(a, file.path);
-    var graph = try gantry.scan(a, paths.items, @as([]const File, &files), readFile, options(d));
+    var graph = try gantry.scan(a, std.testing.io, paths.items, @as([]const File, &files), readFile, options(d));
     defer graph.deinit();
     var out: std.Io.Writer.Allocating = .init(a);
     try std.testing.expectEqual(@as(usize, 2), try report(a, &graph, d, &out.writer));

@@ -1,10 +1,16 @@
 const std = @import("std");
 const ci = @import("src/build.zig");
+/// Adds the package's local gate and the steps the hosted gate runs.
 pub const addCi = ci.addCi;
+/// What `addCi` checks and how its tests run.
 pub const Config = ci.Config;
+/// The watchdog's bound on one test: the default, another with its reason, or none.
 pub const TestTimeout = ci.TestTimeout;
+/// Builds, tests and runs a repository check program as one step.
 pub const addCheck = ci.addCheck;
+/// Adds `check-consumer`: a project that depends on the package with nothing fetched.
 pub const addConsumerCheck = ci.consumer.add;
+/// What `addConsumerCheck` builds.
 pub const ConsumerOptions = ci.consumer.Options;
 
 pub fn build(b: *std.Build) void {

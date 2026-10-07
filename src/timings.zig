@@ -2,18 +2,23 @@
 const std = @import("std");
 
 pub const Recorder = struct {
-    io: std.Io,
     file: ?std.Io.File = null,
     /// The `ci/durations.json` column these records refresh.
     key: []const u8,
     /// The shard that ran the tests, `i/n`, or empty for all of them.
     shard: []const u8 = "",
 
+    /// What `init` fails with: reading the environment, creating the
+    /// records' directory or file, or memory.
+    pub const InitError = std.process.Environ.CreateMapError || std.Io.Dir.CreateDirPathError || std.Io.File.OpenError || std.mem.Allocator.Error;
+    /// What `record` fails with: encoding, sizing or writing the record.
+    pub const RecordError = std.Io.File.StatError || std.Io.Writer.Error || std.mem.Allocator.Error;
+
     /// `stem` names the records without their shard, or is null for none:
     /// the file ends `-2of5.ndjson` for the shard `PREFLIGHT_SHARD` names,
-    /// or `-all.ndjson`.
-    pub fn init(io: std.Io, environ: std.process.Environ, stem: ?[]const u8, key: []const u8) !Recorder {
-        const prefix = stem orelse return .{ .io = io, .key = key };
+    /// or `-all.ndjson`. Close it with `deinit(io)`.
+    pub fn init(io: std.Io, environ: std.process.Environ, stem: ?[]const u8, key: []const u8) InitError!Recorder {
+        const prefix = stem orelse return .{ .key = key };
         const a = std.heap.page_allocator;
         var env = try environ.createMap(a);
         defer env.deinit();
@@ -22,18 +27,18 @@ pub const Recorder = struct {
         const path = try a.print("{s}-{s}.ndjson", .{ prefix, part });
         if (std.Io.Dir.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
         return .{
-            .io = io,
             .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true }),
             .key = key,
             .shard = try a.dupe(u8, shard),
         };
     }
 
-    pub fn deinit(recorder: Recorder) void {
-        if (recorder.file) |file| file.close(recorder.io);
+    pub fn deinit(recorder: Recorder, io: std.Io) void {
+        if (recorder.file) |file| file.close(io);
     }
 
-    pub fn record(recorder: Recorder, name: []const u8, nanoseconds: u64, status: []const u8) !void {
+    /// Appends one test's record; nothing without a file.
+    pub fn record(recorder: Recorder, io: std.Io, name: []const u8, nanoseconds: u64, status: []const u8) RecordError!void {
         const file = recorder.file orelse return;
         const json = try std.json.Stringify.valueAlloc(std.heap.page_allocator, .{
             .name = name,
@@ -44,8 +49,8 @@ pub const Recorder = struct {
         }, .{});
         defer std.heap.page_allocator.free(json);
         var buffer: [4096]u8 = undefined;
-        var writer = file.writer(recorder.io, &buffer);
-        writer.pos = (try file.stat(recorder.io)).size;
+        var writer = file.writer(io, &buffer);
+        writer.pos = (try file.stat(io)).size;
         try writer.interface.writeAll(json);
         try writer.interface.writeByte('\n');
         try writer.interface.flush();

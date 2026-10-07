@@ -5,10 +5,14 @@ runs format, gantry structure rules, ziglint, namespace layout, cast reasons,
 function length, documented snippets and test imports, then the package's tests.
 It is a build dependency; a consumer's module never imports it.
 
+## Install
+
+Requires Zig 0.17.0. Add preflight as a build dependency pinned by commit:
+`zig fetch --save git+https://github.com/pedronaugusto/preflight#<commit>`.
+
 ## Usage
 
-Add preflight as a build dependency in `build.zig.zon`, pinned by commit. In
-`build.zig`, after creating the test step:
+In `build.zig`, after creating the test step:
 
 ```zig
 const preflight = @import("preflight");
@@ -41,34 +45,9 @@ and mode it builds, as a user's build would. The consumer builds for the host in
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
-## Following std's deprecations
+## Design
 
-`zig build deprecations` lists every reference to something the Zig release
-that builds the package deprecated, with the rewrite that replaces it, and
-`zig build deprecations -- --write` applies them and formats the files it
-changed. It reads std's source from that Zig. A deprecated alias, such as
-`pub const indexOf = find;`, needs nothing more: `std.mem.indexOf` becomes
-`std.mem.find`. The rest are in a table per release, checked against that std
-before anything is rewritten:
-
-- `std.fmt.allocPrint(a, ...)` becomes `a.print(...)`, its sentinel variant
-  `a.printSentinel(...)`. A first argument that is not a plain name or call
-  keeps the function form, `std.mem.Allocator.print(...)`.
-- `std.fmt.bufPrint` becomes `std.mem.print`, `bufPrintSentinel`
-  `std.mem.printSentinel`, and `std.fs.path` becomes `std.Io.Dir.path`.
-- `std.mem.copyForwards(T, dest, source)` and `copyBackwards` become
-  `@memmove(dest[0..source.len], source)` when `source` is a name.
-- `b.lazyDependency(...) orelse x` becomes `b.dependencyLazy(...) catch x` for
-  `b` declared as `*std.Build`.
-
-Names resolve through the file's own aliases (`const mem = std.mem;`); an
-alias the rewrites leave unused is removed. A rewrite that would delete a
-comment is left for a person, as is any deprecated reference the table cannot
-move; both are listed as `by hand`. Files that do not parse are skipped and
-named. Build output, `zig-pkg` and hidden directories are not read; name files
-or directories after `--` to read only those.
-
-## Repository facts
+### Repository facts
 
 `ci/layers.zig` declares gantry's layers, required paths, entries, named modules,
 reference rules and optional owned tokens. Layers order production sources only.
@@ -110,7 +89,68 @@ region, module import and whether that import is shown are facts in the JSON
 configuration. Other generated blocks may use an explicit `zig build` argument-array command.
 Missing markers, stale blocks and failed generators fail the gate.
 
-## Hosted gate
+### Ledgers
+
+Existing ziglint findings may be recorded in a repository's `ziglint_exceptions`
+file with their rule, path, exact source line, diagnostic and reason. The allowance
+is consumed once per finding: duplicates, changed code and new findings fail.
+This records migration debt without disabling a rule or admitting growth.
+On branches, git supplies the PR base ledger (or main locally). Every exception
+must already exist there; removals are allowed. Unused exceptions fail on every
+branch, including main. Git renames preserve allowances only when the rule,
+source and diagnostic still match exactly. Hosted checks fetch the base history;
+`PREFLIGHT_LEDGER_BASE` can select an explicit base for a local reproduction.
+
+Zig sources also reject `catch unreachable` without a nonempty
+`// unreachable: <why>` on the same or preceding line, and `std.debug.print`
+outside test blocks and test code. Files with top-level fields
+use TitleCase; other files use snake_case or lowercase. Existing findings use
+independent `unreachable_exceptions`, `debug_print_exceptions` and
+`file_name_exceptions` JSON ledgers with the same five fields and shrinking
+budget as ziglint. Assertion counts per function and package appear in the run
+summary as a report, without affecting the gate.
+
+The reusable workflow's `adopt` input defaults to false. For a package's first
+adoption it can initialize an absent source ledger only from exact findings
+already present in the base source, with the reason
+`existing at gate adoption; burned down in the cleanup pass`. Existing ledgers
+always retain the shrinking budget, even when this input is enabled.
+`zig build findings -Drepo-root=<package>` prints the new source findings as JSON
+for preparing an initial ledger; it does not change the package or approve debt.
+
+Layout exceptions likewise name their exact member set and a reason.
+`zig build docs -- usage` renders a configured region for updating its block.
+`zig build cache` preserves fetched packages and tools when pruning build products.
+
+### Test runs
+
+Packages with relocatable test binaries can set `.portable_tests = true` in the
+build helper and `compile_once: true` in `ci/workflow.json`. Linux then builds
+macOS and Windows tests; those runners download and execute the binaries through
+Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers or
+fixtures compiled with absolute runner paths must be made relocatable first.
+An artifact upload drops the permission to run; preflight restores it before execution. The native matrix stays
+available for comparing elapsed time and runner minutes against this path.
+
+A tier records the durations of every host and mode it executes, through Zig's
+test protocol. In the merge and release tiers, the profile job folds the records
+into `ci/durations.json`, keeping the columns the run did not measure. It uploads
+the result as the proof artifact, `preflight-merge-<sha>` or `preflight-release-<sha>`.
+`gh run download <run> -n preflight-merge-<sha> -D ci` refreshes the package's
+copy. From a package root, `zig build --build-file <preflight>/build.zig
+-Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
+`ci/durations.json` in place.
+The shared runner shuffles test order using the test seed in every tier and in local
+runs. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
+reproduce an order. Direct test binaries also accept `--seed=<number>`.
+Custom runners can import `preflight_order`, whose `init` seeds, selects the
+shard's tests and orders them, and `preflight_timings` to record durations;
+`preflight_runner_options` carries the recorded durations and the record's name.
+Test runs carry no environment from the build: Zig keeps a run's environment in
+its cached configuration, so the runner reads the shard and seed when it runs.
+Test artifacts that share a root module share its runner options and timing record.
+
+### Hosted gate
 
 The gate has four tiers. Each one runs more than the one before it:
 
@@ -173,71 +213,74 @@ may install a repository's external tools into the cached runner temp directory.
 The design uses GitHub's standard [reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows):
 repository facts stay with the caller and common mechanics have one owner.
 
-## Development
+### Following std's deprecations
 
-Requires Zig 0.17.0. Run `zig build test` for the check regression
-suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
+`zig build deprecations` lists every reference to something the Zig release
+that builds the package deprecated, with the rewrite that replaces it, and
+`zig build deprecations -- --write` applies them and formats the files it
+changed. It reads std's source from that Zig. A deprecated alias, such as
+`pub const indexOf = find;`, needs nothing more: `std.mem.indexOf` becomes
+`std.mem.find`. The rest are in a table per release, checked against that std
+before anything is rewritten:
+
+- `std.fmt.allocPrint(a, ...)` becomes `a.print(...)`, its sentinel variant
+  `a.printSentinel(...)`. A first argument that is not a plain name or call
+  keeps the function form, `std.mem.Allocator.print(...)`.
+- `std.fmt.bufPrint` becomes `std.mem.print`, `bufPrintSentinel`
+  `std.mem.printSentinel`, and `std.fs.path` becomes `std.Io.Dir.path`.
+- `std.mem.copyForwards(T, dest, source)` and `copyBackwards` become
+  `@memmove(dest[0..source.len], source)` when `source` is a name.
+- `b.lazyDependency(...) orelse x` becomes `b.dependencyLazy(...) catch x` for
+  `b` declared as `*std.Build`.
+
+Names resolve through the file's own aliases (`const mem = std.mem;`); an
+alias the rewrites leave unused is removed. A rewrite that would delete a
+comment is left for a person, as is any deprecated reference the table cannot
+move; both are listed as `by hand`. Files that do not parse are skipped and
+named. Build output, `zig-pkg` and hidden directories are not read; name files
+or directories after `--` to read only those.
+
+## API
+
+`build.zig` exports what a package's own `build.zig` calls:
+
+| Declaration | What it does |
+|---|---|
+| `addCi(b, Config)` | Adds `lint`, `ci`, `ci-check`, `check-imports`, `docs`, `cache` and `deprecations` |
+| `Config`, `TestTimeout` | The gate's paths, shard records, watchdog and test log level |
+| `addConsumerCheck(b, ConsumerOptions)` | Adds `check-consumer` |
+| `addCheck(b, name, source)` | Builds, tests and runs a repository check program as step `name` |
+
+A test runner of a package's own can import `preflight_order` and
+`preflight_timings`. `preflight_order.init(io, init, args, tests, durations)` seeds,
+selects the shard's tests and orders them, returning `InitError` for a seed that is no
+`u32`, a shard that is not `i/n` or durations of the wrong shape. Its `weigh` and
+`assign` are the shard split by themselves. `preflight_timings.Recorder.init(io,
+environ, stem, key)` opens the timing record, `record(io, name, nanoseconds, status)`
+appends one test and `deinit(io)` closes it; the recorder keeps no `Io`.
+
+## Scope
+
+- It is a build dependency only: no module a consumer compiles imports it.
+- It does not format code: `zig fmt` does, and the gate checks the result.
+- It starts no containers and schedules no runs.
+- It rewrites code only when asked, with `zig build deprecations -- --write`.
+- It does not pick the files a gate checks: `ci/preflight.json` names them.
+
+## Testing
+
+Run `zig build test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
 ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
 `zig-0.17`), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
 
-MIT licensed.
+## Built with
 
-Existing ziglint findings may be recorded in a repository's `ziglint_exceptions`
-file with their rule, path, exact source line, diagnostic and reason. The allowance
-is consumed once per finding: duplicates, changed code and new findings fail.
-This records migration debt without disabling a rule or admitting growth.
-On branches, git supplies the PR base ledger (or main locally). Every exception
-must already exist there; removals are allowed. Unused exceptions fail on every
-branch, including main. Git renames preserve allowances only when the rule,
-source and diagnostic still match exactly. Hosted checks fetch the base history;
-`PREFLIGHT_LEDGER_BASE` can select an explicit base for a local reproduction.
+**tycho**, every coding agent in one folder (in development), and the Zig packages it
+is built from.
 
-Zig sources also reject `catch unreachable` without a nonempty
-`// unreachable: <why>` on the same or preceding line, and `std.debug.print`
-outside test blocks and test code. Files with top-level fields
-use TitleCase; other files use snake_case or lowercase. Existing findings use
-independent `unreachable_exceptions`, `debug_print_exceptions` and
-`file_name_exceptions` JSON ledgers with the same five fields and shrinking
-budget as ziglint. Assertion counts per function and package appear in the run
-summary as a report, without affecting the gate.
+## Licence
 
-The reusable workflow's `adopt` input defaults to false. For a package's first
-adoption it can initialize an absent source ledger only from exact findings
-already present in the base source, with the reason
-`existing at gate adoption; burned down in the cleanup pass`. Existing ledgers
-always retain the shrinking budget, even when this input is enabled.
-`zig build findings -Drepo-root=<package>` prints the new source findings as JSON
-for preparing an initial ledger; it does not change the package or approve debt.
-
-Layout exceptions likewise name their exact member set and a reason.
-`zig build docs -- usage` renders a configured region for updating its block.
-`zig build cache` preserves fetched packages and tools when pruning build products.
-
-Packages with relocatable test binaries can set `.portable_tests = true` in the
-build helper and `compile_once: true` in `ci/workflow.json`. Linux then builds
-macOS and Windows tests; those runners download and execute the binaries through
-Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers or
-fixtures compiled with absolute runner paths must be made relocatable first.
-An artifact upload drops the permission to run; preflight restores it before execution. The native matrix stays
-available for comparing elapsed time and runner minutes against this path.
-
-A tier records the durations of every host and mode it executes, through Zig's
-test protocol. In the merge and release tiers, the profile job folds the records
-into `ci/durations.json`, keeping the columns the run did not measure. It uploads
-the result as the proof artifact, `preflight-merge-<sha>` or `preflight-release-<sha>`.
-`gh run download <run> -n preflight-merge-<sha> -D ci` refreshes the package's
-copy. From a package root, `zig build --build-file <preflight>/build.zig
--Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
-`ci/durations.json` in place.
-The shared runner shuffles test order using the test seed in every tier and in local
-runs. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
-reproduce an order. Direct test binaries also accept `--seed=<number>`.
-Custom runners can import `preflight_order`, whose `init` seeds, selects the
-shard's tests and orders them, and `preflight_timings` to record durations;
-`preflight_runner_options` carries the recorded durations and the record's name.
-Test runs carry no environment from the build: Zig keeps a run's environment in
-its cached configuration, so the runner reads the shard and seed when it runs.
-Test artifacts that share a root module share its runner options and timing record.
+MIT. See [LICENSE](LICENSE).

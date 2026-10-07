@@ -1,11 +1,19 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
 
 ### Breaking
 
+- `preflight_timings.Recorder` keeps no `Io`: `deinit(io)` and `record(io, name, nanoseconds, status)` take it. `init` returns `Recorder.InitError` and `record` `Recorder.RecordError`.
+- `preflight_order.init` returns `InitError`: a seed that is no `u32` is `InvalidSeed` (it was `Overflow` or `InvalidCharacter`), and durations that do not parse are `InvalidDurations`, as from `weigh`, which returns `WeighError`. `assign` returns `std.mem.Allocator.Error`.
+- Pin gantry dc53715, where `scan` takes an `io` and hands it to the reader, `Options.diagnostics` replaces `scanWithDiagnostic`, and every public error set is named. A package's `ci/layers.zig` needs no change.
 - The hosted gate has tiers: `fast`, `merge` (fast plus the Debug suite on macOS and Windows; pull requests and the merge queue run it) and `release` (the former full matrix). `zig.yml` takes `tier` in place of `full`, and `merge-*` and `release-*` matrices in place of `full-matrix`, `compile-matrix` and `run-matrix`; `zig build plan` takes `--tier` in place of `--full`, and `skip.yml` takes `tier`. The proof artifact is `preflight-merge-<sha>` or `preflight-release-<sha>`, and a main push accepts either for its exact commit.
-- Requires Zig 0.17.0. gantry is pinned at d5bf5ba, its 0.17 port; ziglint at 6adecff of pedronaugusto/ziglint, v0.5.3 ported to 0.17.
+- Requires Zig 0.17.0. ziglint is pinned at 6adecff of pedronaugusto/ziglint, v0.5.3 ported to 0.17.
 - `zig build ci-linux`, its Debian image `src/checks/linux.Dockerfile` and the `container` command are removed; preflight starts no containers.
 - Timing keys and record names use Zig 0.17's mode names: `linux-debug`, `windows-safe`, `test-linux-debug-all.ndjson`. Rename the columns of `ci/durations.json` (`-Debug` to `-debug`, `-ReleaseSafe` to `-safe`, `-ReleaseFast` to `-fast`, `-ReleaseSmall` to `-small`).
 - Test runs carry no environment from the build, since Zig 0.17 keeps a run's environment in its cached configuration: the runner reads `PREFLIGHT_SHARD` and `PREFLIGHT_TEST_SEED` when it runs, and `preflight_runner_options` carries the recorded durations and the timing record's name. `PREFLIGHT_TIMINGS` and `PREFLIGHT_DURATIONS` are gone; `preflight_order.init` takes the durations' text and `preflight_timings.Recorder.init` the record's name. Test artifacts that share a root module share its runner options and timing record.
@@ -49,3 +57,10 @@
 
 - The full tier's ThreadSanitizer job leaves the source checks to their own job, as every other test job does.
 - `catch unreachable` and `std.debug.print` checks skip the configured `test_support`, not always `src/testing/`.
+
+### Changed
+
+- The package ships its CHANGELOG, beside the README and LICENSE.
+- The README reads in the packages' order: install, usage, design, API, scope, testing, licence.
+
+[Unreleased]: https://github.com/pedronaugusto/preflight/commits/main

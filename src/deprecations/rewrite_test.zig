@@ -16,6 +16,11 @@ const fixture = [_][2][]const u8{
         \\pub const heap = @import("heap.zig");
         \\pub const Io = @import("Io.zig");
         \\pub const Build = @import("Build.zig");
+        \\pub const lang = @import("lang.zig");
+        \\pub const array_list = @import("array_list.zig");
+        \\pub fn ArrayList(comptime T: type) type {
+        \\    return array_list.Aligned(T, null);
+        \\}
         \\pub const array_hash_map = @import("array_hash_map.zig");
         \\/// Deprecated; use `array_hash_map.Auto`.
         \\pub const AutoArrayHashMapUnmanaged = array_hash_map.Auto;
@@ -90,9 +95,62 @@ const fixture = [_][2][]const u8{
     .{ "Io/Dir.zig", "const std = @import(\"std\");\npub const path = std.fs.path;\npub const max_path_bytes = 4096;\n" },
     .{ "array_hash_map.zig", "pub fn Auto(comptime K: type, comptime V: type) type {}\n" },
     .{
+        "array_list.zig",
+        \\pub fn Aligned(comptime T: type, comptime alignment: ?u8) type {
+        \\    if (alignment) |a| {
+        \\        if (a == 1) return Aligned(T, null);
+        \\    }
+        \\    return struct {
+        \\        const Self = @This();
+        \\        /// Deprecated in favor of `last`
+        \\        pub const getLastOrNull = last;
+        \\        pub fn last(self: Self) ?T {}
+        \\    };
+        \\}
+        \\
+    },
+    .{
+        "lang.zig",
+        \\pub const Optimize = enum {
+        \\    debug,
+        \\    fast,
+        \\    /// Deprecated, to be removed after 0.18.0
+        \\    pub const Debug: @This() = .debug;
+        \\};
+        \\
+    },
+    .{
+        "Build/Step.zig",
+        \\pub const Run = @import("Step/Run.zig");
+        \\pub const Compile = struct {};
+        \\
+    },
+    .{
+        "Build/Step/Run.zig",
+        \\const Run = @This();
+        \\const Compile = @import("../Step.zig").Compile;
+        \\pub const PathArgOptions = struct { prefix: []const u8 = "", suffix: []const u8 = "" };
+        \\/// Deprecated, use `addArtifactArg2`.
+        \\pub fn addArtifactArg(run: *Run, artifact: *Compile) void {
+        \\    run.addArtifactArg2(artifact, .{});
+        \\}
+        \\/// Deprecated, use `addArtifactArg2`.
+        \\pub fn addPrefixedArtifactArg(run: *Run, prefix: []const u8, artifact: *Compile) void {
+        \\    run.addArtifactArg2(artifact, .{ .prefix = prefix });
+        \\}
+        \\pub fn addArtifactArg2(run: *Run, artifact: *Compile, options: PathArgOptions) void {}
+        \\/// Deprecated, use `enableProtocolMode`.
+        \\pub fn enableTestRunnerMode(run: *Run) void {
+        \\    run.stdio = .zig_test;
+        \\}
+        \\
+    },
+    .{
         "Build.zig",
         \\const Build = @This();
+        \\pub const Step = @import("Build/Step.zig");
         \\pub const Dependency = struct {};
+        \\pub fn addRunArtifact(b: *Build, exe: *Step.Compile) *Step.Run {}
         \\/// Deprecated in favor of `dependencyLazy`.
         \\pub fn lazyDependency(b: *Build, name: []const u8, args: anytype) ?*Dependency {}
         \\pub fn dependencyLazy(b: *Build, name: []const u8, args: anytype) error{LazyDependencyNeeded}!*Dependency {}
@@ -180,6 +238,33 @@ test "aliases: std's and the file's own resolve to what they stand for" {
         \\
     );
     try std.testing.expectEqual(0, outcome.leftovers.len);
+}
+
+test "aliases: a bitwise or after a parenthesis is no capture" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    _ = try f.expect(
+        \\const std = @import("std");
+        \\fn join(high: u64, low: u64) u64 {
+        \\    return (high << 32) | low;
+        \\}
+        \\test {
+        \\    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+        \\    _ = &buffer;
+        \\}
+        \\
+    ,
+        \\const std = @import("std");
+        \\fn join(high: u64, low: u64) u64 {
+        \\    return (high << 32) | low;
+        \\}
+        \\test {
+        \\    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        \\    _ = &buffer;
+        \\}
+        \\
+    );
 }
 
 test "aliases: a name bound another way somewhere is left alone" {
@@ -350,7 +435,9 @@ test "signature check: the table holds only where std agrees" {
         var f: Fixture = undefined;
         try f.init(null);
         defer f.deinit();
-        for (table.releases[0].entries) |entry| try std.testing.expectEqual(.active, std.meta.activeTag(try table.check(&f.lib, entry)));
+        // The fixture leaves out most forwarding methods: absent, not wrong.
+        for (table.releases[0].entries) |entry| try std.testing.expect(try table.check(&f.lib, entry) != .mismatch);
+        try std.testing.expectEqual(.active, std.meta.activeTag(try table.check(&f.lib, .{ .forward = "std.Build.Step.Run.addPrefixedArtifactArg" })));
     }
     {
         var f: Fixture = undefined;
@@ -376,6 +463,110 @@ test "signature check: the table holds only where std agrees" {
     }
 }
 
+test "methods: a forwarding method becomes the call it makes, on a value a method returned" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    const outcome = try f.expect(
+        \\const std = @import("std");
+        \\pub fn build(b: *std.Build, exe: *std.Build.Step.Compile) void {
+        \\    const run = b.addRunArtifact(exe);
+        \\    run.addArtifactArg(exe);
+        \\    run.addPrefixedArtifactArg("--tool=", tool(b));
+        \\    run.addPrefixedArtifactArg(prefix(b), tool(b));
+        \\    run.enableTestRunnerMode();
+        \\}
+        \\
+    ,
+        \\const std = @import("std");
+        \\pub fn build(b: *std.Build, exe: *std.Build.Step.Compile) void {
+        \\    const run = b.addRunArtifact(exe);
+        \\    run.addArtifactArg2(exe, .{});
+        \\    run.addArtifactArg2(tool(b), .{ .prefix = "--tool=" });
+        \\    run.addPrefixedArtifactArg(prefix(b), tool(b));
+        \\    run.enableTestRunnerMode();
+        \\}
+        \\
+    );
+    // Two calls would swap; a deprecated method the table does not move is
+    // listed.
+    try std.testing.expectEqual(2, outcome.leftovers.len);
+    try std.testing.expectEqualStrings("its arguments would run in another order", outcome.leftovers[0].doc);
+    try std.testing.expectEqualStrings("std.Build.Step.Run.enableTestRunnerMode", outcome.leftovers[1].name);
+}
+
+test "methods: std's own method aliases rename, through generic types too" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    const outcome = try f.expect(
+        \\const std = @import("std");
+        \\pub fn f(list: *std.ArrayList(u8)) ?u8 {
+        \\    var ops: std.ArrayList(u8) = .empty;
+        \\    _ = ops.getLastOrNull();
+        \\    return list.getLastOrNull();
+        \\}
+        \\
+    ,
+        \\const std = @import("std");
+        \\pub fn f(list: *std.ArrayList(u8)) ?u8 {
+        \\    var ops: std.ArrayList(u8) = .empty;
+        \\    _ = ops.last();
+        \\    return list.last();
+        \\}
+        \\
+    );
+    try std.testing.expectEqual(0, outcome.leftovers.len);
+}
+
+test "builtin: the compiler's deprecated fields move to the target" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    _ = try f.expect(
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\const native_os = builtin.os.tag;
+        \\pub fn f() bool {
+        \\    return builtin.mode == .debug and @import("builtin").cpu.arch == .x86_64 and
+        \\        builtin.object_format == .elf and builtin.abi == .gnu and builtin.is_test and
+        \\        builtin.target.os.tag == native_os and std.lang.Optimize.Debug == .debug;
+        \\}
+        \\
+    ,
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\const native_os = builtin.target.os.tag;
+        \\pub fn f() bool {
+        \\    return builtin.optimize == .debug and @import("builtin").target.cpu.arch == .x86_64 and
+        \\        builtin.target.ofmt == .elf and builtin.target.abi == .gnu and builtin.is_test and
+        \\        builtin.target.os.tag == native_os and std.lang.Optimize.debug == .debug;
+        \\}
+        \\
+    );
+}
+
+test "signature check: a forward or a builtin move holds only where the compiler agrees" {
+    var f: Fixture = undefined;
+    try f.init(.{
+        "Build/Step/Run.zig",
+        \\const Run = @This();
+        \\/// Deprecated, use `addArtifactArg2`.
+        \\pub fn addArtifactArg(run: *Run, artifact: anytype) void {
+        \\    run.addArtifactArg2(artifact, .{});
+        \\    run.count += 1;
+        \\}
+        \\pub fn addArtifactArg2(run: *Run, artifact: anytype, options: anytype) void {}
+        \\
+    });
+    defer f.deinit();
+    const forward = try table.check(&f.lib, .{ .forward = "std.Build.Step.Run.addArtifactArg" });
+    try std.testing.expectEqualStrings("std.Build.Step.Run.addArtifactArg does more than call its replacement on its receiver", forward.mismatch);
+    const moved = try table.check(&f.lib, .{ .builtin = .{ .old = "os", .new = "target.cpu" } });
+    try std.testing.expect(std.mem.startsWith(u8, moved.mismatch, "builtin.os is Target.Os and builtin.target.cpu is"));
+    try std.testing.expectEqual(.absent, std.meta.activeTag(try table.check(&f.lib, .{ .builtin = .{ .old = "removed", .new = "target" } })));
+}
+
 test "signature check: the Zig 0.17 table matches Zig 0.17's std" {
     if (builtin.zig_version.major != 0 or builtin.zig_version.minor != 17) return error.SkipZigTest;
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -399,4 +590,34 @@ test "signature check: the Zig 0.17 table matches Zig 0.17's std" {
     try std.testing.expectEqualStrings("std.Io.Dir.path.resolveAlloc", try std.mem.join(arena.allocator(), ".", normal.path));
     const builtin_type = try lib.normalize(&.{ "std", "builtin", "OptimizeMode" });
     try std.testing.expectEqualStrings("std.lang.Optimize", try std.mem.join(arena.allocator(), ".", builtin_type.path));
+    // The shapes the 0.17 port left behind, against the real std.
+    const outcome = try rewrite.file(arena.allocator(), &lib, release.entries,
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\pub fn build(b: *std.Build, exe: *std.Build.Step.Compile) void {
+        \\    const run = b.addRunArtifact(exe);
+        \\    run.addDirectoryArg(b.path("std"));
+        \\    run.addArtifactArg(exe);
+        \\    var ops: std.ArrayList(u8) = .empty;
+        \\    _ = ops.getLastOrNull();
+        \\    _ = @tagName(builtin.os.tag) ++ @tagName(builtin.mode);
+        \\    _ = std.lang.Optimize.ReleaseFast;
+        \\}
+        \\
+    );
+    try std.testing.expectEqualStrings(
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\pub fn build(b: *std.Build, exe: *std.Build.Step.Compile) void {
+        \\    const run = b.addRunArtifact(exe);
+        \\    run.addDirectoryArg2(b.path("std"), .{});
+        \\    run.addArtifactArg2(exe, .{});
+        \\    var ops: std.ArrayList(u8) = .empty;
+        \\    _ = ops.last();
+        \\    _ = @tagName(builtin.target.os.tag) ++ @tagName(builtin.optimize);
+        \\    _ = std.lang.Optimize.fast;
+        \\}
+        \\
+    , outcome.text);
+    try std.testing.expectEqual(0, outcome.leftovers.len);
 }

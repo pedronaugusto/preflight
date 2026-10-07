@@ -46,6 +46,23 @@ pub const Normal = struct {
 
 pub const Param = struct { comptime_param: bool, type: []const u8 };
 
+/// A call's arguments as source text with holes for the caller's arguments.
+pub const Template = struct {
+    pub const Part = union(enum) {
+        text: []const u8,
+        /// The caller's argument at this index, the receiver not counted.
+        param: usize,
+    };
+};
+
+/// What a forwarding method calls: `new` on the same receiver, with `args`.
+pub const Forward = struct {
+    new: []const u8,
+    /// The method's parameters after the receiver.
+    params: usize,
+    args: []const []const Template.Part,
+};
+
 const max_depth = 24;
 
 pub const Library = struct {
@@ -150,8 +167,16 @@ pub const Library = struct {
     /// declaration a `pub const old = new;` alias names.
     fn replacement(lib: *Library, found: Member, owner_path: Path, path: Path, depth: usize) !?Path {
         if (lib.renames.get(try std.mem.join(lib.a, ".", path))) |new| return new;
-        const decl = found.owner.file.tree.fullVarDecl(found.node) orelse return null;
+        const tree = &found.owner.file.tree;
+        const decl = tree.fullVarDecl(found.node) orelse return null;
         const init = decl.ast.init_node.unwrap() orelse return null;
+        // `pub const Debug: @This() = .debug;` names its own type's `debug`.
+        if (tree.nodeTag(init) == .enum_literal) {
+            const type_node = decl.ast.type_node.unwrap() orelse return null;
+            if (!isThis(tree, type_node)) return null;
+            const literal = try append(lib.a, owner_path, tree.tokenSlice(tree.nodeMainToken(init)));
+            return literal;
+        }
         return lib.pathOf(found.owner, owner_path, init, depth);
     }
 
@@ -189,12 +214,36 @@ pub const Library = struct {
     }
 
     /// The namespace or declaration a member stands for.
+    /// A function that returns a type stands for the type it returns, so
+    /// `std.ArrayList` reaches the methods of the list it makes.
     pub fn targetOf(lib: *Library, found: Member, depth: usize) anyerror!?Target {
         const tree = &found.owner.file.tree;
         const declaration: Target = .{ .file = found.owner.file, .node = found.node, .kind = .declaration };
+        if (tree.nodeTag(found.node) == .fn_decl) return try lib.returned(found.owner.file, found.node, depth) orelse declaration;
         const decl = tree.fullVarDecl(found.node) orelse return declaration;
         const init = decl.ast.init_node.unwrap() orelse return declaration;
         return try lib.evaluate(found.owner.file, init, depth) orelse declaration;
+    }
+
+    /// The container a type function returns: the value of its body's last
+    /// top-level `return`.
+    fn returned(lib: *Library, file: *File, node: Ast.Node.Index, depth: usize) anyerror!?Target {
+        // A type function that returns another call of itself ends here.
+        if (depth >= max_depth) return null;
+        const tree = &file.tree;
+        var buffer: [1]Ast.Node.Index = undefined;
+        const proto = tree.fullFnProto(&buffer, node).?;
+        const return_type = proto.ast.return_type.unwrap() orelse return null;
+        if (tree.nodeTag(return_type) != .identifier or !std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(return_type)), "type")) return null;
+        var statements_buffer: [2]Ast.Node.Index = undefined;
+        const statements = tree.blockStatements(&statements_buffer, tree.nodeData(node).node_and_node[1]) orelse return null;
+        var last: ?Ast.Node.Index = null;
+        for (statements) |statement| if (tree.nodeTag(statement) == .@"return") {
+            last = tree.nodeData(statement).opt_node.unwrap();
+        };
+        const value = last orelse return null;
+        const target = try lib.evaluate(file, value, depth + 1) orelse return null;
+        return if (target.kind == .container) target else null;
     }
 
     fn evaluate(lib: *Library, file: *File, node: Ast.Node.Index, depth: usize) anyerror!?Target {
@@ -202,6 +251,11 @@ pub const Library = struct {
         const tree = &file.tree;
         var buffer: [2]Ast.Node.Index = undefined;
         if (tree.fullContainerDecl(&buffer, node) != null) return .{ .file = file, .node = node, .kind = .container };
+        var call_buffer: [1]Ast.Node.Index = undefined;
+        if (tree.fullCall(&call_buffer, node)) |call| {
+            const callee = try lib.evaluate(file, call.ast.fn_expr, depth + 1) orelse return null;
+            return if (callee.kind == .container) callee else null;
+        }
         switch (tree.nodeTag(node)) {
             .identifier => {
                 const token = tree.nodeMainToken(node);
@@ -276,6 +330,82 @@ pub const Library = struct {
         return if (member(owner, name)) |node| .{ .owner = owner, .node = node } else null;
     }
 
+    /// The std type a method returns, through pointers, optionals and error
+    /// unions: `std.Build.addRunArtifact` returns `std.Build.Step.Run`.
+    pub fn returnPath(lib: *Library, path: Path) !?Path {
+        if (path.len < 2) return null;
+        const found = try lib.lookup(path) orelse return null;
+        const tree = &found.owner.file.tree;
+        if (tree.nodeTag(found.node) != .fn_decl) return null;
+        var buffer: [1]Ast.Node.Index = undefined;
+        var node = tree.fullFnProto(&buffer, found.node).?.ast.return_type.unwrap() orelse return null;
+        while (true) {
+            if (tree.nodeTag(node) == .optional_type) {
+                node = tree.nodeData(node).node;
+            } else if (tree.nodeTag(node) == .error_union) {
+                node = tree.nodeData(node).node_and_node[1];
+            } else if (tree.fullPtrType(node)) |pointer| {
+                node = pointer.ast.child_type;
+            } else break;
+        }
+        const owner_path = (try lib.normalize(path[0 .. path.len - 1])).path;
+        return lib.pathOf(found.owner, owner_path, node, 0);
+    }
+
+    /// A deprecated method whose body only calls its replacement on its
+    /// first parameter: `run.addArtifactArg2(artifact, .{ .prefix = prefix });`.
+    pub fn forward(lib: *Library, found: Member) !?Forward {
+        const tree = &found.owner.file.tree;
+        if (tree.nodeTag(found.node) != .fn_decl) return null;
+        var buffer: [1]Ast.Node.Index = undefined;
+        const proto = tree.fullFnProto(&buffer, found.node).?;
+        var names: std.ArrayList([]const u8) = .empty;
+        var it = proto.iterate(tree);
+        while (it.next()) |param| try names.append(lib.a, tree.tokenSlice(param.name_token orelse return null));
+        if (names.items.len == 0) return null;
+        var statements_buffer: [2]Ast.Node.Index = undefined;
+        const statements = tree.blockStatements(&statements_buffer, tree.nodeData(found.node).node_and_node[1]) orelse return null;
+        if (statements.len != 1) return null;
+        var body = statements[0];
+        if (tree.nodeTag(body) == .@"return") body = tree.nodeData(body).opt_node.unwrap() orelse return null;
+        var call_buffer: [1]Ast.Node.Index = undefined;
+        const call = tree.fullCall(&call_buffer, body) orelse return null;
+        if (tree.nodeTag(call.ast.fn_expr) != .field_access) return null;
+        const receiver, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
+        if (tree.nodeTag(receiver) != .identifier or !std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(receiver)), names.items[0])) return null;
+        const new = tree.tokenSlice(method);
+        const successor = member(found.owner, new) orelse return null;
+        if (deprecation(lib.a, .{ .owner = found.owner, .node = successor }) != null) return null;
+        // Each other parameter once, and nothing else by name: the call
+        // site's arguments take their places.
+        var uses = try lib.a.alloc(usize, names.items.len);
+        @memset(uses, 0);
+        var args: std.ArrayList([]const Template.Part) = .empty;
+        for (call.ast.params) |arg| {
+            var parts: std.ArrayList(Template.Part) = .empty;
+            var token = tree.firstToken(arg);
+            const last = tree.lastToken(arg);
+            var cursor: usize = tree.tokenStart(token);
+            while (token <= last) : (token += 1) {
+                if (tree.tokenTag(token) != .identifier or (token > 0 and tree.tokenTag(token - 1) == .period)) continue;
+                const name = tree.tokenSlice(token);
+                const index = for (names.items, 0..) |param, i| {
+                    if (std.mem.eql(u8, param, name)) break i;
+                } else return null;
+                if (index == 0) return null;
+                uses[index] += 1;
+                try parts.append(lib.a, .{ .text = tree.source[cursor..tree.tokenStart(token)] });
+                try parts.append(lib.a, .{ .param = index - 1 });
+                cursor = tree.tokenStart(token) + name.len;
+            }
+            const end = tree.tokenStart(last) + tree.tokenSlice(last).len;
+            try parts.append(lib.a, .{ .text = tree.source[cursor..end] });
+            try args.append(lib.a, parts.items);
+        }
+        for (uses[1..]) |count| if (count != 1) return null;
+        return .{ .new = new, .params = names.items.len - 1, .args = args.items };
+    }
+
     /// The parameters of a function declaration, without their names.
     pub fn params(lib: *Library, found: Member) !?[]const Param {
         const tree = &found.owner.file.tree;
@@ -322,6 +452,14 @@ pub fn declarationName(tree: *const Ast, node: Ast.Node.Index) ?[]const u8 {
     return tree.tokenSlice(name);
 }
 
+/// `@This()`.
+fn isThis(tree: *const Ast, node: Ast.Node.Index) bool {
+    return switch (tree.nodeTag(node)) {
+        .builtin_call_two, .builtin_call_two_comma => std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(node)), "@This"),
+        else => false,
+    };
+}
+
 fn isPublic(tree: *const Ast, node: Ast.Node.Index) bool {
     return tree.tokenTag(tree.firstToken(node)) == .keyword_pub;
 }
@@ -333,6 +471,15 @@ pub fn importsStd(tree: *const Ast, node: Ast.Node.Index) bool {
     const args = tree.builtinCallParams(&buffer, node) orelse return false;
     return args.len == 1 and tree.nodeTag(args[0]) == .string_literal and
         std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(args[0])), "\"std\"");
+}
+
+/// `@import("builtin")`, the module the compiler writes for each build.
+pub fn importsBuiltin(tree: *const Ast, node: Ast.Node.Index) bool {
+    if (!std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(node)), "@import")) return false;
+    var buffer: [2]Ast.Node.Index = undefined;
+    const args = tree.builtinCallParams(&buffer, node) orelse return false;
+    return args.len == 1 and tree.nodeTag(args[0]) == .string_literal and
+        std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(args[0])), "\"builtin\"");
 }
 
 /// A declaration's doc comment, when the comment marks it: a line that

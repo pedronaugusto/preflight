@@ -113,7 +113,7 @@ const Steps = struct {
         b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
         const deprecations = b.addRunArtifact(executable);
         deprecations.addArgs(&.{ "deprecations", "--std" });
-        deprecations.addDirectoryArg(b.graph.path(.zig_lib, "std"));
+        deprecations.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         deprecations.addPassthruArgs();
         deprecations.setCwd(b.path("."));
         b.step("deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
@@ -153,7 +153,7 @@ const Steps = struct {
         const ziglint_dep = pkg.dependencyLazy("ziglint", .{ .target = host, .optimize = .safe }) catch return;
         const checks = b.addRunArtifact(executable);
         checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
-        checks.addArtifactArg(ziglint_dep.artifact("ziglint"));
+        checks.addArtifactArg2(ziglint_dep.artifact("ziglint"), .{});
         checks.setCwd(b.path("."));
         checks.step.dependOn(&lint_structure.step);
         steps.lint.dependOn(&checks.step);

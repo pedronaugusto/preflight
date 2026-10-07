@@ -16,6 +16,8 @@ pub const Kind = enum {
     receiver,
     memmove,
     orelse_to_catch,
+    /// A forwarding method replaced by the call it makes.
+    forward,
     /// An alias the rewrites left unused.
     unused,
 };
@@ -45,18 +47,18 @@ pub fn file(a: Allocator, lib: *library.Library, entries: []const table.Entry, s
     var leftovers: std.ArrayList(Leftover) = .empty;
     const original = try Ast.parse(a, text, .{});
     if (original.errors.len > 0) return error.Unparsable;
-    const first_names = try Names.collect(a, &original);
+    const first_names = try Names.collect(a, lib, &original);
     var passes: usize = 0;
     while (true) : (passes += 1) {
         if (passes == max_passes) return error.RewriteDidNotSettle;
         const tree = try Ast.parse(a, text, .{});
         if (tree.errors.len > 0) return error.RewriteBrokeSyntax;
-        var view: View = .{ .a = a, .lib = lib, .entries = entries, .tree = &tree, .names = try Names.collect(a, &tree) };
+        var view: View = .{ .a = a, .lib = lib, .entries = entries, .tree = &tree, .names = try Names.collect(a, lib, &tree) };
         const groups = try view.groups(if (passes == 0) &leftovers else null);
         if (groups.len == 0) break;
         text = try apply(a, text, groups, &changes);
     }
-    while (try unusedAliases(a, text, &original, first_names)) |group| {
+    while (try unusedAliases(a, lib, text, &original, first_names)) |group| {
         text = try apply(a, text, &.{group}, &changes);
     }
     std.mem.sort(Change, changes.items, {}, struct {
@@ -76,8 +78,9 @@ pub fn file(a: Allocator, lib: *library.Library, entries: []const table.Entry, s
 }
 
 /// The names a file binds: aliases of std paths, declarations with a std
-/// type, and the rest. Zig forbids shadowing, so a name bound one way
-/// everywhere means that everywhere.
+/// type, declared or returned by a std method, and the rest. Zig forbids
+/// shadowing, so a name bound one way everywhere means that everywhere.
+/// `@import("builtin")` is the path `builtin`.
 const Names = struct {
     aliases: std.StringHashMapUnmanaged(Path) = .empty,
     typed: std.StringHashMapUnmanaged(Path) = .empty,
@@ -86,7 +89,7 @@ const Names = struct {
 
     const Binding = struct { init: ?Ast.Node.Index = null, type: ?Ast.Node.Index = null };
 
-    fn collect(a: Allocator, tree: *const Ast) !Names {
+    fn collect(a: Allocator, lib: *library.Library, tree: *const Ast) !Names {
         var bound: std.StringHashMapUnmanaged(std.ArrayList(Binding)) = .empty;
         for (0..tree.nodes.len) |i| {
             const node: Ast.Node.Index = @fromBackingInt(@intCast(i));
@@ -118,6 +121,18 @@ const Names = struct {
         while (it.next()) |entry| {
             if (try agreed(.type, a, &names, tree, entry.value_ptr.items)) |path| try names.typed.put(a, entry.key_ptr.*, path);
         }
+        // `const run = b.addRunArtifact(exe);` has the type the method returns.
+        changed = true;
+        while (changed) {
+            changed = false;
+            it = bound.iterator();
+            while (it.next()) |entry| {
+                if (names.typed.contains(entry.key_ptr.*) or names.aliases.contains(entry.key_ptr.*)) continue;
+                const path = try names.returned(a, lib, tree, entry.value_ptr.items) orelse continue;
+                try names.typed.put(a, entry.key_ptr.*, path);
+                changed = true;
+            }
+        }
         for (tree.rootDecls()) |decl| {
             const name = library.declarationName(tree, decl) orelse continue;
             if (names.aliases.get(name)) |path| try names.top.put(a, name, path);
@@ -131,7 +146,9 @@ const Names = struct {
         try entry.value_ptr.append(a, binding);
     }
 
-    /// Payload captures, `|x|` and `|*x, i|`, bind names with no declared type.
+    /// Payload captures, `|x|` and `|*x, i|`, bind names with no declared
+    /// type. A bitwise or after `)`, `(a << 1) | b`, is no capture: only
+    /// names, `*` and commas sit between a capture's pipes.
     fn captures(a: Allocator, tree: *const Ast, bound: *std.StringHashMapUnmanaged(std.ArrayList(Binding))) !void {
         const tags = tree.tokens.items(.tag);
         var i: usize = 1;
@@ -142,8 +159,13 @@ const Names = struct {
                 else => continue,
             }
             var j = i + 1;
-            while (j < tags.len and tags[j] != .pipe) : (j += 1) {
-                if (tags[j] == .identifier) try bind(a, bound, tree.tokenSlice(@intCast(j)), .{});
+            while (j < tags.len) : (j += 1) switch (tags[j]) {
+                .identifier, .asterisk, .comma => {},
+                else => break,
+            };
+            if (j == tags.len or tags[j] != .pipe) continue;
+            for (i + 1..j) |k| {
+                if (tags[k] == .identifier) try bind(a, bound, tree.tokenSlice(@intCast(k)), .{});
             }
             i = j;
         }
@@ -155,6 +177,27 @@ const Names = struct {
         for (bindings) |binding| {
             const node = (if (field == .init) binding.init else binding.type) orelse return null;
             const path = (if (field == .init) try names.pathOf(a, tree, node) else try names.typePath(a, tree, node)) orelse return null;
+            if (agreed_path) |seen| if (!samePath(seen, path)) return null;
+            agreed_path = path;
+        }
+        return agreed_path;
+    }
+
+    /// The one std type every binding's initializer returns, when each is a
+    /// method call on a typed name: `b.addRunArtifact(exe)`, `try x.f()`.
+    fn returned(names: *const Names, a: Allocator, lib: *library.Library, tree: *const Ast, bindings: []const Binding) !?Path {
+        var agreed_path: ?Path = null;
+        for (bindings) |binding| {
+            if (binding.type != null) return null;
+            var node = binding.init orelse return null;
+            if (tree.nodeTag(node) == .@"try") node = tree.nodeData(node).node;
+            var buffer: [1]Ast.Node.Index = undefined;
+            const call = tree.fullCall(&buffer, node) orelse return null;
+            if (tree.nodeTag(call.ast.fn_expr) != .field_access) return null;
+            const lhs, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
+            if (tree.nodeTag(lhs) != .identifier) return null;
+            const receiver = names.typed.get(tree.tokenSlice(tree.nodeMainToken(lhs))) orelse return null;
+            const path = try lib.returnPath(try appendPath(a, receiver, tree.tokenSlice(method))) orelse return null;
             if (agreed_path) |seen| if (!samePath(seen, path)) return null;
             agreed_path = path;
         }
@@ -174,15 +217,22 @@ const Names = struct {
                 out[base.len] = tree.tokenSlice(field);
                 return out;
             },
-            .builtin_call_two, .builtin_call_two_comma => return if (library.importsStd(tree, node)) &.{"std"} else null,
+            .builtin_call_two, .builtin_call_two_comma => {
+                if (library.importsStd(tree, node)) return &.{"std"};
+                if (library.importsBuiltin(tree, node)) return &.{"builtin"};
+                return null;
+            },
             else => return null,
         }
     }
 
-    /// The std type a declared type names, through pointers and optionals.
+    /// The std type a declared type names, through pointers and optionals;
+    /// `std.ArrayList(u8)` is the type `std.ArrayList` returns.
     fn typePath(names: *const Names, a: Allocator, tree: *const Ast, node: Ast.Node.Index) !?Path {
         if (tree.nodeTag(node) == .optional_type) return names.typePath(a, tree, tree.nodeData(node).node);
         if (tree.fullPtrType(node)) |pointer| return names.typePath(a, tree, pointer.ast.child_type);
+        var buffer: [1]Ast.Node.Index = undefined;
+        if (tree.fullCall(&buffer, node)) |call| return names.pathOf(a, tree, call.ast.fn_expr);
         return names.pathOf(a, tree, node);
     }
 };
@@ -237,11 +287,11 @@ const View = struct {
         if (tree.nodeTag(callee) == .field_access) {
             const lhs, const method = tree.nodeData(callee).node_and_token;
             if (tree.nodeTag(lhs) == .identifier) if (v.names.typed.get(tree.tokenSlice(tree.nodeMainToken(lhs)))) |type_path| {
-                return v.methodGroup(node, type_path, method, orelses, leftovers);
+                return v.methodGroup(node, call, type_path, method, orelses, leftovers);
             };
         }
         const path = try v.names.pathOf(v.a, tree, callee) orelse return null;
-        if (path.len < 2) return null;
+        if (path.len < 2 or !std.mem.eql(u8, path[0], "std")) return null;
         const owner = try v.lib.normalize(path[0 .. path.len - 1]);
         const written = try std.mem.join(v.a, ".", owner.path);
         const name = path[path.len - 1];
@@ -290,10 +340,12 @@ const View = struct {
         return if (v.dropsComment(edits)) null else .{ .kind = .memmove, .edits = edits };
     }
 
-    /// `value.old(args) orelse x` as `value.new(args) catch x`, for a value
-    /// whose declared type the table names.
-    fn methodGroup(v: *View, node: Ast.Node.Index, type_path: Path, method: Ast.TokenIndex, orelses: std.AutoHashMapUnmanaged(Ast.Node.Index, Ast.TokenIndex), leftovers: ?*std.ArrayList(Leftover)) !?Group {
+    /// A method call on a value of a std type: `value.old(args) orelse x`
+    /// as `value.new(args) catch x`, a forwarding method as the call it
+    /// makes, and a method std aliases (`getLastOrNull = last`) by its name.
+    fn methodGroup(v: *View, node: Ast.Node.Index, call: Ast.full.Call, type_path: Path, method: Ast.TokenIndex, orelses: std.AutoHashMapUnmanaged(Ast.Node.Index, Ast.TokenIndex), leftovers: ?*std.ArrayList(Leftover)) !?Group {
         const tree = v.tree;
+        if (!std.mem.eql(u8, type_path[0], "std")) return null;
         const name = tree.tokenSlice(method);
         const normal = try v.lib.normalize(type_path);
         const written = try std.mem.join(v.a, ".", normal.path);
@@ -305,13 +357,65 @@ const View = struct {
                     .{ .start = v.start(keyword), .end = v.end(keyword), .text = "catch" },
                 }) };
             },
+            .forward => |f| if (matches(written, name, f)) {
+                if (try v.forwardGroup(call, method, try appendPath(v.a, normal.path, name))) |group| return group;
+                if (leftovers) |list| try list.append(v.a, .{ .line = v.line(method), .name = f, .doc = "its arguments would run in another order" });
+                return null;
+            },
             else => {},
         };
+        const full = try v.lib.normalize(try appendPath(v.a, normal.path, name));
+        if (full.path.len == normal.path.len + 1 and samePath(full.path[0..normal.path.len], normal.path) and !std.mem.eql(u8, full.path[normal.path.len], name)) {
+            return .{ .kind = .path, .edits = try v.a.dupe(Edit, &.{.{ .start = v.start(method), .end = v.end(method), .text = full.path[normal.path.len] }}) };
+        }
         const list = leftovers orelse return null;
         const found = try v.lib.lookup(try appendPath(v.a, normal.path, name)) orelse return null;
         const doc = library.deprecation(v.a, found) orelse return null;
         try list.append(v.a, .{ .line = v.line(method), .name = try std.mem.join(v.a, ".", &.{ written, name }), .doc = doc });
         return null;
+    }
+
+    /// `value.old(a, b)` as the call `old` makes, `value.new(b, .{ .x = a })`.
+    /// Arguments that move keep their order of evaluation unless all but
+    /// one read the same whenever they run.
+    fn forwardGroup(v: *View, call: Ast.full.Call, method: Ast.TokenIndex, path: Path) !?Group {
+        const tree = v.tree;
+        const found = try v.lib.lookup(path) orelse return null;
+        const forward = try v.lib.forward(found) orelse return null;
+        const params = call.ast.params;
+        if (params.len != forward.params) return null;
+        var order: std.ArrayList(usize) = .empty;
+        for (forward.args) |parts| for (parts) |part| switch (part) {
+            .param => |index| try order.append(v.a, index),
+            .text => {},
+        };
+        var moved = false;
+        for (order.items, 0..) |index, i| if (index != i) {
+            moved = true;
+        };
+        if (moved) {
+            var effects: usize = 0;
+            for (params) |param| if (!steady(tree, param)) {
+                effects += 1;
+            };
+            if (effects > 1) return null;
+        }
+        var text: std.ArrayList(u8) = .empty;
+        for (forward.args, 0..) |parts, i| {
+            if (i > 0) try text.appendSlice(v.a, ", ");
+            for (parts) |part| switch (part) {
+                .text => |t| try text.appendSlice(v.a, t),
+                .param => |index| try text.appendSlice(v.a, tree.getNodeSource(params[index])),
+            };
+        }
+        const open = v.end(method);
+        var paren = tree.lastToken(call.ast.fn_expr) + 1;
+        while (tree.tokenTag(paren) != .l_paren) paren += 1;
+        const edits = try v.a.dupe(Edit, &.{
+            .{ .start = v.start(method), .end = open, .text = forward.new },
+            .{ .start = v.end(paren), .end = v.closingParenOf(call), .text = text.items },
+        });
+        return if (v.dropsComment(edits)) null else .{ .kind = .forward, .edits = edits };
     }
 
     /// A path std or the table replaces, rewritten with as much of the
@@ -320,6 +424,7 @@ const View = struct {
         const tree = v.tree;
         const path = try v.names.pathOf(v.a, tree, node) orelse return null;
         if (path.len < 2) return null;
+        if (std.mem.eql(u8, path[0], "builtin")) return v.builtinGroup(node, path);
         const normal = try v.lib.normalize(path);
         if (samePath(normal.path, path)) {
             if (normal.leftover) |doc| if (leftovers) |list| try v.leftover(list, node, path, doc);
@@ -345,6 +450,20 @@ const View = struct {
         }
         const edit: Edit = .{ .start = v.start(tree.firstToken(node)), .end = v.end(tree.lastToken(node)), .text = try v.spell(normal.path) };
         return v.pathEdit(edit, path, leftovers);
+    }
+
+    /// `builtin.os` as `builtin.target.os`: the field the table moves, on
+    /// the node that names it.
+    fn builtinGroup(v: *View, node: Ast.Node.Index, path: Path) !?Group {
+        if (path.len != 2) return null;
+        for (v.entries) |entry| switch (entry) {
+            .builtin => |r| if (std.mem.eql(u8, path[1], r.old)) {
+                const field = v.tree.nodeData(node).node_and_token[1];
+                return .{ .kind = .path, .edits = try v.a.dupe(Edit, &.{.{ .start = v.start(field), .end = v.end(field), .text = r.new }}) };
+            },
+            else => {},
+        };
+        return null;
     }
 
     fn leftover(v: *View, list: *std.ArrayList(Leftover), node: Ast.Node.Index, path: Path, doc: []const u8) !void {
@@ -391,6 +510,14 @@ const View = struct {
         return false;
     }
 
+    /// The closing parenthesis of a call with or without arguments.
+    fn closingParenOf(v: *View, call: Ast.full.Call) usize {
+        if (call.ast.params.len > 0) return v.closingParen(call);
+        var token = v.tree.lastToken(call.ast.fn_expr) + 1;
+        while (v.tree.tokenTag(token) != .l_paren) token += 1;
+        return v.start(token + 1);
+    }
+
     fn closingParen(v: *View, call: Ast.full.Call) usize {
         var token = v.tree.lastToken(call.ast.params[call.ast.params.len - 1]) + 1;
         while (v.tree.tokenTag(token) != .r_paren) token += 1;
@@ -425,6 +552,15 @@ fn suffix(tag: Ast.Node.Tag) bool {
     return switch (tag) {
         .identifier, .field_access, .call_one, .call_one_comma, .call, .call_comma, .builtin_call_two, .builtin_call_two_comma, .builtin_call, .builtin_call_comma, .array_access, .deref, .unwrap_optional, .grouped_expression, .slice, .slice_open, .slice_sentinel => true,
         else => false,
+    };
+}
+
+/// An argument whose value does not depend on when it runs: a name, a
+/// field of one, or a literal.
+fn steady(tree: *const Ast, node: Ast.Node.Index) bool {
+    return switch (tree.nodeTag(node)) {
+        .string_literal, .multiline_string_literal, .number_literal, .char_literal, .enum_literal => true,
+        else => plainName(tree, node),
     };
 }
 
@@ -495,9 +631,9 @@ fn compact(a: Allocator, text: []const u8) ![]const u8 {
 
 /// A private alias the rewrites left without a use, removed with its line:
 /// `const fmt = std.fmt;` once no call goes through `fmt`.
-fn unusedAliases(a: Allocator, text: [:0]const u8, original: *const Ast, before: Names) !?Group {
+fn unusedAliases(a: Allocator, lib: *library.Library, text: [:0]const u8, original: *const Ast, before: Names) !?Group {
     const tree = try Ast.parse(a, text, .{});
-    const names = try Names.collect(a, &tree);
+    const names = try Names.collect(a, lib, &tree);
     var it = names.aliases.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;

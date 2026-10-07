@@ -442,7 +442,7 @@ test "shards split the tests once between them by recorded duration, natively an
     // One test outweighs the rest together, so its shard runs it alone.
     var heavy: []const u8 = "";
     var durations: std.Io.Writer.Allocating = .init(a);
-    try durations.writer.print("{{\"keys\":[\"{s}-debug\"],\"tests\":{{", .{@tagName(builtin.os.tag)});
+    try durations.writer.print("{{\"keys\":[\"{s}-debug\"],\"tests\":{{", .{@tagName(builtin.target.os.tag)});
     for (all, 0..) |name, i| {
         if (std.mem.endsWith(u8, name, "case-0")) heavy = name;
         try durations.writer.print("{s}{f}:[{d}]", .{ if (i == 0) "" else ",", std.json.fmt(name, .{}), @as(u32, if (std.mem.endsWith(u8, name, "case-0")) 100 else 1) });

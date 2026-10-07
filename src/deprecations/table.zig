@@ -2,6 +2,7 @@
 //! follow. A deprecated `pub const old = new;` needs no entry: the library
 //! resolves it to `new`. Each entry is checked against the std it runs on.
 const std = @import("std");
+const builtin = @import("builtin");
 const library = @import("library.zig");
 
 pub const Entry = union(enum) {
@@ -16,6 +17,13 @@ pub const Entry = union(enum) {
     /// `value.old(args) orelse x` becomes `value.new(args) catch x`, where
     /// `value` is declared as `type`: `old` returns `?T`, `new` returns `E!T`.
     orelse_to_catch: struct { type: []const u8, old: []const u8, new: []const u8 },
+    /// `value.old(args)`, for a deprecated method whose body only calls its
+    /// replacement, becomes that call with the caller's arguments in place:
+    /// `run.addPrefixedArtifactArg(p, a)` becomes `run.addArtifactArg2(a, .{ .prefix = p })`.
+    forward: []const u8,
+    /// `builtin.old` becomes `builtin.new` for `@import("builtin")`. The
+    /// compiler writes that module, so the check reads the compiler's own.
+    builtin: struct { old: []const u8, new: []const u8 },
 };
 
 pub const Release = struct { version: std.SemanticVersion, entries: []const Entry };
@@ -29,6 +37,24 @@ pub const releases = [_]Release{.{ .version = .{ .major = 0, .minor = 17, .patch
     .{ .memmove = "std.mem.copyForwards" },
     .{ .memmove = "std.mem.copyBackwards" },
     .{ .orelse_to_catch = .{ .type = "std.Build", .old = "lazyDependency", .new = "dependencyLazy" } },
+    .{ .forward = "std.Build.Step.Run.addArtifactArg" },
+    .{ .forward = "std.Build.Step.Run.addPrefixedArtifactArg" },
+    .{ .forward = "std.Build.Step.Run.addOutputFileArg" },
+    .{ .forward = "std.Build.Step.Run.addPrefixedOutputFileArg" },
+    .{ .forward = "std.Build.Step.Run.addFileContentArg" },
+    .{ .forward = "std.Build.Step.Run.addPrefixedFileContentArg" },
+    .{ .forward = "std.Build.Step.Run.addOutputDirectoryArg" },
+    .{ .forward = "std.Build.Step.Run.addPrefixedOutputDirectoryArg" },
+    .{ .forward = "std.Build.Step.Run.addDirectoryArg" },
+    .{ .forward = "std.Build.Step.Run.addPrefixedDirectoryArg" },
+    .{ .forward = "std.Build.Step.Run.addDecoratedDirectoryArg" },
+    .{ .forward = "std.Build.Step.Run.addDepFileOutputArg" },
+    .{ .forward = "std.Build.Step.Run.addPrefixedDepFileOutputArg" },
+    .{ .builtin = .{ .old = "os", .new = "target.os" } },
+    .{ .builtin = .{ .old = "cpu", .new = "target.cpu" } },
+    .{ .builtin = .{ .old = "abi", .new = "target.abi" } },
+    .{ .builtin = .{ .old = "object_format", .new = "target.ofmt" } },
+    .{ .builtin = .{ .old = "mode", .new = "optimize" } },
 } }};
 
 /// The table for the release `version` belongs to: patch releases share it.
@@ -90,7 +116,40 @@ pub fn check(lib: *library.Library, entry: Entry) !Status {
                 return mismatch("{s} returns {s} and {s} returns {s}; orelse becomes catch only for ?T and E!T", a, .{ old_path, old_return, new_path, new_return });
             return .active;
         },
+        .forward => |name| {
+            const old = try lib.lookup(try library.split(a, name)) orelse return .absent;
+            if (library.deprecation(a, old) == null) return mismatch("{s} is not deprecated", a, .{name});
+            if (try lib.forward(old) == null) return mismatch("{s} does more than call its replacement on its receiver", a, .{name});
+            return .active;
+        },
+        .builtin => |r| {
+            const old = builtinType(r.old) orelse return .absent;
+            const new = builtinType(r.new) orelse return mismatch("builtin.{s}: builtin.{s} is missing", a, .{ r.old, r.new });
+            if (!std.mem.eql(u8, old, new)) return mismatch("builtin.{s} is {s} and builtin.{s} is {s}", a, .{ r.old, old, r.new, new });
+            return .active;
+        },
     }
+}
+
+/// The type of `path` in this compiler's `@import("builtin")`: a
+/// declaration, or a field of one. Its doc comments are not in std's
+/// source, so whether it is deprecated is the table's word.
+pub fn builtinType(path: []const u8) ?[]const u8 {
+    const dot = std.mem.findScalar(u8, path, '.');
+    const head = path[0 .. dot orelse path.len];
+    inline for (comptime std.meta.declarations(builtin)) |name| {
+        if (std.mem.eql(u8, name, head)) {
+            const T = @TypeOf(@field(builtin, name));
+            const field = path[(dot orelse return @typeName(T)) + 1 ..];
+            if (@typeInfo(T) != .@"struct") return null;
+            const info = @typeInfo(T).@"struct";
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                if (std.mem.eql(u8, field_name, field)) return @typeName(field_type);
+            }
+            return null;
+        }
+    }
+    return null;
 }
 
 /// `path` as a declaration that exists and is not deprecated.

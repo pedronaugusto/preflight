@@ -4,7 +4,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// The column of `ci/durations.json` this test binary reads.
-pub const key = @tagName(builtin.os.tag) ++ "-" ++ @tagName(builtin.mode);
+pub const key = @tagName(builtin.target.os.tag) ++ "-" ++ @tagName(builtin.optimize);
 
 /// A test that records no time still costs its process a little.
 const floor_seconds = 0.001;

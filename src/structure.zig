@@ -19,6 +19,14 @@ fn within(path: []const u8, dir: []const u8) bool {
     return std.mem.startsWith(u8, path, dir) and (path.len == dir.len or path[dir.len] == '/');
 }
 
+/// `ci/layers.zig`'s `reexports`, each a `.{ .from, .to }`, when it declares them.
+const reexports = if (@hasDecl(declared, "reexports")) blk: {
+    var list: [declared.reexports.len]structure.Reexport = undefined;
+    for (declared.reexports, 0..) |r, i| list[i] = .{ .from = r.from, .to = r.to };
+    const final = list;
+    break :blk final;
+} else [0]structure.Reexport{};
+
 pub fn main(init: std.process.Init) !void {
     var arena: std.heap.ArenaAllocator = .init(init.gpa);
     defer arena.deinit();
@@ -45,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
         .references = declared.references,
         .owned = if (@hasDecl(declared, "owned")) declared.owned else &.{},
         .test_paths = try source.testPaths(a, config),
+        .reexports = &reexports,
     };
     var paths = try gantry.walk(a, init.io, .cwd(), try source.roots(a, config), keep);
     defer paths.deinit();

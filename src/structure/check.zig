@@ -20,12 +20,22 @@ pub const Declared = struct {
     owned: []const gantry.rules.TokenRule = &.{},
     /// Path patterns of test code, as `source.testPaths` returns them.
     test_paths: []const []const u8,
+    /// Imports a namespace file makes to publish the files of its own
+    /// directory, which layers and cycles do not read.
+    reexports: []const Reexport = &.{},
 
     pub fn testCode(d: Declared, path: []const u8) bool {
         for (d.test_paths) |pattern| if (gantry.rules.matches(pattern, path)) return true;
         return false;
     }
 };
+
+/// A namespace file publishing a file of its own directory: `src/odb.zig`
+/// re-exporting `src/odb/bitmap.zig`. The namespace is the package's face
+/// over its parts, so the import is not a layer's dependency on a higher
+/// one, and the part may import the namespace back without a cycle. Every
+/// other rule still reads the import.
+pub const Reexport = struct { from: []const u8, to: []const u8 };
 
 pub fn options(d: Declared) gantry.Options {
     return .{
@@ -53,12 +63,20 @@ pub fn report(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, out
         try out.print("imports: entry files: {s}: test code, never checked\n", .{path});
         problems += 1;
     };
+    problems += try namespaces(graph, d, out);
 
-    var production = try productionGraph(a, graph, d);
+    // Entries read every production edge; layers and cycles read the
+    // implementation, which leaves out the namespaces' re-exports.
+    var production = try productionGraph(a, graph, d, false);
     defer production.deinit();
-    var found = try production.check(a, try productionRules(a, d));
-    defer found.deinit();
-    problems += try print(out, found.items());
+    var entered = try production.check(a, try entryRules(a, d));
+    defer entered.deinit();
+    problems += try print(out, entered.items());
+    var implementation = if (d.reexports.len == 0) null else try productionGraph(a, graph, d, true);
+    defer if (implementation) |*g| g.deinit();
+    var layered = try (if (implementation) |*g| g else &production).check(a, try layerRules(a, d));
+    defer layered.deinit();
+    problems += try print(out, layered.items());
 
     var full = try graph.check(a, try fullRules(a, d));
     defer full.deinit();
@@ -106,28 +124,67 @@ fn unused(graph: *const gantry.Graph, out: *std.Io.Writer) !usize {
     return problems;
 }
 
-/// Production sources and the edges between them that are not test edges.
-/// An edge from production into test code is the full graph's to report.
-fn productionGraph(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared) !gantry.Graph {
+/// Every declared re-export is an import the production graph has, into a
+/// file inside the namespace's own directory: `src/odb.zig` publishes only
+/// what lies under `src/odb/`.
+fn namespaces(graph: *const gantry.Graph, d: Declared, out: *std.Io.Writer) !usize {
+    var problems: usize = 0;
+    for (d.reexports) |r| {
+        const stem = r.from[0 .. r.from.len - @min(r.from.len, ".zig".len)];
+        const inside = std.mem.endsWith(u8, r.from, ".zig") and r.to.len > stem.len + 1 and
+            std.mem.startsWith(u8, r.to, stem) and r.to[stem.len] == '/';
+        if (!inside) {
+            try out.print("imports: reexports: {s} -> {s}: not a file inside {s}/\n", .{ r.from, r.to, stem });
+        } else if (!imports(graph, d, r)) {
+            try out.print("imports: reexports: {s} -> {s}: no such import\n", .{ r.from, r.to });
+        } else continue;
+        problems += 1;
+    }
+    return problems;
+}
+
+fn imports(graph: *const gantry.Graph, d: Declared, r: Reexport) bool {
+    for (graph.edges()) |edge| if (compiled(d, edge) and std.mem.eql(u8, edge.from, r.from) and std.mem.eql(u8, edge.to, r.to)) return true;
+    return false;
+}
+
+fn reexported(d: Declared, edge: gantry.Edge) bool {
+    for (d.reexports) |r| if (std.mem.eql(u8, edge.from, r.from) and std.mem.eql(u8, edge.to, r.to)) return true;
+    return false;
+}
+
+/// An edge a non-test build compiles. An edge from production into test
+/// code is the full graph's to report.
+fn compiled(d: Declared, edge: gantry.Edge) bool {
+    return edge.kind != .@"test" and !d.testCode(edge.from) and !d.testCode(edge.to);
+}
+
+/// Production sources and the edges between them that are not test edges;
+/// the implementation, without the namespaces' re-exports, when asked.
+fn productionGraph(a: std.mem.Allocator, graph: *const gantry.Graph, d: Declared, implementation: bool) !gantry.Graph {
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(a);
     for (graph.paths()) |path| if (!d.testCode(path)) try paths.append(a, path);
     var edges: std.ArrayList(gantry.Edge) = .empty;
     defer edges.deinit(a);
     for (graph.edges()) |edge| {
-        if (edge.kind == .@"test" or d.testCode(edge.from) or d.testCode(edge.to)) continue;
+        if (!compiled(d, edge) or (implementation and reexported(d, edge))) continue;
         try edges.append(a, edge);
     }
     return gantry.Graph.fromEdges(a, paths.items, edges.items);
 }
 
-fn productionRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
+fn entryRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
     const entries = try a.alloc(gantry.rules.EdgeRule, d.entries.len + 1);
     entries[0] = .{ .name = "entry files", .to = "**/main.zig" };
     for (d.entries, entries[1..]) |path, *rule| rule.* = .{ .name = "entry files", .to = path };
+    return .{ .nothing_imports = entries };
+}
+
+fn layerRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
     const ordered = try a.alloc(gantry.rules.OrderedLayers, 1);
     ordered[0] = .{ .name = "layers", .layers = d.layers };
-    return .{ .ordered = ordered, .nothing_imports = entries, .no_cycles = "cycles" };
+    return .{ .ordered = ordered, .no_cycles = "cycles" };
 }
 
 fn fullRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
@@ -363,4 +420,54 @@ test "a file gantry could not read as Zig fails" {
         .{ .path = "src/low.zig", .text = "pub const x = 1;\n" },
         .{ .path = "src/high.zig", .text = "pub const low = @import(\"lo\\qw.zig\");\n" },
     }, two_layers, "imports: src/high.zig: invalid (imports: InvalidLiteral)\n");
+}
+
+const namespace_layers: []const gantry.rules.Layer = &.{
+    .{ .name = "namespace", .patterns = &.{"src/odb.zig"} },
+    .{ .name = "parts", .patterns = &.{"src/odb/*.zig"} },
+};
+
+fn expectNamespaceReport(files: []const File, reexports: []const Reexport, expected: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const d: Declared = .{ .layers = namespace_layers, .reexports = reexports, .test_paths = try source.testPaths(a, .null) };
+    var paths: std.ArrayList([]const u8) = .empty;
+    for (files) |file| try paths.append(a, file.path);
+    var graph = try gantry.scan(a, std.testing.io, paths.items, Files{ .items = files }, Files.read, options(d));
+    defer graph.deinit();
+    var out: std.Io.Writer.Allocating = .init(a);
+    const problems = try report(a, &graph, d, &out.writer);
+    try std.testing.expectEqualStrings(expected, out.written());
+    try std.testing.expectEqual(std.mem.count(u8, expected, "\n"), problems);
+}
+
+test "a namespace re-exports a part above it without breaking its layers" {
+    const files = [_]File{
+        .{ .path = "src/odb.zig", .text = "pub const pack = @import(\"odb/pack.zig\");\npub const x = 1;\n" },
+        .{ .path = "src/odb/pack.zig", .text = "const odb = @import(\"../odb.zig\");\npub const y = odb.x;\n" },
+    };
+    try expectNamespaceReport(&files, &.{}, "imports: layers: src/odb.zig -> src/odb/pack.zig (upward)\nimports: cycles: src/odb.zig -> src/odb/pack.zig (cycle)\n");
+    try expectNamespaceReport(&files, &.{.{ .from = "src/odb.zig", .to = "src/odb/pack.zig" }}, "");
+}
+
+test "a re-export must be an import into the namespace's own directory" {
+    try expectNamespaceReport(&.{
+        .{ .path = "src/odb.zig", .text = "pub const x = 1;\n" },
+        .{ .path = "src/odb/pack.zig", .text = "pub const odb = @import(\"../odb.zig\");\n" },
+    }, &.{
+        .{ .from = "src/odb.zig", .to = "src/odb/pack.zig" },
+        .{ .from = "src/odb/pack.zig", .to = "src/odb.zig" },
+    },
+        \\imports: reexports: src/odb.zig -> src/odb/pack.zig: no such import
+        \\imports: reexports: src/odb/pack.zig -> src/odb.zig: not a file inside src/odb/pack/
+        \\
+    );
+}
+
+test "an entry re-exported by a namespace still fails" {
+    try expectNamespaceReport(&.{
+        .{ .path = "src/odb.zig", .text = "pub const main = @import(\"odb/main.zig\");\n" },
+        .{ .path = "src/odb/main.zig", .text = "pub fn main() void {}\n" },
+    }, &.{.{ .from = "src/odb.zig", .to = "src/odb/main.zig" }}, "imports: entry files: src/odb.zig -> src/odb/main.zig (entry)\n");
 }

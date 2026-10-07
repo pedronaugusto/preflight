@@ -673,3 +673,19 @@ test "a dispatched run compares the branch with main, so a docs-only last commit
     try std.testing.expect(try paths.run(c, null));
     try std.testing.expect(!try paths.run(c, "no-such-base"));
 }
+
+test "structure runner reads the namespaces' re-exports from ci/layers.zig" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const layers = try tmp.dir.readFileAlloc(io, "ci/layers.zig", a, .limited(1024 * 1024));
+    const declared = try std.mem.concat(a, u8, &.{ layers, "pub const reexports = .{.{ .from = \"src/sample.zig\", .to = \"src/sample/part.zig\" }};\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/layers.zig", .data = declared });
+    const stale = try run(a, tmp.dir);
+    try std.testing.expect(stale.term == .exited and stale.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, stale.stderr, "imports: reexports: src/sample.zig -> src/sample/part.zig: no such import") != null);
+}

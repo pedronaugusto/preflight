@@ -43,15 +43,11 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
     const entry = seen.getOrPut(step) catch @panic("OOM");
     if (entry.found_existing) return;
     if (step.cast(std.Build.Step.Run)) |run| {
-        if (run.environ_map) |env| {
-            var iterator = env.iterator();
-            while (iterator.next()) |item| {
-                const inherited = b.graph.environ_map.get(item.key_ptr.*) orelse @panic("portable tests must not contain runner-specific environment paths");
-                if (!std.mem.eql(u8, inherited, item.value_ptr.*)) @panic("portable tests must not contain runner-specific environment paths");
-            }
-        }
         if (run.argv.items.len == 0 or run.argv.items[0] != .artifact) @panic("portable tests must run compiled artifacts");
         const artifact = run.argv.items[0].artifact.artifact;
+        // A test run with an environment fails by name (record.zig); any
+        // other run would replay without it.
+        if (run.environ_map != null and artifact.kind != .@"test") @panic("portable tests must not carry an environment");
         const name = b.fmt("test-{d}{s}", .{ commands.items.len, if (artifact.root_module.resolved_target.?.result.os.tag == .windows) ".exe" else "" });
         const install = b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "preflight/bin" } }, .dest_sub_path = name });
         compile.dependOn(&install.step);

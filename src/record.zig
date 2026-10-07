@@ -72,6 +72,10 @@ fn visit(b: *std.Build, step: *std.Build.Step, context: Context, seen: *std.Auto
 fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: *std.StringHashMap(void)) void {
     const options = context.options;
     const artifact = run.argv.items[0].artifact.artifact;
+    // `setEnvironmentVariable` clones the whole environment into the run, and
+    // Zig 0.17 keeps it in the cached configuration: a later shard, seed or
+    // tool path would find it stale.
+    if (run.environ_map != null) refuse("{s}: a test run carries no environment of the build's; Zig 0.17 keeps it in the cached configuration, where it goes stale. Read it when the tests run", b, run, .{artifact.name});
     // The runner's modules and options are the test module's imports, so
     // artifacts that share a root module share them, timing record included.
     if (artifact.root_module.import_table.get("preflight_runner_options") == null) {
@@ -99,6 +103,10 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         artifact.root_module.addAnonymousImport("preflight_default_test_runner", .{
             .root_source_file = b.graph.path(.zig_lib, "compiler/test_runner.zig"),
         });
+        // Not `enableProtocolMode`, though 0.17 deprecates this for it:
+        // Zig 0.17's test runner reads its cache directory and seed from
+        // argv, which only `.zig_test` passes, and a `.protocol` run cannot
+        // fuzz. std's own `addRunArtifact` still sets `.zig_test`.
         if (run.stdio != .zig_test) run.enableTestRunnerMode();
     }
     if (options.test_timeout_ns != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});

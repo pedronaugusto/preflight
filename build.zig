@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     // Declared before the lazy gantry can end the script, so the first
     // pass on an empty package cache accepts it.
     const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
+    const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
     const target = ci.ciTarget(b);
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
     const gantry = gantry_dep.module("gantry");
@@ -26,7 +27,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .debug,
         .imports = &.{.{ .name = "gantry", .module = gantry }},
-    }) });
+    }), .filters = test_filters });
     const options = b.addOptions();
     options.addOptionPathUntracked("root", b.path("."));
     options.addOptionPathUntracked("zig_std", b.graph.path(.zig_lib, "std"));

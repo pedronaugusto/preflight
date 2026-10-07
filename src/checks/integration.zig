@@ -564,6 +564,21 @@ test "a test runner of its own fails by name while the watchdog is on or the tes
     try std.testing.expect(std.mem.find(u8, single.stderr, "test: a single-threaded build has no watchdog") != null);
 }
 
+test "a test run with an environment of the build's fails by name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // Zig 0.17 bakes the whole environment into the run's cached
+    // configuration, where a later shard or another tool path finds it stale.
+    try edit(a, tmp.dir, "build.zig", "step.dependOn(&b.addRunArtifact(tests).step);", "const run_tests = b.addRunArtifact(tests);\n    run_tests.setEnvironmentVariable(\"SAMPLE_TOOL\", \"1\");\n    step.dependOn(&run_tests.step);");
+    const result = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!ledger.success(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "test: a test run carries no environment of the build's") != null);
+}
+
 test "the test log level is a preflight option" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

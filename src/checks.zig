@@ -19,6 +19,7 @@ test {
     _ = @import("structure/check.zig");
     _ = @import("consumer.zig");
     _ = @import("record.zig");
+    _ = @import("configure.zig");
     _ = source;
     _ = policy;
     _ = imports;

@@ -147,10 +147,18 @@ const Steps = struct {
             }),
         });
         var format_paths: std.ArrayList([]const u8) = .empty;
-        for ([_][]const u8{ "build.zig", "build.zig.zon", "src", "examples", "ci", "conformance", "bench" }) |path| {
+        var format_excluded: std.ArrayList(std.Build.LazyPath) = .empty;
+        for ([_][]const u8{ "build.zig", "build.zig.zon" }) |path| {
             if (configure.exists(b, path)) format_paths.append(b.allocator, path) catch @panic("OOM");
         }
-        const format = b.addFmt(.{ .paths = b.pathList(format_paths.items), .check = true });
+        for ([_][]const u8{ "src", "examples", "ci", "conformance", "bench" }) |path| {
+            if (!configure.exists(b, path)) continue;
+            format_paths.append(b.allocator, path) catch @panic("OOM");
+            // A build of its own in one of these keeps its packages and
+            // outputs beside its manifest.
+            format_excluded.appendSlice(b.allocator, configure.buildDirectoriesUnder(b, path)) catch @panic("OOM");
+        }
+        const format = b.addFmt(.{ .paths = b.pathList(format_paths.items), .exclude_paths = format_excluded.items, .check = true });
         const structure = b.addRunArtifact(checker);
         structure.addArgs(&.{ "--config", config.config });
         structure.setCwd(b.path("."));

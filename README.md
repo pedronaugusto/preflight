@@ -249,12 +249,16 @@ target so its cached executable is reusable across hosted runner CPU models.
 Fetched packages, compiled builds and pinned external tools have separate caches.
 Each job fetches what its own build asks for: it configures the build with the
 job's arguments (`zig build --list-steps`) and builds nothing, retrying three times
-with backoff, as tool setup does. Zig compiles the build script of every package in
-its cache, so a lazy dependency only another job asks for never reaches the Zig
-master leg. A package asks for such a dependency only behind an option that job
-sets (`-Dconformance` for an emulator its conformance job feeds), since Zig marks a
-lazy dependency needed for the whole invocation, whichever step asked for it. `zig build ci-setup`
-may install a repository's external tools into the cached runner temp directory.
+with backoff, as tool setup does. Zig compiles the build script of every package a
+manifest names once it is in the package cache, lazy and unasked for or not, so a
+dependency only one job needs, such as the emulator a conformance job feeds, is named
+in a build of its own under `conformance/`, with its own manifest, and that job runs
+there (`working-directory: conformance` for the setup and the build). Named in the
+package's own manifest, even behind an option, it would reach every build of the
+package, and of a program on it, whose cache holds it: the Zig master leg among them.
+The format and source checks pass over the `zig-out` and `zig-pkg` such a build keeps
+beside its manifest. `zig build ci-setup` may install a repository's external tools
+into the cached runner temp directory.
 
 The design uses GitHub's standard [reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows):
 repository facts stay with the caller and common mechanics have one owner.

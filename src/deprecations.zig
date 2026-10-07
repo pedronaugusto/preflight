@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const library = @import("deprecations/library.zig");
 const table = @import("deprecations/table.zig");
 const rewrite = @import("deprecations/rewrite.zig");
+const configure = @import("configure.zig");
 
 pub const Options = struct {
     /// The `std` directory of the Zig that builds the package.
@@ -113,7 +114,7 @@ fn files(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, paths: []const []co
         defer walker.deinit();
         while (try walker.next(io)) |entry| {
             if (entry.kind == .directory) {
-                if (!skipped(entry.basename)) try walker.enter(io, entry);
+                if (!configure.generated(entry.basename)) try walker.enter(io, entry);
                 continue;
             }
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".zig")) continue;
@@ -128,10 +129,6 @@ fn files(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, paths: []const []co
         }
     }.less);
     return out.items;
-}
-
-fn skipped(name: []const u8) bool {
-    return name[0] == '.' or std.mem.eql(u8, name, "zig-out") or std.mem.eql(u8, name, "zig-pkg");
 }
 
 test {

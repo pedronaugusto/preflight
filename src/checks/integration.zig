@@ -9,7 +9,7 @@ const paths = @import("paths.zig");
 fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const io = std.testing.io;
     for ([_][]const u8{ "src/testing", "ci" }) |path| try dir.createDirPath(io, path);
-    for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "ci/layers.zig", "ci/preflight.json", "ci/consumer.zig" }) |path| {
+    for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "ci/layers.zig", "ci/preflight.json", "ci/consumer.zig", "LICENSE", "README.md", "CHANGELOG.md" }) |path| {
         const input = try std.Io.Dir.path.join(a, &.{ root, "sample", path });
         defer a.free(input);
         const text = try std.Io.Dir.cwd().readFileAlloc(io, input, a, .limited(1024 * 1024));
@@ -23,7 +23,7 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     defer a.free(package_root);
     const relative = try std.Io.Dir.path.relativeAlloc(a, package_root, null, fixture_root, package_root);
     defer a.free(relative);
-    const manifest = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }} }} }}", .{std.zig.fmtString(relative)});
+    const manifest = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }} }} }}", .{std.zig.fmtString(relative)});
     defer a.free(manifest);
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = manifest });
 }

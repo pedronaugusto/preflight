@@ -147,6 +147,9 @@ fn lint(c: *src.Context, config: src.Value, ziglint: []const u8) !void {
     c.report("preflight: test imports\n", .{});
     try checks.imports.check(c, sources, config);
     if (c.errors != 0) return;
+    c.report("preflight: package paths\n", .{});
+    try checks.manifest.paths(c, config);
+    if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| try execute(c.*, try checks.docs.zigCommand(c.a, command));
 }
 

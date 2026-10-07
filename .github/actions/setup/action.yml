@@ -62,5 +62,5 @@ runs:
       env:
         PREFLIGHT_PACKAGE_HIT: ${{ steps.packages.outputs.cache-hit }}
         PREFLIGHT_BUILD_HIT: ${{ steps.builds.outputs.cache-hit }}
-      run: zig build --build-file .preflight/build.zig setup -- --report
+      run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" setup -- --report
       shell: bash

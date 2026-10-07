@@ -105,6 +105,14 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
     try tmp.dir.createDirPath(io, "zig-pkg/third-party");
     try tmp.dir.writeFile(io, .{ .sub_path = "zig-pkg/third-party/value.zig", .data = "const value=1;\n" });
+    // A build of its own under a checked directory, such as a conformance
+    // build with a manifest of its own, keeps its packages and outputs beside
+    // it: neither is the repository's source, to format or to read for casts.
+    const foreign = "pub fn address(ptr: *const u8) usize {\nreturn @intFromPtr(ptr);\n}\n";
+    for ([_][]const u8{ "conformance/zig-pkg/third-party", "conformance/zig-out/generated", "conformance/.zig-cache/o" }) |path| {
+        try tmp.dir.createDirPath(io, path);
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.Io.Dir.path.join(a, &.{ path, "value.zig" }), .data = foreign });
+    }
     const valid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = tmp.dir } });
     if (valid.term != .exited or valid.term.exited != 0) std.debug.print("{s}", .{valid.stderr});
     try std.testing.expect(valid.term == .exited and valid.term.exited == 0);

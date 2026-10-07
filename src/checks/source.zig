@@ -1,5 +1,6 @@
 const std = @import("std");
 const gantry = @import("gantry");
+const configure = @import("../configure.zig");
 
 pub const Value = std.json.Value;
 pub const Context = struct {
@@ -174,12 +175,17 @@ pub fn collect(c: Context, config: Value) ![]Source {
     return out.items;
 }
 
+/// Every Zig file under `root`, passing over the directories a build makes.
 pub fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !void {
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
-    var walker = try dir.walk(c.a);
+    var walker = try dir.walkSelectively(c.a);
     defer walker.deinit();
     while (try walker.next(c.io)) |entry| {
+        if (entry.kind == .directory) {
+            if (!configure.generated(entry.basename)) try walker.enter(c.io, entry);
+            continue;
+        }
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
         const path = try std.Io.Dir.path.join(c.a, &.{ root, entry.path });
         const normalized = try c.a.dupe(u8, path);

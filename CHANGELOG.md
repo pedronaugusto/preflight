@@ -1,9 +1,8 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -31,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The structure runner walks the configured `sources` roots, not `src` alone.
 - A per-test watchdog of 120 s is on by default. `Config.test_timeout` is a `TestTimeout`: `.default`, `.{ .bound = .{ .limit, .reason } }` or `.{ .off = reason }`; an empty reason fails the build. preflight passes the build runner no `--test-timeout`, and a `test_timeout` in `ci/workflow.json` fails the plan.
 - A test artifact with a runner of its own fails the build by name while the watchdog is on or the build is sharded; a single-threaded test build fails while the watchdog is on.
-- `addConsumerCheck`'s `.use_llvm` names a function of the package's `build.zig` that the consumer's build calls with its own target and mode, in place of a value.
+- `addConsumerCheck` takes no `.use_llvm`: Zig 0.17 builds what its own backend could not.
+- A test run that carries an environment of the build's (`setEnvironmentVariable`, `getEnvMap`) fails by name: Zig 0.17 keeps the whole environment in the cached configuration, where a later shard, seed or tool path finds it stale. Read such values when the tests run.
+- The setup action's `install-zig` input is gone with the containers; it takes `zig-version` (default 0.17.0), which its cache keys carry.
 - Timing records carry their `shard`; a test that two shards of one column both recorded fails `zig build profile`. Two test runs with one name get distinct record files.
 - Shard by test case, not by named case. `ci/workflow.json` takes `"shards": {"windows": n, "macos": n, "linux": n}` and `"fast_shards": n`; `windows_shards`, `fast_windows_shards`, `shard_jobs`, `fast_linux_shards`, `fast_linux_jobs` and `priority` fail the plan. Each shard job compiles the whole suite once and the test runner runs its share, balanced by `ci/durations.json`. Matrix jobs carry `shard` instead of `cases`, and the runner no longer passes `-Dtest-case`; drop the case options from the package's build.
 - The reusable workflow drops the `measured-plan` input and its planning job; the static matrices are complete. The `preflight-full-<sha>` proof artifact holds the refreshed `durations.json` instead of `summary.json`.
@@ -52,15 +53,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Share source checks and fast and full CI gates through Zig alone, with a build helper and a reusable workflow.
 
 - Run fast CI in one stage per host and plan only measured full-tier shards.
+- The merge and release tiers run the Debug suite on Linux with Zig master, never blocking; the run's summary reports it.
+- `zig build deprecations` moves `@import("builtin")`'s `os`, `cpu`, `abi`, `object_format` and `mode` to `target.*` and `optimize`; replaces a deprecated `std.Build.Step.Run` method that only forwards (`addArtifactArg`, `addDirectoryArg`, `addOutputFileArg` and the rest) with the call it makes; follows std's method aliases (`getLastOrNull` to `last`) on values of a std type, generic types and values a std method returned included; and follows a deprecated decl literal (`Optimize.ReleaseFast` to `.fast`).
+- `zig build test -Dtest-filter=...` runs part of preflight's own suite.
+
+### Changed
+
+- The package ships its CHANGELOG, beside the README and LICENSE.
+- The README reads in the packages' order: install, usage, design, API, scope, built with, testing, licence.
+- The generated matrices pass Zig 0.17's `-Doptimize=debug`, `safe`, `fast` and `small`; regenerate a caller's with `zig build plan`.
 
 ### Fixed
 
 - The full tier's ThreadSanitizer job leaves the source checks to their own job, as every other test job does.
 - `catch unreachable` and `std.debug.print` checks skip the configured `test_support`, not always `src/testing/`.
-
-### Changed
-
-- The package ships its CHANGELOG, beside the README and LICENSE.
-- The README reads in the packages' order: install, usage, design, API, scope, testing, licence.
 
 [Unreleased]: https://github.com/pedronaugusto/preflight/commits/main

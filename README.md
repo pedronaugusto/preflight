@@ -38,10 +38,8 @@ when their build products are already available.
 adds `check-consumer`: it builds a generated project that depends on the package
 by path with fetching off and a Zig cache of its own, so the build a consumer gets
 cannot reach the package's CI dependencies or anything cached for them. `.modules` names the modules the program imports,
-`.packages` the dependencies the package itself needs, and `.use_llvm` names a
-public function of the package's `build.zig`, `fn (std.Build.ResolvedTarget,
-std.lang.Optimize) ?bool`, which the consumer's build calls for the target
-and mode it builds, as a user's build would. The consumer builds for the host in Debug. `preflight.addCheck(b, name, source)` builds a
+and `.packages` the dependencies the package itself needs. The consumer builds
+for the host in Debug. `preflight.addCheck(b, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
@@ -165,6 +163,12 @@ The gate has four tiers. Each one runs more than the one before it:
   supported. It runs before a release cut, or by hand when a wave touched
   threading or platform code.
 
+The merge and release tiers also run the Debug suite on Linux with Zig master,
+the next release in development. That job never blocks: the run's summary
+reports its result, and a break is a note for the next port's rewrite table.
+The setup action takes `zig-version` (0.17.0, or master), and its cache keys
+carry it.
+
 Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
 that commit as `preflight-ref` and the tier as `tier`. The sample caller in this
 repository shows the trigger and concurrency policy:
@@ -232,8 +236,23 @@ before anything is rewritten:
   `@memmove(dest[0..source.len], source)` when `source` is a name.
 - `b.lazyDependency(...) orelse x` becomes `b.dependencyLazy(...) catch x` for
   `b` declared as `*std.Build`.
+- A deprecated `std.Build.Step.Run` method whose body only calls its
+  replacement becomes that call: `run.addArtifactArg(exe)` becomes
+  `run.addArtifactArg2(exe, .{})`, `run.addPrefixedDirectoryArg(p, dir)`
+  `run.addDirectoryArg2(dir, .{ .prefix = p })`. Arguments that would run in
+  another order are left for a person unless all but one are names or
+  literals.
+- `@import("builtin")`'s `os`, `cpu`, `abi` and `object_format` become
+  `target.os`, `target.cpu`, `target.abi` and `target.ofmt`, and `mode`
+  becomes `optimize`. The compiler writes that module, so these are checked
+  against the compiler that built preflight.
 
-Names resolve through the file's own aliases (`const mem = std.mem;`); an
+Names resolve through the file's own aliases (`const mem = std.mem;`) and
+through the types of values: a parameter or variable declared with a std type,
+`std.ArrayList(u8)` included, or initialized by a std method,
+`const run = b.addRunArtifact(exe);`. A method std aliases on such a value
+moves with it: `list.getLastOrNull()` becomes `list.last()`. A deprecated
+`pub const Debug: @This() = .debug;` is followed to `.debug`. An
 alias the rewrites leave unused is removed. A rewrite that would delete a
 comment is left for a person, as is any deprecated reference the table cannot
 move; both are listed as `by hand`. Files that do not parse are skipped and
@@ -267,6 +286,11 @@ appends one test and `deinit(io)` closes it; the recorder keeps no `Io`.
 - It rewrites code only when asked, with `zig build deprecations -- --write`.
 - It does not pick the files a gate checks: `ci/preflight.json` names them.
 
+## Built with
+
+**tycho**, every coding agent in one folder (in development), and the Zig packages it
+is built from.
+
 ## Testing
 
 Run `zig build test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
@@ -275,11 +299,6 @@ structure, and `zig build verify` runs its lint, tests and format check.
 ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
 `zig-0.17`), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
-
-## Built with
-
-**tycho**, every coding agent in one folder (in development), and the Zig packages it
-is built from.
 
 ## Licence
 

@@ -67,6 +67,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Pin gantry 3ce6836 and sweep 394604e, where one path pattern matches a path in half the time: the source checks match `test_files`, `test_support` and `function_limits` patterns that way.
 - The structure check compiles each pattern once and matches each path against the test patterns once.
 - Each job fetches what its own build asks for, configuring it with the job's arguments, instead of every dependency: a lazy dependency only another job asks for, such as a terminal emulator that builds with exactly one Zig, no longer stops the Zig master leg. The package cache key changes with it.
 - The package ships its CHANGELOG, beside the README and LICENSE.

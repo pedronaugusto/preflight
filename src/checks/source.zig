@@ -65,6 +65,13 @@ pub fn items(v: Value) []const Value {
     return if (v == .array) v.array.items else &.{};
 }
 
+/// The strings of an array; anything else in it is refused.
+pub fn strings(a: std.mem.Allocator, v: Value) ![]const []const u8 {
+    const out = try a.alloc([]const u8, items(v).len);
+    for (items(v), out) |item, *text| text.* = if (item == .string) item.string else return error.ExpectedStrings;
+    return out;
+}
+
 /// Path patterns in gantry's dialect: `*` and `?` stay within one component,
 /// `**` spans components, and a pattern without `/` matches the basename.
 pub fn glob(pattern: []const u8, path: []const u8) bool {

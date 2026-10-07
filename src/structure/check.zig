@@ -23,6 +23,8 @@ pub const Declared = struct {
     /// Imports a namespace file makes to publish the files of its own
     /// directory, which layers and cycles do not read.
     reexports: []const Reexport = &.{},
+    /// Packages only tests may import, such as a library of test doubles.
+    test_dependencies: []const []const u8 = &.{},
 
     pub fn testCode(d: Declared, path: []const u8) bool {
         for (d.test_paths) |pattern| if (gantry.rules.matches(pattern, path)) return true;
@@ -187,6 +189,21 @@ fn layerRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
     return .{ .ordered = ordered, .no_cycles = "cycles" };
 }
 
+/// The package's own reference rules, and one per test-only dependency:
+/// an import of it outside test code. Inside a test block it is a test
+/// reference, which the rule passes over.
+fn references(a: std.mem.Allocator, d: Declared) ![]const gantry.rules.ReferenceRule {
+    const rules = try a.alloc(gantry.rules.ReferenceRule, d.references.len + d.test_dependencies.len);
+    @memcpy(rules[0..d.references.len], d.references);
+    for (d.test_dependencies, rules[d.references.len..]) |name, *rule| rule.* = .{
+        .name = "test dependencies",
+        .target = name,
+        .kind = .import,
+        .except_from = d.test_paths,
+    };
+    return rules;
+}
+
 fn fullRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
     const forbidden = try a.alloc(gantry.rules.EdgeRule, d.test_paths.len);
     for (d.test_paths, forbidden) |pattern, *rule| rule.* = .{ .name = "production reaches tests", .to = pattern, .kind = .import };
@@ -204,7 +221,7 @@ fn fullRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
         .ordered = ordered,
         .forbidden = forbidden,
         .allowed = allowed.items,
-        .references = d.references,
+        .references = try references(a, d),
         .required = required,
         .tokens = d.owned,
     };
@@ -470,4 +487,24 @@ test "an entry re-exported by a namespace still fails" {
         .{ .path = "src/odb.zig", .text = "pub const main = @import(\"odb/main.zig\");\n" },
         .{ .path = "src/odb/main.zig", .text = "pub fn main() void {}\n" },
     }, &.{.{ .from = "src/odb.zig", .to = "src/odb/main.zig" }}, "imports: entry files: src/odb.zig -> src/odb/main.zig (entry)\n");
+}
+
+test "a test-only dependency imported by production code fails" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const d: Declared = .{ .layers = two_layers, .test_dependencies = &.{"shakedown"}, .test_paths = try source.testPaths(a, .null) };
+    const files = [_]File{
+        .{ .path = "src/low.zig", .text = "const shakedown = @import(\"shakedown\");\npub fn f() void { _ = shakedown; }\n" },
+        .{ .path = "src/high.zig", .text = "pub const x = 1;\ntest { _ = @import(\"shakedown\"); }\n" },
+        .{ .path = "src/high_test.zig", .text = "const shakedown = @import(\"shakedown\");\ntest { _ = shakedown; }\n" },
+        .{ .path = "src/testing/clock.zig", .text = "pub const shakedown = @import(\"shakedown\");\n" },
+    };
+    var paths: std.ArrayList([]const u8) = .empty;
+    for (files) |file| try paths.append(a, file.path);
+    var graph = try gantry.scan(a, std.testing.io, paths.items, Files{ .items = &files }, Files.read, options(d));
+    defer graph.deinit();
+    var out: std.Io.Writer.Allocating = .init(a);
+    try std.testing.expectEqual(@as(usize, 1), try report(a, &graph, d, &out.writer));
+    try std.testing.expectEqualStrings("imports: test dependencies: src/low.zig: @import(\"shakedown\")\n", out.written());
 }

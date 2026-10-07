@@ -54,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
         .owned = if (@hasDecl(declared, "owned")) declared.owned else &.{},
         .test_paths = try source.testPaths(a, config),
         .reexports = &reexports,
+        .test_dependencies = try source.strings(a, source.get(config, "test_dependencies")),
     };
     var paths = try gantry.walk(a, init.io, .cwd(), try source.roots(a, config), keep);
     defer paths.deinit();

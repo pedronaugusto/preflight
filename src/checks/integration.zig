@@ -700,7 +700,7 @@ const bench_build =
     \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
     \\    const step = b.step("test", "Run the sample tests");
     \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
-    \\    preflight.addCi(b, .{ .tests = step, .bench = BENCH });
+    \\    preflight.addCi(b, .{ .tests = step, .portable_tests = true, .bench = BENCH });
     \\}
     \\
     \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
@@ -735,6 +735,15 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     if (!ledger.success(timed)) std.debug.print("{s}\n", .{timed.stderr});
     try std.testing.expect(ledger.success(timed));
     try tmp.dir.access(io, if (builtin.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
+    // Compiled once and run elsewhere, the smoke run gets a fresh directory there too.
+    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(built)) std.debug.print("{s}\n", .{built.stderr});
+    try std.testing.expect(ledger.success(built));
+    const manifest = try tmp.dir.readFileAlloc(io, "zig-out/preflight/tests.json", a, .limited(1 << 20));
+    try std.testing.expect(std.mem.find(u8, manifest, "\"scratch\":true") != null);
+    const replayed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(replayed)) std.debug.print("{s}\n", .{replayed.stderr});
+    try std.testing.expect(ledger.success(replayed));
     // The tests run the program: one that fails fails them.
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "pub fn main() !void {\n    return error.Broken;\n}\n" });
     const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });

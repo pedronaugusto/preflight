@@ -2,7 +2,14 @@
 const std = @import("std");
 const configure = @import("configure.zig");
 
-pub const Command = struct { argv: []const []const u8, test_runner: bool, cwd: ?[]const u8 = null };
+pub const Command = struct {
+    argv: []const []const u8,
+    test_runner: bool,
+    cwd: ?[]const u8 = null,
+    /// The run had a fresh temporary directory (`b.tmpPath()`) as its working
+    /// directory, and gets a fresh one where it replays.
+    scratch: bool = false,
+};
 
 const manifest_path = "zig-out/preflight/tests.json";
 
@@ -31,12 +38,18 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, checker: *std.Build.Step.Compi
         executable.addArg(command.argv[0]);
         const run = b.addRunFile(b.path(command.argv[0]));
         run.addArgs(command.argv[1..]);
-        run.setCwd(b.path(command.cwd orelse "."));
+        run.setCwd(if (command.scratch) b.tmpPath() else b.path(command.cwd orelse "."));
         run.has_side_effects = true;
         if (command.test_runner) run.enableTestRunnerMode();
         run.step.dependOn(&executable.step);
         execute.dependOn(&run.step);
     }
+}
+
+/// Whether `step` makes a fresh temporary directory, as `b.tmpPath()` does.
+fn temporary(step: *std.Build.Step) bool {
+    const write = step.cast(std.Build.Step.WriteFile) orelse return false;
+    return write.mode == .tmp;
 }
 
 fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, commands: *std.ArrayList(Command), seen: *std.AutoHashMap(*std.Build.Step, void)) void {
@@ -65,11 +78,17 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
             },
             else => @panic("portable tests must not contain generated arguments"),
         };
+        var scratch = false;
         const cwd = if (run.cwd) |path| switch (path) {
             .src_path => |source| if (source.owner == b) source.sub_path else @panic("portable tests must use a repository-relative directory"),
+            .generated => |generated| blk: {
+                if (!temporary(b.graph.generated_files.items[@backingInt(generated.index)])) @panic("portable tests must use a repository-relative or a fresh temporary directory");
+                scratch = true;
+                break :blk null;
+            },
             else => @panic("portable tests must use a repository-relative directory"),
         } else null;
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd }) catch @panic("OOM");
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }

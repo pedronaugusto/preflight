@@ -43,7 +43,7 @@ under `zig-out/bench` and runs the timed ones one after another with no argument
 arguments are for running it from `zig-out/bench` by hand, and each run has a
 fresh, empty working directory for the fixtures it writes;
 `zig build test` runs each once with `--smoke`, built in the test's mode, where a
-program runs every point once and reads no clock. A repository with a `bench/`
+program runs every point once at its smallest size. A repository with a `bench/`
 directory and no `.bench` fails its tests by name.
 
 `preflight.addConsumerCheck(b, .{ .package = "name", .program = b.path("ci/consumer.zig") })`

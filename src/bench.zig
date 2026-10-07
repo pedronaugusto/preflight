@@ -32,7 +32,8 @@ pub const Bench = struct {
 };
 
 /// The argument a program gets in `zig build test`: run every point once,
-/// read no clock, print nothing a reader would take for a measurement.
+/// at its smallest size, so the run checks the program still works and
+/// times nothing worth reading.
 pub const smoke_flag = "--smoke";
 
 /// Adds `bench` and runs every program once with `--smoke` before `tests`

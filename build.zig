@@ -23,6 +23,10 @@ pub fn build(b: *std.Build) void {
     const target = ci.ciTarget(b);
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
     const gantry = gantry_dep.module("gantry");
+    // The test doubles are shakedown's, which only preflight's own suite
+    // imports: a build that runs preflight for another repository never
+    // fetches it.
+    const shakedown = if (repo_root == null) (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .debug }) catch return).module("shakedown") else null;
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/checks.zig"),
@@ -30,18 +34,30 @@ pub fn build(b: *std.Build) void {
         .optimize = .debug,
         .imports = &.{.{ .name = "gantry", .module = gantry }},
     }), .filters = test_filters });
+    if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
     options.addOptionPathUntracked("root", b.path("."));
     options.addOptionPathUntracked("zig_std", b.graph.path(.zig_lib, "std"));
     tests.root_module.addOptions("test_options", options);
     // The gate below gives the suite preflight's runner, as it does a
-    // consumer's tests; the order module the runner imports runs its own
-    // tests beside it.
+    // consumer's tests; the order module and the watchdog the runner
+    // imports run their own tests beside it.
     const suite = &b.addRunArtifact(tests).step;
     const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/order.zig"), .target = target, .optimize = .debug }) });
     const order_run = b.addRunArtifact(order);
     test_step.dependOn(suite);
     test_step.dependOn(&order_run.step);
+    const watch_run: ?*std.Build.Step = if (shakedown) |module| run: {
+        const watch = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("src/watchdog_test.zig"),
+            .target = target,
+            .optimize = .debug,
+            .imports = &.{.{ .name = "shakedown", .module = module }},
+        }), .filters = test_filters });
+        const run = &b.addRunArtifact(watch).step;
+        test_step.dependOn(run);
+        break :run run;
+    } else null;
     const executable = b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -55,6 +71,7 @@ pub fn build(b: *std.Build) void {
         const verify = b.step("verify", "Check format, sources, checker regressions and the hosted runner");
         verify.dependOn(&b.top_level_steps.get("ci").?.step);
         verify.dependOn(&order_run.step);
+        if (watch_run) |run| verify.dependOn(run);
         verify.dependOn(&b.addFmt(.{ .paths = b.pathList(&.{"."}), .check = true }).step);
         verify.dependOn(&executable.step);
     }

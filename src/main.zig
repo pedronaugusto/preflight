@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
         const summary = try checks.profile.summarize(c, option(args, "--input") orelse ".preflight-timings", previous);
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse durations, .data = try checks.profile.render(a, summary) });
     } else if (std.mem.eql(u8, command, "fetch")) {
-        try retry(c, try fetchArgs(a, init.environ_map));
+        try checks.command.retry(c, try checks.command.fetchArgs(a, init.environ_map.get("BUILD_ARGS") orelse ""));
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
@@ -150,7 +150,7 @@ fn lint(c: *src.Context, config: src.Value, ziglint: []const u8) !void {
     c.report("preflight: package paths\n", .{});
     try checks.manifest.paths(c, config);
     if (c.errors != 0) return;
-    for (src.items(src.get(config, "extra_checks"))) |command| try execute(c.*, try checks.docs.zigCommand(c.a, command));
+    for (src.items(src.get(config, "extra_checks"))) |command| try checks.command.execute(c.*, try checks.docs.zigCommand(c.a, command));
 }
 
 fn qualitySources(c: *src.Context, sources: []const src.Source, config: src.Value) ![]src.Source {
@@ -185,24 +185,6 @@ fn append(c: src.Context, path: []const u8, text: []const u8) !void {
     try writer.interface.flush();
 }
 
-pub fn execute(c: src.Context, argv: []const []const u8) !void {
-    var child = try std.process.spawn(c.io, .{ .argv = argv });
-    const term = try child.wait(c.io);
-    if (term != .exited or term.exited != 0) return error.CommandFailed;
-}
-
-fn retry(c: src.Context, argv: []const []const u8) !void {
-    for (0..3) |attempt| {
-        execute(c, argv) catch |err| {
-            if (attempt == 2) return err;
-            c.report("preflight: fetch failed; retry {d}/3\n", .{attempt + 2});
-            try std.Io.sleep(c.io, .fromSeconds(@as(i64, 5) << @intCast(attempt)), .awake);
-            continue;
-        };
-        return;
-    }
-}
-
 fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
     const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "zig", "env" } });
     if (result.term != .exited or result.term.exited != 0) return error.ZigEnvironmentFailed;
@@ -235,7 +217,7 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
             for (try checks.matrix.fastTargets(c.a, config)) |target| {
                 const argv = try checks.matrix.fastCrossArgs(c.a, config, target);
                 c.report("preflight fast compile: {s}\n", .{argv[4]});
-                try execute(c, argv);
+                try checks.command.execute(c, argv);
             }
         }
         return;
@@ -246,33 +228,20 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         for (targets) |target| {
             const argv = try checks.matrix.crossArgs(c.a, config, target);
             c.report("preflight cross: {s}\n", .{argv[4]});
-            try execute(c, argv);
+            try checks.command.execute(c, argv);
         }
         return;
     }
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         const setup_step = src.get(config, "setup_step");
-        if (setup_step == .string) try retry(c, &.{ "zig", "build", setup_step.string });
+        if (setup_step == .string) try checks.command.retry(c, &.{ "zig", "build", setup_step.string });
         const before = src.get(config, "before_tests_step");
-        if (before == .string) try execute(c, &.{ "zig", "build", before.string });
+        if (before == .string) try checks.command.execute(c, &.{ "zig", "build", before.string });
     }
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, &.{ "zig", "build", env.get("STEP") orelse "ci" });
     var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
     while (tokens.next()) |token| try argv.append(c.a, token);
     // PREFLIGHT_SHARD reaches the test runners through the environment.
-    try execute(c, argv.items);
-}
-
-/// Configures the build a job runs, with the job's arguments, and builds
-/// nothing: Zig fetches what that configuration asks for and no more. A
-/// lazy dependency only another job asks for is never fetched, so its
-/// build script never compiles here (a Zig it does not support cannot stop
-/// this job's tests).
-fn fetchArgs(a: std.mem.Allocator, env: *std.process.Environ.Map) ![]const []const u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "zig", "build", "--list-steps" });
-    var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
-    while (tokens.next()) |token| try argv.append(a, token);
-    return argv.items;
+    try checks.command.execute(c, argv.items);
 }

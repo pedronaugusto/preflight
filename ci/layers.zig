@@ -2,7 +2,7 @@
 const gantry = @import("gantry");
 
 pub const layers: []const gantry.rules.Layer = &.{
-    .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig" } },
+    .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
     .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/record.zig", "src/portable.zig", "src/consumer.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{"src/checks/*.zig"} },
@@ -28,4 +28,5 @@ pub const references: []const gantry.rules.ReferenceRule = &.{.{ .name = "named 
     "test_options",
     "preflight_default_test_runner",
     "preflight_runner_options",
+    "shakedown",
 } }};

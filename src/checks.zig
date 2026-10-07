@@ -13,6 +13,7 @@ pub const profile = @import("checks/profile.zig");
 pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 pub const manifest = @import("checks/manifest.zig");
+pub const command = @import("checks/command.zig");
 
 test {
     _ = @import("structure/check.zig");
@@ -31,6 +32,7 @@ test {
     _ = profile;
     _ = attest;
     _ = manifest;
+    _ = command;
     _ = paths;
     _ = @import("deprecations.zig");
 }

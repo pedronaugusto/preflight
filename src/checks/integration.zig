@@ -1123,3 +1123,65 @@ test "toolchain caller-owned timing option retains its config override" {
         try std.testing.expect(ledger.success(result));
     }
 }
+
+test "owner cross objects preserve expected compile failure diagnostics without an emitted binary" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const accept = b.option(bool, "accept", "unexpectedly accept the rejected input") orelse false;
+        \\    const wrong = b.option(bool, "wrong", "emit the wrong diagnostic") orelse false;
+        \\    const options = b.addOptions();
+        \\    options.addOption(bool, "accept", accept);
+        \\    options.addOption([]const u8, "message", if (wrong) "wrong projection diagnostic" else "expected projection diagnostic");
+        \\    const step = b.step("test", "expected semantic failures and positive compilation");
+        \\    const positives = b.addObject(.{ .name = "positive", .root_module = b.createModule(.{ .root_source_file = b.path("src/positive.zig"), .target = target }) });
+        \\    step.dependOn(&positives.step);
+        \\    for ([_]std.Build.Step.Compile.Kind{ .obj, .exe, .@"test" }) |kind| {
+        \\        const rejected = std.Build.Step.Compile.create(b, .{
+        \\            .name = b.fmt("rejected-{t}", .{kind}), .kind = kind,
+        \\            .root_module = b.createModule(.{ .root_source_file = b.path("src/rejected.zig"), .target = target }),
+        \\        });
+        \\        rejected.root_module.addOptions("rejection_options", options);
+        \\        rejected.expect_errors = .{ .contains = "expected projection diagnostic" };
+        \\        // A semantic failure produces no file for the object/link graph.
+        \\        step.dependOn(&rejected.step);
+        \\    }
+        \\    preflight.addCi(b, .{ .tests = step });
+        \\    const projected = b.top_level_steps.get("ci-check").?;
+        \\    for (projected.step.dependencies.items) |dependency| {
+        \\        const artifact = dependency.cast(std.Build.Step.Compile) orelse continue;
+        \\        if (!std.mem.startsWith(u8, artifact.name, "rejected-")) continue;
+        \\        if (artifact.expect_errors == null) @panic("projection lost expected diagnostics");
+        \\        if (artifact.generated_bin.unwrap() != null) @panic("projection requests a nonexistent failure binary");
+        \\    }
+        \\}
+        \\
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/rejected.zig", .data = "const options = @import(\"rejection_options\");\ncomptime { if (!options.accept) @compileError(options.message); }\npub fn main() void {}\ntest {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/positive.zig", .data = "export fn positive() u32 { return 7; }\n" });
+    for ([_][]const u8{ "aarch64-linux-musl", "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu", "aarch64-windows-gnu" }) |target| {
+        const target_arg = try a.print("-Dtarget={s}", .{target});
+        const good = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+        if (!ledger.success(good)) std.debug.print("{s}", .{good.stderr});
+        try std.testing.expect(ledger.success(good));
+        const wrong = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false", "-Dwrong=true" }, .cwd = .{ .dir = tmp.dir } });
+        try std.testing.expect(!ledger.success(wrong));
+        try std.testing.expect(std.mem.find(u8, wrong.stderr, "wrong projection diagnostic") != null);
+        try std.testing.expect(std.mem.find(u8, wrong.stderr, "should contain") != null);
+        const accepted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false", "-Daccept=true" }, .cwd = .{ .dir = tmp.dir } });
+        try std.testing.expect(!ledger.success(accepted));
+        try std.testing.expect(std.mem.find(u8, accepted.stderr, "should contain") != null);
+    }
+    const native = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-link", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(native)) std.debug.print("{s}", .{native.stderr});
+    try std.testing.expect(ledger.success(native));
+}

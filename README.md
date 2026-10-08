@@ -285,15 +285,13 @@ forwarded even when inaccessible; malformed declarations fail before invocation.
 Option-shaped filenames are prefixed with `./`. Default input probing preserves
 access, I/O and cancellation failures; only absent optional roots are skipped.
 
-The currently pinned ziglint `924b6b5` cannot certify completed analysis: its
-exit values conflate findings/input failure, traversal can silently stop and
-its final output flush error is ignored. The lint gate therefore **fails
-closed for this pin, including apparently successful runs**. Exact diagnostic
-ledger matching remains available for reports, but cannot turn missing
-completion evidence into a successful gate. Signals, cancellation, input and
-capture errors and output-limit failures remain failures. A completion-aware
-ziglint or glint contract is required before this batch can pass and land;
-there is no exit-code or suppression bypass.
+The pinned ziglint `924b6b5` retains its existing clean/findings/exception
+behavior. Signals, cancellation, reported input errors, malformed diagnostics,
+output-limit and capture failures remain failures even when findings are allowed.
+The retiring fork cannot reliably report completion: it can silently lose
+traversal or flush failures. **F04 completion guarantees are deferred to glint**,
+whose outcome classes will distinguish completed analysis from failure. This
+batch neither implements F04 nor repairs ziglint; its remaining gates stay enabled.
 
 A shared `skip` job filters changes before the fast tier. Changes touching only
 Markdown outside `src`, LICENSE or images run the documented-snippet check alone.

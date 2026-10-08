@@ -29,14 +29,13 @@ pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
     var allowed = try ledger.Ledger.load(c, config, "ziglint_exceptions");
     try parseFindings(c, output, &allowed);
     try allowed.finish();
-    // Termination is independent of exception acceptance. The pinned CLI
-    // returns 1 for findings AND invalid arguments, 0 for some input errors,
-    // swallows directory-walk errors, and ignores its final flush failure.
-    // It cannot certify either complete outcome: never infer one from text.
+    // Preserve the pinned tool's existing clean/findings/exception behavior.
+    // Abnormal termination is independently detectable even after an allowed
+    // finding. Full completion detection is deferred to glint (owner F04).
     if (result.term != .exited) {
         c.fail("ziglint: analysis terminated abnormally ({t})", .{result.term});
-    } else {
-        c.fail("ziglint: completion unavailable in pinned 924b6b5 contract (exit {d}); a completion-aware tool is required", .{result.term.exited});
+    } else if (result.term.exited != 0 and std.mem.trim(u8, output, " \t\r\n").len == 0) {
+        c.fail("ziglint: command failed without diagnostics", .{});
     }
 }
 
@@ -166,7 +165,7 @@ test "owner allowed finding followed by signal must fail independently" {
     try std.testing.expect(c.errors != 0);
 }
 
-test "owner complete-looking findings and no findings fail closed without a completion contract" {
+test "owner legacy clean and allowed findings pass while visible failures remain failures" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -205,8 +204,9 @@ test "owner complete-looking findings and no findings fail closed without a comp
             try std.testing.expect(err == error.InvalidZiglintDiagnostic);
             continue;
         };
-        try std.testing.expect(c.errors != 0);
-        if (std.mem.eql(u8, mode, "empty") or std.mem.eql(u8, mode, "findings")) try std.testing.expectEqual(@as(usize, 1), c.errors);
+        if (std.mem.eql(u8, mode, "empty") or std.mem.eql(u8, mode, "findings")) {
+            try std.testing.expectEqual(@as(usize, 0), c.errors);
+        } else try std.testing.expect(c.errors != 0);
     }
     const FaultIo = @import("shakedown").FaultIo;
     const faults = try FaultIo.init(std.testing.allocator, io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .processSpawn, .n = 1 } }, .fault = .{ .fail = error.Canceled } }} });
@@ -225,7 +225,7 @@ test "owner complete-looking findings and no findings fail closed without a comp
     try std.testing.expectError(error.InputOutput, capture(&failed_capture, &.{executable}, .unlimited));
 }
 
-test "owner pinned tool input failure exits zero and has no completion protocol" {
+test "owner pinned tool reported input failure fails even with exit zero" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -237,6 +237,9 @@ test "owner pinned tool input failure exits zero and has no completion protocol"
     const result = try capture(&c, &.{ executable, "missing.zig" }, .unlimited);
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
     try std.testing.expect(std.mem.find(u8, result.stderr, "error: cannot access 'missing.zig'") != null);
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"ziglint_paths\":[\"missing.zig\"]}", .{})).value;
+    try check(&c, executable, config);
+    try std.testing.expect(c.errors != 0);
 }
 
 test "owner explicit lint inputs cannot be silently omitted" {

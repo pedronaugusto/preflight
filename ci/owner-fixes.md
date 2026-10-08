@@ -63,6 +63,14 @@ Final local ReleaseFast measurements (1,000 renders each): 58.35, 59.08 and
 58.04 microseconds/render, 12,016 bytes. The separately timed benchmark build
 run measured 58.57 microseconds/render. These are local measurements, not CI
 performance gates. Two final self-regenerations produced the same SHA-256:
-`3d46c960b13f1f12d8b581059601248646f917644f50932cc237dee7d8305547`.
+`a8e605588808f985e2db59be06a09a5be8d51517b77210b27c7e80810751b1b8`.
 The no-findings fixture was additionally rerun without a suppression ledger;
 its four-test selection passed and isolates the completion failure alone.
+
+FAST 37811856948 on 4fa94138ee524b987193ac06843a66c39c4002a8 exposed a
+self-generation invocation error: the caller targeted `.` rather than the
+original `sample`, whose build accepts the tier's optimize option. Regression
+commit 62a75fe fails `zig build test -Dci-lint=false -Dtest-filter='generated caller'`.
+Regeneration with `--working-directory sample` restores the original destination;
+the same four-test selection then passes. The README records the complete self
+regeneration command. The canonical consumer default remains its repository root.

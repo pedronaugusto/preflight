@@ -235,7 +235,11 @@ identical. There is no package-local planner or Python dependency. This is an
 offline regeneration write, not a crash-atomic or durable publication API.
 `--working-directory <relative-directory>` supports a nested package, and
 `--manifest <file>` selects its manifest. Preflight alone uses `--self` to call
-its own reusable workflows at `github.sha`.
+its own reusable workflows at `github.sha`. Its self-caller gates the sample:
+
+```sh
+zig build plan -- --self --workflow .github/workflows/ci.yml --config sample/ci/workflow.json --working-directory sample
+```
 
 `zig build plan -- --tier <tier> --output <file>` still emits the matrix records
 for inspecting a plan; it appends hosted-output records and is separate from

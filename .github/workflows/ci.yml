@@ -29,14 +29,14 @@ jobs:
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
       preflight-ref: ${{ github.sha }}
-      working-directory: "."
+      working-directory: "sample"
   gate:
     needs: skip
     if: always() && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
     uses: ./.github/workflows/zig.yml
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
-      working-directory: "."
+      working-directory: "sample"
       preflight-ref: ${{ github.sha }}
       attest: ${{ github.event_name == 'push' || inputs.status-only }}
       fast-matrix: >-

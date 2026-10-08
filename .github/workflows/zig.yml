@@ -146,7 +146,7 @@ jobs:
         if: always() && matrix.step == 'hardened-fuzz'
         with:
           name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
-          path: ${{ inputs.working-directory }}/.zig-cache/v
+          path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -212,7 +212,7 @@ jobs:
         if: always() && matrix.step == 'hardened-fuzz'
         with:
           name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
-          path: ${{ inputs.working-directory }}/.zig-cache/v
+          path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -391,7 +391,7 @@ jobs:
         if: always() && matrix.step == 'hardened-fuzz'
         with:
           name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
-          path: ${{ inputs.working-directory }}/.zig-cache/v
+          path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7

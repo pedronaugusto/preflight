@@ -323,11 +323,19 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         if (std.mem.eql(u8, token, "-Dci-bench-smoke=false")) continue;
         try argv.append(c.a, token);
     }
-    try argv.append(c.a, "-Dci-bench-smoke=false");
     // SDK identity is an explicit build option, so Zig configuration caches
     // cannot retain a different runner's SDKROOT environment.
     if (builtin.os.tag == .macos) {
         if (env.get("SDKROOT")) |sdk| try argv.append(c.a, try c.a.print("-Dci-sdk={s}", .{sdk}));
+    }
+    // Custom legacy steps may not use addCi. Ask the configured compiler
+    // graph whether it declares this control instead of guessing from source.
+    const snapshot = try facts.read(c, "zig", argv.items[3..]);
+    for (snapshot.config.available_options) |available_option| {
+        if (std.mem.eql(u8, available_option.name.slice(&snapshot.config), "ci-bench-smoke")) {
+            try argv.append(c.a, "-Dci-bench-smoke=false");
+            break;
+        }
     }
     // PREFLIGHT_SHARD reaches the test runners through the environment.
     try checks.command.execute(c, argv.items);

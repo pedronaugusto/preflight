@@ -74,6 +74,9 @@ fn apply(b: *std.Build, step: *std.Build.Step, options: Options, seen: *std.Auto
     if (entry.found_existing) return;
     if (step.cast(std.Build.Step.Compile)) |artifact| {
         if (!artifact.kind.isTest()) return;
+        // Zig's native fuzz rebuild preserves this configured backend. On
+        // x86_64 the self-hosted backend can produce a zero-PC coverage file.
+        artifact.use_llvm = true;
         for (artifact.root_module.getGraph().modules) |module| {
             const applied = modules.getOrPut(b.allocator, module) catch @panic("OOM");
             if (applied.found_existing) continue;

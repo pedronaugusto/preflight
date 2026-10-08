@@ -131,3 +131,15 @@ omitted its benchmark configuration. Both failures are retained as failing-befor
 integration tests in the following regression commit. The runner now emits that
 control once; the sample declares its existing benchmark. No sanitizer, campaign,
 artifact-retention requirement or correctness gate was weakened.
+
+FAST 37844576624 on 927b0e8 executed native hardened tests and LLVM TSan
+successfully. The default x86_64 fuzz backend produced a coverage file with zero
+PCs, so hardened test artifacts now explicitly select LLVM before Zig's fuzz
+rebuild. Uploads use the actual configured local cache, not the package cwd.
+A retained legacy custom-step regression also caught an unsupported injected
+smoke option: the runner now queries compiler-derived available options before
+adding that control. All three regressions fail before and pass after the fix.
+The probe adds one configure-only protocol request per hosted execution; the
+0.22 s warm facts observation above indicates its measured local scale, rather than
+claiming zero orchestration cost. No fallback graph, timing threshold, unsupported
+sanitizer success or compile-only campaign was introduced.

@@ -1066,16 +1066,38 @@ test "toolchain cold root declares CI controls before lazy discovery returns" {
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const empty_packages = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
-    const owner = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, root, a);
-    // Zig's supported offline mode lets the real first configurer pass run,
-    // then deterministically refuses the missing lazy package. No fetching.
-    const result = try std.process.run(a, std.testing.io, .{
-        .argv = &.{ "zig", "build", "--system", empty_packages, "-Dci-bench-smoke=false", "-Dci-hardened=false", "-Dci-tsan=false", "-Dci-lint=false" },
-        .cwd = .{ .path = owner },
+    const io = std.testing.io;
+    var owner = try std.Io.Dir.cwd().openDir(io, root, .{});
+    defer owner.close(io);
+    for ([_][]const u8{ "build.zig", "build.zig.zon" }) |name| {
+        const text = try owner.readFileAlloc(io, name, a, .limited(1024 * 1024));
+        const copied = if (std.mem.eql(u8, name, "build.zig.zon"))
+            try std.mem.replaceOwned(u8, a, text, "git+https://github.com/pedronaugusto/gantry#76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9", "file:///preflight-deliberately-missing-lazy-package")
+        else
+            text;
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = copied });
+    }
+    var sources = try owner.openDir(io, "src", .{ .iterate = true });
+    defer sources.close(io);
+    var walk = try sources.walk(a);
+    defer walk.deinit();
+    while (try walk.next(io)) |entry| {
+        const dest = try a.print("src/{s}", .{entry.path});
+        if (entry.kind == .directory) {
+            try tmp.dir.createDirPath(io, dest);
+        } else if (entry.kind == .file) {
+            try tmp.dir.createDirPath(io, std.Io.Dir.path.dirname(dest).?);
+            try tmp.dir.writeFile(io, .{ .sub_path = dest, .data = try sources.readFileAlloc(io, entry.path, a, .limited(1024 * 1024)) });
+        }
+    }
+    // The actual first configurer pass must accept controls before returning
+    // for the missing lazy dependency; its subsequent local fetch must fail.
+    const result = try std.process.run(a, io, .{
+        .argv = &.{ "zig", "build", "-Dci-bench-smoke=false", "-Dci-hardened=false", "-Dci-tsan=false", "-Dci-lint=false" },
+        .cwd = .{ .dir = tmp.dir },
     });
     try std.testing.expect(!ledger.success(result));
     if (std.mem.find(u8, result.stderr, "invalid option:") != null) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(std.mem.find(u8, result.stderr, "invalid option:") == null);
-    try std.testing.expect(std.mem.find(u8, result.stderr, "lazy dependency package not found:") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "fetching lazy dependency gantry-") != null);
 }

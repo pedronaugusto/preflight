@@ -7,8 +7,13 @@ pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
     try argv.appendSlice(c.a, &.{ executable, "--ignore", "Z013", "--ignore", "Z024" });
     const paths = src.get(config, "ziglint_paths");
     if (paths == .null) {
-        for ([_][]const u8{ "src", "examples", "ci", "build.zig" }) |path|
-            if (c.exists(path)) try argv.append(c.a, path);
+        for ([_][]const u8{ "src", "examples", "ci", "build.zig" }) |path| {
+            c.directory().access(c.io, path, .{}) catch |err| switch (err) {
+                error.FileNotFound => continue,
+                else => return err,
+            };
+            try argv.append(c.a, path);
+        }
     } else {
         if (paths != .array) return error.InvalidZiglintPaths;
         for (src.items(paths)) |value| {

@@ -76,3 +76,19 @@ test "a toolchain manifest names only the toolchain, ziglint and shakedown" {
     try std.testing.expectEqual(@as(usize, 1), try check(a, "gantry", reaching, &out.writer));
     try std.testing.expectEqualStrings("check-toolchain: gantry depends on strand (git+https://github.com/pedronaugusto/strand#1), a family package outside the toolchain\n", out.written());
 }
+
+test "closure rejects mutable dependency pins" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var out: std.Io.Writer.Allocating = .init(arena.allocator());
+    const manifest = ".{ .dependencies = .{ .sweep = .{ .url = \"git+https://github.com/pedronaugusto/sweep#main\", .hash = \"sweep-hash\" } } }";
+    try std.testing.expectError(error.UnpinnedDependency, check(arena.allocator(), "preflight", manifest, &out.writer));
+}
+
+test "closure does not mistake an unrelated URL path for a family identity" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var out: std.Io.Writer.Allocating = .init(arena.allocator());
+    const manifest = ".{ .dependencies = .{ .external = .{ .url = \"https://example.invalid/github.com/pedronaugusto/strand/archive.tar.gz\", .hash = \"external-content-hash\" } } }";
+    try std.testing.expectEqual(@as(usize, 0), try check(arena.allocator(), "preflight", manifest, &out.writer));
+}

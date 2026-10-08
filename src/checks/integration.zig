@@ -1105,3 +1105,21 @@ test "toolchain cold root declares CI controls before lazy discovery returns" {
     try std.testing.expect(std.mem.find(u8, result.stderr, "invalid option:") == null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "fetching lazy dependency gantry-") != null);
 }
+
+test "toolchain caller-owned timing option retains its config override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try fixture(a, tmp.dir);
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
+    const declared = try std.mem.replaceOwned(u8, a, build, "preflight.addCi(b, .{", "const timing = b.option(bool, \"ci-timings\", \"Caller-owned recording\") orelse false;\n    preflight.addCi(b, .{ .timings_enabled = timing,");
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = declared });
+    for ([_][]const u8{ "false", "true" }) |enabled| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--list-steps", try a.print("-Dci-timings={s}", .{enabled}) }, .cwd = .{ .dir = tmp.dir } });
+        if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(ledger.success(result));
+    }
+}

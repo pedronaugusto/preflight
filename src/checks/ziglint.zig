@@ -227,3 +227,32 @@ test "owner pinned tool input failure exits zero and has no completion protocol"
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
     try std.testing.expect(std.mem.find(u8, result.stderr, "error: cannot access 'missing.zig'") != null);
 }
+
+test "owner explicit lint inputs cannot be silently omitted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "record.zig", .data =
+        \\const std = @import("std");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    const a = init.arena.allocator();
+        \\    const args = try init.minimal.args.toSlice(a);
+        \\    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = "invocation.txt", .data = try std.mem.join(a, "\n", args) });
+        \\}
+        \\
+    });
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build-exe", "record.zig", "-femit-bin=record" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
+    const executable = try tmp.dir.realPathFileAlloc(io, "record", a);
+    var c: src.Context = .{ .a = a, .io = io, .dir = tmp.dir };
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"ziglint_paths\":[\"missing.zig\"]}", .{})).value;
+    try check(&c, executable, config);
+    try std.testing.expect(std.mem.find(u8, try c.read("invocation.txt"), "\nmissing.zig") != null);
+    for ([_][]const u8{ "{\"ziglint_paths\":true}", "{\"ziglint_paths\":[1]}", "{\"ziglint_paths\":[\"\"]}" }) |invalid| {
+        const malformed = (try std.json.parseFromSlice(src.Value, a, invalid, .{})).value;
+        try std.testing.expectError(error.InvalidZiglintPaths, check(&c, executable, malformed));
+    }
+}

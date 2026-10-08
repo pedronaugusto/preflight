@@ -1,0 +1,33 @@
+# Preflight design
+
+Preflight owns repository gates, build and process orchestration, and the canonical hosted workflow planner. Gantry owns semantic architecture checks. Code-level rules belong to glint; the current supported ziglint behavior remains available until that integration supplies reliable completion outcomes. The legacy tool can silently omit traversal or final-flush failures, so F04 remains open. Independently observable input, signal, cancellation and capture failures still fail the gate.
+
+## Configured builds and target projection
+
+`addCi` consumes the caller's actual `std.Build` graph. Foreign target checks project configured artifacts to objects, including test, helper, benchmark and transitive native-source modules. Native `ci-link` and portable test-build steps retain the original artifacts and their SDK libraries/frameworks. Object compilation certifies compilation; only native linking and execution certify those operations. Benchmark modules include the selected ordinary graph and the separate ReleaseFast graph.
+
+The `facts` adapter asks the installed Zig 0.17.0 compiler/build runner to configure through `zig build --listen=-`. Build-system handshake version 1 and configuration notifications differ from compiler messages. The serialized configuration is read while the child lives, then the supported exit message ends the session without requesting artifact execution. Both compiling and invoked compiler versions are exact gates; this native internal format is not a stable external API.
+
+Facts preserve configured module identities and scoped imports, step dependencies and artifact/test roots, package owners, options, lazy dependencies, generated/source path identities, target flags and native framework requests. They describe the configured artifact graph, not the compiler's analyzed source-level graph. Gantry declarations remain its owner. Lint reads these configured test roots and embedded WriteFile source content; unavailable dynamic producer content fails clearly when required. It never substitutes the old handwritten root reconstruction. CLI configuration options are replayed; unsupported non-CLI inputs fail rather than implying parity.
+
+The adapter validates native serialized storage before calling std's loader. Frames are bounded to 64 messages and 8 MiB each; paths/strings to 32 KiB; protocol accumulation, each child capture stream and the configuration file each to 64 MiB. Validation limits traversal to one million words/references and depth 64, with deduplicated references. I/O inactivity is bounded to 120 seconds. Unknown messages, wrong versions, malformed indices/tags/flags, truncation, cancellation, child signal/nonzero exit and reader/writer failures are infrastructure failures. None falls back to guessed facts.
+
+## Measurement ownership
+
+`Config.bench` configures ReleaseFast programs, injects the published shakedown module and actual commit/physical host CPU/OS provenance, and installs shakedown's comparator. Callbacks describe work and observable results. Shakedown owns warmup, clock resolution, batching, samples, statistics, JSONL and noise comparison. Preflight owns artifact builds and child processes; it implements no timer or statistical algorithm.
+
+`bench-build` only builds. `bench` explicitly measures. Local `test` runs each program once with `--smoke`, invoking each row once; ordinary hosted CI disables those executions and compiles benchmarks. `bench-ab` requires a clean candidate and a caller-selected immutable base/program/row, builds the detached base in owned temporary storage, and alternates base/candidate order with fresh working directories. Both revisions must implement the benchmark contract; earlier revisions fail rather than being patched. Provenance is checked against actual commits and Zig. Invalid inputs, signal/nonzero exit, malformed/truncated JSONL, smoke output, capture/output failures and child timeout fail infrastructure. Capture is bounded to 64 MiB per stream and execution to 600 seconds. Comparisons report changes and noise without timing pass/fail thresholds.
+
+## Opt-in hardened profile
+
+A caller enables `Config.hardened` and the canonical workflow's hardened option. Selected test artifacts retain Debug or use ReleaseSafe, with LLVM selected for native instrumentation. Normal builds retain caller-selected modes. Safety remains on; any source loop exception requires its own measured justification. This design does not force startup allocation policy onto callers or police source text with regexes.
+
+`hardened` executes tests. `hardened-fuzz` executes Zig 0.17's bounded native fuzzer on eligible 64-bit non-Windows hosts. Dedicated test steps must execute tests, and absent fuzz tests fail the campaign. Callers supply seeds through std.testing.fuzz; Zig owns corpus, failing-input reproduction and instrumented coverage. Hosted jobs retain the actual configured local-cache fuzz directory for seven days, including on failure. Reported campaign coverage is not a comprehensive-coverage guarantee.
+
+`hardened-tsan` executes LLVM ThreadSanitizer tests only on native x86_64 Linux; every selected module must be eligible. Unsupported hosts and sanitizer startup failures fail explicitly. The existing test runner retains std.testing.allocator ownership and std SafeAllocator's write-after-free checking. Regression consumers exercise an actual freed-storage write and, on Linux, a real intentional race alongside a synchronized control. No custom allocator, verifier, future language feature or additional package prerequisite is introduced.
+
+## Canonical orchestration and costs
+
+One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. Declarative repository facts stay with the caller. Hardened opt-in adds three native jobs per enabled tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
+
+Runner protocol, timeout, test ordering, allocation ownership and portable shard records remain separate from benchmark measurement. The runtime build dependency closure remains unchanged; shakedown is lazy test/benchmark support. Configuration and driver fault tests use deterministic child/input/output failures, rather than timing thresholds.

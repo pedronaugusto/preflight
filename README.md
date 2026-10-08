@@ -12,6 +12,8 @@ It is a build dependency; a consumer's module never imports it.
 Requires Zig 0.17.0. Add preflight as a build dependency pinned by commit:
 `zig fetch --save git+https://github.com/pedronaugusto/preflight#<commit>`.
 
+See [the design](docs/design.md) for ownership and invariants.
+
 ## Usage
 
 In `build.zig`, after creating the test step:
@@ -183,7 +185,7 @@ Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "pr
 
 This adapter reads the installed `lib/compiler/Maker.zig`, `configurer.zig`, `std/zig/{Server,Client}.zig` and `std/Build/Configuration.zig` contracts: `zig build --listen=-` sends build-system handshake version 1 and a serialized configuration-file path. Compiler `zig_version` messages are a different protocol. The file is read while the child lives, because poisoned configurations are deleted on clean exit; the adapter then sends the supported exit message. It requests no artifact execution. Zig configuration is a native serialized internal format, **not a stable external API**, and does not provide the compiler's analyzed source-level dependency graph. Gantry still owns source boundaries and their declarations. `ci-check` already projects the configured `std.Build` graph directly; that compiler-owned graph remains its source, and `ci-link` retains native SDK linking.
 
-Both compiling and invoked Zig must be exactly 0.17.0, with protocol version 1. Unknown/version-mismatched messages, configuration failures, malformed lengths/indices/tags/reserved fields, truncation, child signals/nonzero exits, cancellation, capture/write failures and budget exhaustion are explicit failures. Limits are 64 frames, 8 MiB per frame, 32 KiB paths/strings, 64 MiB aggregate capture/configuration, one million validation words/references and 64 nested decoding levels. No failure falls back to the previous guessed root list. Unsupported non-CLI build inputs are refused because their configuration cannot be faithfully replayed.
+Both compiling and invoked Zig must be exactly 0.17.0, with protocol version 1. Unknown/version-mismatched messages, configuration failures, malformed lengths/indices/tags/reserved fields, truncation, child signals/nonzero exits, cancellation, capture/write failures and budget exhaustion are explicit failures. Limits are 64 frames, 8 MiB per frame, 32 KiB paths/strings, 64 MiB each for protocol accumulation, each capture stream and the configuration file, one million validation words/references and 64 nested decoding levels. No failure falls back to the previous guessed root list. Unsupported non-CLI build inputs are refused because their configuration cannot be faithfully replayed.
 
 ### Test runs
 

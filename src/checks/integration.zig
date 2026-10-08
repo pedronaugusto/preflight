@@ -1039,3 +1039,23 @@ test "toolchain canonical sample declares its benchmark artifacts" {
     if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(ledger.success(result));
 }
+
+test "toolchain hardened selects LLVM for the native fuzz rebuild" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
+    const replacement =
+        \\const backend = b.step("backend-proof", "Require LLVM instrumentation for the native fuzz rebuild");
+        \\if (tests.use_llvm != true) backend.dependOn(&b.addFail("hardened tests must select LLVM before fuzz instrumentation").step);
+        \\preflight.addConsumerCheck(b,
+    ;
+    const modified = try std.mem.replaceOwned(u8, a, build, "preflight.addConsumerCheck(b,", replacement);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "backend-proof", "-Dci-hardened=true" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+}

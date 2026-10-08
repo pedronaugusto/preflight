@@ -177,3 +177,14 @@ test "toolchain hosted profile jobs execute their own steps and compile benches 
     try contains(body, "zig build verify -Dci-bench-smoke=false");
     try contains(body, "hardened-fuzz");
 }
+
+test "toolchain fuzz artifacts follow the configured shared local cache" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
+    for ([_][]const u8{ "fast", "gate", "execute" }) |name| {
+        const body = try job(workflow, name);
+        try contains(body, "path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v");
+        try contains(body, "if-no-files-found: error");
+    }
+}

@@ -5,6 +5,8 @@ runs format, gantry structure rules, ziglint, namespace layout, cast reasons,
 function length, documented snippets and test imports, then the package's tests.
 It is a build dependency; a consumer's module never imports it.
 
+**WIP:** hardened checks are opt-in and the configured-build adapter supports exactly Zig 0.17.0. F04 completion remains deferred to future glint integration. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
+
 ## Install
 
 Requires Zig 0.17.0. Add preflight as a build dependency pinned by commit:
@@ -150,6 +152,38 @@ for preparing an initial ledger; it does not change the package or approve debt.
 Layout exceptions likewise name their exact member set and a reason.
 `zig build docs -- usage` renders a configured region for updating its block.
 `zig build cache` preserves fetched packages and tools when pruning build products.
+
+### Measuring and comparison
+
+`Config.bench` injects `shakedown` and `preflight_bench_options` (`commit`, physical build-host `cpu`, `os`). Its imports callback is optional. Benchmark programs call published `shakedown.bench.run` with named `Row(Context)` callbacks, workload units and observable results. Shakedown owns warmup, clock resolution, batching, samples, statistics, JSONL and comparison noise; preflight owns builds and child processes. [The sample](sample/bench/sum.zig) is a complete consumer.
+
+`zig build bench-build` compiles ReleaseFast programs and the published `shakedown-bench-compare` tool, executing nothing. `zig build bench` manually measures them. Local `zig build test` invokes each program once with `--smoke`; each row does its one smoke invocation. Hosted orchestration passes `-Dci-bench-smoke=false` and compiles benches without timing gates. Smoke rows cannot be compared as measurements.
+
+From a clean Git checkout, select a commit and workload:
+
+```sh
+zig build bench-ab -- --base <commit> --program workflow --row 'caller generation' --pairs 5 --output .zig-cache/measurements
+```
+
+The driver resolves an immutable base, clones it beneath the caller's `.zig-cache`, builds each revision's `bench-build`, then alternates base/candidate order between pairs, with fresh working directories. It delegates every pair to shakedown's comparator, preserving raw JSONL with `--output`. Both revisions must implement `bench-build` and the selected program's `--row` contract; earlier revisions fail explicitly rather than being patched. Candidate tracked edits and untracked source files are refused; use an ignored output directory for repeated runs. Provenance must match both Git commits. Source archives report `source-archive` rather than inventing a commit. CPU provenance names the physical build host, separate from a selected target's CPU; native executions are required for comparisons. Unknown, missing or duplicate options, nonzero/signal exits, timeouts, capture limits, malformed/truncated JSONL, smoke output and output failures fail infrastructure. Changes beyond observed noise are reports, never speed pass/fail thresholds.
+
+### Hardened profile
+
+Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, and `"hardened": true` in `ci/workflow.json`, then regenerate the caller. Dedicated steps must execute tests. Defaults select `test`, so a package without fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign.
+
+`zig build hardened` runs the ordinary suite with `-Dci-hardened=true`; its test modules use Debug or ReleaseSafe. Normal build modes remain caller-selected. A measured source loop can explicitly disable safety at its boundary, with its reason and matched measurements; this batch adds no such exceptions. Source-site rules belong to glint, architectural rules to gantry. No startup-allocation policy is forced on a consumer.
+
+`zig build hardened-fuzz` executes the installed Zig 0.17 bounded native fuzzer, with caller options forwarded. The current compiler supports native 64-bit non-Windows hosts; foreign targets and unsupported backends must fail execution. Seed corpora belong in `std.testing.fuzz` options. Zig reports campaign counts and instrumented coverage, retains corpus/coverage beneath `.zig-cache/v`, and reports failing inputs and reproduction details. Hosted jobs retain that directory, including on failure, for seven days. Preserve those files and the printed test seed when reproducing; accumulated coverage is not a coverage guarantee.
+
+`zig build hardened-tsan` compiles with LLVM ThreadSanitizer and executes the selected tests on native x86_64 Linux. Every selected module's target is checked. Other hosts fail with an explicit eligibility message. The sample executes real concurrent tests; preflight's Linux regression first runs a synchronized consumer, then requires a real intentional-race diagnostic. Sanitizer startup failures remain failures. The existing test runner continues to own `std.testing.allocator`, using std's SafeAllocator with `check_write_after_free = true`; a real consumer test frees storage and writes through it to prove detection. There is no substitute allocator, verifier, future language feature or aegis prerequisite.
+
+### Configured build facts
+
+`zig build facts -D<name>=<value>` reports the actual configured Zig 0.17 build as JSON: compiler module identities and scoped import tables, artifact steps and dependencies, configured options, package owners/hashes, discovered lazy dependencies, test-root descriptors, source/generated path identities, target flags and native framework requests. Additional configuration flags can follow `--`. Lint takes its test roots from those facts; `ci/preflight.json` still selects sources and policies. Embedded WriteFile test sources are read from the compiler configuration, without executing or guessing generator paths. Dynamic producer content is unavailable at configure time and is reported as generated; if lint requires that content it fails `GeneratedTestRootUnavailable` rather than substituting handwritten roots.
+
+This adapter reads the installed `lib/compiler/Maker.zig`, `configurer.zig`, `std/zig/{Server,Client}.zig` and `std/Build/Configuration.zig` contracts: `zig build --listen=-` sends build-system handshake version 1 and a serialized configuration-file path. Compiler `zig_version` messages are a different protocol. The file is read while the child lives, because poisoned configurations are deleted on clean exit; the adapter then sends the supported exit message. It requests no artifact execution. Zig configuration is a native serialized internal format, **not a stable external API**, and does not provide the compiler's analyzed source-level dependency graph. Gantry still owns source boundaries and their declarations. `ci-check` already projects the configured `std.Build` graph directly; that compiler-owned graph remains its source, and `ci-link` retains native SDK linking.
+
+Both compiling and invoked Zig must be exactly 0.17.0, with protocol version 1. Unknown/version-mismatched messages, configuration failures, malformed lengths/indices/tags/reserved fields, truncation, child signals/nonzero exits, cancellation, capture/write failures and budget exhaustion are explicit failures. Limits are 64 frames, 8 MiB per frame, 32 KiB paths/strings, 64 MiB aggregate capture/configuration, one million validation words/references and 64 nested decoding levels. No failure falls back to the previous guessed root list. Unsupported non-CLI build inputs are refused because their configuration cannot be faithfully replayed.
 
 ### Test runs
 
@@ -378,8 +412,8 @@ or directories after `--` to read only those.
 
 | Declaration | What it does |
 |---|---|
-| `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `check-imports`, `docs`, `cache` and `deprecations` |
-| `Config`, `TestTimeout`, `Bench` | The gate's paths, shard records, watchdog, test log level and benchmarks |
+| `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `facts`, `check-imports`, `docs`, `cache` and `deprecations`; optional bench and hardened steps |
+| `Config`, `TestTimeout`, `Bench`, `Hardened` | The gate's paths, shard records, watchdog, test log level and benchmarks |
 | `addConsumerCheck(b, ConsumerOptions)` | Adds `check-consumer` |
 | `addCheck(b, name, source)` | Builds, tests and runs a repository check program as step `name` |
 

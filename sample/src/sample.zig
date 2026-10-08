@@ -12,3 +12,7 @@ test "sum of each fixture case" {
     const fixture = @import("testing/cases.zig");
     for (fixture.cases) |case| try std.testing.expectEqual(case.sum, sum(case.a, case.b));
 }
+
+test {
+    _ = @import("testing/hardened.zig");
+}

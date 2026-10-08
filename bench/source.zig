@@ -1,33 +1,48 @@
-//! Source-check costs over one namespace with many functions. ReleaseFast;
-//! parsing is outside the timed region; `--smoke` executes each row once.
+//! Source checks with parsing outside the measured region.
 const std = @import("std");
 const checks = @import("checks");
-
+const measuring = @import("shakedown").bench;
+const metadata = @import("preflight_bench_options");
+const Context = struct {
+    scratch: std.heap.ArenaAllocator,
+    io: std.Io,
+    source: checks.source.Source,
+    config: checks.source.Value,
+    fn quality(c: *Context, units: u64) !void {
+        for (0..units) |_| {
+            const findings = try checks.quality.findings(c.scratch.allocator(), &.{c.source}, c.config);
+            if (findings.len != 0) return error.UnexpectedFindings;
+            _ = c.scratch.reset(.retain_capacity);
+        }
+    }
+    fn lengths(c: *Context, units: u64) !void {
+        for (0..units) |_| {
+            var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io };
+            try checks.policy.lengths(&context, &.{c.source}, c.config);
+            _ = c.scratch.reset(.retain_capacity);
+        }
+    }
+};
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const args = try init.minimal.args.toSlice(a);
-    const smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke");
     var text: std.Io.Writer.Allocating = .init(a);
     for (0..100) |i| try text.writer.print("pub fn work{d}() void {{\n    const x = 1;\n    _ = x;\n}}\n", .{i});
-    const source = try checks.source.Source.parse(a, "src/tools/work.zig", text.written());
-    const config = (try std.json.parseFromSlice(checks.source.Value, a, "{\"test_support\":[\"src/testing/**\"],\"function_limits\":{\"src/**\":120}}", .{})).value;
-    var out_buffer: [1024]u8 = undefined;
-    var out = std.Io.File.stdout().writerStreaming(init.io, &out_buffer);
-    for ([_][]const u8{ "quality", "lengths" }) |name| {
-        var scratch = std.heap.ArenaAllocator.init(init.gpa);
-        defer scratch.deinit();
-        var context: checks.source.Context = .{ .a = scratch.allocator(), .io = init.io };
-        const start = std.Io.Clock.awake.now(init.io).nanoseconds;
-        const rounds: usize = if (smoke) 1 else 1000;
-        for (0..rounds) |_| {
-            if (std.mem.eql(u8, name, "quality")) {
-                const findings = try checks.quality.findings(context.a, &.{source}, config);
-                if (findings.len != 0) return error.UnexpectedFindings;
-            } else try checks.policy.lengths(&context, &.{source}, config);
-            _ = scratch.reset(.retain_capacity);
-        }
-        const elapsed = std.Io.Clock.awake.now(init.io).nanoseconds - start;
-        try out.interface.print("{s}: {d:.3} ns/op\n", .{ name, @as(f64, @floatFromInt(elapsed)) / @as(f64, @floatFromInt(rounds)) });
-    }
-    try out.interface.flush();
+    var context: Context = .{
+        .scratch = .init(init.gpa),
+        .io = init.io,
+        .source = try checks.source.Source.parse(a, "src/tools/work.zig", text.written()),
+        .config = (try std.json.parseFromSlice(checks.source.Value, a, "{\"test_support\":[\"src/testing/**\"],\"function_limits\":{\"src/**\":120}}", .{})).value,
+    };
+    defer context.scratch.deinit();
+    var buffer: [4096]u8 = undefined;
+    var output = std.Io.File.stdout().writerStreaming(init.io, &buffer);
+    try measuring.run(init.gpa, init.io, &output.interface, &context, &.{
+        .{ .name = "quality", .unit = "scan", .run = Context.quality },
+        .{ .name = "lengths", .unit = "scan", .run = Context.lengths },
+    }, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{
+        .smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke"),
+        .prefix = if (args.len == 3 and std.mem.eql(u8, args[1], "--row")) args[2] else "",
+    });
+    try output.interface.flush();
 }

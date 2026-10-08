@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- Benchmark programs can use injected published `shakedown.bench` and build provenance directly. `bench-build` builds ReleaseFast programs/comparison without executing; hosted gates disable benchmark smoke. `bench-ab` builds immutable revisions, interleaves caller-selected workloads and delegates comparison to shakedown. Both revisions must implement this contract.
+- `Config.hardened` and workflow `hardened` opt into safety-on test configurations, executed native Zig fuzzer campaigns and x86_64 Linux LLVM ThreadSanitizer jobs. Unsupported targets and compile-only profile steps fail explicitly; existing allocator ownership is preserved.
+- `facts` reads Zig 0.17.0's build-system protocol and bounded serialized configured graph. Lint uses actual configured test roots, including embedded WriteFile roots, instead of the handwritten `test_roots` list. Unavailable dynamic generated test content and unsupported versions/inputs fail clearly. This is a version-specific internal-format adapter, not a stable Zig external graph API. Existing object/native-link graphs and legacy ziglint behavior remain.
+
 - `ci-check` emits root, test, benchmark, helper and transitive native objects instead of linking binaries. `ci-link` retains the native link gate. Portable test artifacts are linked on their destination SDK runner; regenerate callers to update every matrix. Required libraries and Apple frameworks remain on native modules.
 - Declared `ziglint_paths` are never silently dropped: malformed declarations are rejected and option-shaped names remain literal paths. Default probing preserves access, I/O and cancellation failures.
 - F04 completion guarantees are deferred to glint as it replaces the retiring ziglint fork. The pinned fork retains its existing clean/findings/exception behavior; independently detectable signal, capture and input failures remain failures. No ziglint repair is included.

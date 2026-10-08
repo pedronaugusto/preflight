@@ -6,6 +6,7 @@ const objects = @import("objects.zig");
 const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
 const bench = @import("bench.zig");
+const hardened = @import("hardened.zig");
 
 pub const Config = struct {
     tests: *std.Build.Step,
@@ -26,9 +27,12 @@ pub const Config = struct {
     /// `zig build test` runs each once with `--smoke`. A repository with a `bench/`
     /// directory and none given fails its tests.
     bench: ?Bench = null,
+    /// Opt-in native safety checks; release artifacts keep their chosen mode.
+    hardened: ?Hardened = null,
 };
 
 pub const Bench = bench.Bench;
+pub const Hardened = hardened.Profile;
 
 pub const TestTimeout = record.TestTimeout;
 
@@ -76,10 +80,13 @@ const Steps = struct {
     lint_enabled: bool,
     timing: bool,
     sdk: ?[]const u8,
+    smoke: bool,
+    profile_options: hardened.Options,
 
     fn create(b: *std.Build, config: Config) Steps {
+        const profile_options = hardened.declare(b);
         const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
-        bench.add(b, config.tests, config.bench);
+        const smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true;
         const ci = b.step("ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);
@@ -91,7 +98,7 @@ const Steps = struct {
         const sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner");
         const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
         const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false);
-        return .{ .lint = lint, .ci = ci, .lint_enabled = enabled, .timing = timing, .sdk = sdk };
+        return .{ .lint = lint, .ci = ci, .lint_enabled = enabled, .timing = timing, .sdk = sdk, .smoke = smoke, .profile_options = profile_options };
     }
 
     /// `pkg` is the preflight package whose sources and tools the gate runs.
@@ -113,6 +120,8 @@ const Steps = struct {
             break :fail 0;
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        bench.add(b, pkg, config.tests, config.bench, steps.smoke);
+        hardened.add(b, config.tests, config.hardened, steps.profile_options);
         objects.add(b, config.tests, steps.sdk);
         if (config.portable_tests) portable.add(b, config.tests, executable);
         const plan = b.addRunArtifact(executable);
@@ -120,6 +129,13 @@ const Steps = struct {
         plan.addPassthruArgs();
         plan.setCwd(b.path("."));
         b.step("plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
+        const facts = b.addRunArtifact(executable);
+        facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
+        configurationOptions(b, facts);
+        facts.addPassthruArgs();
+        facts.setCwd(b.path("."));
+        facts.has_side_effects = true;
+        b.step("facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
         const cache = b.addRunArtifact(executable);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));
@@ -180,6 +196,8 @@ const Steps = struct {
         const checks = b.addRunArtifact(executable);
         checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
         checks.addArtifactArg2(ziglint_dep.artifact("ziglint"), .{});
+        checks.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+        configurationOptions(b, checks);
         checks.setCwd(b.path("."));
         checks.step.dependOn(&lint_structure.step);
         steps.lint.dependOn(&checks.step);
@@ -206,4 +224,13 @@ fn orderTests(step: *std.Build.Step, lint: *std.Build.Step) void {
         return;
     }
     for (step.dependencies.items) |dependency| orderTests(dependency, lint);
+}
+
+fn configurationOptions(b: *std.Build, run: *std.Build.Step.Run) void {
+    for (b.user_input_options.keys(), b.user_input_options.values()) |name, value| switch (value) {
+        .flag => run.addArgs(&.{ "--build-option", b.fmt("-D{s}", .{name}) }),
+        .scalar => |text| run.addArgs(&.{ "--build-option", b.fmt("-D{s}={s}", .{ name, text }) }),
+        .list => |list| for (list.items) |text| run.addArgs(&.{ "--build-option", b.fmt("-D{s}={s}", .{ name, text }) }),
+        else => run.step.dependOn(&b.addFail("build facts: unsupported non-CLI configuration option; cannot reproduce configured graph").step),
+    };
 }

@@ -168,3 +168,12 @@ test "SDK artifacts link on their matrix runner before native replay" {
     try contains(compile, "PREFLIGHT_SETUP: 'true'");
     try contains(try job(workflow, "execute"), "needs: compile");
 }
+
+test "toolchain hosted profile jobs execute their own steps and compile benches only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "fast");
+    try contains(body, "STEP: ${{ matrix.step }}");
+    try contains(body, "zig build verify -Dci-bench-smoke=false");
+    try contains(body, "hardened-fuzz");
+}

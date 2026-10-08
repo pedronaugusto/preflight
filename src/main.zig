@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
 const src = checks.source;
+const facts = @import("facts.zig");
 
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
@@ -12,7 +13,9 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(a);
     if (args.len < 2) return error.MissingCommand;
     const command = args[1];
-    if (std.mem.eql(u8, command, "plan")) {
+    if (std.mem.eql(u8, command, "facts")) {
+        try exportFacts(c, args);
+    } else if (std.mem.eql(u8, command, "plan")) {
         try planOptions(args[2..]);
         const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
         if (option(args, "--full") != null) return error.FullReplacedByTier;
@@ -95,15 +98,50 @@ pub fn main(init: std.process.Init) !void {
         _ = try deprecations.run(a, init.io, .cwd(), .{ .std_dir = std_dir, .write = hasFlag(args, "--write"), .paths = paths.items }, &out.interface);
         try out.interface.flush();
     } else if (std.mem.eql(u8, command, "lint")) {
-        const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+        var config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+        var build_options: std.ArrayList([]const u8) = .empty;
+        for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--build-option")) {
+            if (i + 1 == args.len) return error.MissingConfigurationOption;
+            try build_options.append(a, args[i + 1]);
+        };
+        const snapshot = try facts.read(c, option(args, "--zig-exe") orelse "zig", build_options.items);
+        const roots = try facts.testRoots(a, snapshot);
+        var root_values: std.ArrayList(src.Value) = .empty;
+        const sources = try std.mem.concat(a, src.Source, &.{ try src.collect(c, config), try facts.generatedSources(a, snapshot) });
+        for (roots) |root| for (sources) |source| if (std.mem.eql(u8, root, source.path)) {
+            try root_values.append(a, .{ .string = root });
+            break;
+        };
+        try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
         c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
         c.adopt = std.mem.eql(u8, environment(init.environ_map, "PREFLIGHT_ADOPT") orelse "false", "true");
         const branch = try checks.ledger.git(&c, &.{ "branch", "--show-current" });
         const name = environment(init.environ_map, "GITHUB_HEAD_REF") orelse environment(init.environ_map, "GITHUB_REF_NAME") orelse std.mem.trim(u8, branch.stdout, "\r\n");
         if (!std.mem.eql(u8, name, "main")) c.ledger_base = environment(init.environ_map, "PREFLIGHT_LEDGER_BASE") orelse environment(init.environ_map, "GITHUB_BASE_REF") orelse "main";
-        try lint(&c, config, option(args, "--ziglint") orelse return error.MissingZiglint);
+        try lint(&c, config, option(args, "--ziglint") orelse return error.MissingZiglint, sources);
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
+}
+
+fn exportFacts(c: src.Context, args: []const []const u8) !void {
+    const a = c.a;
+    var options: std.ArrayList([]const u8) = .empty;
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--zig-exe")) {
+            i += 1;
+            if (i == args.len) return error.MissingCompiler;
+        } else if (std.mem.eql(u8, args[i], "--build-option")) {
+            i += 1;
+            if (i == args.len) return error.MissingConfigurationOption;
+            try options.append(a, args[i]);
+        } else try options.append(a, args[i]);
+    }
+    const snapshot = try facts.read(c, option(args, "--zig-exe") orelse "zig", options.items);
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.File.stdout().writerStreaming(c.io, &buffer);
+    try facts.write(a, snapshot, &out.interface);
+    try out.interface.flush();
 }
 
 fn environment(env: *std.process.Environ.Map, key: []const u8) ?[]const u8 {
@@ -150,8 +188,7 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, config: src.Value, ziglint: []const u8) !void {
-    const sources = try src.collect(c.*, config);
+fn lint(c: *src.Context, config: src.Value, ziglint: []const u8, sources: []const src.Source) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
@@ -281,6 +318,7 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     try argv.appendSlice(c.a, &.{ "zig", "build", env.get("STEP") orelse "ci" });
     var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
     while (tokens.next()) |token| try argv.append(c.a, token);
+    try argv.append(c.a, "-Dci-bench-smoke=false");
     // SDK identity is an explicit build option, so Zig configuration caches
     // cannot retain a different runner's SDKROOT environment.
     if (builtin.os.tag == .macos) {

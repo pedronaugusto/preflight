@@ -5,9 +5,11 @@ const gantry = @import("gantry");
 pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig", "src/rules.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
-    .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/build.zig" } },
+    .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{"src/checks/*.zig"} },
     .{ .name = "deprecation codemod", .patterns = &.{ "src/deprecations/*.zig", "src/deprecations.zig" } },
+    .{ .name = "configuration validation", .patterns = &.{"src/facts/*.zig"} },
+    .{ .name = "configured build facts", .patterns = &.{"src/facts.zig"} },
     .{ .name = "structure rules", .patterns = &.{"src/structure/check.zig"} },
     .{ .name = "check index", .patterns = &.{"src/checks.zig"} },
     .{ .name = "structure runner", .patterns = &.{"src/structure.zig"} },
@@ -30,6 +32,8 @@ const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named depen
     "preflight_default_test_runner",
     "preflight_runner_options",
     "shakedown",
+    "preflight_bench_options",
+    "facts",
     "preflight_rules",
 } }};
 pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ family.shakedown);

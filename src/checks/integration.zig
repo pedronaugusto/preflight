@@ -9,12 +9,13 @@ const paths = @import("paths.zig");
 fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const io = std.testing.io;
     for ([_][]const u8{ "src/testing", "ci" }) |path| try dir.createDirPath(io, path);
-    for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "ci/layers.zig", "ci/preflight.json", "ci/consumer.zig", "LICENSE", "README.md", "CHANGELOG.md" }) |path| {
+    for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "src/testing/hardened.zig", "ci/layers.zig", "ci/preflight.json", "ci/consumer.zig", "LICENSE", "README.md", "CHANGELOG.md" }) |path| {
         const input = try std.Io.Dir.path.join(a, &.{ root, "sample", path });
         defer a.free(input);
         const text = try std.Io.Dir.cwd().readFileAlloc(io, input, a, .limited(1024 * 1024));
         defer a.free(text);
-        try dir.writeFile(io, .{ .sub_path = path, .data = text });
+        const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", "") else text;
+        try dir.writeFile(io, .{ .sub_path = path, .data = copied });
     }
     const fixture_root = try dir.realPathFileAlloc(io, ".", a);
     defer a.free(fixture_root);
@@ -887,4 +888,123 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     }
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.py", .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.zig", .{}));
+}
+
+test "toolchain measuring builds without executing and injects shakedown for a consumer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDir(std.testing.io, "bench", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bench/probe.zig", .data =
+        \\const std = @import("std");
+        \\const measuring = @import("shakedown").bench;
+        \\pub fn main(init: std.process.Init) !void {
+        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
+        \\    if (args.len != 2 or !std.mem.eql(u8, args[1], "--smoke")) return error.FullMeasurementMustNotRunInCi;
+        \\    _ = measuring.Row(void);
+        \\    _ = @import("preflight_bench_options").commit;
+        \\}
+    });
+    const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
+    const changed = try std.mem.replaceOwned(u8, a, build, ".portable_tests = true", ".portable_tests = true, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize, .imports = probeImports }");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = try std.mem.concat(a, u8, &.{
+        changed,
+        \\fn probeImports(_: *std.Build, _: std.Build.ResolvedTarget, _: std.lang.Optimize) []const std.Build.Module.Import { return &.{}; }
+    }) });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "bench-build" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+    const smoke = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(smoke)) std.debug.print("{s}", .{smoke.stderr});
+    try std.testing.expect(ledger.success(smoke));
+}
+
+test "toolchain hardened preserves test allocator ownership and detects write after free" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
+    const changed = try std.mem.replaceOwned(u8, a, build, ".portable_tests = true", ".portable_tests = true");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = changed });
+    const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(good)) std.debug.print("{s}", .{good.stderr});
+    try std.testing.expect(ledger.success(good));
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data =
+        \\test "write after free" {
+        \\    const a = @import("std").testing.allocator;
+        \\    const bytes = try a.alloc(u8, 128);
+        \\    a.free(bytes);
+        \\    const ptr: *volatile u8 = &bytes[0];
+        \\    ptr.* = 42;
+        \\}
+    });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!ledger.success(bad));
+    try std.testing.expect(std.mem.find(u8, bad.stderr, "write after free") != null or std.mem.find(u8, bad.stderr, "use after free") != null);
+}
+
+test "toolchain facts come from the configured build including options and generated test roots" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
+    const generated = try std.mem.replaceOwned(u8, a, build, "const tests = b.addTest(.{ .root_module = module });",
+        \\const files = b.addWriteFiles();
+        \\const generated_module = b.createModule(.{ .root_source_file = files.add("generated.zig", "test { _ = @import(\"configured_sample\"); }\n"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "configured_sample", .module = module }} });
+        \\const tests = b.addTest(.{ .root_module = generated_module });
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = generated });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "facts", "--", "-Doptimize=safe" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+    try std.testing.expect(std.mem.find(u8, result.stdout, "src/sample.zig") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "safe") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "ci-check") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "configured_sample") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "\"kind\":\"generated\"") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "\"test_roots\"") != null);
+}
+
+test "toolchain TSan executes a native consumer and detects an intentional race" {
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "hardened-tsan" }, .cwd = .{ .dir = tmp.dir } });
+    if (!ledger.success(good)) std.debug.print("{s}", .{good.stderr});
+    try std.testing.expect(ledger.success(good));
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
+        \\const std = @import("std");
+        \\var go: std.atomic.Value(bool) = .init(false);
+        \\var shared: u32 = 0;
+        \\fn race() void {
+        \\    while (!go.load(.acquire)) std.atomic.spinLoopHint();
+        \\    for (0..10000) |_| {
+        \\        shared += 1;
+        \\        std.mem.doNotOptimizeAway(shared);
+        \\    }
+        \\}
+        \\test "intentional race" {
+        \\    const first = try std.Thread.spawn(.{}, race, .{});
+        \\    const second = try std.Thread.spawn(.{}, race, .{});
+        \\    go.store(true, .release);
+        \\    first.join();
+        \\    second.join();
+        \\}
+    });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "hardened-tsan" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!ledger.success(bad));
+    try std.testing.expect(std.mem.find(u8, bad.stderr, "data race") != null);
 }

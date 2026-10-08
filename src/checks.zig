@@ -22,6 +22,10 @@ test {
     _ = @import("consumer.zig");
     _ = @import("record.zig");
     _ = @import("configure.zig");
+    _ = @import("facts.zig");
+    _ = @import("facts_test.zig");
+    _ = @import("profile_test.zig");
+    _ = @import("bench_driver.zig");
     _ = source;
     _ = policy;
     _ = imports;

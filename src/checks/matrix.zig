@@ -66,7 +66,23 @@ pub const Tier = enum {
     release,
 };
 
+/// The sole planner also owns opt-in native safety execution jobs.
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
+    const normal = try basePlan(a, config, tier);
+    const hardened = src.get(config, "hardened");
+    if (hardened != .null and hardened != .bool) return error.InvalidHardenedProfile;
+    if (hardened == .null or !hardened.bool) return normal;
+    var jobs: std.ArrayList(Job) = .empty;
+    try jobs.appendSlice(a, normal);
+    for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }) |step| {
+        var job: Job = .{ .os = hosts[0], .name = step, .step = step, .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}), .setup = true };
+        job.cache_key = try key(a, job);
+        try jobs.append(a, job);
+    }
+    return jobs.toOwnedSlice(a);
+}
+
+fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     try validate(a, config);
     for (obsolete) |name| if (src.get(config, name) != .null) return error.ObsoleteShardConfig;
     // The watchdog bounds each test (`Config.test_timeout`).
@@ -572,4 +588,20 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     }
     const bad = (try std.json.parseFromSlice(src.Value, a, "{\"build_args\":[\"-Dtarget=x86_64-macos\"]}", .{})).value;
     try std.testing.expectError(error.InvalidBuildArgs, plan(a, bad, .fast));
+}
+
+test "hardened planner schedules native execution with no portable sanitizer replay" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"hardened\":true}", .{})).value;
+    const tiers = try split(a, config, try plan(a, config, .merge), .merge);
+    var executed: usize = 0;
+    for (tiers.native) |job| if (std.mem.startsWith(u8, job.step, "hardened")) {
+        executed += 1;
+        try std.testing.expectEqualStrings(hosts[0], job.os);
+        try std.testing.expectEqual(.execute, job.operation);
+        try std.testing.expectEqualStrings("", job.artifact);
+    };
+    try std.testing.expectEqual(@as(usize, 3), executed);
 }

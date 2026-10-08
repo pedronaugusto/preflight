@@ -131,7 +131,7 @@ jobs:
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Check sources, run Linux Debug and compile other test targets
         env:
-          STEP: preflight-fast
+          STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_SHARD: ${{ matrix.shard }}
           PREFLIGHT_PREPARED: 'true'
@@ -140,8 +140,16 @@ jobs:
           FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - name: Verify the shared checker
-        if: github.repository == 'pedronaugusto/preflight'
-        run: zig build verify
+        if: github.repository == 'pedronaugusto/preflight' && matrix.step == 'preflight-fast'
+        run: zig build verify -Dci-bench-smoke=false
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.step == 'hardened-fuzz'
+        with:
+          name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
+          path: ${{ inputs.working-directory }}/.zig-cache/v
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: contains(matrix.args, '-Dci-timings=true')
         with:
@@ -200,6 +208,14 @@ jobs:
           PREFLIGHT_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}
           FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.step == 'hardened-fuzz'
+        with:
+          name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
+          path: ${{ inputs.working-directory }}/.zig-cache/v
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: contains(matrix.args, '-Dci-timings=true')
         with:
@@ -371,6 +387,14 @@ jobs:
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.step == 'hardened-fuzz'
+        with:
+          name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
+          path: ${{ inputs.working-directory }}/.zig-cache/v
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: contains(matrix.args, '-Dci-timings=true')
         with:

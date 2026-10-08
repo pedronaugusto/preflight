@@ -86,7 +86,7 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         \\      - uses: mlugg/setup-zig@v2
         \\        with:
         \\          version: 0.17.0
-        \\      - run: zig build verify
+        \\      - run: zig build verify -Dci-bench-smoke=false
         \\
     );
     return text.toOwnedSlice();

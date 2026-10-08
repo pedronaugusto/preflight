@@ -6,6 +6,8 @@ pub const addCi = ci.addCi;
 pub const Config = ci.Config;
 /// The benchmarks `addCi` builds, runs and smoke-tests.
 pub const Bench = ci.Bench;
+/// Opt-in native safety, fuzzer and ThreadSanitizer checks.
+pub const Hardened = ci.Hardened;
 /// The watchdog's bound on one test: the default, another with its reason, or none.
 pub const TestTimeout = ci.TestTimeout;
 /// Builds, tests and runs a repository check program as one step.
@@ -73,8 +75,15 @@ pub fn build(b: *std.Build) void {
         const lint_tool = b.dependencyLazy("ziglint", .{ .target = target, .optimize = .safe }) catch return;
         options.addOptionPath("ziglint", lint_tool.artifact("ziglint").getEmittedBin());
         // preflight gates its own sources with the checks it ships.
-        ci.addOwnCi(b, .{ .tests = suite, .bench = .{
-            .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" } },
+        const profile = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("src/profile_test.zig"),
+            .target = target,
+            .optimize = .debug,
+            .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "shakedown", .module = shakedown.? } },
+        }) });
+        b.step("profile-tests", "Native protocol fuzzer and concurrent tests").dependOn(&b.addRunArtifact(profile).step);
+        ci.addOwnCi(b, .{ .tests = suite, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
+            .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" }, .{ .name = "configuration", .source = "bench/configuration.zig" } },
             .imports = benchImports,
             .target = target,
             .optimize = .debug,
@@ -117,10 +126,9 @@ pub fn build(b: *std.Build) void {
 
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const gantry = (b.dependencyLazy("gantry", .{ .target = target, .optimize = optimize }) catch unreachable).module("gantry"); // unreachable: build returns before addOwnCi if gantry is not available
-    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "checks", .module = b.createModule(.{
-        .root_source_file = b.path("src/checks.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "gantry", .module = gantry }},
-    }) }}) catch @panic("OOM");
+    const imports: []const std.Build.Module.Import = &.{.{ .name = "gantry", .module = gantry }};
+    return b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "checks", .module = b.createModule(.{ .root_source_file = b.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
+        .{ .name = "facts", .module = b.createModule(.{ .root_source_file = b.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },
+    }) catch @panic("OOM");
 }

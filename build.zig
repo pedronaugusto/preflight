@@ -1,5 +1,6 @@
 const std = @import("std");
 const ci = @import("src/build.zig");
+const toolchain_build = @import("src/toolchain_build.zig");
 /// Adds the package's local gate and the steps the hosted gate runs.
 pub const addCi = ci.addCi;
 /// What `addCi` checks and how its tests run.
@@ -107,20 +108,16 @@ pub fn build(b: *std.Build) void {
         if (watch_run) |run| verify.dependOn(run);
         verify.dependOn(&b.addFmt(.{ .paths = b.pathList(&.{"."}), .check = true }).step);
         verify.dependOn(&executable.step);
-        // preflight, gantry and sweep name no other package of the family.
-        const toolchain = b.createModule(.{ .root_source_file = b.path("ci/toolchain.zig"), .target = target, .optimize = .debug, .imports = &.{.{ .name = "gantry", .module = gantry }} });
-        const closure = b.addRunArtifact(b.addExecutable(.{ .name = "check-toolchain", .root_module = toolchain }));
-        for ([_]struct { []const u8, std.Build.LazyPath }{
-            .{ "preflight", b.path("build.zig.zon") },
-            .{ "gantry", gantry_dep.path("build.zig.zon") },
-            .{ "sweep", gantry_dep.builder.dependency("sweep", .{ .target = target, .optimize = .debug }).path("build.zig.zon") },
-        }) |package| {
-            closure.addArg(package[0]);
-            closure.addFileArg(package[1]);
-        }
-        const check_toolchain = b.step("check-toolchain", "Check that the toolchain names no other package of the family");
-        check_toolchain.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = toolchain })).step);
-        check_toolchain.dependOn(&closure.step);
+        toolchain_build.add(b, b.createModule(.{
+            .root_source_file = b.path("ci/toolchain.zig"),
+            .target = target,
+            .optimize = .debug,
+            .imports = &.{.{ .name = "gantry", .module = gantry }},
+        }), &.{ executable.root_module, b.modules.get("rules").?, b.createModule(.{
+            .root_source_file = b.path("src/build.zig"),
+            .target = target,
+            .imports = &.{.{ .name = "gantry", .module = gantry }},
+        }) }, &.{ tests.root_module, profile.root_module });
     }
     const root = repo_root orelse ".";
     for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "findings" }) |name| {

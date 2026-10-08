@@ -445,9 +445,16 @@ is built from.
 Run `zig build test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
-`zig build check-toolchain` holds the toolchain rule: preflight, gantry and sweep name
-no other package of the family in their manifests, only each other, ziglint and the
-test-only shakedown.
+`zig build check-toolchain` validates the installed Zig 0.17.0 runner's resolved
+package hashes recursively against gantry's manifest declarations and the fetched
+packages' names and fingerprints. It follows gantry's production import facts in
+the actual configured module bindings, including relative and generated sources.
+Runtime edges must stay below their owner in aegis/sweep → glint → gantry → preflight;
+shakedown remains test-only and lazy pinned bootstrap edges remain separate.
+Unmaterialized bootstrap pins are reported explicitly; they are never runtime proof.
+Unsupported reachability, unresolved identities/bindings, mutable pins and I/O
+failures fail the check. This own-gate adapter uses version-specific Zig configure
+internals; it is not a stable external compiler API.
 ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
 `zig-0.17`, commit 924b6b5), with all rules except Z024 as in tycho;
 `zig fmt` owns line formatting. The linter is a pinned Zig build dependency.

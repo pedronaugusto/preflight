@@ -1059,3 +1059,23 @@ test "toolchain hardened selects LLVM for the native fuzz rebuild" {
     if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(ledger.success(result));
 }
+
+test "toolchain cold root declares CI controls before lazy discovery returns" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const empty_packages = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const owner = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, root, a);
+    // Zig's supported offline mode lets the real first configurer pass run,
+    // then deterministically refuses the missing lazy package. No fetching.
+    const result = try std.process.run(a, std.testing.io, .{
+        .argv = &.{ "zig", "build", "--system", empty_packages, "-Dci-bench-smoke=false", "-Dci-hardened=false", "-Dci-tsan=false", "-Dci-lint=false" },
+        .cwd = .{ .path = owner },
+    });
+    try std.testing.expect(!ledger.success(result));
+    if (std.mem.find(u8, result.stderr, "invalid option:") != null) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(std.mem.find(u8, result.stderr, "invalid option:") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "lazy dependency package not found:") != null);
+}

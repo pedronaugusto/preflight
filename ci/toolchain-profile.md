@@ -122,3 +122,12 @@ imports and extra storage with deduplicated reference traversal. It runs once
 per configured facts request, outside runtime hot paths. Source scans and caller
 generation show no measured difference beyond noise; no required safety or
 correctness check was weakened for performance.
+
+## Hosted correction evidence
+
+FAST 37842704932 on 121ccd8 failed before campaigns ran: the hosted wrapper
+repeated ci-bench-smoke=false (Zig then parsed a list), and the canonical sample
+omitted its benchmark configuration. Both failures are retained as failing-before
+integration tests in the following regression commit. The runner now emits that
+control once; the sample declares its existing benchmark. No sanitizer, campaign,
+artifact-retention requirement or correctness gate was weakened.

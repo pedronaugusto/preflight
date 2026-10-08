@@ -317,7 +317,12 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, &.{ "zig", "build", env.get("STEP") orelse "ci" });
     var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
-    while (tokens.next()) |token| try argv.append(c.a, token);
+    while (tokens.next()) |token| {
+        // The canonical planner may already specify this hosted control.
+        // Repeating a boolean turns it into a Zig list, so emit it once.
+        if (std.mem.eql(u8, token, "-Dci-bench-smoke=false")) continue;
+        try argv.append(c.a, token);
+    }
     try argv.append(c.a, "-Dci-bench-smoke=false");
     // SDK identity is an explicit build option, so Zig configuration caches
     // cannot retain a different runner's SDKROOT environment.

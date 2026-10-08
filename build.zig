@@ -23,7 +23,10 @@ pub fn build(b: *std.Build) void {
     const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
     const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
     const target = ci.ciTarget(b);
-    const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return;
+    const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch {
+        _ = ci.declareCiOptions(b);
+        return;
+    };
     const gantry = gantry_dep.module("gantry");
     _ = b.addModule("rules", .{ .root_source_file = b.path("src/rules.zig"), .target = target, .imports = &.{.{ .name = "gantry", .module = gantry }} });
     // A package consumer needs only the family policies. Its gate installs
@@ -32,7 +35,10 @@ pub fn build(b: *std.Build) void {
     // The test doubles are shakedown's, which only preflight's own suite
     // imports: a build that runs preflight for another repository never
     // fetches it.
-    const shakedown = if (repo_root == null) (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .debug }) catch return).module("shakedown") else null;
+    const shakedown = if (repo_root == null) (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .debug }) catch {
+        _ = ci.declareCiOptions(b);
+        return;
+    }).module("shakedown") else null;
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/checks.zig"),
@@ -72,7 +78,10 @@ pub fn build(b: *std.Build) void {
     }) });
     b.installArtifact(executable);
     if (repo_root == null) {
-        const lint_tool = b.dependencyLazy("ziglint", .{ .target = target, .optimize = .safe }) catch return;
+        const lint_tool = b.dependencyLazy("ziglint", .{ .target = target, .optimize = .safe }) catch {
+            _ = ci.declareCiOptions(b);
+            return;
+        };
         options.addOptionPath("ziglint", lint_tool.artifact("ziglint").getEmittedBin());
         // preflight gates its own sources with the checks it ships.
         const profile = b.addTest(.{ .root_module = b.createModule(.{

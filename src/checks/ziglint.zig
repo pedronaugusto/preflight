@@ -9,9 +9,14 @@ pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
     if (paths == .null) {
         for ([_][]const u8{ "src", "examples", "ci", "build.zig" }) |path|
             if (c.exists(path)) try argv.append(c.a, path);
-    } else for (src.items(paths)) |value| {
-        const path = src.string(value, "");
-        if (c.exists(path)) try argv.append(c.a, path);
+    } else {
+        if (paths != .array) return error.InvalidZiglintPaths;
+        for (src.items(paths)) |value| {
+            if (value != .string or value.string.len == 0) return error.InvalidZiglintPaths;
+            // Explicit inputs belong to the invocation even when inaccessible.
+            // Only the tool can report their actual stat/read failure.
+            try argv.append(c.a, value.string);
+        }
     }
     const result = try capture(c, argv.items, .limited(64 * 1024 * 1024));
     const output = try std.mem.concat(c.a, u8, &.{ result.stdout, result.stderr });

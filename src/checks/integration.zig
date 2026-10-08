@@ -1008,3 +1008,34 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
     try std.testing.expect(!ledger.success(bad));
     try std.testing.expect(std.mem.find(u8, bad.stderr, "data race") != null);
 }
+
+test "toolchain hosted runner forwards its benchmark control exactly once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = "{}" });
+    const fixture_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const owner = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, root, a);
+    const build = try std.Io.Dir.path.join(a, &.{ owner, "build.zig" });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("STEP", "hardened");
+    try env.put("BUILD_ARGS", "-Dci-lint=false -Dci-bench-smoke=false");
+    try env.put("PREFLIGHT_SETUP", "false");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+}
+
+test "toolchain canonical sample declares its benchmark artifacts" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sample = try std.Io.Dir.path.join(a, &.{ root, "sample" });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "bench-build" }, .cwd = .{ .path = sample } });
+    if (!ledger.success(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(ledger.success(result));
+}

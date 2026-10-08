@@ -759,3 +759,107 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!ledger.success(broken));
 }
+
+test "owner cross objects retain SDK declarations and validate every artifact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDir(io, "bench", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const broken = b.option([]const u8, "broken", "artifact to break") orelse "";
+        \\    const options = b.addOptions();
+        \\    options.addOption([]const u8, "broken", broken);
+        \\    const native = b.addLibrary(.{ .name = "native", .linkage = .dynamic, .root_module = b.createModule(.{ .root_source_file = b.path("src/native.zig"), .target = target, .optimize = optimize }) });
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    module.addOptions("options", options);
+        \\    module.linkLibrary(native);
+        \\    if (target.result.os.tag == .macos) {
+        \\        module.linkFramework("Security", .{});
+        \\        module.linkFramework("CoreFoundation", .{});
+        \\    }
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\    const helper = b.addExecutable(.{ .name = "helper", .root_module = b.createModule(.{ .root_source_file = b.path("src/helper.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "sample", .module = module }} }) });
+        \\    const test_step = b.step("test", "tests and helpers");
+        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
+        \\    test_step.dependOn(&b.addRunArtifact(helper).step);
+        \\    b.step("check", "root").dependOn(&tests.step);
+        \\    preflight.addCi(b, .{ .tests = test_step, .bench = .{ .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }}, .imports = imports, .target = target, .optimize = optimize } });
+        \\}
+        \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+        \\    _ = target;
+        \\    _ = optimize;
+        \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = b.modules.get("preflight_sample").? }}) catch @panic("OOM");
+        \\}
+        \\
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/native.zig", .data = "export fn nativeValue() u32 { return 7; }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\const options = @import("options");
+        \\extern fn nativeValue() u32;
+        \\extern "c" fn SecCopyErrorMessageString(i32, ?*anyopaque) ?*anyopaque;
+        \\extern "c" fn CFRelease(*anyopaque) void;
+        \\pub fn value(comptime kind: []const u8) u32 {
+        \\    if (std.mem.eql(u8, kind, options.broken)) @compileError("broken artifact");
+        \\    if (builtin.os.tag == .macos) {
+        \\        if (SecCopyErrorMessageString(0, null)) |message| CFRelease(message);
+        \\    }
+        \\    return nativeValue();
+        \\}
+        \\test "SDK link and execution" { try std.testing.expectEqual(@as(u32, 7), value("test")); }
+        \\
+    });
+    for ([_][]const u8{ "src/helper.zig", "bench/main.zig" }, [_][]const u8{ "helper", "bench" }) |path, kind| {
+        try tmp.dir.writeFile(io, .{ .sub_path = path, .data = try a.print("const sample = @import(\"sample\");\npub fn main() void {{ _ = sample.value(\"{s}\"); }}\n", .{kind}) });
+    }
+    for ([_][]const u8{ "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu" }) |target| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+        if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    }
+    for ([_][]const u8{ "test", "helper", "bench" }) |kind| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }, .cwd = .{ .dir = tmp.dir } });
+        try std.testing.expect(result.term == .exited and result.term.exited != 0);
+        try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
+    }
+    const native = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-link", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (native.term != .exited or native.term.exited != 0) std.debug.print("{s}", .{native.stderr});
+    try std.testing.expect(native.term == .exited and native.term.exited == 0);
+}
+
+test "owner caller regeneration replaces stale pin without a consumer planner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDirPath(io, ".github/workflows");
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"compile_once\":true,\"shards\":{\"macos\":2},\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
+    const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
+    // The fixture's build uses the local dependency. The generator independently
+    // reads the declared publication pin, as it does after a consumer's repin.
+    try tmp.dir.writeFile(io, .{ .sub_path = "pin.zon", .data = ".{ .dependencies = .{ .preflight = .{ .url = \"git+https://github.com/pedronaugusto/preflight#" ++ pin ++ "\" } } }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".github/workflows/ci.yml", .data = "old stale pin\n" });
+    for (0..2) |index| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "plan", "--", "--workflow", ".github/workflows/ci.yml", "--manifest", "pin.zon" }, .cwd = .{ .dir = tmp.dir } });
+        if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(result.term == .exited and result.term.exited == 0);
+        const text = try tmp.dir.readFileAlloc(io, ".github/workflows/ci.yml", a, .limited(1024 * 1024));
+        try std.testing.expect(std.mem.find(u8, text, "uses: pedronaugusto/preflight/.github/workflows/zig.yml@" ++ pin) != null);
+        if (index == 0) try tmp.dir.writeFile(io, .{ .sub_path = "first.yml", .data = text }) else try std.testing.expectEqualStrings(try tmp.dir.readFileAlloc(io, "first.yml", a, .limited(1024 * 1024)), text);
+    }
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.py", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.zig", .{}));
+}

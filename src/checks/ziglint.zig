@@ -109,3 +109,36 @@ test "exact exceptions are consumed once and cannot admit source changes" {
     try findings(&c, output, allowed);
     try std.testing.expectEqual(@as(usize, 3), c.errors);
 }
+
+test "owner allowed finding followed by signal must fail independently" {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "value.zig", .data = "code\n" });
+    // Test-only fake process: flush one complete, allowed diagnostic, then die.
+    try tmp.dir.writeFile(io, .{ .sub_path = "fake.zig", .data =
+        \\const std = @import("std");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    var buffer: [128]u8 = undefined;
+        \\    var writer = std.Io.File.stderr().writerStreaming(init.io, &buffer);
+        \\    try writer.interface.writeAll("Z028: value.zig:1: inline import\n");
+        \\    try writer.interface.flush();
+        \\    std.process.abort();
+        \\}
+        \\
+    });
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build-exe", "fake.zig", "-femit-bin=fake" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"ziglint_paths":["value.zig"],"ziglint_exceptions":[{"rule":"Z028","path":"value.zig","source":"code","detail":"inline import","reason":"existing declaration"}]}
+    , .{})).value;
+    var c: src.Context = .{ .a = a, .io = io, .dir = tmp.dir };
+    const executable = try tmp.dir.realPathFileAlloc(io, "fake", a);
+    try check(&c, executable, config);
+    try std.testing.expect(c.errors != 0);
+}

@@ -261,6 +261,11 @@ test "owner explicit lint inputs cannot be silently omitted" {
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"ziglint_paths\":[\"missing.zig\"]}", .{})).value;
     try check(&c, executable, config);
     try std.testing.expect(std.mem.find(u8, try c.read("invocation.txt"), "\nmissing.zig") != null);
+    const literal_paths = (try std.json.parseFromSlice(src.Value, a,
+        \\{"ziglint_paths":["--ignore","Z011"]}
+    , .{})).value;
+    try check(&c, executable, literal_paths);
+    try std.testing.expect(std.mem.find(u8, try c.read("invocation.txt"), "\n./--ignore") != null);
     for ([_][]const u8{ "{\"ziglint_paths\":true}", "{\"ziglint_paths\":[1]}", "{\"ziglint_paths\":[\"\"]}" }) |invalid| {
         const malformed = (try std.json.parseFromSlice(src.Value, a, invalid, .{})).value;
         try std.testing.expectError(error.InvalidZiglintPaths, check(&c, executable, malformed));

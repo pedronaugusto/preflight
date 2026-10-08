@@ -198,7 +198,12 @@ The merge and release tiers also run the Debug suite on Linux with Zig master,
 the next release in development. That job never blocks: the run's summary
 reports its result, and a break is a note for the next port's rewrite table.
 The setup action takes `zig-version` (0.17.0, or master), and its cache keys
-carry it.
+carry it. The shared workflow runs external-tool setup separately, with up to
+three attempts of five minutes each. A hung `apt-get update` therefore expires
+at a step deadline and can be retried. Exhausted attempts fail blocking jobs.
+Every Zig master step has a deadline, with their total below its job timeout,
+so a hang remains an advisory failure and the blocking jobs decide the run's
+conclusion. The master suite has a twenty-minute step deadline.
 
 Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
 that commit as `preflight-ref` and the tier as `tier`. The sample caller in this

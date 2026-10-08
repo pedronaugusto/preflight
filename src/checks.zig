@@ -36,5 +36,6 @@ test {
     _ = manifest;
     _ = command;
     _ = paths;
+    _ = @import("checks/workflow_test.zig");
     _ = @import("deprecations.zig");
 }

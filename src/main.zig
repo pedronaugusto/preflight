@@ -37,6 +37,11 @@ pub fn main(init: std.process.Init) !void {
         }
     } else if (std.mem.eql(u8, command, "setup")) {
         try setup(c, init.environ_map);
+    } else if (std.mem.eql(u8, command, "prepare")) {
+        const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
+        const step = src.get(config, "setup_step");
+        // The hosted workflow owns the attempt deadlines and retries.
+        if (step == .string) try checks.command.execute(c, &.{ "zig", "build", step.string });
     } else if (std.mem.eql(u8, command, "profile")) {
         const durations = option(args, "--durations") orelse "ci/durations.json";
         const previous = if (c.exists(durations)) try c.json(durations) else .null;
@@ -234,7 +239,8 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     }
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         const setup_step = src.get(config, "setup_step");
-        if (setup_step == .string) try checks.command.retry(c, &.{ "zig", "build", setup_step.string });
+        if (setup_step == .string and !std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true"))
+            try checks.command.retry(c, &.{ "zig", "build", setup_step.string });
         const before = src.get(config, "before_tests_step");
         if (before == .string) try checks.command.execute(c, &.{ "zig", "build", before.string });
     }

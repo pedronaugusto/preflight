@@ -112,11 +112,28 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.cache_key }}
+      - name: Set up test tools (attempt 1/3)
+        id: tools1
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 2/3)
+        id: tools2
+        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 3/3)
+        id: tools3
+        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Check sources, run Linux Debug and compile other test targets
         env:
           STEP: preflight-fast
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_SHARD: ${{ matrix.shard }}
+          PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: 'true'
           PREFLIGHT_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}
           FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
@@ -154,11 +171,29 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.cache_key }}
+      - name: Set up test tools (attempt 1/3)
+        id: tools1
+        if: matrix.setup
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 2/3)
+        id: tools2
+        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 3/3)
+        id: tools3
+        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run the gate
         env:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_SHARD: ${{ matrix.shard }}
+          PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_ADOPT: ${{ inputs.adopt }}
           PREFLIGHT_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}
@@ -178,36 +213,61 @@ jobs:
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: ${{ inputs.test-job-timeout }}
+    # All step budgets total 50 minutes; a stalled step fails before this
+    # cancellation bound, so continue-on-error can keep the run advisory.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 2
         with:
           fetch-depth: 0
       - uses: actions/checkout@v4
+        timeout-minutes: 2
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
+        timeout-minutes: 10
         with:
           zig-version: master
           build-args: -Doptimize=debug -Dci-lint=false
           working-directory: ${{ inputs.working-directory }}
           build-key: master-linux-debug
+      - name: Set up test tools (attempt 1/3)
+        id: tools1
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 2/3)
+        id: tools2
+        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 3/3)
+        id: tools3
+        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run the Debug suite on Zig master
         id: suite
+        timeout-minutes: 20
         env:
           STEP: ci
           BUILD_ARGS: -Doptimize=debug -Dci-lint=false
+          PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: 'true'
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - name: Report
+        timeout-minutes: 1
         if: always()
         env:
           OUTCOME: ${{ steps.suite.outcome }}
+          TOOLS: ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome }}
         run: |
           version=$(zig version 2>/dev/null || echo unknown)
-          echo "Zig master $version: $OUTCOME (non-blocking)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Zig master $version: tool setup $TOOLS; suite $OUTCOME (non-blocking)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass; a note for the next port"; fi
   compile:
     if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'') && inputs.compile-once'
@@ -266,11 +326,29 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ inputs.working-directory }}/zig-out/preflight
+      - name: Set up test tools (attempt 1/3)
+        id: tools1
+        if: matrix.setup
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 2/3)
+        id: tools2
+        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 3/3)
+        id: tools3
+        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run test executables
         env:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_SHARD: ${{ matrix.shard }}
+          PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - uses: actions/upload-artifact@v4

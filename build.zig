@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) void {
         check_toolchain.dependOn(&closure.step);
     }
     const root = repo_root orelse ".";
-    for ([_][]const u8{ "plan", "setup", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "findings" }) |name| {
+    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "findings" }) |name| {
         if (b.top_level_steps.contains(name)) continue;
         const command = b.addRunArtifact(executable);
         command.addArg(name);

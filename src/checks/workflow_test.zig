@@ -90,6 +90,7 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     const caller = try read(a, ".github/workflows/ci.yml");
     try contains(caller, "uses: ./.github/workflows/zig.yml");
     try contains(caller, "preflight-ref: ${{ github.sha }}");
+    try contains(caller, "working-directory: \"sample\"");
     const config = (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/workflow.json"), .{})).value;
     for ([_]matrix.Tier{ .fast, .merge, .release }) |tier| {
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);

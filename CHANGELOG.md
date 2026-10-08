@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Breaking
 
 - `ci-check` emits root, test, benchmark, helper and transitive native objects instead of linking binaries. `ci-link` retains the native link gate. Portable test artifacts are linked on their destination SDK runner; regenerate callers to update every matrix. Required libraries and Apple frameworks remain on native modules.
+- Declared `ziglint_paths` are never silently dropped: malformed declarations are rejected and option-shaped names remain literal paths. Default probing preserves access, I/O and cancellation failures.
 - The pinned ziglint 924b6b5 does not expose reliable analysis completion. Lint fails closed for this pin regardless of diagnostic exceptions; this batch cannot land until a completion-aware tool contract is available.
 - `addCi` exposes `zig build plan -- --workflow .github/workflows/ci.yml`: the canonical Zig generator replaces the caller and all tier matrices using the immutable preflight pin in `build.zig.zon`. No package-local planner, Python or hand-edited workflow pin is needed. Declarative `build_args`, target `args` and `windows_git_latest` are supported; malformed inputs and unsafe output paths are refused.
 - Refresh lazy test-only shakedown to d5d19d3 and the green gantry prerequisite to 76b1366.

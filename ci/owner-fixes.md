@@ -88,3 +88,32 @@ passed bootstrap and setup, then failed solely on the pinned ziglint completion
 contract (exit 0, no diagnostics). Final local `check` passes; lint's structure
 and formatting steps pass and its analysis gate fails closed for the same reason.
 No MERGE dispatch or main fast-forward is permissible while that gate is red.
+
+## Resumed owner diagnosis
+
+All three failed FAST logs were reread. The first caller working-directory
+failure is corrected; the later two failures are the temporary F04 fail-closed
+barrier, not completed repairs. Published ziglint main is 66709a4, 13 commits
+behind the already-pinned green family branch 924b6b5; it offers no newer
+completion interface. [The exact tool-owned change requirements](ziglint-completion.md)
+explain why the supported CLI cannot distinguish missing completion from a
+complete clean/findings run. The unconditional rejection is not a finished F04
+implementation and must be replaced after the tool exposes a real contract.
+The three fixes remain one unlanded batch; no main or consumer change occurred.
+
+Independent resumed preflight invocation fixes preserve actual input failures:
+
+- Regression-only 96eaab6 fails `zig build test -Dci-lint=false -Dtest-filter='owner explicit lint'`: the declared missing file is absent from the subprocess argv. 897c398 forwards it and rejects malformed path declarations.
+- Regression-only 8a06585 fails `zig build test -Dci-lint=false -Dtest-filter='owner default lint'`: injected AccessDenied is replaced by a later spawn FileNotFound because the input probe swallowed it. 16bb556 propagates AccessDenied, InputOutput and Canceled before spawning a tool.
+- Regression-only c869e5f fails the explicit-input selection for an option-shaped filename. Prefixing it with `./` makes it a literal path rather than another lint option.
+
+The final resumed `zig build test -Dci-lint=false -Dtest-filter='checks.ziglint'`
+selection passes 10/10; `zig build check` passes. `zig build lint` passes format
+and structure and fails solely on the existing unsupported completion contract.
+These invocation changes have O(number of declared/default paths) offline setup
+cost, not a library runtime hot path; the caller-generation benchmark is unchanged.
+Gantry/shakedown published mains remain 76b1366/d5d19d3, matching their pins.
+A supported completion-aware ziglint revision or explicit extension of repository
+write scope was requested from the owner; none is currently available. No new
+FAST/MERGE can prove the incomplete F04 repair green. The previous hosted failure
+remains 37814193507 on 86c53b2; no main, consumer or glint changes were made.

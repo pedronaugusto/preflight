@@ -280,6 +280,11 @@ local build option for native links, including an explicit macOS target or CPU.
 The SDK search paths also reach transitive native dependencies. Foreign object
 jobs do not require an Apple SDK.
 
+`ziglint_paths` is an array of nonempty literal paths. Explicit inputs are
+forwarded even when inaccessible; malformed declarations fail before invocation.
+Option-shaped filenames are prefixed with `./`. Default input probing preserves
+access, I/O and cancellation failures; only absent optional roots are skipped.
+
 The currently pinned ziglint `924b6b5` cannot certify completed analysis: its
 exit values conflate findings/input failure, traversal can silently stop and
 its final output flush error is ignored. The lint gate therefore **fails

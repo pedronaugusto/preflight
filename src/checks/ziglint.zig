@@ -20,7 +20,8 @@ pub fn check(c: *src.Context, executable: []const u8, config: src.Value) !void {
             if (value != .string or value.string.len == 0) return error.InvalidZiglintPaths;
             // Explicit inputs belong to the invocation even when inaccessible.
             // Only the tool can report their actual stat/read failure.
-            try argv.append(c.a, value.string);
+            const path = if (std.mem.startsWith(u8, value.string, "-")) try c.a.print("./{s}", .{value.string}) else value.string;
+            try argv.append(c.a, path);
         }
     }
     const result = try capture(c, argv.items, .limited(64 * 1024 * 1024));

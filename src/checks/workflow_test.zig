@@ -29,7 +29,7 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "fast", "gate", "master", "execute" }) |name| {
+    for ([_][]const u8{ "fast", "gate", "master", "compile", "execute" }) |name| {
         const body = try job(text, name);
         for (1..4) |attempt| {
             const marker = try arena.allocator().print("        id: tools{d}\n", .{attempt});
@@ -41,7 +41,7 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             try std.testing.expectEqual(attempt < 3, std.mem.find(u8, step, "continue-on-error: true") != null);
             if (attempt > 1) {
                 try contains(step, try arena.allocator().print("if: ${{{{ !cancelled() && steps.tools{d}.outcome == 'failure' }}}}", .{attempt - 1}));
-            } else if (std.mem.eql(u8, name, "gate") or std.mem.eql(u8, name, "execute")) {
+            } else if (std.mem.eql(u8, name, "gate") or std.mem.eql(u8, name, "compile") or std.mem.eql(u8, name, "execute")) {
                 try contains(step, "if: matrix.setup");
             }
         }
@@ -153,4 +153,17 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     if (prepared.term != .exited or prepared.term.exited != 0) std.debug.print("{s}", .{prepared.stderr});
     try std.testing.expect(prepared.term == .exited and prepared.term.exited == 0);
     try std.testing.expectEqualStrings("xb", try tmp.dir.readFileAlloc(io, "attempts", a, .limited(32)));
+}
+
+test "SDK artifacts link on their matrix runner before native replay" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const workflow = try read(a, ".github/workflows/zig.yml");
+    const compile = try job(workflow, "compile");
+    try contains(compile, "runs-on: ${{ matrix.os }}");
+    try contains(compile, "Link test executables with the native SDK");
+    try contains(compile, "PREFLIGHT_PREPARED: 'true'");
+    try contains(compile, "PREFLIGHT_SETUP: 'true'");
+    try contains(try job(workflow, "execute"), "needs: compile");
 }

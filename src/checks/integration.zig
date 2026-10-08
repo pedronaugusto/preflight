@@ -778,7 +778,8 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         \\    const broken = b.option([]const u8, "broken", "artifact to break") orelse "";
         \\    const options = b.addOptions();
         \\    options.addOption([]const u8, "broken", broken);
-        \\    const native = b.addLibrary(.{ .name = "native", .linkage = .dynamic, .root_module = b.createModule(.{ .root_source_file = b.path("src/native.zig"), .target = target, .optimize = optimize }) });
+        \\    const native = b.addLibrary(.{ .name = "native", .linkage = .static, .root_module = b.createModule(.{ .root_source_file = b.path("src/native.zig"), .target = target, .optimize = optimize }) });
+        \\    native.root_module.addOptions("options", options);
         \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
         \\    module.addOptions("options", options);
         \\    module.linkLibrary(native);
@@ -801,7 +802,7 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         \\}
         \\
     });
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/native.zig", .data = "export fn nativeValue() u32 { return 7; }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/native.zig", .data = "const std = @import(\"std\");\nconst options = @import(\"options\");\nexport fn nativeValue() u32 { if (comptime std.mem.eql(u8, options.broken, \"native\")) @compileError(\"broken artifact\"); return 7; }\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
         \\const std = @import("std");
         \\const builtin = @import("builtin");
@@ -810,7 +811,7 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         \\extern "c" fn SecCopyErrorMessageString(i32, ?*anyopaque) ?*anyopaque;
         \\extern "c" fn CFRelease(*anyopaque) void;
         \\pub fn value(comptime kind: []const u8) u32 {
-        \\    if (std.mem.eql(u8, kind, options.broken)) @compileError("broken artifact");
+        \\    if (comptime std.mem.eql(u8, kind, options.broken)) @compileError("broken artifact");
         \\    if (builtin.os.tag == .macos) {
         \\        if (SecCopyErrorMessageString(0, null)) |message| CFRelease(message);
         \\    }
@@ -827,7 +828,7 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
     }
-    for ([_][]const u8{ "test", "helper", "bench" }) |kind| {
+    for ([_][]const u8{ "test", "helper", "bench", "native" }) |kind| {
         const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }, .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
@@ -835,6 +836,19 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
     const native = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-link", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (native.term != .exited or native.term.exited != 0) std.debug.print("{s}", .{native.stderr});
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    if (builtin.os.tag == .macos) {
+        if (env.get("SDKROOT")) |sdk| {
+            const explicit = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-link", "-Dtarget=x86_64-macos", "-Dcpu=baseline", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+            if (explicit.term != .exited or explicit.term.exited != 0) std.debug.print("{s}", .{explicit.stderr});
+            try std.testing.expect(explicit.term == .exited and explicit.term.exited == 0);
+        }
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/native.zig", .data = "export fn wrongNativeSymbol() u32 { return 7; }\n" });
+    const unlinked = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-link", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(unlinked.term == .exited and unlinked.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, unlinked.stderr, "nativeValue") != null);
 }
 
 test "owner caller regeneration replaces stale pin without a consumer planner" {

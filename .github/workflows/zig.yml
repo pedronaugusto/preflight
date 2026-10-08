@@ -273,7 +273,7 @@ jobs:
   compile:
     if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'') && inputs.compile-once'
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
@@ -291,8 +291,27 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.cache_key }}
-      - name: Compile test executables
+      - name: Set up test tools (attempt 1/3)
+        id: tools1
+        if: matrix.setup
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 2/3)
+        id: tools2
+        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
+        timeout-minutes: 5
+        continue-on-error: true
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Set up test tools (attempt 3/3)
+        id: tools3
+        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
+        timeout-minutes: 5
+        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+      - name: Link test executables with the native SDK
         env:
+          PREFLIGHT_PREPARED: 'true'
+          PREFLIGHT_SETUP: 'true'
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run

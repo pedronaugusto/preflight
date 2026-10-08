@@ -70,9 +70,11 @@ pub fn build(b: *std.Build) void {
     }) });
     b.installArtifact(executable);
     if (repo_root == null) {
+        const lint_tool = b.dependencyLazy("ziglint", .{ .target = target, .optimize = .safe }) catch return;
+        options.addOptionPath("ziglint", lint_tool.artifact("ziglint").getEmittedBin());
         // preflight gates its own sources with the checks it ships.
         ci.addOwnCi(b, .{ .tests = suite, .bench = .{
-            .programs = &.{.{ .name = "source", .source = "bench/source.zig" }},
+            .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" } },
             .imports = benchImports,
             .target = target,
             .optimize = .debug,

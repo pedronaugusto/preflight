@@ -1,0 +1,43 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: fast, merge (the candidate for main) or release (before a cut, or after threading or platform work)
+        type: choice
+        options: [fast, merge, release]
+        default: fast
+      status-only:
+        description: Verify the recorded merge or release tier for this exact commit
+        type: boolean
+        default: false
+  pull_request:
+  merge_group:
+concurrency:
+  # Main status runs must not share the replaceable branch queue.
+  group: ci-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('main-status-{0}', github.run_id) || github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  skip:
+    if: github.event_name != 'push' && !inputs.status-only
+    uses: @SKIP@
+    with:
+      tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
+      preflight-ref: @PIN@
+      working-directory: @DIRECTORY@
+  gate:
+    needs: skip
+    if: always() && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
+    uses: @GATE@
+    with:
+      tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
+      working-directory: @DIRECTORY@
+      preflight-ref: @PIN@
+      attest: ${{ github.event_name == 'push' || inputs.status-only }}
+@MATRICES@      windows-git-latest: @WINDOWS_GIT@
+      compile-once: @COMPILE_ONCE@

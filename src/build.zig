@@ -2,6 +2,7 @@
 const std = @import("std");
 const configure = @import("configure.zig");
 const portable = @import("portable.zig");
+const objects = @import("objects.zig");
 const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
 const bench = @import("bench.zig");
@@ -74,6 +75,7 @@ const Steps = struct {
     ci: *std.Build.Step,
     lint_enabled: bool,
     timing: bool,
+    sdk: ?[]const u8,
 
     fn create(b: *std.Build, config: Config) Steps {
         const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
@@ -81,14 +83,15 @@ const Steps = struct {
         const ci = b.step("ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);
-        const compile = b.step("ci-check", "Compile every test and its helpers without executing tests");
-        compileTests(config.tests, compile);
+        _ = b.step("ci-check", "Compile root, test, benchmark and helper objects without linking or executing");
+        _ = b.step("ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
         // Options are declared before any lazy dependency can end the
         // build script: Zig 0.17 rejects a -D option the first pass never
         // declared, even while it only discovers what to fetch.
+        const sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner");
         const enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true;
         const timing = config.timings_enabled orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false);
-        return .{ .lint = lint, .ci = ci, .lint_enabled = enabled, .timing = timing };
+        return .{ .lint = lint, .ci = ci, .lint_enabled = enabled, .timing = timing, .sdk = sdk };
     }
 
     /// `pkg` is the preflight package whose sources and tools the gate runs.
@@ -110,7 +113,13 @@ const Steps = struct {
             break :fail 0;
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        objects.add(b, config.tests, steps.sdk);
         if (config.portable_tests) portable.add(b, config.tests, executable);
+        const plan = b.addRunArtifact(executable);
+        plan.addArg("plan");
+        plan.addPassthruArgs();
+        plan.setCwd(b.path("."));
+        b.step("plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
         const cache = b.addRunArtifact(executable);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));
@@ -197,12 +206,4 @@ fn orderTests(step: *std.Build.Step, lint: *std.Build.Step) void {
         return;
     }
     for (step.dependencies.items) |dependency| orderTests(dependency, lint);
-}
-
-fn compileTests(step: *std.Build.Step, compile: *std.Build.Step) void {
-    if (step.tag == .compile) {
-        compile.dependOn(step);
-        return;
-    }
-    for (step.dependencies.items) |dependency| compileTests(dependency, compile);
 }

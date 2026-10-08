@@ -154,8 +154,8 @@ Layout exceptions likewise name their exact member set and a reason.
 ### Test runs
 
 Packages with relocatable test binaries can set `.portable_tests = true` in the
-build helper and `compile_once: true` in `ci/workflow.json`. Linux then builds
-macOS and Windows tests; those runners download and execute the binaries through
+build helper and `compile_once: true` in `ci/workflow.json`. Each destination runner links its tests with the native SDK; shards download
+and execute those binaries through
 Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers or
 fixtures compiled with absolute runner paths must be made relocatable first.
 An artifact upload drops the permission to run; preflight restores it before execution. The native matrix stays
@@ -185,10 +185,11 @@ The gate has four tiers. Each one runs more than the one before it:
 
 - **local**: the tests a change touches, run by hand while working. Not CI.
 - **fast**: the source checks and the Linux Debug suite in one Ubuntu job, which
-  also compiles the test binaries for macOS, Windows and every configured cross
-  target without running them.
+  also compiles objects for public roots, tests, benchmarks and helpers on macOS,
+  Windows and every configured cross target. This proves compilation, not linking.
 - **merge**: fast, plus the Debug suite run on macOS and Windows, sharded as
-  configured. It runs once per wave, on the candidate for main.
+  configured, and links every configured macOS and Windows target on its native
+  SDK runner. It runs once per wave, on the candidate for main.
 - **release**: every mode on every host (Debug and ReleaseSafe everywhere,
   ReleaseFast on Linux), ReleaseSmall, every cross target and TSan where
   supported. It runs before a release cut, or by hand when a wave touched
@@ -217,18 +218,73 @@ repository shows the trigger and concurrency policy:
 - The caller owns one concurrency group per branch, with cancellation enabled
   for work branches and disabled for main's status job. No scheduled runs are enabled.
 
-`ci/workflow.json` names cross targets and optional CPUs, the compile step,
-sanitizer step and shard counts. A `test_timeout` there is refused: the watchdog
-bounds each test. The matrices are static, generated locally from
-`ci/workflow.json` with `zig build plan -- --tier <tier> --output <file>`:
-`fast-matrix` for fast; `merge-matrix`, `merge-compile-matrix` and
-`merge-run-matrix` for merge; `release-matrix`, `release-compile-matrix` and
-`release-run-matrix` for release. `compile-once` enables the compile and run
-matrices. Regenerate them when the configuration changes. `ci-check` compiles the
-test graph without executing it, including packages whose release-tier cross step
-only builds a library. `fast_shards` splits Linux Debug across that many Ubuntu
-jobs, in the fast and merge tiers. The first job owns the source checks and the
-compile bundle for the other targets.
+`ci/workflow.json` is the declarative input. A consumer using `addCi` regenerates
+its entire caller, including both reusable-workflow references, the checkout
+pin, triggers, concurrency policy and all seven tier matrices, with:
+
+```sh
+zig build plan -- --workflow .github/workflows/ci.yml
+```
+
+First refresh preflight in `build.zig.zon` to the intended published commit.
+The generator reads that manifest's full immutable preflight URL pin; it never
+uses an old workflow's pin. It replaces one relative `.yml` or `.yaml` file,
+refuses traversal and symlinks, and renders/validates all inputs before opening
+it. Its parent directories must already exist. Repeated generation is byte
+identical. There is no package-local planner or Python dependency. This is an
+offline regeneration write, not a crash-atomic or durable publication API.
+`--working-directory <relative-directory>` supports a nested package, and
+`--manifest <file>` selects its manifest. Preflight alone uses `--self` to call
+its own reusable workflows at `github.sha`.
+
+`zig build plan -- --tier <tier> --output <file>` still emits the matrix records
+for inspecting a plan; it appends hosted-output records and is separate from
+single-file workflow replacement. `--workflow` renders every tier and cannot
+be combined with `--output`. Consumer repositories keep only declarative inputs
+and their generated caller, never copied planner code or consumer plan dumps.
+
+Targets are strings or objects with `target`, optional `cpu`, and optional
+`args` (an array of `-D` feature flags). `build_args` supplies flags to every
+host and target; target/CPU configuration belongs in its explicit fields.
+For example:
+
+```json
+{"compile_once":true,"build_args":["-Dfeature=true"],"targets":[{"target":"x86_64-macos","cpu":"baseline","args":["-Dtrust-store=true"]},"aarch64-macos","x86_64-windows-gnu"]}
+```
+
+These flags must be individual whitespace-free `-D` arguments. Malformed
+triples, arrays, CPUs, shard counts, booleans and portable-host declarations are
+refused. `windows_git_latest` controls the shared Windows Git setup. A
+workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test.
+`fast_shards` splits Linux Debug; the first shard owns source checks and the
+cross-object bundle. Static jobs explicitly distinguish `execute`, `objects`,
+`link` and `replay` operations. `compile_once` enables the separate native link
+and shard replay matrices; it never moves SDK linking to Linux.
+
+`ci-check` now emits objects for the configured test graph, installed artifacts,
+the `check` graph and public modules, including benchmark smoke programs,
+helpers, generated inputs and transitive native libraries. The compile
+projection carries target, CPU, optimization and source/header options; SDK
+link requests stay on the original native modules. Zig resolves framework and
+system-library names even in object mode, so those link-only requests are not
+passed to the compile projection. `ci-link` links the original artifacts without
+running them; `ci`, `test` and portable `ci-build` retain their required libraries
+and framework declarations. No compile-only success certifies a native link.
+On macOS the shared setup discovers `SDKROOT` and passes its identity as an
+explicit build option, so configuration caches cannot retain another SDK; `-Dci-sdk=<SDK path>` is an explicit
+local build option for native links, including an explicit macOS target or CPU.
+The SDK search paths also reach transitive native dependencies. Foreign object
+jobs do not require an Apple SDK.
+
+The currently pinned ziglint `924b6b5` cannot certify completed analysis: its
+exit values conflate findings/input failure, traversal can silently stop and
+its final output flush error is ignored. The lint gate therefore **fails
+closed for this pin, including apparently successful runs**. Exact diagnostic
+ledger matching remains available for reports, but cannot turn missing
+completion evidence into a successful gate. Signals, cancellation, input and
+capture errors and output-limit failures remain failures. A completion-aware
+ziglint or glint contract is required before this batch can pass and land;
+there is no exit-code or suppression bypass.
 
 A shared `skip` job filters changes before the fast tier. Changes touching only
 Markdown outside `src`, LICENSE or images run the documented-snippet check alone.
@@ -315,7 +371,7 @@ or directories after `--` to read only those.
 
 | Declaration | What it does |
 |---|---|
-| `addCi(b, Config)` | Adds `lint`, `ci`, `ci-check`, `check-imports`, `docs`, `cache` and `deprecations` |
+| `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `check-imports`, `docs`, `cache` and `deprecations` |
 | `Config`, `TestTimeout`, `Bench` | The gate's paths, shard records, watchdog, test log level and benchmarks |
 | `addConsumerCheck(b, ConsumerOptions)` | Adds `check-consumer` |
 | `addCheck(b, name, source)` | Builds, tests and runs a repository check program as step `name` |

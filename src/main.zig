@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
 const src = checks.source;
@@ -12,9 +13,17 @@ pub fn main(init: std.process.Init) !void {
     if (args.len < 2) return error.MissingCommand;
     const command = args[1];
     if (std.mem.eql(u8, command, "plan")) {
+        try planOptions(args[2..]);
         const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
         if (option(args, "--full") != null) return error.FullReplacedByTier;
         const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
+        if (option(args, "--workflow")) |path| {
+            const own = hasFlag(args, "--self");
+            const pin = if (own) "" else try checks.workflow.pinned(c, option(args, "--manifest") orelse "build.zig.zon");
+            const text = try checks.workflow.render(a, config, pin, option(args, "--working-directory") orelse ".", own);
+            try checks.workflow.write(c, path, text);
+            return;
+        }
         const jobs = try checks.matrix.plan(a, config, tier);
         const tiers = try checks.matrix.split(a, config, jobs, tier);
         const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
@@ -107,6 +116,23 @@ fn hasFlag(args: []const []const u8, name: []const u8) bool {
     return false;
 }
 
+fn planOptions(args: []const []const u8) !void {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const flag = args[index];
+        if (std.mem.eql(u8, flag, "--self")) continue;
+        var known = false;
+        for ([_][]const u8{ "--config", "--tier", "--output", "--workflow", "--manifest", "--working-directory", "--full" }) |name| {
+            if (std.mem.eql(u8, name, flag)) known = true;
+        }
+        if (!known) return error.UnknownPlanOption;
+        index += 1;
+        if (index == args.len or std.mem.startsWith(u8, args[index], "--")) return error.MissingPlanOptionValue;
+    }
+    if (hasFlag(args, "--workflow") and hasFlag(args, "--output")) return error.ConflictingPlanOutputs;
+    if (!hasFlag(args, "--workflow") and (hasFlag(args, "--self") or hasFlag(args, "--manifest") or hasFlag(args, "--working-directory"))) return error.WorkflowOptionWithoutOutput;
+}
+
 fn option(args: []const []const u8, name: []const u8) ?[]const u8 {
     for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, name) and i + 1 < args.len) return args[i + 1];
     return null;
@@ -191,6 +217,13 @@ fn append(c: src.Context, path: []const u8, text: []const u8) !void {
 }
 
 fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
+    if (builtin.os.tag == .macos) {
+        const sdk = try std.process.run(c.a, c.io, .{ .argv = &.{ "xcrun", "--no-cache", "--sdk", "macosx", "--show-sdk-path" } });
+        if (sdk.term != .exited or sdk.term.exited != 0) return error.NativeSdkUnavailable;
+        const path = std.mem.trim(u8, sdk.stdout, " \t\r\n");
+        if (!std.Io.Dir.path.isAbsolute(path) or std.mem.findScalar(u8, path, '\n') != null) return error.InvalidSdkPath;
+        if (env.get("GITHUB_ENV")) |output| try append(c, output, try c.a.print("SDKROOT={s}\n", .{path}));
+    }
     const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "zig", "env" } });
     if (result.term != .exited or result.term.exited != 0) return error.ZigEnvironmentFailed;
     const Env = struct { global_cache_dir: []const u8 };
@@ -248,6 +281,11 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     try argv.appendSlice(c.a, &.{ "zig", "build", env.get("STEP") orelse "ci" });
     var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
     while (tokens.next()) |token| try argv.append(c.a, token);
+    // SDK identity is an explicit build option, so Zig configuration caches
+    // cannot retain a different runner's SDKROOT environment.
+    if (builtin.os.tag == .macos) {
+        if (env.get("SDKROOT")) |sdk| try argv.append(c.a, try c.a.print("-Dci-sdk={s}", .{sdk}));
+    }
     // PREFLIGHT_SHARD reaches the test runners through the environment.
     try checks.command.execute(c, argv.items);
 }

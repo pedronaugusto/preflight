@@ -19,6 +19,7 @@ pub const Job = struct {
     job_timeout: usize = 20,
     cache_key: []const u8 = "",
     artifact: []const u8 = "",
+    operation: enum { execute, objects, link, replay } = .execute,
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -66,6 +67,7 @@ pub const Tier = enum {
 };
 
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
+    try validate(a, config);
     for (obsolete) |name| if (src.get(config, name) != .null) return error.ObsoleteShardConfig;
     // The watchdog bounds each test (`Config.test_timeout`).
     if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
@@ -81,6 +83,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     }
     try jobs.append(a, .{ .os = hosts[0], .name = "source checks and documented snippets", .step = "lint", .job_timeout = src.number(src.get(config, "source_job_timeout"), 20) });
     try releaseJobs(a, config, &jobs);
+    try sdkJobs(a, config, &jobs);
     for (jobs.items) |*job| job.cache_key = try key(a, job.*);
     return jobs.items;
 }
@@ -92,6 +95,7 @@ fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     try jobs.appendSlice(a, try fastPlan(a, config, true));
     const start = jobs.items.len;
     for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{.debug});
+    try sdkJobs(a, config, &jobs);
     for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
     return jobs.items;
 }
@@ -104,7 +108,7 @@ fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), 
         try jobs.append(a, .{
             .os = host,
             .name = try a.print("test ({s}, {s}){s}{s}", .{ host, title(mode), if (count > 1) " shard " else "", shard }),
-            .args = try a.print("-Doptimize={t} -Dci-lint=false -Dci-timings=true", .{mode}),
+            .args = try a.print("-Doptimize={t} -Dci-lint=false -Dci-timings=true{s}", .{ mode, try buildArgs(a, src.get(config, "build_args")) }),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
@@ -114,7 +118,7 @@ fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), 
 
 pub const Tiers = struct { native: []Job, compile: []Job, run: []Job };
 
-/// Portable hosts compile once on Linux per host and mode; every shard of
+/// Portable hosts link once on their SDK runner per host and mode; every shard of
 /// that host and mode runs the same binaries.
 pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: Tier) !Tiers {
     var native: std.ArrayList(Job) = .empty;
@@ -143,17 +147,19 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         if (!built) {
             const target = if (std.mem.eql(u8, job.os, hosts[1])) "aarch64-macos" else "x86_64-windows-gnu";
             var builder = whole;
-            builder.os = hosts[0];
+            builder.os = job.os;
             builder.step = "ci-build";
-            builder.setup = false;
-            builder.args = try a.print("{s} -Dtarget={s}", .{ job.args, target });
-            builder.name = try a.print("compile for {s}", .{whole.name});
+            builder.operation = .link;
+            builder.setup = true;
+            builder.args = try a.print("{s} -Dtarget={s} -Dcpu=baseline", .{ job.args, target });
+            builder.name = try a.print("native link for {s}", .{whole.name});
             builder.cache_key = try a.print("compile-{s}", .{whole_key});
             builder.artifact = artifact;
             try compile.append(a, builder);
         }
         var executor = job;
         executor.step = "ci-run";
+        executor.operation = .replay;
         executor.artifact = artifact;
         try run.append(a, executor);
     }
@@ -172,7 +178,7 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, timing: bool) ![]Job {
             .os = hosts[0],
             .name = try a.print("Linux Debug{s}{s}", .{ if (count > 1) " shard " else "", shard }),
             .step = "preflight-fast",
-            .args = try a.print("-Doptimize=debug{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "" }),
+            .args = try a.print("-Doptimize=debug{s}{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "", try buildArgs(a, src.get(config, "build_args")) }),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
@@ -183,6 +189,7 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, timing: bool) ![]Job {
 }
 
 pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
+    try validate(a, config);
     var targets: std.ArrayList(src.Value) = .empty;
     try targets.appendSlice(a, src.items(src.get(config, "targets")));
     for ([_][]const u8{ "aarch64-macos", "x86_64-windows-gnu" }) |native| {
@@ -209,7 +216,7 @@ fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
     const compile = src.string(src.get(config, "compile_step"), "check");
     try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=small" });
     if (src.items(src.get(config, "targets")).len > 0)
-        try jobs.append(a, .{ .os = hosts[0], .name = "cross (all configured targets)", .step = "preflight-cross", .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20) });
+        try jobs.append(a, .{ .os = hosts[0], .name = "cross (all configured targets)", .step = "preflight-cross", .operation = .objects, .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20) });
     const sanitizer = src.get(config, "sanitizer");
     if (sanitizer == .string) try jobs.append(a, .{
         .os = hosts[0],
@@ -221,14 +228,83 @@ fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
     });
 }
 
+fn validate(a: std.mem.Allocator, config: src.Value) !void {
+    if (config != .object) return error.InvalidWorkflowConfig;
+    const targets = src.get(config, "targets");
+    if (targets != .null and targets != .array) return error.InvalidCrossTargets;
+    for (src.items(targets)) |target| _ = try crossArgs(a, config, target);
+    _ = try validatedArgs(a, src.get(config, "build_args"));
+    const shards = src.get(config, "shards");
+    if (shards != .null and shards != .object) return error.InvalidShardCount;
+    for (host_names) |host| _ = try shardCount(src.get(shards, host));
+    for ([_][]const u8{ "compile_once", "windows_git_latest" }) |name| {
+        const value = src.get(config, name);
+        if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
+    }
+    const portable_hosts = src.get(config, "portable_hosts");
+    if (portable_hosts != .null) {
+        if (portable_hosts != .array) return error.InvalidPortableHosts;
+        for (try src.strings(a, portable_hosts)) |host| {
+            var found = false;
+            for (hosts) |known| if (std.mem.eql(u8, host, known)) {
+                found = true;
+            };
+            if (!found) return error.InvalidPortableHosts;
+        }
+    }
+}
+
+fn sdkJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
+    for (src.items(src.get(config, "targets"))) |target| {
+        const argv = try crossArgs(a, config, target);
+        const query = try std.Target.Query.parse(.{ .arch_os_abi = argv[4][9..] });
+        const host = switch (query.os_tag orelse return error.InvalidCrossTarget) {
+            .macos => hosts[1],
+            .windows => hosts[2],
+            else => continue,
+        };
+        var text: std.Io.Writer.Allocating = .init(a);
+        defer text.deinit();
+        for (argv[3..]) |arg| try text.writer.print("{s}{s}", .{ if (text.written().len == 0) "" else " ", arg });
+        try jobs.append(a, .{ .os = host, .name = try a.print("SDK link ({s})", .{argv[4][9..]}), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link });
+    }
+}
+
+fn validatedArgs(a: std.mem.Allocator, value: src.Value) ![]const []const u8 {
+    if (value == .null) return &.{};
+    if (value != .array) return error.InvalidBuildArgs;
+    const args = try src.strings(a, value);
+    for (args) |arg| {
+        if (!std.mem.startsWith(u8, arg, "-D") or std.mem.startsWith(u8, arg, "-Dtarget=") or std.mem.startsWith(u8, arg, "-Dcpu=")) return error.InvalidBuildArgs;
+        for (arg) |byte| if (std.ascii.isWhitespace(byte) or byte < 32) return error.InvalidBuildArgs;
+    }
+    return args;
+}
+
+fn buildArgs(a: std.mem.Allocator, value: src.Value) ![]const u8 {
+    var text: std.Io.Writer.Allocating = .init(a);
+    defer text.deinit();
+    for (try validatedArgs(a, value)) |arg| try text.writer.print(" {s}", .{arg});
+    return text.toOwnedSlice();
+}
+
 pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
     const name = if (target == .string) target.string else src.string(src.get(target, "target"), "");
     if (name.len == 0) return error.InvalidCrossTarget;
     const cpu = src.get(target, "cpu");
+    _ = std.Target.Query.parse(.{ .arch_os_abi = name, .cpu_features = if (cpu == .string) cpu.string else null }) catch return error.InvalidCrossTarget;
     var args: std.ArrayList([]const u8) = .empty;
-    try args.appendSlice(a, &.{ "zig", "build", src.string(src.get(config, "compile_step"), "check"), "-Dci-lint=false" });
+    try args.appendSlice(a, &.{ "zig", "build", "ci-check", "-Dci-lint=false" });
     try args.append(a, try a.print("-Dtarget={s}", .{name}));
-    if (cpu == .string) try args.append(a, try a.print("-Dcpu={s}", .{cpu.string}));
+    if (cpu != .null and cpu != .string) return error.InvalidCrossCpu;
+    if (cpu == .string) {
+        if (cpu.string.len == 0) return error.InvalidCrossCpu;
+        for (cpu.string) |byte| if (std.ascii.isWhitespace(byte) or byte < 32) return error.InvalidCrossCpu;
+        try args.append(a, try a.print("-Dcpu={s}", .{cpu.string}));
+    }
+    for ([_]src.Value{ src.get(config, "build_args"), src.get(target, "args") }) |values| {
+        try args.appendSlice(a, try validatedArgs(a, values));
+    }
     return args.toOwnedSlice(a);
 }
 
@@ -248,7 +324,7 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     const targets = src.items(src.get(config, "targets"));
     const first = try crossArgs(a, config, targets[0]);
     const second = try crossArgs(a, config, targets[1]);
-    try std.testing.expectEqualStrings("install", first[2]);
+    try std.testing.expectEqualStrings("ci-check", first[2]);
     try std.testing.expectEqualStrings("-Dtarget=x86_64-windows-gnu", first[4]);
     try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[4]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[5]);
@@ -277,7 +353,7 @@ test "fast gate executes only Linux Debug and compiles all other test targets" {
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
 }
 
-test "portable matrix builds macOS and Windows binaries on Linux without losing native coverage" {
+test "portable matrix links macOS and Windows binaries on their SDK runners without losing native coverage" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -288,7 +364,7 @@ test "portable matrix builds macOS and Windows binaries on Linux without losing 
     try std.testing.expectEqual(@as(usize, 4), tiers.run.len);
     try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);
     for (tiers.compile, tiers.run) |builder, executor| {
-        try std.testing.expectEqualStrings(hosts[0], builder.os);
+        try std.testing.expectEqualStrings(executor.os, builder.os);
         try std.testing.expectEqualStrings(builder.artifact, executor.artifact);
         try std.testing.expect(!std.mem.eql(u8, executor.os, hosts[0]));
     }
@@ -402,7 +478,7 @@ test "the merge tier adds the Debug suite on macOS and Windows to the fast tier,
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
 }
 
-test "the merge tier compiles macOS and Windows Debug once on Linux and runs every shard of it" {
+test "the merge tier links macOS and Windows Debug once on native runners and runs every shard of it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -458,4 +534,42 @@ test "only the merge and release tiers execute macOS and Windows" {
             .release => 2 * 2 + 2,
         }), executed);
     }
+}
+
+test "owner SDK link jobs retain configured targets CPUs and feature arguments" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"compile_once":true,"build_args":["-Dfeature=true"],"targets":[{"target":"x86_64-macos","cpu":"baseline","args":["-Dtrust-store=true"]},"aarch64-macos","aarch64-windows-gnu","aarch64-linux-gnu"]}
+    , .{})).value;
+    const cross = try fastTargets(a, config);
+    try std.testing.expectEqual(@as(usize, 5), cross.len);
+    const argv = try fastCrossArgs(a, config, cross[0]);
+    try std.testing.expectEqualStrings("ci-check", argv[2]);
+    try std.testing.expectEqualStrings("-Dcpu=baseline", argv[5]);
+    try std.testing.expectEqualStrings("-Dfeature=true", argv[6]);
+    try std.testing.expectEqualStrings("-Dtrust-store=true", argv[7]);
+    for ([_]Tier{ .merge, .release }) |tier| {
+        const tiers = try split(a, config, try plan(a, config, tier), tier);
+        var linked: usize = 0;
+        for (tiers.native) |job| if (std.mem.eql(u8, job.step, "ci-link")) {
+            linked += 1;
+            try std.testing.expect(job.operation == .link);
+            try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
+            try std.testing.expect(std.mem.find(u8, job.args, "-Dfeature=true") != null);
+            if (std.mem.find(u8, job.args, "x86_64-macos") != null) {
+                try std.testing.expect(std.mem.find(u8, job.args, "-Dcpu=baseline") != null);
+                try std.testing.expect(std.mem.find(u8, job.args, "-Dtrust-store=true") != null);
+            }
+        };
+        try std.testing.expectEqual(@as(usize, 3), linked);
+        for (tiers.compile) |job| {
+            try std.testing.expect(job.operation == .link);
+            try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
+        }
+        for (tiers.run) |job| try std.testing.expect(job.operation == .replay);
+    }
+    const bad = (try std.json.parseFromSlice(src.Value, a, "{\"build_args\":[\"-Dtarget=x86_64-macos\"]}", .{})).value;
+    try std.testing.expectError(error.InvalidBuildArgs, plan(a, bad, .fast));
 }

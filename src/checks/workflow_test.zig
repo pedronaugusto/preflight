@@ -143,13 +143,21 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     const repo_arg = try a.print("-Drepo-root={s}", .{fixture_root});
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
+    // Match setup-zig: local and global caches share an absolute directory.
+    const cache = try a.print("{s}/.zig-cache", .{fixture_root});
+    try env.put("ZIG_LOCAL_CACHE_DIR", cache);
+    try env.put("ZIG_GLOBAL_CACHE_DIR", cache);
     try env.put("STEP", "probe");
     try env.put("BUILD_ARGS", "");
     try env.put("PREFLIGHT_SETUP", "true");
     try env.put("PREFLIGHT_PREPARED", "true");
     const failed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--build-file", build_file, repo_arg, "prepare" }, .environ_map = &env });
     try std.testing.expect(failed.term == .exited and failed.term.exited != 0);
-    try std.testing.expectEqualStrings("x", try tmp.dir.readFileAlloc(io, "attempts", a, .limited(32)));
+    const attempts = tmp.dir.readFileAlloc(io, "attempts", a, .limited(32)) catch |err| {
+        std.debug.print("{s}", .{failed.stderr});
+        return err;
+    };
+    try std.testing.expectEqualStrings("x", attempts);
     const prepared = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--build-file", build_file, repo_arg, "run" }, .environ_map = &env });
     if (prepared.term != .exited or prepared.term.exited != 0) std.debug.print("{s}", .{prepared.stderr});
     try std.testing.expect(prepared.term == .exited and prepared.term.exited == 0);

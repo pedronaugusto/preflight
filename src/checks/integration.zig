@@ -1075,7 +1075,11 @@ test "toolchain cold root declares CI controls before lazy discovery returns" {
             try std.mem.replaceOwned(u8, a, text, "git+https://github.com/pedronaugusto/gantry#76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9", "file:///preflight-deliberately-missing-lazy-package")
         else
             text;
-        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = copied });
+        const uncached = if (std.mem.eql(u8, name, "build.zig.zon"))
+            try std.mem.replaceOwned(u8, a, copied, "gantry-0.1.0-1iNrkYwDDACsflv8JL7EcKNxh68qFeRvfnj44o2gpGWP", "gantry-0.1.0-1iNrkYxDDACsflv8JL7EcKNxh68qFeRvfnj44o2gpGWP")
+        else
+            copied;
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = uncached });
     }
     var sources = try owner.openDir(io, "src", .{ .iterate = true });
     defer sources.close(io);

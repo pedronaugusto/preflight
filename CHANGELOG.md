@@ -81,7 +81,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Hosted external-tool setup has three attempts, each bounded by a five-minute step timeout, so a hung `apt-get update` cannot consume the whole job. Zig master's step deadlines total less than its job timeout, keeping a hung advisory job from cancelling an otherwise successful run. The master suite is bounded at twenty minutes independently of the blocking jobs' configured timeouts.
+- Hosted external-tool setup has three attempts, each bounded by a five-minute step timeout, so a hung `apt-get update` cannot consume the whole job. Zig master's step deadlines total less than its job timeout, keeping a hung advisory job from cancelling an otherwise successful run. The master suite uses `test-job-timeout` as a step deadline capped at twenty minutes; blocking job timeouts keep their configured values.
 
 - The format and source checks pass over the `zig-out` and `zig-pkg` directories a build of its own under a checked directory keeps beside its manifest, such as a conformance build's under `conformance/`; a run of that build no longer fails the next lint on a package it fetched.
 - A dispatched fast tier compares the branch with `origin/main` from their merge base, not with `HEAD^`: a docs-only last commit no longer skips the gate for the code before it.

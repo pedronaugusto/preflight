@@ -203,7 +203,8 @@ three attempts of five minutes each. A hung `apt-get update` therefore expires
 at a step deadline and can be retried. Exhausted attempts fail blocking jobs.
 Every Zig master step has a deadline, with their total below its job timeout,
 so a hang remains an advisory failure and the blocking jobs decide the run's
-conclusion. The master suite has a twenty-minute step deadline.
+conclusion. The master suite uses `test-job-timeout` as its step deadline, capped at twenty
+minutes to preserve that budget.
 
 Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
 that commit as `preflight-ref` and the tier as `tier`. The sample caller in this

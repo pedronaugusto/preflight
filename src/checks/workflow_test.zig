@@ -64,7 +64,11 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
         if (std.mem.startsWith(u8, line, "      - ")) steps += 1;
         if (std.mem.startsWith(u8, line, "        timeout-minutes: ")) {
             deadlines += 1;
-            total += try std.fmt.parseInt(usize, line[25..], 10);
+            const value = line[25..];
+            if (std.mem.startsWith(u8, value, "${{")) {
+                try std.testing.expectEqualStrings("${{ inputs.test-job-timeout < 20 && inputs.test-job-timeout || 20 }}", value);
+                total += 20;
+            } else total += try std.fmt.parseInt(usize, value, 10);
         }
     }
     try std.testing.expectEqual(steps, deadlines);

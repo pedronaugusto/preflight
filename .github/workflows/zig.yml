@@ -47,6 +47,7 @@ on:
         type: boolean
         default: false
       test-job-timeout:
+        description: Zig master suite step timeout in minutes, capped at 20
         type: number
         default: 20
       windows-git-latest:
@@ -252,7 +253,7 @@ jobs:
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run the Debug suite on Zig master
         id: suite
-        timeout-minutes: 20
+        timeout-minutes: ${{ inputs.test-job-timeout < 20 && inputs.test-job-timeout || 20 }}
         env:
           STEP: ci
           BUILD_ARGS: -Doptimize=debug -Dci-lint=false

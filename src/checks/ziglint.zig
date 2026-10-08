@@ -261,3 +261,19 @@ test "owner explicit lint inputs cannot be silently omitted" {
         try std.testing.expectError(error.InvalidZiglintPaths, check(&c, executable, malformed));
     }
 }
+
+test "owner default lint probes preserve access and infrastructure failures" {
+    const FaultIo = @import("shakedown").FaultIo;
+    for ([_]anyerror{ error.AccessDenied, error.InputOutput, error.Canceled }) |failure| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const faults = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .dirAccess, .n = 1 } }, .fault = .{ .fail = failure } }} });
+        defer faults.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var c: src.Context = .{ .a = arena.allocator(), .io = faults.io(), .dir = tmp.dir };
+        try std.testing.expectError(failure, check(&c, "must-not-run", .null));
+        try std.testing.expectEqual(@as(u64, 1), faults.count(.dirAccess));
+        try std.testing.expectEqual(@as(u64, 0), faults.count(.processSpawn));
+    }
+}

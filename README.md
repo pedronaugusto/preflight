@@ -266,7 +266,7 @@ cross-object bundle. Static jobs explicitly distinguish `execute`, `objects`,
 and shard replay matrices; it never moves SDK linking to Linux.
 
 `ci-check` now emits objects for the configured test graph, installed artifacts,
-the `check` graph and public modules, including benchmark smoke programs,
+the `check` graph and public modules, including benchmark smoke and ReleaseFast programs,
 helpers, generated inputs and transitive native libraries. The compile
 projection carries target, CPU, optimization and source/header options; SDK
 link requests stay on the original native modules. Zig resolves framework and

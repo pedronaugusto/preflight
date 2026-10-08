@@ -848,6 +848,9 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
     defer env.deinit();
     if (builtin.os.tag == .macos) {
         if (env.get("SDKROOT")) |sdk| {
+            const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "bench", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+            if (timed.term != .exited or timed.term.exited != 0) std.debug.print("{s}", .{timed.stderr});
+            try std.testing.expect(timed.term == .exited and timed.term.exited == 0);
             const explicit = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-link", "-Dtarget=x86_64-macos", "-Dcpu=baseline", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
             if (explicit.term != .exited or explicit.term.exited != 0) std.debug.print("{s}", .{explicit.stderr});
             try std.testing.expect(explicit.term == .exited and explicit.term.exited == 0);

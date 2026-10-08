@@ -8,6 +8,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8) void {
     var projection: Projection = .{ .b = b, .objects = objects, .sdk = sdk };
     projection.collect(tests, links);
     projection.collect(b.getInstallStep(), links);
+    if (b.top_level_steps.get("bench")) |bench| projection.collect(&bench.step, links);
     if (b.top_level_steps.get("check")) |check| projection.collect(&check.step, links);
     for (b.modules.values()) |module| {
         const object = b.addObject(.{ .name = "ci-root", .root_module = projection.module(module) });

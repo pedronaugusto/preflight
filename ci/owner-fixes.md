@@ -74,3 +74,17 @@ commit 62a75fe fails `zig build test -Dci-lint=false -Dtest-filter='generated ca
 Regeneration with `--working-directory sample` restores the original destination;
 the same four-test selection then passes. The README records the complete self
 regeneration command. The canonical consumer default remains its repository root.
+
+Artifact review additionally found the separate ReleaseFast benchmark graph was
+absent from collection. Regression-only commit 4f56a42 fails the cross fixture
+on a benchmark error present only in ReleaseFast. Collecting the `bench` step
+validates that graph without executing it in object/link gates. The expanded
+four-test selection passes, including native SDK linking and execution of the
+timed benchmark. Both benchmark modes require compiler work per target; the
+collector visits each graph node once and does not change benchmark runtime code.
+
+Corrected-path FAST 37813130980 on 6c27975143e59abcfc8359015515948786e03ebc
+passed bootstrap and setup, then failed solely on the pinned ziglint completion
+contract (exit 0, no diagnostics). Final local `check` passes; lint's structure
+and formatting steps pass and its analysis gate fails closed for the same reason.
+No MERGE dispatch or main fast-forward is permissible while that gate is red.

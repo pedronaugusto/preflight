@@ -116,9 +116,17 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
         \\const std = @import("std");
         \\pub fn build(b: *std.Build) void {
-        \\    b.step("ci-setup", "setup").dependOn(&b.addSystemCommand(&.{ "zig", "run", "attempt.zig", "--", "x" }).step);
-        \\    b.step("before", "before tests").dependOn(&b.addSystemCommand(&.{ "zig", "run", "attempt.zig", "--", "b" }).step);
+        \\    b.step("ci-setup", "setup").dependOn(attempt(b, "x"));
+        \\    b.step("before", "before tests").dependOn(attempt(b, "b"));
         \\    _ = b.step("probe", "the suite");
+        \\}
+        \\fn attempt(b: *std.Build, label: []const u8) *std.Build.Step {
+        \\    const command = b.addSystemCommand(&.{ b.graph.zig_exe, "run" });
+        \\    command.addFileArg(b.path("attempt.zig"));
+        \\    command.addArgs(&.{ "--", label });
+        \\    command.setCwd(b.path("."));
+        \\    command.has_side_effects = true;
+        \\    return &command.step;
         \\}
         \\
     });
@@ -144,7 +152,7 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     // Match setup-zig: local and global caches share an absolute directory.
-    const cache = try a.print("{s}/.zig-cache", .{fixture_root});
+    const cache = try std.Io.Dir.cwd().realPathFileAlloc(io, ".zig-cache", a);
     try env.put("ZIG_LOCAL_CACHE_DIR", cache);
     try env.put("ZIG_GLOBAL_CACHE_DIR", cache);
     try env.put("STEP", "probe");

@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
     const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
     const target = ci.ciTarget(b);
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch {
-        _ = ci.declareCiOptions(b);
+        _ = ci.declareCiOptions(b, null);
         return;
     };
     const gantry = gantry_dep.module("gantry");
@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
     // imports: a build that runs preflight for another repository never
     // fetches it.
     const shakedown = if (repo_root == null) (b.dependencyLazy("shakedown", .{ .target = target, .optimize = .debug }) catch {
-        _ = ci.declareCiOptions(b);
+        _ = ci.declareCiOptions(b, null);
         return;
     }).module("shakedown") else null;
     const test_step = b.step("test", "Run the shared check regression suite");
@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(executable);
     if (repo_root == null) {
         const lint_tool = b.dependencyLazy("ziglint", .{ .target = target, .optimize = .safe }) catch {
-            _ = ci.declareCiOptions(b);
+            _ = ci.declareCiOptions(b, null);
             return;
         };
         options.addOptionPath("ziglint", lint_tool.artifact("ziglint").getEmittedBin());

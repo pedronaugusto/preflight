@@ -76,13 +76,13 @@ pub fn addCheck(b: *std.Build, name: []const u8, source: []const u8) *std.Build.
 
 /// Declare the same CI controls when a root script must return early to
 /// discover its own lazy dependencies, before it can construct test steps.
-pub fn declareCiOptions(b: *std.Build) CiOptions {
+pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
     return .{
         .profile_options = hardened.declare(b),
         .smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true,
         .sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner"),
         .lint_enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true,
-        .timing = b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false,
+        .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
     };
 }
 /// Controls accepted during a root script's lazy-discovery pass.
@@ -104,14 +104,14 @@ const Steps = struct {
     profile_options: hardened.Options,
 
     fn create(b: *std.Build, config: Config) Steps {
-        const controls = declareCiOptions(b);
+        const controls = declareCiOptions(b, config.timings_enabled);
         const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
         const ci = b.step("ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);
         _ = b.step("ci-check", "Compile root, test, benchmark and helper objects without linking or executing");
         _ = b.step("ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .ci = ci, .lint_enabled = controls.lint_enabled, .timing = config.timings_enabled orelse controls.timing, .sdk = controls.sdk, .smoke = controls.smoke, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .ci = ci, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .smoke = controls.smoke, .profile_options = controls.profile_options };
     }
 
     /// `pkg` is the preflight package whose sources and tools the gate runs.

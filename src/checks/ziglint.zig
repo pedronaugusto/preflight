@@ -128,7 +128,7 @@ test "owner allowed finding followed by signal must fail independently" {
         \\    var writer = std.Io.File.stderr().writerStreaming(init.io, &buffer);
         \\    try writer.interface.writeAll("Z028: value.zig:1: inline import\n");
         \\    try writer.interface.flush();
-        \    std.posix.raise(std.posix.SIG.KILL) catch unreachable;
+        \\    try std.posix.raise(.KILL);
         \\}
         \\
     });

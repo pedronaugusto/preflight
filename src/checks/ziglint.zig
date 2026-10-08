@@ -135,8 +135,9 @@ test "owner allowed finding followed by signal must fail independently" {
     const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build-exe", "fake.zig", "-femit-bin=fake" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"ziglint_paths":["value.zig"],"ziglint_exceptions":[{"rule":"Z028","path":"value.zig","source":"code","detail":"inline import","reason":"existing declaration"}]}
+        \\{"ziglint_paths":["value.zig"],"ziglint_exceptions":"exceptions.json"}
     , .{})).value;
+    try tmp.dir.writeFile(io, .{ .sub_path = "exceptions.json", .data = "[{\"rule\":\"Z028\",\"path\":\"value.zig\",\"source\":\"code\",\"detail\":\"inline import\",\"reason\":\"existing declaration\"}]" });
     var c: src.Context = .{ .a = a, .io = io, .dir = tmp.dir };
     const executable = try tmp.dir.realPathFileAlloc(io, "fake", a);
     try check(&c, executable, config);

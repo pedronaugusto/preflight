@@ -11,14 +11,18 @@ const Context = struct {
     fn trusted(c: *Context, units: u64) !void {
         for (0..units) |_| {
             var reader = std.Io.Reader.fixed(c.bytes);
-            c.steps = (try std.Build.Configuration.load(c.scratch.allocator(), &reader)).steps.len;
+            const graph = try std.Build.Configuration.load(c.scratch.allocator(), &reader);
+            std.mem.doNotOptimizeAway(graph);
+            c.steps = graph.steps.len;
             _ = c.scratch.reset(.retain_capacity);
         }
         if (c.steps == 0) return error.EmptyConfiguration;
     }
     fn bounded(c: *Context, units: u64) !void {
         for (0..units) |_| {
-            c.steps = (try configuration.load(c.scratch.allocator(), c.bytes)).steps.len;
+            const graph = try configuration.load(c.scratch.allocator(), c.bytes);
+            std.mem.doNotOptimizeAway(graph);
+            c.steps = graph.steps.len;
             _ = c.scratch.reset(.retain_capacity);
         }
         if (c.steps == 0) return error.EmptyConfiguration;

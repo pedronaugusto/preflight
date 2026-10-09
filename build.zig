@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .safe,
-        .imports = &.{.{ .name = "gantry", .module = gantry }},
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "glint", .module = glint } },
     }) });
     b.installArtifact(executable);
     if (repo_root == null) {
@@ -139,7 +139,8 @@ pub fn build(b: *std.Build) void {
 
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const gantry = (b.dependencyLazy("gantry", .{ .target = target, .optimize = optimize }) catch unreachable).module("gantry"); // unreachable: build returns before addOwnCi if gantry is not available
-    const imports: []const std.Build.Module.Import = &.{.{ .name = "gantry", .module = gantry }};
+    const glint = (b.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: own CI returned before benchmark creation if this pin is unavailable
+    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "glint", .module = glint } };
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = b.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = b.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },

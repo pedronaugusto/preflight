@@ -15,6 +15,8 @@ const Context = struct {
         if (c.bytes == 0) return error.EmptyCaller;
     }
 };
+const WorkloadError = @typeInfo(@typeInfo(@TypeOf(Context.generate)).@"fn".return_type.?).error_union.error_set;
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const args = try init.minimal.args.toSlice(a);
@@ -25,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     defer context.scratch.deinit();
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try measuring.run(init.gpa, init.io, &output.interface, &context, &.{.{ .name = "caller generation", .unit = "render", .run = Context.generate }}, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{
+    try measuring.run(WorkloadError, init.gpa, init.io, &output.interface, &context, &.{.{ .name = "caller generation", .unit = "render", .run = Context.generate }}, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{
         .smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke"),
         .prefix = if (args.len == 3 and std.mem.eql(u8, args[1], "--row")) args[2] else "",
     });

@@ -5,7 +5,7 @@ runs format, gantry structure rules, ziglint, namespace layout, cast reasons,
 function length, documented snippets and test imports, then the package's tests.
 It is a build dependency; a consumer's module never imports it.
 
-**WIP:** hardened checks are opt-in and the configured-build adapter supports exactly Zig 0.17.0. F04 completion remains deferred to future glint integration. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
+**WIP:** hardened checks are opt-in and the configured-build adapter supports exactly Zig 0.17.0. The published Glint completion adapter is tested, but the ordinary gate still uses the predecessor while required correctness coverage and configuration migration are pending. F04 remains open in that gate. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
 
 ## Install
 

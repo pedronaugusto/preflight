@@ -1,6 +1,6 @@
 # Preflight design
 
-Preflight owns repository gates, build and process orchestration, and the canonical hosted workflow planner. Gantry owns semantic architecture checks. Code-level rules belong to glint; the current supported ziglint behavior remains available until that integration supplies reliable completion outcomes. The legacy tool can silently omit traversal or final-flush failures, so F04 remains open. Independently observable input, signal, cancellation and capture failures still fail the gate.
+Preflight owns repository gates, build and process orchestration, and the canonical hosted workflow planner. Gantry owns semantic architecture checks. Code-level rules belong to glint; the current supported ziglint behavior remains available until its required coverage and configuration migration are complete. The pinned Glint completion adapter verifies execution independently of finding acceptance, but is not yet installed in the ordinary gate. The legacy tool can silently omit traversal or final-flush failures, so F04 remains open. Independently observable input, signal, cancellation and capture failures still fail the gate.
 
 ## Configured builds and target projection
 
@@ -38,3 +38,31 @@ The own-tree toolchain gate consumes Zig 0.17.0's resolved `package_map`, depend
 The gate validates immutable git revisions, declared content hashes against resolved hashes and canonical remote family names against fetched manifest identities. All materialized declaration dependencies are checked recursively, including different published bootstrap versions. Unmaterialized lazy bootstrap entries are named as such and cannot supply production facts. Runtime family edges descend aegis/sweep, glint, gantry, preflight; test-support and pinned lazy bootstrap edges are separate. Required source, identity, binding, version, parser and output failures remain errors. Source reachability is gantry's current lexical/declaration analysis, not a claim of Zig compiler semantic reachability; unsupported recovered constructs fail clearly. Configure internals and the build protocol are distinct version-gated source-of-facts adapters, neither a stable external graph API. Closure scanning is an own-gate cost outside consumer runtime; no dependency or consumer changes are needed.
 
 Cross projections retain each compile step's expected-error union and diagnostic limit. Zig's build runner owns matching (`contains`, `exact`, `starts_with`, `stderr_contains`) and failure outcomes. Deliberate failures do not request emitted binaries, since Zig returns after matching rather than producing a file. Positive projections still emit objects; original native artifacts retain their diagnostic and SDK-link contracts. The integration fixture exercises expected failures, wrong diagnostics and unexpected success across Linux, both macOS architectures and both Windows architectures, with a positive object beside each rejection.
+
+
+## Glint completion boundary and pending switch-over
+
+The pinned Glint engine supplies code predicates through its public rule API. The new process adapter supplies a fresh unpredictable run ID and private scratch receipt, bounds both output streams, rejects abnormal termination, and verifies the receipt with `Completion.verify`. It then checks selected-source count, report version, complete analysis and diagnostic count before loading exact reasoned exceptions. Missing, malformed, stale or truncated receipts/output, output-limit errors, cancellation, input failures and incomplete allowed-only findings all fail independently. Unexpected stderr also fails. Receipts are transient build products and never package contents.
+
+The ordinary gate retains its predecessor until all adopted checks are accounted for. In particular, Z011 requires declaration resolution for each call; unsupported receiver/generic facts remain undecided and cannot be made complete by an allowed finding. Its required coverage is currently insufficient for this package. A report-only selection must not replace a required correctness gate merely to get a green run. This checkpoint neither retires the fork nor claims F04 closed in the ordinary gate.
+
+The switch-over mapping is explicit:
+
+| Existing policy | Glint owner and migration obligation |
+|---|---|
+| Parser compatibility and deprecated calls | Z003 and Z011 correctness gates; required front-end and call coverage must complete. |
+| Private import liveness | Z013 correctness, with Gantry retaining architecture/reachability policy. D001 stays deferred; unresolved generic/reflection facts are undecided. |
+| Naming/style IDs Z001/Z005/Z006/Z009/Z014/Z031/Z032 and byte-line Z024 | Reviewed style reports before gate adoption. Previous defaults do not admit new gates. |
+| API exposure, compound assertions and empty catches | Z012/Z016/Z026 family reports before gate adoption; site reasons remain explicit. |
+| Cast and safety-off reasons | P001/P002. All 22 casts and tests remain in the intended all-site policy; the prior four-cast production gate stays until reconciled adoption. |
+| Function length | P003, including type-constructor accounting, per-path limits and bounded named exceptions with reasons. Per-source `FileConfig` applies Gantry-selected limits. |
+| Production catch-unreachable and debug output | P004/P005, preserving adopted gates and explicit test/support classification. P005 uses resolved std identity rather than spelling. |
+| Configured disallowed declarations | P006 against resolved identities, with reasons and replacements; no text-ban replacement. |
+| Published Aegis obligations | A001–A005 reports with recognized published operation contracts and classified site exceptions; no proof or new gate follows from zero findings. |
+| Removed fork IDs | Z002/Z004/Z007/Z010/Z015/Z017–Z023/Z025/Z027–Z030/Z033 are intentionally removed by review, never aliased or restored by a compatibility profile. Z008 remains absent. |
+
+Legacy exact ledgers require a source/detail/ID audit before conversion to `glint_exceptions` or one real `glint-ignore: ID -- reason` comment. Retained gate exceptions must still be exact, single-use and shrinking, with stale entries rejected; removed-rule entries retire only after that mapping. Function exceptions retain their bounded limits and reasons. Generated/vendor exclusions retain provenance and explicit audit obligations. No predecessor configuration is silently dropped.
+
+Glint's library accepts explicit production/test/generated input classification and per-source configurations; the standalone CLI currently lacks those per-source settings. The final caller must bind actual configured module contexts and Gantry's path selections to that library seam. A flat CLI invocation cannot substitute for configured test-support classification or per-path function limits. The pinned Gantry still independently recovers Zig tokens and liveness; its Glint projection adapter must land before that scan can retire. No Glint-to-Gantry dependency is introduced. Object/native-SDK linking, expected compile-error metadata, benchmark/hardened/build protocol and recursive toolchain closure remain independent gates.
+
+The ordinary recursive closure gate also encounters unbound embedded-test imports when the published Glint/Aegis modules enter a consumer test artifact. Adoption requires an actual supported test-module binding contract or more precise configured test reachability. Preflight does not invent dependency-private fixture bindings or exempt those imports.

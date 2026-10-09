@@ -23,6 +23,8 @@ const Context = struct {
         }
     }
 };
+const WorkloadError = @typeInfo(@typeInfo(@TypeOf(Context.quality)).@"fn".return_type.?).error_union.error_set || @typeInfo(@typeInfo(@TypeOf(Context.lengths)).@"fn".return_type.?).error_union.error_set;
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const args = try init.minimal.args.toSlice(a);
@@ -37,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     defer context.scratch.deinit();
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try measuring.run(init.gpa, init.io, &output.interface, &context, &.{
+    try measuring.run(WorkloadError, init.gpa, init.io, &output.interface, &context, &.{
         .{ .name = "quality", .unit = "scan", .run = Context.quality },
         .{ .name = "lengths", .unit = "scan", .run = Context.lengths },
     }, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{

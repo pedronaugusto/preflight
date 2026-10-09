@@ -6,6 +6,7 @@ pub const docs = @import("checks/docs.zig");
 pub const workflow = @import("checks/workflow.zig");
 pub const matrix = @import("checks/matrix.zig");
 pub const cache = @import("checks/cache.zig");
+pub const glint = @import("checks/glint.zig");
 pub const ziglint = @import("checks/ziglint.zig");
 pub const ledger = @import("checks/ledger.zig");
 pub const quality = @import("checks/quality.zig");
@@ -33,6 +34,7 @@ test {
     _ = matrix;
     _ = workflow;
     _ = cache;
+    _ = glint;
     _ = ziglint;
     _ = ledger;
     _ = quality;

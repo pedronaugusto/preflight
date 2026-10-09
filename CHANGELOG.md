@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Prepare Glint G3 integration with a completion adapter and process regressions. The ordinary gate retains ziglint pending required correctness coverage and reasoned per-source policy migration; F04 remains open there.
+- Pin green Shakedown B6 and adapt own benchmark callbacks to its declared workload-error contract without changing workloads.
+
 ### Breaking
 
 - Benchmark programs can use injected published `shakedown.bench` and build provenance directly. `bench-build` builds ReleaseFast programs/comparison without executing; hosted gates disable benchmark smoke. `bench-ab` builds immutable revisions, interleaves caller-selected workloads and delegates comparison to shakedown. Both revisions must implement this contract.

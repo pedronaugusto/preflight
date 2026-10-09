@@ -119,13 +119,15 @@ const Steps = struct {
         const host = ciTarget(b);
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug }) catch return;
         const gantry = gantry_dep.module("gantry");
+        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return;
+        const glint = glint_dep.module("glint");
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
             .root_module = b.createModule(.{
                 .root_source_file = pkg.path("src/main.zig"),
                 .target = host,
                 .optimize = .safe,
-                .imports = &.{.{ .name = "gantry", .module = gantry }},
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "glint", .module = glint } },
             }),
         });
         const timeout = config.test_timeout.nanoseconds() orelse fail: {

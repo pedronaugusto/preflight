@@ -8,6 +8,7 @@
         .aegis = .{
             .url = "git+https://github.com/pedronaugusto/aegis#a5d17d0f346d8edacce34b86eea953eb096931da",
             .hash = "aegis-0.0.0-rsxoupEWAwBXhrB2fwXEkUcw6KOANFGN9PRnfOhKmPtV",
+            .lazy = true,
         },
         .ziglint = .{
             .url = "git+https://github.com/pedronaugusto/ziglint#924b6b5dbc5848ceef77ebccc42470efdf7a1dc4",

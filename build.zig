@@ -33,7 +33,10 @@ pub fn build(b: *std.Build) void {
     // A package consumer needs only the family policies. Its gate installs
     // the tools through addCi; our suite and benchmarks belong to this checkout.
     if (b.pkg_hash.len != 0) return;
-    const safety = b.dependency("aegis", .{ .target = target, .optimize = .debug }).module("aegis");
+    const safety = (b.dependencyLazy("aegis", .{ .target = target, .optimize = .debug }) catch {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    }).module("aegis");
     // The test doubles are shakedown's, which only preflight's own suite
     // imports: a build that runs preflight for another repository never
     // fetches it.

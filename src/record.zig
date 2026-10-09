@@ -91,7 +91,8 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         artifact.root_module.addImport("preflight_timings", module);
         const target = artifact.root_module.resolved_target.?;
         const optimize = artifact.root_module.optimize.?;
-        const safety = context.pkg.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
+        // Lazy: a consumer that builds no test run never fetches aegis.
+        const safety = (context.pkg.dependencyLazy("aegis", .{ .target = target, .optimize = optimize }) catch return).module("aegis");
         artifact.root_module.addImport("preflight_aegis", safety);
         artifact.root_module.addAnonymousImport("preflight_order", .{
             .root_source_file = context.pkg.path("src/order.zig"),

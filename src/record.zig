@@ -170,7 +170,7 @@ test "timeout rejects nanoseconds that cannot fit the runner option" {
 test "timeout boundary preserves representable bounds and rejects overflow" {
     const shake = @import("shakedown");
     try shake.check(std.testing.allocator, {}, struct {
-        fn run(_: void, c: *@import("shakedown").Case) !void {
+        fn run(_: void, c: *shake.Case) !void {
             const ns = shake.gen.int(c.source, i96);
             const actual = TestTimeout.duration(.{ .bound = .{ .limit = .fromNanoseconds(ns), .reason = "boundary property" } });
             if (ns > std.math.maxInt(u64)) {

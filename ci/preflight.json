@@ -1,6 +1,7 @@
 {
   "sources": [
-    "src"
+    "src",
+    "bench"
   ],
   "test_roots": [
     "src/checks.zig",
@@ -19,6 +20,15 @@
   ],
   "test_support": [
     "src/testing/**",
-    "src/bench_driver.zig"
-  ]
+    "src/bench_driver.zig",
+    "bench/**"
+  ],
+  "glint": {
+    "rules": [
+      {
+        "id": "A004",
+        "level": "gate"
+      }
+    ]
+  }
 }

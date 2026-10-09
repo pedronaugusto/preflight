@@ -65,3 +65,13 @@ futex publication/wait protocol. Std clock-tagged timestamp comparison and timeo
 values keep clock and scale together. No guard, confined state or borrowed lock
 capability enters the public API. Raw-site comments state the permitted reason at
 the retained parser, generated-schema, one-owner naming and measured-loop sites.
+
+The package config declares Glint A004 at `gate` for the adopted scalar domains.
+Its source roots include `src` and `bench`; tests and benchmarks have no A004
+exemption. Benchmark paths are test support for architecture ownership and
+Shakedown access, while remaining selected inputs for Glint. The index/count
+relation is a reasoned safe-type-internals exception at the one representation
+comparison. This declaration awaits Glint integration:
+published Preflight still invokes ziglint, and published Glint currently admits
+A004 only in report mode. G4 must honour the package setting and supply the
+gating policy before this adoption can land.

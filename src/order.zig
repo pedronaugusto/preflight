@@ -26,9 +26,9 @@ pub const Shard = struct {
     /// Validate the index/count relation before any shard arithmetic.
     /// Zig permits direct field construction; assign rechecks this boundary.
     pub fn init(index: ShardIndex, count: ShardCount) ParseError!Shard {
-        // aegis-raw: safe-type-internals: importing shard representations
-        // establishes the relation between an index and its domain count.
-        if (count.raw() == 0 or index.raw() >= count.raw()) return error.InvalidShard;
+        if (count == ShardCount.fromRaw(0)) return error.InvalidShard;
+        // glint-ignore: A004 -- safe-type-internals: docs/design.md#shard-and-watchdog-boundaries; compare representations once to establish the index/count relation
+        if (index.raw() >= count.raw()) return error.InvalidShard;
         return .{ .index = index, .count = count };
     }
 

@@ -22,6 +22,8 @@ pub const entries: []const []const u8 = &.{ "src/structure.zig", "src/build.zig"
 pub const modules: []const gantry.NamedModule = &.{
     .{ .name = "preflight_order", .path = "src/order.zig" },
     .{ .name = "preflight_timings", .path = "src/timings.zig" },
+    .{ .name = "checks", .path = "src/checks.zig" },
+    .{ .name = "facts", .path = "src/facts.zig" },
 };
 const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{
     "std",

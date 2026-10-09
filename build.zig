@@ -29,6 +29,12 @@ pub fn build(b: *std.Build) void {
         return;
     };
     const gantry = gantry_dep.module("gantry");
+    const glint_dep = b.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    };
+    const glint = glint_dep.module("glint");
+    b.step("glint-tool", "Build the published code-rule engine").dependOn(&glint_dep.artifact("glint").step);
     _ = b.addModule("rules", .{ .root_source_file = b.path("src/rules.zig"), .target = target, .imports = &.{.{ .name = "gantry", .module = gantry }} });
     // A package consumer needs only the family policies. Its gate installs
     // the tools through addCi; our suite and benchmarks belong to this checkout.
@@ -45,10 +51,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{.{ .name = "gantry", .module = gantry }},
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "glint", .module = glint } },
     }), .filters = test_filters });
     if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
+    options.addOptionPath("glint", glint_dep.artifact("glint").getEmittedBin());
     options.addOptionPathUntracked("root", b.path("."));
     options.addOptionPathUntracked("zig_std", b.graph.path(.zig_lib, "std"));
     tests.root_module.addOptions("test_options", options);

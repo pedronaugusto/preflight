@@ -445,6 +445,12 @@ is built from.
 Run `zig build test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
+Cross object validation retains a compile step's `expect_errors` and diagnostic
+limit. Zig matches the caller's expected diagnostics; wrong diagnostics and
+unexpected success fail. Expected-failure steps request no emitted binary.
+Ordinary positive artifacts still emit objects, and native SDK links retain the
+original artifact graph.
+
 `zig build check-toolchain` validates the installed Zig 0.17.0 runner's resolved
 package hashes recursively against gantry's manifest declarations and the fetched
 packages' names and fingerprints. It follows gantry's production import facts in

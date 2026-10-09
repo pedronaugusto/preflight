@@ -64,7 +64,11 @@ const Projection = struct {
             .max_rss = original.step.max_rss,
         });
         object.installed_headers = original.installed_headers;
-        _ = object.getEmittedBin();
+        // Zig owns exact diagnostic matching and rejects unexpected success.
+        // Deliberate semantic failures cannot produce a generated binary.
+        object.expect_errors = original.expect_errors;
+        object.error_limit = original.error_limit;
+        if (object.expect_errors == null) _ = object.getEmittedBin();
         p.artifacts.put(p.b.allocator, original, object) catch @panic("OOM");
         return object;
     }

@@ -904,7 +904,7 @@ test "toolchain measuring builds without executing and injects shakedown for a c
         \\pub fn main(init: std.process.Init) !void {
         \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
         \\    if (args.len != 2 or !std.mem.eql(u8, args[1], "--smoke")) return error.FullMeasurementMustNotRunInCi;
-        \\    _ = measuring.Row(void);
+        \\    _ = measuring.Row(void, error{});
         \\    _ = @import("preflight_bench_options").commit;
         \\}
     });

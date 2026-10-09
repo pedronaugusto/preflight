@@ -9,7 +9,7 @@ const configure = @import("configure.zig");
 pub const Options = struct {
     timing: bool,
     /// The watchdog's bound on one test; 0 turns it off.
-    test_timeout_ns: u64,
+    test_timeout: std.Io.Duration,
     test_log_level: std.log.Level,
     /// The package's recorded durations, repository-relative.
     durations: []const u8,
@@ -26,12 +26,20 @@ pub const TestTimeout = union(enum) {
 
     pub const default_limit: std.Io.Duration = .fromSeconds(120);
 
-    /// The bound in nanoseconds, 0 for none, or null when a reason is missing.
-    pub fn nanoseconds(timeout: TestTimeout) ?u64 {
+    /// The bound, zero for none, or null for a missing reason or overflow.
+    /// aegis-raw: design: retain std's duration in the
+    /// build helper, checking the generated runner's u64 schema before export.
+    /// The published aegis build helper exports no scalar namespaces.
+    pub fn duration(timeout: TestTimeout) ?std.Io.Duration {
         return switch (timeout) {
-            .default => @intCast(default_limit.toNanoseconds()),
-            .bound => |custom| if (std.mem.trim(u8, custom.reason, " ").len == 0) null else @intCast(@max(custom.limit.toNanoseconds(), 1)),
-            .off => |reason| if (std.mem.trim(u8, reason, " ").len == 0) null else 0,
+            .default => default_limit,
+            .bound => |custom| bound: {
+                if (std.mem.trim(u8, custom.reason, " ").len == 0) break :bound null;
+                const ns = @max(custom.limit.toNanoseconds(), 1);
+                if (ns > std.math.maxInt(u64)) break :bound null;
+                break :bound .fromNanoseconds(ns);
+            },
+            .off => |reason| if (std.mem.trim(u8, reason, " ").len == 0) null else .zero,
         };
     }
 };
@@ -81,9 +89,18 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
     if (artifact.root_module.import_table.get("preflight_runner_options") == null) {
         const module = b.createModule(.{ .root_source_file = context.pkg.path("src/timings.zig") });
         artifact.root_module.addImport("preflight_timings", module);
-        artifact.root_module.addAnonymousImport("preflight_order", .{ .root_source_file = context.pkg.path("src/order.zig") });
+        const target = artifact.root_module.resolved_target.?;
+        const optimize = artifact.root_module.optimize.?;
+        const safety = context.pkg.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
+        artifact.root_module.addImport("preflight_aegis", safety);
+        artifact.root_module.addAnonymousImport("preflight_order", .{
+            .root_source_file = context.pkg.path("src/order.zig"),
+            .imports = &.{.{ .name = "preflight_aegis", .module = safety }},
+        });
         const runner = b.addOptions();
-        runner.addOption(u64, "test_timeout_ns", options.test_timeout_ns);
+        // aegis-raw: design: the generated options schema
+        // is raw u64, validated by TestTimeout.duration and wrapped by the runner.
+        runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds())); // safe: validated export range
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         runner.addOption(?[]const u8, "timings", if (options.timing) timings(b, artifact, names) else null);
         runner.addOption([]const u8, "durations", context.durations);
@@ -91,7 +108,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
     }
     if (artifact.test_runner != null) {
         // That runner neither arms the watchdog nor reads the shard.
-        if (options.test_timeout_ns != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
+        if (options.test_timeout.toNanoseconds() != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
         const unsharded = b.addRunArtifact(context.checker);
         unsharded.addArgs(&.{ "unsharded", artifact.name });
         unsharded.has_side_effects = true;
@@ -109,7 +126,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         // fuzz. std's own `addRunArtifact` still sets `.zig_test`.
         if (run.stdio != .zig_test) run.enableTestRunnerMode();
     }
-    if (options.test_timeout_ns != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
+    if (options.test_timeout.toNanoseconds() != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
 }
 
 /// The run's timing record, without its shard: the runner appends the shard
@@ -119,6 +136,8 @@ fn timings(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringH
     const stem = b.fmt("{s}-{s}-{s}", .{ artifact.name, @tagName(target.os.tag), @tagName(artifact.root_module.optimize.?) });
     // Two runs that share a name would truncate each other's records.
     var name = stem;
+    // aegis-raw: no-danger: one build owns this name suffix; it is not an ID
+    // or an externally supplied count and never meets another number domain.
     var count: usize = 2;
     while ((names.getOrPut(name) catch @panic("OOM")).found_existing) : (count += 1) name = b.fmt("{s}-{d}", .{ stem, count });
     return b.fmt(".zig-cache/preflight-timings/{s}", .{name});
@@ -136,9 +155,31 @@ fn singleThreaded(artifact: *std.Build.Step.Compile) bool {
 }
 
 test "the default test timeout needs no reason, any other one does" {
-    try std.testing.expectEqual(@as(?u64, 120 * std.time.ns_per_s), TestTimeout.nanoseconds(.default));
-    try std.testing.expectEqual(@as(?u64, 30 * std.time.ns_per_s), TestTimeout.nanoseconds(.{ .bound = .{ .limit = .fromSeconds(30), .reason = "spawns are slow" } }));
-    try std.testing.expectEqual(@as(?u64, 0), TestTimeout.nanoseconds(.{ .off = "its own runner" }));
-    try std.testing.expectEqual(@as(?u64, null), TestTimeout.nanoseconds(.{ .bound = .{ .limit = .fromSeconds(30), .reason = "" } }));
-    try std.testing.expectEqual(@as(?u64, null), TestTimeout.nanoseconds(.{ .off = " " }));
+    try std.testing.expectEqual(@as(?std.Io.Duration, .fromSeconds(120)), TestTimeout.duration(.default));
+    try std.testing.expectEqual(@as(?std.Io.Duration, .fromSeconds(30)), TestTimeout.duration(.{ .bound = .{ .limit = .fromSeconds(30), .reason = "spawns are slow" } }));
+    try std.testing.expectEqual(@as(?std.Io.Duration, .zero), TestTimeout.duration(.{ .off = "its own runner" }));
+    try std.testing.expectEqual(@as(?std.Io.Duration, null), TestTimeout.duration(.{ .bound = .{ .limit = .fromSeconds(30), .reason = "" } }));
+    try std.testing.expectEqual(@as(?std.Io.Duration, null), TestTimeout.duration(.{ .off = " " }));
+}
+
+test "timeout rejects nanoseconds that cannot fit the runner option" {
+    const too_large: std.Io.Duration = .fromNanoseconds(@as(i96, std.math.maxInt(u64)) + 1);
+    try std.testing.expectEqual(@as(?std.Io.Duration, null), TestTimeout.duration(.{ .bound = .{ .limit = too_large, .reason = "explicit large bound" } }));
+}
+
+test "timeout boundary preserves representable bounds and rejects overflow" {
+    const shake = @import("shakedown");
+    try shake.check(std.testing.allocator, {}, struct {
+        fn run(_: void, c: *@import("shakedown").Case) !void {
+            const ns = shake.gen.int(c.source, i96);
+            const actual = TestTimeout.duration(.{ .bound = .{ .limit = .fromNanoseconds(ns), .reason = "boundary property" } });
+            if (ns > std.math.maxInt(u64)) {
+                try std.testing.expectEqual(@as(?std.Io.Duration, null), actual);
+            } else {
+                try std.testing.expectEqual(@max(ns, 1), actual.?.toNanoseconds());
+            }
+        }
+    }.run, .{ .cases = 256 });
+    const largest: std.Io.Duration = .fromNanoseconds(std.math.maxInt(u64));
+    try std.testing.expectEqual(largest, TestTimeout.duration(.{ .bound = .{ .limit = largest, .reason = "maximum runner bound" } }).?);
 }

@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
     // A package consumer needs only the family policies. Its gate installs
     // the tools through addCi; our suite and benchmarks belong to this checkout.
     if (b.pkg_hash.len != 0) return;
+    const safety = b.dependency("aegis", .{ .target = target, .optimize = .debug }).module("aegis");
     // The test doubles are shakedown's, which only preflight's own suite
     // imports: a build that runs preflight for another repository never
     // fetches it.
@@ -45,7 +46,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{.{ .name = "gantry", .module = gantry }},
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "preflight_aegis", .module = safety } },
     }), .filters = test_filters });
     if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
@@ -56,7 +57,7 @@ pub fn build(b: *std.Build) void {
     // consumer's tests; the order module and the watchdog the runner
     // imports run their own tests beside it.
     const suite = &b.addRunArtifact(tests).step;
-    const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/order.zig"), .target = target, .optimize = .debug }) });
+    const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/order.zig"), .target = target, .optimize = .debug, .imports = &.{.{ .name = "preflight_aegis", .module = safety }} }) });
     const order_run = b.addRunArtifact(order);
     test_step.dependOn(suite);
     test_step.dependOn(&order_run.step);
@@ -65,7 +66,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/watchdog_test.zig"),
             .target = target,
             .optimize = .debug,
-            .imports = &.{.{ .name = "shakedown", .module = module }},
+            .imports = &.{ .{ .name = "shakedown", .module = module }, .{ .name = "preflight_aegis", .module = safety } },
         }), .filters = test_filters });
         const run = &b.addRunArtifact(watch).step;
         test_step.dependOn(run);

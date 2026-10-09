@@ -423,7 +423,12 @@ A test runner of a package's own can import `preflight_order` and
 `preflight_timings`. `preflight_order.init(io, init, args, tests, durations)` seeds,
 selects the shard's tests and orders them, returning `InitError` for a seed that is no
 `u32`, a shard that is not `i/n` or durations of the wrong shape. Its `weigh` and
-`assign` are the shard split by themselves. `preflight_timings.Recorder.init(io,
+`assign` are the shard split by themselves. `Shard.index` is a `ShardIndex` and
+`Shard.count` is a `ShardCount`, backed by aegis distinct scalar types. Construct a
+shard with `Shard.init(.fromRaw(index), .fromRaw(count))` or parse hosted `i/n` text.
+`assign` rejects invalid shards, overflowing load-storage counts or unequal name/weight lengths in every build
+mode. `TestTimeout.duration()` returns a checked `std.Io.Duration`; a custom bound
+above `u64` nanoseconds fails configuration. Public waits keep std's Io vocabulary. `preflight_timings.Recorder.init(io,
 environ, stem, key)` opens the timing record, `record(io, name, nanoseconds, status)`
 appends one test and `deinit(io)` closes it; the recorder keeps no `Io`.
 

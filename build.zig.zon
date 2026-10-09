@@ -5,6 +5,10 @@
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
+        .aegis = .{
+            .url = "git+https://github.com/pedronaugusto/aegis#a5d17d0f346d8edacce34b86eea953eb096931da",
+            .hash = "aegis-0.0.0-rsxoupEWAwBXhrB2fwXEkUcw6KOANFGN9PRnfOhKmPtV",
+        },
         .ziglint = .{
             .url = "git+https://github.com/pedronaugusto/ziglint#924b6b5dbc5848ceef77ebccc42470efdf7a1dc4",
             .hash = "ziglint-0.5.3-t0bwL9gkBgDJkTIUhKe70dqGDYevrZK1XGTdjnHfwURT",

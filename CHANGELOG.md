@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `preflight_order.Shard.index` and `.count` use aegis-backed `ShardIndex` and `ShardCount`. `Shard.init(index, count)` checks the index/count relation; `assign` also checks load-storage bounds; `assign` adds `InvalidShard` and `InvalidWeights` to `AssignError`, and `init` adds `InvalidWeights` to `InitError`. Shard syntax and selected test indices are unchanged.
+- `TestTimeout.nanoseconds() ?u64` becomes `TestTimeout.duration() ?std.Io.Duration`. Configuration rejects custom bounds above `u64` nanoseconds in every mode, retaining the existing one-nanosecond floor and reason requirement. Public `TestTimeout.bound.limit` and watchdog waits keep `std.Io.Duration`.
+
 - Benchmark programs can use injected published `shakedown.bench` and build provenance directly. `bench-build` builds ReleaseFast programs/comparison without executing; hosted gates disable benchmark smoke. `bench-ab` builds immutable revisions, interleaves caller-selected workloads and delegates comparison to shakedown. Both revisions must implement this contract.
 - `Config.hardened` and workflow `hardened` opt into safety-on test configurations, executed native Zig fuzzer campaigns and x86_64 Linux LLVM ThreadSanitizer jobs. Unsupported targets and compile-only profile steps fail explicitly; existing allocator ownership is preserved.
 - The own toolchain closure gate validates recursive resolved content-hash pins and fetched package identities, then follows gantry production/test import facts through actual configured module bindings. Pinned lazy bootstrap versions remain distinct; unsupported facts and unresolved inputs fail clearly.

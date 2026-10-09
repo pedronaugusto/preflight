@@ -27,6 +27,7 @@ const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named depen
     "std",
     "builtin",
     "gantry",
+    "preflight_aegis",
     "layers",
     "test_options",
     "preflight_default_test_runner",

@@ -38,3 +38,30 @@ The own-tree toolchain gate consumes Zig 0.17.0's resolved `package_map`, depend
 The gate validates immutable git revisions, declared content hashes against resolved hashes and canonical remote family names against fetched manifest identities. All materialized declaration dependencies are checked recursively, including different published bootstrap versions. Unmaterialized lazy bootstrap entries are named as such and cannot supply production facts. Runtime family edges descend aegis/sweep, glint, gantry, preflight; test-support and pinned lazy bootstrap edges are separate. Required source, identity, binding, version, parser and output failures remain errors. Source reachability is gantry's current lexical/declaration analysis, not a claim of Zig compiler semantic reachability; unsupported recovered constructs fail clearly. Configure internals and the build protocol are distinct version-gated source-of-facts adapters, neither a stable external graph API. Closure scanning is an own-gate cost outside consumer runtime; no dependency or consumer changes are needed.
 
 Cross projections retain each compile step's expected-error union and diagnostic limit. Zig's build runner owns matching (`contains`, `exact`, `starts_with`, `stderr_contains`) and failure outcomes. Deliberate failures do not request emitted binaries, since Zig returns after matching rather than producing a file. Positive projections still emit objects; original native artifacts retain their diagnostic and SDK-link contracts. The integration fixture exercises expected failures, wrong diagnostics and unexpected success across Linux, both macOS architectures and both Windows architectures, with a positive object beside each rejection.
+
+## Shard and watchdog boundaries
+
+Aegis is the std-only scalar safety leaf used by test-order and watchdog modules.
+`ShardIndex` and `ShardCount` retain `usize` layout but cannot be interchanged.
+`Shard.init` and `Shard.parse` establish a nonzero count and an index below it.
+`assign` rechecks those contracts because Zig permits direct field construction,
+checks that `count * sizeof(f64)` fits before load allocation, and rejects unequal
+name/weight lengths before allocating or indexing. Its measured inner loop uses
+raw shard positions in that one domain after validation; the storage bound also
+proves `start + step` cannot overflow. Test indices remain native slice positions.
+
+The build helper retains `std.Io.Duration` through `TestTimeout.duration`, validates
+the generated options' `u64` nanosecond range and exports that schema once. The
+published aegis build helper does not export scalar namespaces to build scripts;
+the runtime runner wraps the generated value in aegis `Duration(.nanosecond, u64)`.
+Conversion to the public std wait vocabulary is explicit and checked. The disabled
+watchdog remains zero; nonpositive custom durations retain their one-nanosecond
+floor. Missing reasons and oversized custom durations fail configuration.
+
+The watchdog owns an awake-clock deadline and only observes an atomic completion
+flag. The test thread publishes completion, wakes it and joins before reclaiming
+storage. There is no lock beside borrowed data: a spin guard cannot implement this
+futex publication/wait protocol. Std clock-tagged timestamp comparison and timeout
+values keep clock and scale together. No guard, confined state or borrowed lock
+capability enters the public API. Raw-site comments state the permitted reason at
+the retained parser, generated-schema, one-owner naming and measured-loop sites.

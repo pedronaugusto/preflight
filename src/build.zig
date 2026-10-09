@@ -128,11 +128,11 @@ const Steps = struct {
                 .imports = &.{.{ .name = "gantry", .module = gantry }},
             }),
         });
-        const timeout = config.test_timeout.nanoseconds() orelse fail: {
-            config.tests.dependOn(&b.addFail("test_timeout: a bound other than the default, or none, needs its reason").step);
-            break :fail 0;
+        const timeout = config.test_timeout.duration() orelse fail: {
+            config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
+            break :fail std.Io.Duration.zero;
         };
-        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout_ns = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
         bench.add(b, pkg, config.tests, config.bench, steps.smoke);
         hardened.add(b, config.tests, config.hardened, steps.profile_options);
         objects.add(b, config.tests, steps.sdk);

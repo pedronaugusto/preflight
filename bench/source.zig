@@ -3,19 +3,20 @@ const std = @import("std");
 const checks = @import("checks");
 const measuring = @import("shakedown").bench;
 const metadata = @import("preflight_bench_options");
+const WorkloadError = error{ OutOfMemory, InvalidPattern, PatternTooLong, InvalidTestSupport, InvalidZigSource, UnexpectedFindings };
 const Context = struct {
     scratch: std.heap.ArenaAllocator,
     io: std.Io,
     source: checks.source.Source,
     config: checks.source.Value,
-    fn quality(c: *Context, units: u64) !void {
+    fn quality(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
             const findings = try checks.quality.findings(c.scratch.allocator(), &.{c.source}, c.config);
             if (findings.len != 0) return error.UnexpectedFindings;
             _ = c.scratch.reset(.retain_capacity);
         }
     }
-    fn lengths(c: *Context, units: u64) !void {
+    fn lengths(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
             var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io };
             try checks.policy.lengths(&context, &.{c.source}, c.config);
@@ -37,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
     defer context.scratch.deinit();
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try measuring.run(init.gpa, init.io, &output.interface, &context, &.{
+    try measuring.run(WorkloadError, init.gpa, init.io, &output.interface, &context, &.{
         .{ .name = "quality", .unit = "scan", .run = Context.quality },
         .{ .name = "lengths", .unit = "scan", .run = Context.lengths },
     }, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{

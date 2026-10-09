@@ -4,11 +4,12 @@ const facts = @import("facts");
 const configuration = facts.configuration;
 const measuring = @import("shakedown").bench;
 const metadata = @import("preflight_bench_options");
+const WorkloadError = error{ EndOfStream, OutOfMemory, ReadFailed, ConfigurationBudget, MalformedConfiguration, EmptyConfiguration };
 const Context = struct {
     scratch: std.heap.ArenaAllocator,
     bytes: []const u8,
     steps: usize = 0,
-    fn trusted(c: *Context, units: u64) !void {
+    fn trusted(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
             var reader = std.Io.Reader.fixed(c.bytes);
             const graph = try std.Build.Configuration.load(c.scratch.allocator(), &reader);
@@ -18,7 +19,7 @@ const Context = struct {
         }
         if (c.steps == 0) return error.EmptyConfiguration;
     }
-    fn bounded(c: *Context, units: u64) !void {
+    fn bounded(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
             const graph = try configuration.load(c.scratch.allocator(), c.bytes);
             std.mem.doNotOptimizeAway(graph);
@@ -38,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     defer c.scratch.deinit();
     var buffer: [4096]u8 = undefined;
     var writer = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try measuring.run(init.gpa, init.io, &writer.interface, &c, &.{
+    try measuring.run(WorkloadError, init.gpa, init.io, &writer.interface, &c, &.{
         .{ .name = "compiler trusted configuration load", .unit = "graph", .run = Context.trusted },
         .{ .name = "bounded configuration load", .unit = "graph", .run = Context.bounded },
     }, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{

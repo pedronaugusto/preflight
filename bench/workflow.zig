@@ -3,13 +3,19 @@ const std = @import("std");
 const checks = @import("checks");
 const measuring = @import("shakedown").bench;
 const metadata = @import("preflight_bench_options");
+const WorkloadError = error{ OutOfMemory, CallerRejected, EmptyCaller };
 const Context = struct {
     scratch: std.heap.ArenaAllocator,
     config: checks.source.Value,
     bytes: usize = 0,
-    fn generate(c: *Context, units: u64) !void {
+    fn generate(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
-            c.bytes = (try checks.workflow.render(c.scratch.allocator(), c.config, "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d", ".", false)).len;
+            // The renderer's many configuration errors all mean this fixed input broke.
+            const caller = checks.workflow.render(c.scratch.allocator(), c.config, "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d", ".", false) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.CallerRejected,
+            };
+            c.bytes = caller.len;
             _ = c.scratch.reset(.retain_capacity);
         }
         if (c.bytes == 0) return error.EmptyCaller;
@@ -25,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     defer context.scratch.deinit();
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writerStreaming(init.io, &buffer);
-    try measuring.run(init.gpa, init.io, &output.interface, &context, &.{.{ .name = "caller generation", .unit = "render", .run = Context.generate }}, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{
+    try measuring.run(WorkloadError, init.gpa, init.io, &output.interface, &context, &.{.{ .name = "caller generation", .unit = "render", .run = Context.generate }}, .{ .commit = metadata.commit, .cpu = metadata.cpu, .os = metadata.os }, .{
         .smoke = args.len == 2 and std.mem.eql(u8, args[1], "--smoke"),
         .prefix = if (args.len == 3 and std.mem.eql(u8, args[1], "--row")) args[2] else "",
     });

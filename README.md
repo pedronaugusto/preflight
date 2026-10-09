@@ -157,7 +157,7 @@ Layout exceptions likewise name their exact member set and a reason.
 
 ### Measuring and comparison
 
-`Config.bench` injects `shakedown` and `preflight_bench_options` (`commit`, physical build-host `cpu`, `os`). Its imports callback is optional. Benchmark programs call published `shakedown.bench.run` with named `Row(Context)` callbacks, workload units and observable results. Shakedown owns warmup, clock resolution, batching, samples, statistics, JSONL and comparison noise; preflight owns builds and child processes. [The sample](sample/bench/sum.zig) is a complete consumer.
+`Config.bench` injects `shakedown` and `preflight_bench_options` (`commit`, physical build-host `cpu`, `os`). Its imports callback is optional. Benchmark programs call published `shakedown.bench.run` with named `Row(Context, WorkloadError)` callbacks and an explicit workload error set, workload units and observable results. Shakedown owns warmup, clock resolution, batching, samples, statistics, JSONL and comparison noise; preflight owns builds and child processes. [The sample](sample/bench/sum.zig) is a complete consumer.
 
 `zig build bench-build` compiles ReleaseFast programs and the published `shakedown-bench-compare` tool, executing nothing. `zig build bench` manually measures them. Local `zig build test` invokes each program once with `--smoke`; each row does its one smoke invocation. Hosted orchestration passes `-Dci-bench-smoke=false` and compiles benches without timing gates. Smoke rows cannot be compared as measurements.
 

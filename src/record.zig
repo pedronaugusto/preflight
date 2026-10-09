@@ -166,20 +166,3 @@ test "timeout rejects nanoseconds that cannot fit the runner option" {
     const too_large: std.Io.Duration = .fromNanoseconds(@as(i96, std.math.maxInt(u64)) + 1);
     try std.testing.expectEqual(@as(?std.Io.Duration, null), TestTimeout.duration(.{ .bound = .{ .limit = too_large, .reason = "explicit large bound" } }));
 }
-
-test "timeout boundary preserves representable bounds and rejects overflow" {
-    const shake = @import("shakedown");
-    try shake.check(std.testing.allocator, {}, struct {
-        fn run(_: void, c: *shake.Case) !void {
-            const ns = shake.gen.int(c.source, i96);
-            const actual = TestTimeout.duration(.{ .bound = .{ .limit = .fromNanoseconds(ns), .reason = "boundary property" } });
-            if (ns > std.math.maxInt(u64)) {
-                try std.testing.expectEqual(@as(?std.Io.Duration, null), actual);
-            } else {
-                try std.testing.expectEqual(@max(ns, 1), actual.?.toNanoseconds());
-            }
-        }
-    }.run, .{ .cases = 256 });
-    const largest: std.Io.Duration = .fromNanoseconds(std.math.maxInt(u64));
-    try std.testing.expectEqual(largest, TestTimeout.duration(.{ .bound = .{ .limit = largest, .reason = "maximum runner bound" } }).?);
-}

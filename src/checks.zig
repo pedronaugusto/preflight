@@ -21,6 +21,7 @@ test {
     _ = @import("structure/check.zig");
     _ = @import("consumer.zig");
     _ = @import("record.zig");
+    _ = @import("record_test.zig");
     _ = @import("configure.zig");
     _ = @import("facts.zig");
     _ = @import("facts_test.zig");

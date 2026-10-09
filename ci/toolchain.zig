@@ -10,7 +10,9 @@ const Import = struct { name: []const u8, module: usize };
 const Module = struct { owner: []const u8, source_arg: ?usize, imports: []const Import };
 const Root = struct { module: usize, kind: Kind };
 const Config = struct { zig: []const u8, packages: []const Package, modules: []const Module, roots: []const Root };
-const Node = struct { module: usize, file: []const u8, kind: Kind };
+/// `root` is the module the traversal started from: the compiler builds only
+/// that module's `test` blocks, never those of the modules it imports.
+const Node = struct { module: usize, root: usize, file: []const u8, kind: Kind };
 const Identity = struct { name: []const u8, fingerprint: u64 };
 const Pin = struct { name: []const u8, family: bool = false };
 
@@ -104,13 +106,13 @@ fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: any
     var pending: std.ArrayList(Node) = .empty;
     for (c.roots) |root| {
         if (root.module >= c.modules.len or root.kind == .bootstrap) return error.InvalidClosureConfiguration;
-        try pending.append(a, .{ .module = root.module, .kind = root.kind, .file = try reader.source(c.modules[root.module]) });
+        try pending.append(a, .{ .module = root.module, .root = root.module, .kind = root.kind, .file = try reader.source(c.modules[root.module]) });
     }
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     var edges: std.StringHashMapUnmanaged(void) = .empty;
     var bytes: usize = 0;
     while (pending.pop()) |node| {
-        const key = try a.print("{d}:{t}:{s}", .{ node.module, node.kind, node.file });
+        const key = try a.print("{d}:{d}:{t}:{s}", .{ node.root, node.module, node.kind, node.file });
         if ((try seen.getOrPut(a, key)).found_existing) continue;
         if (seen.count() > 100_000) return error.ClosureTooLarge;
         const module = c.modules[node.module];
@@ -127,11 +129,14 @@ fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: any
             // Tests inside a production artifact are not configured there.
             // Traverse them through the compiler-configured test roots instead.
             if (node.kind == .runtime and reference.kind == .@"test") continue;
+            // Nor does a test build compile the tests of the modules its root
+            // imports: a dependency's embedded tests are its own to bind.
+            if (node.module != node.root and reference.kind == .@"test") continue;
             const kind: Kind = if (node.kind == .@"test" or reference.kind == .@"test") .@"test" else .runtime;
             if (std.mem.eql(u8, reference.name, "std") or std.mem.eql(u8, reference.name, "builtin") or std.mem.eql(u8, reference.name, "root")) continue;
             if (std.mem.endsWith(u8, reference.name, ".zig") or std.mem.endsWith(u8, reference.name, ".zon")) {
                 const path = try std.Io.Dir.path.resolve(a, &.{ std.Io.Dir.path.dirname(node.file) orelse ".", reference.name });
-                try pending.append(a, .{ .module = node.module, .file = path, .kind = kind });
+                try pending.append(a, .{ .module = node.module, .root = node.root, .file = path, .kind = kind });
                 continue;
             }
             const imported = for (module.imports) |imported| {
@@ -151,7 +156,7 @@ fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: any
                     if (kind == .runtime) try runtimeEdge(parent.name, child_identity.name, family[child_index]);
                 }
             }
-            try pending.append(a, .{ .module = imported.module, .file = try reader.source(child), .kind = kind });
+            try pending.append(a, .{ .module = imported.module, .root = node.root, .file = try reader.source(child), .kind = kind });
         }
     }
 }
@@ -264,6 +269,7 @@ test "closure does not mistake an unrelated URL path for a family identity" {
 }
 
 const Fixture = struct {
+    main_source: []const u8 = "pub const runtime = @import(\"gantry\"); test \"doubles\" { _ = @import(\"shakedown\"); }",
     gantry_source: []const u8 = "pub const nested = @import(\"renamed\");",
     nested_manifest: []const u8 = ".{ .name = .strand, .fingerprint = 694876690031050755, .dependencies = .{} }",
     failure: ?anyerror = null,
@@ -290,7 +296,7 @@ const Fixture = struct {
         ;
         if (std.mem.eql(u8, path, "nested/build.zig.zon")) return self.nested_manifest;
         if (std.mem.eql(u8, path, "doubles/build.zig.zon")) return ".{ .name = .shakedown, .fingerprint = 1131071330934849540, .dependencies = .{} }";
-        if (std.mem.eql(u8, path, "main.zig")) return "pub const runtime = @import(\"gantry\"); test \"doubles\" { _ = @import(\"shakedown\"); }";
+        if (std.mem.eql(u8, path, "main.zig")) return self.main_source;
         if (std.mem.eql(u8, path, "gantry.zig")) return self.gantry_source;
         if (std.mem.eql(u8, path, "strand.zig")) return "pub const value = 1;";
         if (std.mem.eql(u8, path, "doubles.zig")) return "pub const value = 2;";
@@ -331,11 +337,24 @@ test "closure distinguishes production test and pinned unmaterialized bootstrap 
     var out: std.Io.Writer.Allocating = .init(arena.allocator());
     const fixture: Fixture = .{ .gantry_source = "test \"only\" { _ = @import(\"renamed\"); }" };
     try validate(arena.allocator(), Fixture.config(), fixture, Fixture.read, &out.writer);
-    try std.testing.expect(std.mem.find(u8, out.written(), "test gantry -> strand") != null);
     try std.testing.expect(std.mem.find(u8, out.written(), "test preflight -> shakedown") != null);
     try std.testing.expect(std.mem.find(u8, out.written(), "runtime preflight -> gantry") != null);
     try std.testing.expect(std.mem.find(u8, out.written(), "bootstrap gantry -> preflight pin=preflight-0.1.0-AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA materialized=false") != null);
     try std.testing.expect(std.mem.find(u8, out.written(), "runtime gantry -> strand") == null);
+}
+
+test "closure follows the tests of the root module only, as the compiler builds them" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var out: std.Io.Writer.Allocating = .init(arena.allocator());
+    // An imported module's embedded test names a module its binding lacks:
+    // the test build never compiles it, so it is no unresolved import.
+    const fixture: Fixture = .{ .gantry_source = "test \"embedded\" { _ = @import(\"unbound\"); _ = @import(\"renamed\"); }" };
+    try validate(arena.allocator(), Fixture.config(), fixture, Fixture.read, &out.writer);
+    try std.testing.expect(std.mem.find(u8, out.written(), "gantry -> strand") == null);
+    // The root module's own tests are built, so its unbound import is real.
+    const own: Fixture = .{ .main_source = "pub const runtime = @import(\"gantry\"); test \"own\" { _ = @import(\"unbound\"); }" };
+    try std.testing.expectError(error.UnresolvedProductionImport, validate(arena.allocator(), Fixture.config(), own, Fixture.read, &out.writer));
 }
 
 test "closure rejects direct test-support production imports and upward toolchain edges" {

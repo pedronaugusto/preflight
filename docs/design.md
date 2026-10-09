@@ -67,11 +67,16 @@ capability enters the public API. Raw-site comments state the permitted reason a
 the retained parser, generated-schema, one-owner naming and measured-loop sites.
 
 The package config declares Glint A004 at `gate` for the adopted scalar domains.
-Its source roots include `src` and `bench`; tests and benchmarks have no A004
-exemption. Benchmark paths are test support for architecture ownership and
-Shakedown access, while remaining selected inputs for Glint. The index/count
-relation is a reasoned safe-type-internals exception at the one representation
-comparison. This declaration awaits Glint integration:
-published Preflight still invokes ziglint, and published Glint currently admits
-A004 only in report mode. G4 must honour the package setting and supply the
-gating policy before this adoption can land.
+Its source root is `src`, with tests inside it under the same rule; `sources`
+stays the shipped roots, which `.paths` must list, so the benchmarks under
+`bench` are outside this declaration until Glint can select roots a fetched
+package does not ship. The index/count relation is a reasoned safe-type-internals
+exception at the one representation comparison. The declaration takes effect
+once Glint accepts the setting and its gating policy: published Preflight still
+invokes ziglint, and published Glint admits A004 only in report mode.
+
+The toolchain closure follows the `test` blocks of a test artifact's root module
+and not those of the modules it imports, as the compiler builds them. A
+dependency's embedded tests may name modules, such as shakedown, that only its own
+test build binds; they are not part of the consumer's closure, and the gate neither
+binds nor exempts them.

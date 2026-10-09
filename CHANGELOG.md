@@ -18,7 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Declared `ziglint_paths` are never silently dropped: malformed declarations are rejected and option-shaped names remain literal paths. Default probing preserves access, I/O and cancellation failures.
 - F04 completion guarantees are deferred to glint as it replaces the retiring ziglint fork. The pinned fork retains its existing clean/findings/exception behavior; independently detectable signal, capture and input failures remain failures. No ziglint repair is included.
 - `addCi` exposes `zig build plan -- --workflow .github/workflows/ci.yml`: the canonical Zig generator replaces the caller and all tier matrices using the immutable preflight pin in `build.zig.zon`. No package-local planner, Python or hand-edited workflow pin is needed. Declarative `build_args`, target `args` and `windows_git_latest` are supported; malformed inputs and unsafe output paths are refused.
-- Refresh lazy test-only shakedown to green main 9357a9a and the green gantry prerequisite to 76b1366.
+- Refresh lazy test-only shakedown to green main 9357a9a and the green gantry prerequisite to 3677ee0.
 
 - File-name case is owned by ziglint Z009; preflight's `file-name-case` check and `file_name_exceptions` ledger are removed. Move any needed naming exceptions to the Z009 ziglint ledger. Gantry's deeper declaration liveness owns unused imports, so the ziglint invocation disables Z013. Z011 remains the deprecation gate; the separate codemod stays.
 - Path compilation and matching use gantry's exported `Globs` exclusively, with malformed patterns returned as errors even on empty inputs. The direct sweep dependency is removed.

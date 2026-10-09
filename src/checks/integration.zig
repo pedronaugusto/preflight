@@ -1072,11 +1072,11 @@ test "toolchain cold root declares CI controls before lazy discovery returns" {
     for ([_][]const u8{ "build.zig", "build.zig.zon" }) |name| {
         const text = try owner.readFileAlloc(io, name, a, .limited(1024 * 1024));
         const copied = if (std.mem.eql(u8, name, "build.zig.zon"))
-            try std.mem.replaceOwned(u8, a, text, "git+https://github.com/pedronaugusto/gantry#76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9", "file:///preflight-deliberately-missing-lazy-package")
+            try std.mem.replaceOwned(u8, a, text, "git+https://github.com/pedronaugusto/gantry#3677ee001a89b07060decc817e95b87b9cb29ce9", "file:///preflight-deliberately-missing-lazy-package")
         else
             text;
         const uncached = if (std.mem.eql(u8, name, "build.zig.zon"))
-            try std.mem.replaceOwned(u8, a, copied, "gantry-0.1.0-1iNrkYwDDACsflv8JL7EcKNxh68qFeRvfnj44o2gpGWP", "gantry-0.1.0-1iNrkYxDDACsflv8JL7EcKNxh68qFeRvfnj44o2gpGWP")
+            try std.mem.replaceOwned(u8, a, copied, "gantry-0.1.0-1iNrkTwCDAAGb-z9PfKY87xoFPNpMfdvguhnsUlqngxF", "gantry-0.1.0-1iNrkTxCDAAGb-z9PfKY87xoFPNpMfdvguhnsUlqngxF")
         else
             copied;
         try tmp.dir.writeFile(io, .{ .sub_path = name, .data = uncached });

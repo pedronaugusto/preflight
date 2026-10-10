@@ -1,7 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const C = std.Build.Configuration;
 const shakedown = @import("shakedown");
 const configuration = @import("facts/configuration.zig");
+const facts = @import("facts.zig");
 
 pub fn seed(a: std.mem.Allocator) ![]const u8 {
     var wip: C.Wip = .init(a);
@@ -43,4 +45,16 @@ test "build configuration bounds reserved bits and every allocation failure" {
     // TopLevel reserved flag bits must remain zero.
     bad[bad.len - 5] |= 0x80;
     try std.testing.expectError(error.MalformedConfiguration, configuration.load(a, bad));
+}
+
+test "the exported facts name the Zig that produced them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const loaded = try configuration.load(a, try seed(a));
+    var out: std.Io.Writer.Allocating = .init(a);
+    try facts.write(a, .{ .config = loaded, .path = "path" }, &out.writer);
+    const parsed = try std.json.parseFromSliceLeaky(struct { protocol: u32, zig: []const u8 }, a, out.written(), .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u32, 1), parsed.protocol);
+    try std.testing.expectEqualStrings(builtin.zig_version_string, parsed.zig);
 }

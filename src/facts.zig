@@ -332,15 +332,3 @@ test "build protocol chunked transport cancellation child status and output faul
     const loaded = try configuration.load(a, seed);
     try std.testing.expectError(error.WriteFailed, write(a, .{ .config = loaded, .path = "path" }, &writer));
 }
-
-test "the exported facts name the Zig that produced them" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const loaded = try configuration.load(a, try @import("facts_test.zig").seed(a));
-    var out: Io.Writer.Allocating = .init(a);
-    try write(a, .{ .config = loaded, .path = "path" }, &out.writer);
-    const parsed = try std.json.parseFromSliceLeaky(struct { protocol: u32, zig: []const u8 }, a, out.written(), .{ .ignore_unknown_fields = true });
-    try std.testing.expectEqual(@as(u32, 1), parsed.protocol);
-    try std.testing.expectEqualStrings(builtin.zig_version_string, parsed.zig);
-}

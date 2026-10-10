@@ -105,7 +105,18 @@ pub fn main(init: std.process.Init) !void {
         _ = try deprecations.run(a, init.io, .cwd(), .{ .std_dir = std_dir, .write = hasFlag(args, "--write"), .paths = paths.items }, &out.interface);
         try out.interface.flush();
     } else if (std.mem.eql(u8, command, "lint")) {
-        try lintCommand(&c, init, args);
+        // A passing lint prints nothing; a failing one prints all it found, and a
+        // hosted job keeps it in the summary either way.
+        var held: std.Io.Writer.Allocating = .init(a);
+        c.held = &held;
+        const outcome = lintCommand(&c, init, args);
+        c.held = null;
+        if (c.summary_path) |path| if (held.written().len != 0) {
+            // glint-ignore: Z026 -- the summary is a copy for the hosted job; the outcome below is the check's
+            append(c, path, try a.print("<details><summary>lint</summary>\n\n```\n{s}```\n</details>\n", .{held.written()})) catch {};
+        };
+        if (std.meta.isError(outcome) or c.errors != 0) c.report("{s}", .{held.written()});
+        try outcome;
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
 }

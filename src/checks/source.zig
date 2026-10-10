@@ -13,6 +13,10 @@ pub const Context = struct {
     zig: []const u8 = "zig",
     /// The environment a child process gets; null passes this process's own.
     environ_map: ?*const std.process.Environ.Map = null,
+    /// Where the reports go instead of stderr until the command knows its outcome:
+    /// a passing check writes nothing, since Zig 0.17 shows any stderr of a passing
+    /// build step under a "failed command:" line.
+    held: ?*std.Io.Writer.Allocating = null,
 
     pub fn directory(c: Context) std.Io.Dir {
         return c.dir orelse .cwd();
@@ -25,6 +29,10 @@ pub const Context = struct {
 
     /// Writes to stderr, as a command-line tool reports; a failed write loses only the message.
     pub fn report(c: Context, comptime fmt: []const u8, args: anytype) void {
+        if (c.held) |held| {
+            held.writer.print(fmt, args) catch return;
+            return;
+        }
         var buffer: [1024]u8 = undefined;
         var writer = std.Io.File.stderr().writerStreaming(c.io, &buffer);
         writer.interface.print(fmt, args) catch return;

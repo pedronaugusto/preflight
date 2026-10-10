@@ -1,7 +1,8 @@
-//! Zig 0.17 build-system protocol and the actual configured artifact graph.
+//! Zig's build-system protocol and the actual configured artifact graph, on the Zig versions `zig_version.zig` lists.
 const std = @import("std");
 const builtin = @import("builtin");
 const src = @import("checks/source.zig");
+const zig_version = @import("zig_version.zig");
 pub const configuration = @import("facts/configuration.zig");
 const C = std.Build.Configuration;
 const Io = std.Io;
@@ -9,7 +10,10 @@ const limit = 64 * 1024 * 1024;
 
 pub const Snapshot = struct { config: C, path: []const u8, options: []const []const u8 = &.{}, bytes: []const u8 = &.{} };
 pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snapshot {
-    if (!std.mem.eql(u8, builtin.zig_version_string, "0.17.0")) return error.UnsupportedConfigurationVersion;
+    _ = zig_version.require() catch {
+        c.report("preflight: the configured-build reader supports {s}; this one was built with Zig {s}\n", .{ zig_version.supported, builtin.zig_version_string });
+        return error.UnsupportedConfigurationVersion;
+    };
     const version = try std.process.run(c.a, c.io, .{ .argv = &.{ zig, "version" }, .stdout_limit = .limited(1024), .stderr_limit = .limited(1024), .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromSeconds(30) } } });
     try successful(version.term);
     if (!std.mem.eql(u8, std.mem.trim(u8, version.stdout, "\r\n"), builtin.zig_version_string)) return error.UnsupportedCompilerVersion;
@@ -128,7 +132,9 @@ pub fn write(a: std.mem.Allocator, snapshot: Snapshot, writer: *Io.Writer) !void
     const c = &snapshot.config;
     var modules: std.AutoHashMapUnmanaged(C.Module.Index, void) = .empty;
     var pending: std.ArrayList(C.Module.Index) = .empty;
-    try writer.writeAll("{\"protocol\":1,\"zig\":\"0.17.0\",\"configuration\":");
+    try writer.writeAll("{\"protocol\":1,\"zig\":");
+    try std.json.Stringify.value(builtin.zig_version_string, .{}, writer);
+    try writer.writeAll(",\"configuration\":");
     try std.json.Stringify.value(snapshot.path, .{}, writer);
     try writer.writeAll(",\"configured_options\":");
     try std.json.Stringify.value(snapshot.options, .{}, writer);
@@ -325,4 +331,16 @@ test "build protocol chunked transport cancellation child status and output faul
     const seed = try fixture.seed(a);
     const loaded = try configuration.load(a, seed);
     try std.testing.expectError(error.WriteFailed, write(a, .{ .config = loaded, .path = "path" }, &writer));
+}
+
+test "the exported facts name the Zig that produced them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const loaded = try configuration.load(a, try @import("facts_test.zig").seed(a));
+    var out: Io.Writer.Allocating = .init(a);
+    try write(a, .{ .config = loaded, .path = "path" }, &out.writer);
+    const parsed = try std.json.parseFromSliceLeaky(struct { protocol: u32, zig: []const u8 }, a, out.written(), .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqual(@as(u32, 1), parsed.protocol);
+    try std.testing.expectEqualStrings(builtin.zig_version_string, parsed.zig);
 }

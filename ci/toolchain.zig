@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const gantry = @import("gantry");
+const zig_version = @import("zig_version");
 const Kind = enum { runtime, @"test", bootstrap };
 const Dep = struct { name: []const u8, hash: []const u8 };
 const Package = struct { hash: []const u8, root: []const u8, available: bool, dependencies: []const Dep };
@@ -20,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const args = try init.minimal.args.toSlice(a);
     if (args.len < 2) return error.ExpectedResolvedConfiguration;
-    if (!std.mem.eql(u8, builtin.zig_version_string, "0.17.0")) return error.UnsupportedClosureConfiguration;
+    _ = zig_version.require() catch return error.UnsupportedClosureConfiguration;
     const text = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], a, .limited(64 << 20));
     const config = try std.json.parseFromSliceLeaky(Config, a, text, .{ .max_value_len = 64 << 20 });
     var buffer: [4096]u8 = undefined;
@@ -47,7 +48,7 @@ const Reader = struct {
 /// Runtime/test classification comes from gantry imports in their real module
 /// binding context, including relative sources and references only tests reach.
 fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: anytype, out: *std.Io.Writer) !void {
-    if (!std.mem.eql(u8, c.zig, "0.17.0")) return error.UnsupportedClosureConfiguration;
+    if (!std.mem.eql(u8, c.zig, builtin.zig_version_string)) return error.UnsupportedClosureConfiguration;
     if (c.packages.len == 0 or c.packages.len > 512 or c.modules.len > 4096 or c.roots.len > 4096) return error.InvalidClosureConfiguration;
     var packages: std.StringHashMapUnmanaged(usize) = .empty;
     for (c.packages, 0..) |package, index| {
@@ -304,7 +305,7 @@ const Fixture = struct {
     }
     fn config() Config {
         return .{
-            .zig = "0.17.0",
+            .zig = builtin.zig_version_string,
             .packages = &.{
                 .{ .hash = "", .root = "root", .available = true, .dependencies = &.{ .{ .name = "gantry", .hash = "gantry-0.1.0-AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }, .{ .name = "shakedown", .hash = "shakedown-0.1.0-BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } } },
                 .{ .hash = "gantry-0.1.0-AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", .root = "gantry", .available = true, .dependencies = &.{ .{ .name = "alias", .hash = "strand-0.1.0-AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }, .{ .name = "preflight", .hash = "preflight-0.1.0-AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } } },

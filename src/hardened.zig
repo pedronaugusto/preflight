@@ -1,6 +1,7 @@
 //! Opt-in build/test orchestration; source-site safety rules belong to glint.
 const std = @import("std");
 const builtin = @import("builtin");
+const zig_version = @import("zig_version.zig");
 
 pub const Profile = struct {
     /// A step containing real std.testing.fuzz targets.
@@ -23,10 +24,10 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Op
         if (options.active or options.tsan) tests.dependOn(&b.addFail("hardened: this package has not opted in via Config.hardened").step);
         return;
     };
-    if (!std.mem.eql(u8, builtin.zig_version_string, "0.17.0")) {
-        tests.dependOn(&b.addFail("hardened: supported only with Zig 0.17.0").step);
+    _ = zig_version.require() catch {
+        tests.dependOn(&b.addFail(b.fmt("hardened: supported only with {s}, not Zig {s}", .{ zig_version.supported, builtin.zig_version_string })).step);
         return;
-    }
+    };
     if (options.active or options.tsan) {
         var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
         var modules: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty;

@@ -1,9 +1,11 @@
-//! Own-gate adapter over the installed Zig 0.17 configure data. Not an external API.
+//! Own-gate adapter over the installed Zig's configure data, on the versions `zig_version.zig` lists. Not an external API.
 const std = @import("std");
 const builtin = @import("builtin");
+const zig_version = @import("zig_version.zig");
 
 pub fn add(b: *std.Build, checker: *std.Build.Module, production: []const *std.Build.Module, tests: []const *std.Build.Module) void {
-    if (!std.mem.eql(u8, builtin.zig_version_string, "0.17.0")) @panic("unsupported closure configuration: requires Zig 0.17.0");
+    _ = zig_version.require() catch std.debug.panic("unsupported closure configuration: requires {s}, not Zig {s}", .{ zig_version.supported, builtin.zig_version_string });
+    checker.addImport("zig_version", b.createModule(.{ .root_source_file = b.path("src/zig_version.zig") }));
     const run = b.addRunArtifact(b.addExecutable(.{ .name = "check-toolchain", .root_module = checker }));
     // The source reader follows gantry facts during make. Its complete dynamic
     // input set is deliberately not represented as a cached fixed manifest list.
@@ -35,7 +37,9 @@ pub fn add(b: *std.Build, checker: *std.Build.Module, production: []const *std.B
         const module = modules.keys()[at];
         for (module.import_table.values()) |imported| modules.put(a, imported, {}) catch @panic("OOM");
     }
-    write(w, "{\"zig\":\"0.17.0\",\"packages\":[");
+    write(w, "{\"zig\":");
+    json(w, builtin.zig_version_string);
+    write(w, ",\"packages\":[");
     package(w, "", b.root.joinString(a, "") catch @panic("OOM"), true, b.available_deps);
     for (std.Build.package_map.values()) |entry| {
         write(w, ",");

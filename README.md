@@ -29,8 +29,9 @@ Adopting preflight takes three steps and no configuration file:
 
 3. Generate the hosted workflow: `mkdir -p .github/workflows && zig build plan -- --workflow .github/workflows/ci.yml`.
 
-Pull requests then run the merge tier (source checks and the Debug suite on Linux, macOS
-and Windows), a dispatch runs the tier it names, and a nightly run takes the full matrix.
+Pull requests then run the merge tier (source checks, the Debug suite on Linux, macOS
+and Windows, and the configured cross targets), a dispatch runs the tier it names, and a
+nightly run takes the full matrix.
 Every option has a default: `ci/preflight.json` chooses what the source checks read and
 hold, `ci/workflow.json` what the hosted gate runs, and `ci/layers.zig` a source layering
 to enforce; a project needs none of them to start. [sample/zero](sample/zero) is such a
@@ -123,9 +124,9 @@ file. The structure check compiles each pattern once.
 `ci/preflight.json` names source directories, test roots, test support, README
 regions and extra repository checks. A `vendored` exemption must name its upstream
 and how the fork is verified. Function exceptions name an exact file and function,
-a reason and the current line ceiling; growth fails. The normal limit is 120,
-with lower per-path `function_limits` for shared folds. Casts require a nonempty
-`// safe:` comment on their own line. Strings cannot supply that comment.
+a reason and the current line ceiling; growth fails once P003 is gated. The normal limit
+is 120, with lower per-path `function_limits` for shared folds. P001 asks each cast for a
+nonempty `// safe:` comment on its own line. Strings cannot supply that comment.
 
 A namespace containing two or more implementation files has one adjacent entry:
 `src/parser.zig` beside `src/parser/`. Case-insensitive matching accommodates
@@ -170,9 +171,9 @@ it, at any revision that keeps its public names.
 
 | Rule | Weight |
 |---|---|
-| Z003 syntax, Z013 dead import, P001 cast reasons, P002 safety-off reasons, P003 function length, P004 `catch unreachable` | gate |
+| Z003 syntax, Z013 dead import, P002 safety-off reasons, P004 `catch unreachable` | gate |
 | Z011 deprecated call, P005 debug print | finding: any finding fails, and a call glint cannot resolve is counted, not a verdict |
-| Z026 discarded error, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
+| P001 cast reasons, P003 function length, Z026 discarded error, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
 | Z024 line length, P006 disallowed declarations, D001 dead declarations | off (P006 gates once `disallowed` names something) |
 
 `gate` is glint's: a finding fails the run, and so does any site the rule could
@@ -306,7 +307,7 @@ Test artifacts that share a root module share its runner options and timing reco
 
 ### Hosted gate
 
-The gate has four tiers. The merge and release tiers run more than the fast one does, with one exception: the fast tier object-compiles every cross target, which the merge tier leaves to the nightly release run, so a landing stays four jobs:
+The gate has four tiers, each holding everything the one before it checks:
 
 - **local**: the tests a change touches, run by hand while working. Not CI.
 - **fast**: three kinds of Ubuntu job that run side by side: the source checks, the
@@ -315,9 +316,10 @@ The gate has four tiers. The merge and release tiers run more than the fast one 
   many jobs as `cross_jobs` asks for. Test, helper and public-module objects are
   compiled for each target, and the benchmarks in Debug. This proves compilation,
   not linking.
-- **merge**: the gate a change passes to reach main, four jobs: the source checks and
-  the Debug suite on Linux, macOS and Windows (sharded as configured). It is the
-  required status check of a pull request, and with `land` it moves main.
+- **merge**: the gate a change passes to reach main: the source checks, the Debug suite
+  on Linux, macOS and Windows (sharded as configured), and an object compile of every
+  configured cross target (macOS and Windows run natively instead). It is the required
+  status check of a pull request, and with `land` it moves main.
 - **release**: the full matrix, nightly and before a cut: every mode on every host
   (Debug and ReleaseSafe everywhere, ReleaseFast on Linux), ReleaseSmall, every
   cross target with the ReleaseFast benchmarks, the SDK links, TSan and the

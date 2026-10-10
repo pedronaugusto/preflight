@@ -23,6 +23,14 @@
       {
         "id": "Z026",
         "level": "gate"
+      },
+      {
+        "id": "P001",
+        "level": "gate"
+      },
+      {
+        "id": "P003",
+        "level": "gate"
       }
     ]
   }

@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- The default policy reports a cast without its written reason (P001) and a function over the reading budget (P003) instead of gating them: they are a house style, which a package gates in its `glint.rules`. What can hide undefined behaviour still gates by default: safety turned off without a reason (P002) and `catch unreachable` without an invariant (P004).
+- The merge tier compiles the objects of every configured cross target, as the fast tier does: a landing runs the merge tier alone, so a change can no longer move main past a target it breaks.
 - The linked graph is held to one revision of each package and no cycle between packages, the package under test included: a test dependency that links the package back takes the package's own module, bound by the build script. `ci/toolchain.zig`, `check-toolchain` and the toolchain closure policy are gone; this general check replaces them, and preflight needs no `revision_exceptions`. preflight no longer pins aegis.
 - Nothing of preflight's own pins reaches a package's artifact. The test runner, `preflight_order` and the watchdog link std alone: `Shard` holds a plain `index` below a nonzero `count` (`Shard.init(index, count)`). Benchmarks and fuzzing use the package's own `shakedown`, which it must declare; `Config.fuzz_step` is opt-in (null by default), and without it there is no `fuzz` step and nothing is fetched for one.
 - The family rule sets leave preflight: the `rules` module and `preflight_rules` are gone. Test-only packages are `test_dependencies` in `ci/preflight.json`; token rules are a package's own, in its `ci/layers.zig`.

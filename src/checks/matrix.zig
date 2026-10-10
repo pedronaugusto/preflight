@@ -232,14 +232,18 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
 }
 
 /// The source checks, Linux Debug and the Debug suite on macOS and Windows,
-/// each recording its durations. Compiling for other targets, the benchmarks
-/// and the other modes are the release tier's.
+/// each recording its durations, and an object compile of every configured
+/// target: a landing runs this tier alone, so it holds everything the fast tier
+/// checks. The benchmarks' optimizing compiles and the other modes are the
+/// release tier's.
 fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.appendSlice(a, try fastPlan(a, config, .merge));
     const start = jobs.items.len;
     for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{.debug});
     for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
+    const targets = src.items(src.get(config, "targets"));
+    if (targets.len > 0) try crossJobs(a, config, &jobs, targets, false);
     return jobs.items;
 }
 
@@ -799,26 +803,28 @@ test "portable shards share one compilation per host and mode" {
     try std.testing.expectEqual(@as(usize, 3), sharing);
 }
 
-test "the merge tier is four jobs: the source checks and the Debug suite on Linux, macOS and Windows" {
+test "the merge tier is the source checks, the Debug suite on Linux, macOS and Windows, and the configured targets' objects" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"targets\":[\"aarch64-linux-gnu\"],\"hardened\":true}", .{})).value;
     const jobs = try plan(a, config, .merge);
-    try std.testing.expectEqual(@as(usize, 4), jobs.len);
+    try std.testing.expectEqual(@as(usize, 5), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
     try std.testing.expectEqualStrings("ci", jobs[1].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
     try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[2].name);
     try std.testing.expectEqualStrings("test (windows-latest, Debug)", jobs[3].name);
-    for (jobs[1..]) |job| {
+    for (jobs[1..4]) |job| {
         try std.testing.expectEqualStrings("ci", job.step);
         try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", job.args);
         try std.testing.expect(job.operation == .execute);
     }
-    // Cross targets, SDK links, benchmarks, sanitizers and the hardened checks are the release tier's.
+    // A landing runs this tier alone, so it compiles the configured targets as the fast tier does.
+    try std.testing.expectEqualStrings("preflight-cross", jobs[4].step);
+    try std.testing.expectEqualStrings("aarch64-linux-gnu", jobs[4].targets);
+    // SDK links, benchmarks, sanitizers and the hardened checks are the release tier's.
     for (jobs) |job| {
-        try std.testing.expect(job.targets.len == 0);
         try std.testing.expect(!std.mem.startsWith(u8, job.step, "hardened"));
         try std.testing.expect(!std.mem.eql(u8, job.step, "ci-link"));
     }

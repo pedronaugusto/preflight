@@ -167,19 +167,22 @@ test "casts need their reason in production, not in tests, and in test support a
     defer f.deinit();
     const cast = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(p);\n}\n";
     try f.file("src/root.zig", cast);
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // safe: p points at a u32\n}\n");
+    // A house style: reported until the package gates it.
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    const gated = "\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"P001\",\"level\":\"gate\"}]}";
+    try std.testing.expect(try f.run("{" ++ gated ++ "}", .{}) != 0);
+    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // safe: p points at a u32\n}\n");
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ gated ++ "}", .{}));
     try f.file("src/root.zig", "pub const x = 1;\n");
     try f.file("src/root_test.zig", cast);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ gated ++ "}", .{}));
     try f.file("src/testing/harness.zig", cast);
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expect(try f.run("{" ++ gated ++ "}", .{}) != 0);
     try f.file("src/root_test.zig", "pub const t = 1;\n");
     try f.file("src/testing/harness.zig", "pub const h = 1;\n");
     try f.file("src/tls.zig", cast);
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"vendored\":{\"src/tls.zig\":\"std's client, verified byte for byte by check-tls\"}}", .{}));
+    try std.testing.expect(try f.run("{" ++ gated ++ "}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ gated ++ ",\"vendored\":{\"src/tls.zig\":\"std's client, verified byte for byte by check-tls\"}}", .{}));
 }
 
 test "function length: the limit, a per-path ceiling and a reasoned exception that cannot grow or go stale" {
@@ -190,7 +193,9 @@ test "function length: the limit, a per-path ceiling and a reasoned exception th
     for (0..30) |_| try body.appendSlice(f.c.a, "    _ = 1;\n");
     try body.appendSlice(f.c.a, "}\n");
     try f.file("src/root.zig", body.items);
-    const paths = "\"glint_paths\":[\"src\"]";
+    // A house style: reported until the package gates it.
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"function_limit\":20}", .{}));
+    const paths = "\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"P003\",\"level\":\"gate\"}]}";
     try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", .{}));
     try std.testing.expect(try f.run("{" ++ paths ++ ",\"function_limit\":20}", .{}) != 0);
     try std.testing.expect(try f.run("{" ++ paths ++ ",\"function_limits\":{\"src/**\":20}}", .{}) != 0);

@@ -24,8 +24,12 @@ pub const fact_budget: usize = 4_000_000;
 pub const Weight = enum { gate, finding, report, off };
 
 const Entry = struct { rule: glint.Rule, weight: Weight };
-/// preflight's default policy. Correctness and the
-/// package's own declared policy gate, as the ziglint fork's selection did; the
+/// preflight's default policy, for any project with no configuration. Correctness gates,
+/// and so do the sites that can hide undefined behaviour or a stray print: safety
+/// turned off without a reason (P002), `catch unreachable` without an invariant
+/// (P004), a debug print the project forbids (P005). A cast's written reason (P001)
+/// and the function reading budget (P003) are a house style, reported until a package
+/// gates them in its `glint.rules`; the
 /// Zig style rules, and the discarded errors (Z026), are reported until a
 /// package is clean under them and gates them itself: glint finds 3 times the
 /// sites the fork's Z026 did,
@@ -35,9 +39,9 @@ const defaults = [_]Entry{
     .{ .rule = .Z003, .weight = .gate },
     .{ .rule = .Z011, .weight = .finding },
     .{ .rule = .Z013, .weight = .gate },
-    .{ .rule = .P001, .weight = .gate },
+    .{ .rule = .P001, .weight = .report },
     .{ .rule = .P002, .weight = .gate },
-    .{ .rule = .P003, .weight = .gate },
+    .{ .rule = .P003, .weight = .report },
     .{ .rule = .P004, .weight = .gate },
     .{ .rule = .P005, .weight = .finding },
     .{ .rule = .Z026, .weight = .report },
@@ -404,7 +408,7 @@ fn parsed(a: std.mem.Allocator, text: []const u8) !src.Value {
     return (try std.json.parseFromSlice(src.Value, a, text, .{ .allocate = .alloc_always })).value;
 }
 
-test "the default policy gates what the fork gated and reports the rest" {
+test "the default policy gates correctness and the sites that can hide undefined behaviour, and reports the rest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
@@ -413,8 +417,8 @@ test "the default policy gates what the fork gated and reports the rest" {
     try std.testing.expect(policy.base.strict_suppressions);
     try std.testing.expectEqual(.production, policy.base.cast_scope);
     try std.testing.expectEqual(.pointer, policy.base.casts);
-    for ([_]glint.Rule{ .Z003, .Z013, .P001, .P002, .P003, .P004 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
-    for ([_]glint.Rule{ .Z011, .P005, .Z026, .Z012, .Z016, .Z001, .Z006, .Z032 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
+    for ([_]glint.Rule{ .Z003, .Z013, .P002, .P004 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
+    for ([_]glint.Rule{ .P001, .P003, .Z011, .P005, .Z026, .Z012, .Z016, .Z001, .Z006, .Z032 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
     for ([_]glint.Rule{ .Z024, .P006, .D001 }) |rule| try std.testing.expectEqual(.off, policy.base.level(rule));
     try std.testing.expect(policy.fails(.Z011) and policy.fails(.P005));
     try std.testing.expect(!policy.fails(.Z012) and !policy.fails(.Z001));
@@ -471,7 +475,8 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
     const policy = (try parse(&c, try parsed(c.a,
-        \\{"function_limit":100,"function_limits":{"src/fold/*.zig":60,"src/**":90},"vendored":{"src/tls.zig":"std, verified by check-tls"},
+        \\{"glint":{"rules":[{"id":"P001","level":"gate"},{"id":"P003","level":"gate"}]},
+        \\ "function_limit":100,"function_limits":{"src/fold/*.zig":60,"src/**":90},"vendored":{"src/tls.zig":"std, verified by check-tls"},
         \\ "test_support":["src/testing/**"],
         \\ "function_exceptions":{"src/big.zig:compress":{"lines":150,"reason":"one asm block"}}}
     ))).?;

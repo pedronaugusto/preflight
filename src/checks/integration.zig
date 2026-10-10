@@ -137,8 +137,9 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
     try tmp.dir.createDir(io, "examples", .default_dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\n" });
+    // A cast without its reason is reported by default, not gated.
     const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = tmp.dir } });
-    try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
+    try std.testing.expect(cast.term == .exited and cast.term.exited == 0);
     try std.testing.expect(std.mem.find(u8, cast.stderr, "P001: examples/value.zig:2:") != null);
 }
 
@@ -264,7 +265,6 @@ test "sample rejects each code rule the default policy gates and passes clean co
         .{ .rule = "P004", .text = "fn foo() !void {}\npub fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n" },
         .{ .rule = "P005", .text = "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n" },
         .{ .rule = "P002", .text = "pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n" },
-        .{ .rule = "P001", .text = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\ntest {}\n" },
         .{ .rule = "Z011", .text = "const std = @import(\"std\");\npub fn old() ?usize { return std.mem.indexOfScalar(u8, \"x\", 'x'); }\ntest {}\n" },
     };
     for (examples) |example| {
@@ -279,6 +279,11 @@ test "sample rejects each code rule the default policy gates and passes clean co
     const style = try lintFixture(a, tmp.dir);
     try std.testing.expect(style.term == .exited and style.term.exited == 0);
     try std.testing.expect(std.mem.find(u8, style.stderr, "Z006") != null);
+    // So is a house style the package has not gated: a cast without its written reason.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\ntest {}\n" });
+    const house = try lintFixture(a, tmp.dir);
+    try std.testing.expect(house.term == .exited and house.term.exited == 0);
+    try std.testing.expect(std.mem.find(u8, house.stderr, "P001") != null);
     try fixture(a, tmp.dir);
     const clean = try lintFixture(a, tmp.dir);
     try std.testing.expect(clean.term == .exited and clean.term.exited == 0);

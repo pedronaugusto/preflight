@@ -68,7 +68,7 @@ jobs:
   # job compiles the toolchain. The same job tells a fast run whether the
   # change is documentation alone, which needs none of the gate.
   toolchain:
-    if: '!inputs.attest && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    if: '(!inputs.attest || github.event_name == ''push'') && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
     runs-on: ubuntu-latest
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
@@ -116,9 +116,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: .preflight-bin/linux/preflight attest
-  # A branch sees the caches of main and its own, so main keeps the one thing
-  # every job of a new branch would otherwise compile for itself: the build runner.
+  # A branch sees the caches of main and its own, so main keeps what every job of
+  # a new branch would otherwise make for itself: the build runner every `zig build`
+  # compiles first, and the package's external tools. Nothing is run; each job does
+  # a gate job's setup, once a week per runner, and finds all of it cached the rest of the time.
   warm:
+    needs: toolchain
     if: inputs.attest && github.event_name == 'push'
     name: warm (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -128,11 +131,21 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
           path: .preflight
-      - uses: ./.preflight/.github/actions/warm
+      - uses: ./.preflight/.github/actions/setup
+        with:
+          windows-git-latest: ${{ inputs.windows-git-latest }}
+          working-directory: ${{ inputs.working-directory }}
+          build-key: warm
+          toolchain: toolchain-${{ inputs.preflight-ref }}
+      - name: Install the external tools
+        timeout-minutes: 10
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
   gate:
     needs: toolchain
     if: '!inputs.attest && needs.toolchain.outputs.docs-only != ''true'' && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'

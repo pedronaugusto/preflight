@@ -408,8 +408,9 @@ caches; what a job builds of the package is kept in none, since the next run cha
 the sources and a gigabyte of objects per job evicted the rest of the repository's
 caches. What Zig builds for itself is the build runner and each target's runtime,
 which every `zig build` compiles first and which a run on main renews weekly in the
-`warm` job: a branch sees the caches of main and its own, so its first jobs restore
-the runner instead of compiling it.
+`warm` job, together with the package's external tools: a branch sees the caches of main
+and its own, so its first jobs restore the runner instead of compiling it, and the tools
+instead of building them.
 Each job fetches what its own build asks for: it configures the build with the
 job's arguments (`zig build --list-steps`) and builds nothing, retrying three times
 with backoff, as tool setup does. Zig compiles the build script of every package a

@@ -78,7 +78,15 @@ and `.packages` the dependencies the package itself needs. `.options` gives the 
 the options a consumer would (`.{ .name = "http", .value = .{ .flag = false } }` builds it
 without its optional HTTP), so that a feature a package makes optional is built both ways.
 The consumer builds
-for the host in Debug. `preflight.addCheck(b, name, source)` builds a
+for the host in Debug.
+
+A build nested in the package (a conformance build against an emulator that is not yours, a
+consumer fixture) that uses a package the root also pins takes the pin from the root:
+`preflight.addNestedManifest(b, .{ .directory = "conformance", .name = "pkg_conformance", .fingerprint = 0x..., .path_dependencies = &.{.{ .name = "pkg", .path = ".." }}, .shared = &.{"shakedown"} })`
+returns the step that writes `conformance/build.zig.zon`, each `.shared` package's source and hash read
+from the root's `build.zig.zon` (`.pins` names those only the nested build uses), and the step that runs
+the nested build depends on it. The file is the build's output: keep it out of version control, so no
+copy of a pin exists to drift. `lint` still checks any nested manifest it finds, which catches one kept by hand. `preflight.addCheck(b, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
@@ -637,6 +645,7 @@ or directories after `--` to read only those.
 | `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `facts`, `check-imports`, `docs`, `cache` and `deprecations`; optional bench and hardened steps |
 | `Config`, `TestTimeout`, `Bench`, `Hardened` | The gate's paths, shard records, watchdog, test log level and benchmarks |
 | `addConsumerCheck(b, ConsumerOptions)` | Adds `check-consumer` |
+| `addNestedManifest(b, NestedManifest)` | Returns the step that writes a nested build's `build.zig.zon` from the package's own pins |
 | `addCheck(b, name, source)` | Builds, tests and runs a repository check program as step `name` |
 
 A test runner of a package's own can import `preflight_order` and

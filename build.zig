@@ -16,6 +16,10 @@ pub const addCheck = ci.addCheck;
 pub const addConsumerCheck = ci.consumer.add;
 /// What `addConsumerCheck` builds.
 pub const ConsumerOptions = ci.consumer.Options;
+/// Writes the manifest of a build nested in the package from the package's own pins.
+pub const addNestedManifest = ci.nested.add;
+/// What `addNestedManifest` writes.
+pub const NestedManifest = ci.nested.Options;
 
 pub fn build(b: *std.Build) void {
     // Declared before the lazy gantry can end the script, so the first

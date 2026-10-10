@@ -5,6 +5,7 @@ const portable = @import("portable.zig");
 const objects = @import("objects.zig");
 const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
+pub const nested = @import("nested.zig");
 const bench = @import("bench.zig");
 const fuzz = @import("fuzz.zig");
 const hardened = @import("hardened.zig");

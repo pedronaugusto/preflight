@@ -21,6 +21,7 @@ pub const phases = @import("checks/phases.zig");
 test {
     _ = @import("structure/check.zig");
     _ = @import("consumer.zig");
+    _ = @import("nested.zig");
     _ = @import("record.zig");
     _ = @import("record_test.zig");
     _ = @import("configure.zig");

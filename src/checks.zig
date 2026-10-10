@@ -26,6 +26,7 @@ test {
     _ = @import("configure.zig");
     _ = @import("facts.zig");
     _ = @import("facts_test.zig");
+    _ = @import("facts/revisions.zig");
     _ = @import("zig_version.zig");
     _ = @import("profile_test.zig");
     _ = @import("bench_driver.zig");

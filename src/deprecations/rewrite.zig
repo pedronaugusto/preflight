@@ -456,6 +456,8 @@ const View = struct {
     /// the node that names it.
     fn builtinGroup(v: *View, node: Ast.Node.Index, path: Path) !?Group {
         if (path.len != 2) return null;
+        // A name bound to `builtin.os` moves with its declaration; only the field access has a field to rewrite.
+        if (v.tree.nodeTag(node) != .field_access) return null;
         for (v.entries) |entry| switch (entry) {
             .builtin => |r| if (std.mem.eql(u8, path[1], r.old)) {
                 const field = v.tree.nodeData(node).node_and_token[1];

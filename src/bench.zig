@@ -18,7 +18,7 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
         if (configure.exists(b, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench").step);
         return;
     };
-    const dep = pkg.dependencyLazy("shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return;
+    const dep = configure.dependency(b, pkg, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return;
     const comparison = dep.artifact("shakedown-bench-compare");
     const build = b.step("bench-build", "Build benchmarks and shakedown comparison in ReleaseFast; execute nothing");
     const step = b.step("bench", "Build and manually measure benchmark rows through shakedown");
@@ -88,7 +88,7 @@ fn provenance(b: *std.Build) []const u8 {
 }
 
 fn executable(b: *std.Build, pkg: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
-    const dep = pkg.dependencyLazy("shakedown", .{ .target = bench.target, .optimize = optimize }) catch unreachable; // unreachable: lazy discovery restarts configuration
+    const dep = configure.dependency(b, pkg, "shakedown", .{ .target = bench.target, .optimize = optimize }) catch unreachable; // unreachable: lazy discovery restarts configuration
     const mod = b.createModule(.{ .root_source_file = b.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
     if (!mod.import_table.contains("shakedown")) mod.addImport("shakedown", dep.module("shakedown"));
     const metadata = b.addOptions();

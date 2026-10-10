@@ -29,6 +29,86 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
     return pin;
 }
 
+/// The jobs the generator writes; any other job of a caller is the package's own.
+const generated_jobs = [_][]const u8{ "gate", "checks", "land" };
+
+/// The caller `render` writes, then the jobs `existing` (the caller it replaces) holds
+/// beside the generated ones, verbatim: a package's own extra jobs survive regeneration.
+pub fn renderKeeping(a: std.mem.Allocator, config: src.Value, pin: []const u8, directory: []const u8, own: bool, existing: []const u8) ![]const u8 {
+    const generated = try render(a, config, pin, directory, own);
+    return std.mem.concat(a, u8, &.{ generated, try extraJobs(a, existing) });
+}
+
+/// The jobs of a caller that the generator does not write, as they stand. A job
+/// starts at a key indented two spaces under `jobs:` and runs to the next such key
+/// or the next top-level key.
+pub fn extraJobs(a: std.mem.Allocator, existing: []const u8) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var in_jobs = false;
+    var keep = false;
+    var lines = std.mem.splitScalar(u8, existing, '\n');
+    while (lines.next()) |line| {
+        if (line.len > 0 and line[0] != ' ' and line[0] != '#') {
+            in_jobs = std.mem.eql(u8, std.mem.trimEnd(u8, line, " \r"), "jobs:");
+            keep = false;
+            continue;
+        }
+        if (!in_jobs) continue;
+        const key = jobKey(line);
+        if (key) |name| {
+            keep = true;
+            for (generated_jobs) |known| if (std.mem.eql(u8, known, name)) {
+                keep = false;
+            };
+        }
+        if (keep) {
+            if (lines.peek() == null and line.len == 0) break;
+            try out.writer.print("{s}\n", .{line});
+        }
+    }
+    return out.toOwnedSlice();
+}
+
+/// The job a line opens: `  name:` and nothing else but a comment.
+fn jobKey(line: []const u8) ?[]const u8 {
+    if (line.len < 4 or line[0] != ' ' or line[1] != ' ' or line[2] == ' ' or line[2] == '#') return null;
+    const colon = std.mem.findScalar(u8, line, ':') orelse return null;
+    if (std.mem.trim(u8, line[colon + 1 ..], " \r").len != 0) return null;
+    return line[2..colon];
+}
+
+const default_cron = "23 3 * * *";
+
+/// The triggers `ci/workflow.json` asks for beyond the dispatch and the pull request.
+const Triggers = struct { push: []const u8, schedule: []const u8, nightly_tier: []const u8 };
+
+/// `attest` adds the push trigger on main that checks the commit's recorded merge or release run;
+/// `nightly` is `false`, or `{ "cron": ..., "tier": ... }` (default: release at 03:23 UTC).
+fn triggers(a: std.mem.Allocator, config: src.Value) !Triggers {
+    const nightly = src.get(config, "nightly");
+    if (nightly != .null and nightly != .bool and nightly != .object) return error.InvalidNightly;
+    var cron: []const u8 = default_cron;
+    var tier: []const u8 = "release";
+    if (nightly == .object) {
+        for (nightly.object.keys()) |key| if (!std.mem.eql(u8, key, "cron") and !std.mem.eql(u8, key, "tier")) return error.InvalidNightly;
+        cron = src.string(src.get(nightly, "cron"), default_cron);
+        tier = src.string(src.get(nightly, "tier"), "release");
+        var fields: usize = 0;
+        var parts = std.mem.tokenizeScalar(u8, cron, ' ');
+        while (parts.next()) |part| : (fields += 1) {
+            for (part) |byte| if (!std.ascii.isDigit(byte) and std.mem.findScalar(u8, "*/,-", byte) == null) return error.InvalidNightly;
+        }
+        if (fields != 5) return error.InvalidNightly;
+        if (!std.mem.eql(u8, tier, "fast") and !std.mem.eql(u8, tier, "merge") and !std.mem.eql(u8, tier, "release")) return error.InvalidNightly;
+    }
+    const off = nightly == .bool and !nightly.bool;
+    return .{
+        .push = if (std.mem.eql(u8, try boolean(config, "attest"), "true")) "  push:\n    branches: [main]\n" else "",
+        .schedule = if (off) "" else try a.print("  schedule:\n    - cron: '{s}'\n", .{cron}),
+        .nightly_tier = tier,
+    };
+}
+
 pub fn render(a: std.mem.Allocator, config: src.Value, pin: []const u8, directory: []const u8, own: bool) ![]const u8 {
     // Every writer in renderAllocating is memory-backed. Its only write
     // failure is allocation exhaustion; preserve the allocator error contract.
@@ -55,8 +135,11 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         }
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
-    const tokens = [_][]const u8{ "@GATE@", "@PIN@", "@DIRECTORY@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
-    const values = [_][]const u8{ gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
+    const when = try triggers(a, config);
+    const tokens = [_][]const u8{ "@GATE@", "@PIN@", "@DIRECTORY@", "@PUSH@", "@SCHEDULE@", "@NIGHTLY@", "@LANDDEFAULT@", "@CONTENTS@", "@LAND@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
+    // The gate of preflight's own caller is not the whole of its run: the suite runs in `checks`, so the caller lands.
+    const land = if (own) "false" else "${{ github.event_name == 'workflow_dispatch' && inputs.land }}";
+    const values = [_][]const u8{ gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), when.push, when.schedule, when.nightly_tier, try boolean(config, "land"), if (std.mem.eql(u8, try boolean(config, "land"), "true")) "write" else "read", land, matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -85,6 +168,15 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         \\        with:
         \\          version: 0.17.0
         \\      - run: zig build verify -Dci-bench-smoke=false
+        \\  land:
+        \\    needs: [gate, checks]
+        \\    if: github.event_name == 'workflow_dispatch' && inputs.land && inputs.tier == 'merge' && needs.gate.result == 'success' && needs.checks.result == 'success'
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\      contents: write
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - uses: ./.github/actions/land
         \\
     );
     return text.toOwnedSlice();
@@ -227,4 +319,59 @@ test "caller generation survives every allocation failure without resizing its b
     const alloc = @import("shakedown").alloc;
     var no_resize: alloc.NoResize = .init(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(no_resize.allocator(), allocationRender, .{});
+}
+
+test "a package's own jobs survive regeneration, and the generated ones are not duplicated" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value;
+    const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
+    const base = try render(a, config, pin, ".", false);
+    const existing = try std.mem.concat(a, u8, &.{
+        base,
+        \\  indicative:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo one
+        \\  sizes:  # kept
+        \\    needs: gate
+        \\    runs-on: ubuntu-latest
+        \\
+    });
+    const regenerated = try renderKeeping(a, config, pin, ".", false, existing);
+    try std.testing.expectEqualStrings(existing, regenerated);
+    // Again, from the regenerated text: the same bytes.
+    try std.testing.expectEqualStrings(regenerated, try renderKeeping(a, config, pin, ".", false, regenerated));
+    // No caller yet, or one with only generated jobs, keeps nothing.
+    try std.testing.expectEqualStrings(base, try renderKeeping(a, config, pin, ".", false, ""));
+    try std.testing.expectEqualStrings(base, try renderKeeping(a, config, pin, ".", false, base));
+    // A top-level key after the jobs ends them.
+    const trailing = try renderKeeping(a, config, pin, ".", false, try std.mem.concat(a, u8, &.{ existing, "other:\n  note:\n" }));
+    try std.testing.expectEqualStrings(existing, trailing);
+}
+
+test "a project with nothing set gets pull requests, dispatch and a nightly release run, and no landing or main status run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
+    const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, pin, ".", false);
+    try std.testing.expect(std.mem.find(u8, plain, "  pull_request:\n") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "  push:\n") == null);
+    try std.testing.expect(std.mem.find(u8, plain, "- cron: '23 3 * * *'") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "&& 'release' || 'merge'") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "type: boolean\n        default: false\n      status-only") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "contents: write") == null);
+    const set = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"attest\":true,\"nightly\":{\"cron\":\"5 1 * * 0\",\"tier\":\"merge\"}}", .{})).value, pin, ".", false);
+    try std.testing.expect(std.mem.find(u8, set, "  push:\n    branches: [main]\n") != null);
+    try std.testing.expect(std.mem.find(u8, set, "- cron: '5 1 * * 0'") != null);
+    try std.testing.expect(std.mem.find(u8, set, "&& 'merge' || 'merge'") != null);
+    try std.testing.expect(std.mem.find(u8, set, "contents: write") != null);
+    try std.testing.expect(std.mem.find(u8, set, "description: Fast-forward main to this commit when the merge tier passes\n        type: boolean\n        default: true") != null);
+    const off = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"nightly\":false}", .{})).value, pin, ".", false);
+    try std.testing.expect(std.mem.find(u8, off, "schedule:") == null);
+    for ([_][]const u8{ "{\"nightly\":{\"cron\":\"daily\"}}", "{\"nightly\":{\"tier\":\"all\"}}", "{\"nightly\":{\"when\":1}}", "{\"nightly\":3}", "{\"land\":\"yes\"}" }) |text| {
+        try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false)));
+    }
 }

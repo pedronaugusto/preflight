@@ -54,7 +54,10 @@ directory and no `.bench` fails its tests by name.
 adds `check-consumer`: it builds a generated project that depends on the package
 by path with fetching off and a Zig cache of its own, so the build a consumer gets
 cannot reach the package's CI dependencies or anything cached for them. `.modules` names the modules the program imports,
-and `.packages` the dependencies the package itself needs. The consumer builds
+and `.packages` the dependencies the package itself needs. `.options` gives the package
+the options a consumer would (`.{ .name = "http", .value = .{ .flag = false } }` builds it
+without its optional HTTP), so that a feature a package makes optional is built both ways.
+The consumer builds
 for the host in Debug. `preflight.addCheck(b, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
@@ -270,16 +273,15 @@ The gate has four tiers. Each one runs more than the one before it:
   many jobs as `cross_jobs` asks for. Test, helper and public-module objects are
   compiled for each target, and the benchmarks in Debug. This proves compilation,
   not linking.
-- **merge**: fast, plus the benchmarks compiled in ReleaseFast for every target,
-  the Debug suite run on macOS and Windows, sharded as configured, and every
-  configured macOS and Windows target linked on its native SDK runner. It runs
-  once per wave, on the candidate for main.
-- **release**: every mode on every host (Debug and ReleaseSafe everywhere,
-  ReleaseFast on Linux), ReleaseSmall, every cross target and TSan where
-  supported. It runs before a release cut, or by hand when a wave touched
-  threading or platform code.
+- **merge**: the gate a change passes to reach main, four jobs: the source checks and
+  the Debug suite on Linux, macOS and Windows (sharded as configured). It is the
+  required status check of a pull request, and with `land` it moves main.
+- **release**: the full matrix, nightly and before a cut: every mode on every host
+  (Debug and ReleaseSafe everywhere, ReleaseFast on Linux), ReleaseSmall, every
+  cross target with the ReleaseFast benchmarks, the SDK links, TSan and the
+  hardened checks where configured, and the Debug suite on Linux with Zig master.
 
-The merge and release tiers also run the Debug suite on Linux with Zig master,
+The release tier also runs the Debug suite on Linux with Zig master,
 the next release in development. That job never blocks: the run's summary
 reports its result, and a break is a note for the next port's rewrite table.
 The setup action takes `zig-version` (0.17.0, or master), and its cache keys
@@ -296,11 +298,27 @@ that commit as `preflight-ref` and the tier as `tier`. The sample caller in this
 repository shows the trigger and concurrency policy:
 
 - Work-branch pushes start no run. Dispatch runs the tier it names, fast by default.
-- PR merge candidates and merge queue candidates run the merge tier. A main push
-  checks for a successful merge or release run on its exact SHA, with its proof
-  artifact. It reports green without repeating tests; if there is no proof, it fails.
+- Pull requests and merge queue candidates run the merge tier, which is the gate to
+  require as a status check. Nothing family-specific is needed for that.
+- A schedule runs the release tier nightly.
 - The caller owns one concurrency group per branch, with cancellation enabled
-  for work branches and disabled for main's status job. No scheduled runs are enabled.
+  for work branches and disabled for main's status job.
+
+The options of `ci/workflow.json` that shape the caller, all off or defaulted in a new project:
+
+- `land` (default `false`): a merge-tier dispatch whose jobs are all green fast-forwards main to
+  the commit it tested, with the run's own token and never forced; a main that moved fails the
+  job and says so. The token's push starts no run, so a landing is tested once. Dispatch with
+  `-f land=false` to test without landing.
+- `attest` (default `false`): a push to main runs a cheap job that checks for a successful merge
+  or release run on its exact SHA, with its proof artifact, and fails without one. For repositories
+  that push to main by hand.
+- `nightly` (default: the release tier at `23 3 * * *` UTC): `false` for no schedule, or
+  `{ "cron": "5 1 * * 0", "tier": "merge" }` for another time or tier. The run also warms main's caches.
+- `ci/preflight.json` `revision_exceptions`: see the one-revision check below.
+
+A job of the caller that the generator does not write (a package's own `indicative` or `sizes`)
+is kept verbatim when the caller is regenerated.
 
 `ci/workflow.json` is the declarative input. A consumer using `addCi` regenerates
 its entire caller, including both reusable-workflow references, the checkout
@@ -331,6 +349,24 @@ single-file workflow replacement. `--workflow` renders every tier and cannot
 be combined with `--output`. Consumer repositories keep only declarative inputs
 and their generated caller, never copied planner code or consumer plan dumps.
 
+### One revision of each package
+
+`lint` reads the configured build and fails a package whose artifact links two
+revisions of one dependency: types of one revision do not unify with the other's, and
+state a package holds once per program is held twice. The message names the package,
+both revisions, and the packages whose modules import each:
+
+```
+aegis is linked in 2 revisions:
+  aegis-0.0.0-rsxouifg... pulled by conduit, reactor
+  aegis-0.0.0-rsxoutrd... pulled by shakedown
+```
+
+The test runner and benchmark programs preflight adds take the package's own `aegis` and
+`shakedown` when it declares them, and preflight's pin otherwise. The package under test is
+exempt from a second revision of itself, which it cannot pin. `revision_exceptions` in
+`ci/preflight.json` maps a package to the reason two of its revisions may meet.
+
 Targets are strings or objects with `target`, optional `cpu`, and optional
 `args` (an array of `-D` feature flags). `build_args` supplies flags to every
 host and target; target/CPU configuration belongs in its explicit fields.
@@ -353,7 +389,7 @@ and shard replay matrices; it never moves SDK linking to Linux.
 `ci-check` emits objects for the configured test graph, installed artifacts,
 the `check` graph and public modules, the benchmarks in Debug,
 helpers, generated inputs and transitive native libraries. `ci-check-bench` emits
-the benchmarks as they are built to run, in ReleaseFast: the merge and release tiers
+the benchmarks as they are built to run, in ReleaseFast: the release tier
 compile them for every target, and the fast tier does not, since that optimizing
 compile takes longer than all the other objects together. The compile
 projection carries target, CPU, optimization and source/header options; SDK
@@ -386,7 +422,7 @@ each test runs exactly once. Repository-specific jobs stay in the caller and run
 on the tiers they belong to.
 Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) of
 compiling each, longest target first onto the job with the least, each target keeping
-its optional CPU and flags. A target costs what the last merge or release run measured
+its optional CPU and flags. A target costs what the last release run measured
 of it (`ci/costs.json`, which the run's proof artifact carries beside
 `ci/durations.json`), and 90 s, or the mean of the others, where none did. `cross_jobs`
 fixes the count instead. The checks run on their host's baseline CPU target, so a

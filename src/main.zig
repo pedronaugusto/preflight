@@ -27,7 +27,8 @@ pub fn main(init: std.process.Init) !void {
         if (option(args, "--workflow")) |path| {
             const own = hasFlag(args, "--self");
             const pin = if (own) "" else try checks.workflow.pinned(c, option(args, "--manifest") orelse "build.zig.zon");
-            const text = try checks.workflow.render(a, config, pin, option(args, "--working-directory") orelse ".", own);
+            const existing = if (c.exists(path)) try c.read(path) else "";
+            const text = try checks.workflow.renderKeeping(a, config, pin, option(args, "--working-directory") orelse ".", own, existing);
             try checks.workflow.write(c, path, text);
             return;
         }
@@ -104,26 +105,33 @@ pub fn main(init: std.process.Init) !void {
         _ = try deprecations.run(a, init.io, .cwd(), .{ .std_dir = std_dir, .write = hasFlag(args, "--write"), .paths = paths.items }, &out.interface);
         try out.interface.flush();
     } else if (std.mem.eql(u8, command, "lint")) {
-        var config = try c.json(option(args, "--config") orelse "ci/preflight.json");
-        if (option(args, "--zig-exe")) |zig| c.zig = zig;
-        var build_options: std.ArrayList([]const u8) = .empty;
-        for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--build-option")) {
-            if (i + 1 == args.len) return error.MissingConfigurationOption;
-            try build_options.append(a, args[i + 1]);
-        };
-        const snapshot = try facts.read(c, option(args, "--zig-exe") orelse "zig", build_options.items);
-        const roots = try facts.testRoots(a, snapshot);
-        var root_values: std.ArrayList(src.Value) = .empty;
-        const sources = try std.mem.concat(a, src.Source, &.{ try src.collect(c, config), try facts.generatedSources(a, snapshot) });
-        for (roots) |root| for (sources) |source| if (std.mem.eql(u8, root, source.path)) {
-            try root_values.append(a, .{ .string = root });
-            break;
-        };
-        try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
-        c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-        try lint(&c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
+        try lintCommand(&c, init, args);
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
+}
+
+/// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.
+fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8) !void {
+    const a = c.a;
+    var config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+    var build_options: std.ArrayList([]const u8) = .empty;
+    for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--build-option")) {
+        if (i + 1 == args.len) return error.MissingConfigurationOption;
+        try build_options.append(a, args[i + 1]);
+    };
+    const snapshot = try facts.read(c.*, option(args, "--zig-exe") orelse "zig", build_options.items);
+    const roots = try facts.testRoots(a, snapshot);
+    var root_values: std.ArrayList(src.Value) = .empty;
+    const sources = try std.mem.concat(a, src.Source, &.{ try src.collect(c.*, config), try facts.generatedSources(a, snapshot) });
+    for (roots) |root| for (sources) |source| if (std.mem.eql(u8, root, source.path)) {
+        try root_values.append(a, .{ .string = root });
+        break;
+    };
+    try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
+    c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
+    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
+    try facts.revisions.check(c, &snapshot.config, try checks.manifest.name(c), src.get(config, "revision_exceptions"));
 }
 
 fn exportFacts(c: src.Context, args: []const []const u8) !void {

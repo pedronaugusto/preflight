@@ -621,3 +621,24 @@ test "signature check: the Zig 0.17 table matches Zig 0.17's std" {
     , outcome.text);
     try std.testing.expectEqual(0, outcome.leftovers.len);
 }
+
+test "builtin: a name bound to a deprecated field moves with its declaration and is left alone where it is used" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    _ = try f.expect(
+        \\const builtin = @import("builtin");
+        \\const os = builtin.os;
+        \\pub fn f() bool {
+        \\    return os.tag == .linux;
+        \\}
+        \\
+    ,
+        \\const builtin = @import("builtin");
+        \\const os = builtin.target.os;
+        \\pub fn f() bool {
+        \\    return os.tag == .linux;
+        \\}
+        \\
+    );
+}

@@ -21,6 +21,10 @@
     "src/testing/**",
     "src/bench_driver.zig"
   ],
+  "revision_exceptions": {
+    "aegis": "glint, gantry, sweep and shakedown pin four aegis revisions until the family moves to one",
+    "glint": "gantry is pinned to the glint it was built with; preflight pins another until the glint repin lands"
+  },
   "glint": {
     "rules": [
       {

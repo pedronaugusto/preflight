@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const src = @import("checks/source.zig");
 const zig_version = @import("zig_version.zig");
 pub const configuration = @import("facts/configuration.zig");
+pub const revisions = @import("facts/revisions.zig");
 const C = std.Build.Configuration;
 const Io = std.Io;
 const limit = 64 * 1024 * 1024;

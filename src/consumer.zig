@@ -12,12 +12,22 @@ pub const Options = struct {
     modules: []const []const u8 = &.{},
     /// Packages the consumer's build may read: what the package needs to build.
     packages: []const *std.Build.Dependency = &.{},
+    /// Options the consumer gives the package, as `b.dependency(name, .{ ... })` does: `.http = false`
+    /// proves a build without a feature the package makes optional.
+    options: []const Option = &.{},
+};
+
+/// One option of the dependency.
+pub const Option = struct {
+    name: []const u8,
+    value: union(enum) { flag: bool, number: i64, text: []const u8 },
 };
 
 /// What the generated build script depends on and imports.
 const Shape = struct {
     package: []const u8,
     modules: []const []const u8,
+    options: []const Option = &.{},
 };
 
 /// Adds `check-consumer`. The project is generated under the cache, so the
@@ -40,6 +50,11 @@ pub fn add(b: *std.Build, options: Options) void {
     build.addDirectoryArg2(b.path("."), .{});
     build.addFileArg(options.program);
     build.addArg(options.package);
+    for (options.options) |option| build.addArg(switch (option.value) {
+        .flag => |flag| b.fmt("-D{s}=bool:{}", .{ option.name, flag }),
+        .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
+        .text => |text| b.fmt("-D{s}=str:{s}", .{ option.name, text }),
+    });
     build.addArgs(if (options.modules.len > 0) options.modules else &.{options.package});
     build.has_side_effects = true;
     b.step("check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
@@ -66,7 +81,12 @@ pub fn main(init: std.process.Init) !void {
     const relative = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
     std.mem.replaceScalar(u8, relative, '\\', '/');
     const text = try cwd.readFileAlloc(io, args[5], a, .limited(16 * 1024 * 1024));
-    const shape: Shape = .{ .package = args[6], .modules = args[7..] };
+    var modules: std.ArrayList([]const u8) = .empty;
+    var dependency_options: std.ArrayList(Option) = .empty;
+    for (args[7..]) |arg| {
+        if (std.mem.startsWith(u8, arg, "-D")) try dependency_options.append(a, try parseOption(arg[2..])) else try modules.append(a, arg);
+    }
+    const shape: Shape = .{ .package = args[6], .modules = modules.items, .options = dependency_options.items };
     try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
     try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });
@@ -76,6 +96,18 @@ pub fn main(init: std.process.Init) !void {
     var child = try std.process.spawn(io, .{ .argv = &.{ args[1], "build", "--system", packages }, .cwd = .{ .path = directory }, .environ_map = &env });
     const term = try child.wait(io);
     if (term != .exited or term.exited != 0) std.process.exit(1);
+}
+
+/// `name=bool:false`, `name=i64:3` or `name=str:text`.
+fn parseOption(text: []const u8) !Option {
+    const equals = std.mem.findScalar(u8, text, '=') orelse return error.InvalidDependencyOption;
+    const name = text[0..equals];
+    const kind, const value = std.mem.cutScalar(u8, text[equals + 1 ..], ':') orelse return error.InvalidDependencyOption;
+    if (name.len == 0) return error.InvalidDependencyOption;
+    if (std.mem.eql(u8, kind, "bool")) return .{ .name = name, .value = .{ .flag = std.mem.eql(u8, value, "true") } };
+    if (std.mem.eql(u8, kind, "i64")) return .{ .name = name, .value = .{ .number = try std.fmt.parseInt(i64, value, 10) } };
+    if (std.mem.eql(u8, kind, "str")) return .{ .name = name, .value = .{ .text = value } };
+    return error.InvalidDependencyOption;
 }
 
 fn manifest(a: std.mem.Allocator, package: []const u8, path: []const u8) ![]const u8 {
@@ -102,7 +134,13 @@ fn script(a: std.mem.Allocator, shape: Shape) ![]const u8 {
         \\    const optimize = b.standardOptimizeOption(.{});
         \\
     );
-    try w.print("    const package = b.dependency(\"{f}\", .{{ .target = target, .optimize = optimize }});\n", .{std.zig.fmtString(shape.package)});
+    try w.print("    const package = b.dependency(\"{f}\", .{{ .target = target, .optimize = optimize", .{std.zig.fmtString(shape.package)});
+    for (shape.options) |option| switch (option.value) {
+        .flag => |flag| try w.print(", .{f} = {}", .{ std.zig.fmtIdPU(option.name), flag }),
+        .number => |number| try w.print(", .{f} = {d}", .{ std.zig.fmtIdPU(option.name), number }),
+        .text => |text| try w.print(", .{f} = \"{f}\"", .{ std.zig.fmtIdPU(option.name), std.zig.fmtString(text) }),
+    };
+    try w.writeAll(" });\n");
     try w.writeAll("    const exe = b.addExecutable(.{ .name = \"consumer\", ");
     try w.writeAll(".root_module = b.createModule(.{\n        .root_source_file = b.path(\"src/main.zig\"),\n        .target = target,\n        .optimize = optimize,\n        .imports = &.{\n");
     for (shape.modules) |module| try w.print("            .{{ .name = \"{f}\", .module = package.module(\"{f}\") }},\n", .{ std.zig.fmtString(module), std.zig.fmtString(module) });
@@ -119,6 +157,13 @@ test "the generated consumer imports each named module from the package" {
     try std.testing.expect(std.mem.find(u8, text, ".{ .name = \"conduit.tty\", .module = package.module(\"conduit.tty\") }") != null);
     const single = try script(a, .{ .package = "strand", .modules = &.{"strand"} });
     try std.testing.expect(std.mem.find(u8, single, ".{ .name = \"strand\", .module = package.module(\"strand\") }") != null);
+    const optioned = try script(a, .{ .package = "relic", .modules = &.{"relic"}, .options = &.{ .{ .name = "http", .value = .{ .flag = false } }, .{ .name = "level", .value = .{ .number = 2 } }, .{ .name = "mode", .value = .{ .text = "lazy" } } } });
+    try std.testing.expect(std.mem.find(u8, optioned, "b.dependency(\"relic\", .{ .target = target, .optimize = optimize, .http = false, .level = 2, .mode = \"lazy\" })") != null);
+    const parsed = try parseOption("http=bool:false");
+    try std.testing.expectEqualStrings("http", parsed.name);
+    try std.testing.expect(!parsed.value.flag);
+    try std.testing.expectError(error.InvalidDependencyOption, parseOption("http"));
+    try std.testing.expectError(error.InvalidDependencyOption, parseOption("http=float:1"));
     const zon = try manifest(a, "strand", "../..");
     try std.testing.expect(std.mem.find(u8, zon, ".dependencies = .{ .strand = .{ .path = \"../..\" } }") != null);
 }

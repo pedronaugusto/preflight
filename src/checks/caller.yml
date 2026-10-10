@@ -1,14 +1,16 @@
 name: CI
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+@PUSH@@SCHEDULE@  workflow_dispatch:
     inputs:
       tier:
-        description: fast, merge (the candidate for main) or release (before a cut, or after threading or platform work)
+        description: fast, merge (the gate a landing passes) or release (the full matrix, nightly and before a cut)
         type: choice
         options: [fast, merge, release]
         default: fast
+      land:
+        description: Fast-forward main to this commit when the merge tier passes
+        type: boolean
+        default: @LANDDEFAULT@
       status-only:
         description: Verify the recorded merge or release tier for this exact commit
         type: boolean
@@ -25,10 +27,15 @@ permissions:
 jobs:
   gate:
     uses: @GATE@
+    # Only the job that lands a green merge run writes (`land` in ci/workflow.json), and only to move main.
+    permissions:
+      contents: @CONTENTS@
+      actions: read
     with:
-      tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
+      tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || github.event_name == 'schedule' && '@NIGHTLY@' || 'merge' }}
       working-directory: @DIRECTORY@
       preflight-ref: @PIN@
       attest: ${{ github.event_name == 'push' || inputs.status-only }}
+      land: @LAND@
 @MATRICES@      windows-git-latest: @WINDOWS_GIT@
       compile-once: @COMPILE_ONCE@

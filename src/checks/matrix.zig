@@ -62,18 +62,20 @@ fn title(mode: Mode) []const u8 {
 pub const Tier = enum {
     /// The source checks, Linux Debug and an object compile of every target; every other host compiles only.
     fast,
-    /// The candidate for main: fast, the ReleaseFast benchmarks compiled for every target, and the Debug suite on macOS and Windows.
+    /// The gate a landing passes, and the only one: the source checks and the Debug suite executed on Linux, macOS and
+    /// Windows. A package that passes it moves main (`land`), so it holds what a change can break and no more.
     merge,
-    /// Before a release: every mode on every host, cross targets and TSan.
+    /// The full matrix, nightly and before a cut: every mode on every host, the ReleaseFast benchmarks and every cross
+    /// target, the SDK links, ThreadSanitizer and the opt-in hardened checks; the run on Zig master joins it.
     release,
 };
 
-/// The sole planner also owns opt-in native safety execution jobs.
+/// The sole planner also owns opt-in native safety execution jobs, which only the release tier runs.
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     const normal = try basePlan(a, config, tier);
     const hardened = src.get(config, "hardened");
     if (hardened != .null and hardened != .bool) return error.InvalidHardenedProfile;
-    if (hardened == .null or !hardened.bool) return normal;
+    if (hardened == .null or !hardened.bool or tier != .release) return normal;
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.appendSlice(a, normal);
     for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }) |step| {
@@ -106,14 +108,14 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     return jobs.items;
 }
 
-/// The fast tier's jobs, recording durations, the ReleaseFast benchmarks
-/// compiled for every target, and the Debug suite executed on macOS and Windows.
+/// The source checks, Linux Debug and the Debug suite on macOS and Windows,
+/// each recording its durations. Compiling for other targets, the benchmarks
+/// and the other modes are the release tier's.
 fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.appendSlice(a, try fastPlan(a, config, .merge));
     const start = jobs.items.len;
     for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{.debug});
-    try sdkJobs(a, config, &jobs);
     for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
     return jobs.items;
 }
@@ -184,9 +186,9 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
     return .{ .native = native.items, .compile = compile.items, .run = run.items };
 }
 
-/// Linux Debug in `fast_shards` jobs; the first also checks sources and
-/// compiles the other targets. They record durations when `timing` is set
-/// or they are shards.
+/// The source checks and Linux Debug in `fast_shards` jobs; the fast tier adds
+/// the object compile of every target. They record durations when the tier
+/// is not fast or they are shards.
 fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     const timing = tier != .fast;
     var jobs: std.ArrayList(Job) = .empty;
@@ -204,7 +206,7 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
             .cache_key = try a.print("fast-linux-debug-{d}", .{i}),
         });
     }
-    try crossJobs(a, config, &jobs, try fastTargets(a, config), tier != .fast);
+    if (tier == .fast) try crossJobs(a, config, &jobs, try fastTargets(a, config), false);
     return jobs.items;
 }
 
@@ -232,7 +234,7 @@ const unmeasured_target_seconds = 90;
 /// The seconds of compiling one cross job is given, when `cross_seconds` does not say.
 const default_cross_seconds = 200;
 
-/// The seconds `name` takes to compile, as the last merge or release run
+/// The seconds `name` takes to compile, as the last release run
 /// measured them (`ci/costs.json`, which the plan reads as `measured`), the
 /// benchmarks too when `bench` is set; null when nothing was measured.
 fn targetSeconds(a: std.mem.Allocator, config: src.Value, name: []const u8, bench: bool) !?f64 {
@@ -322,8 +324,8 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     }
 }
 
-/// The targets the fast and merge tiers compile: the configured ones, and
-/// the macOS and Windows targets those tiers do not run natively.
+/// The targets the fast tier compiles: the configured ones, and
+/// the macOS and Windows targets that tier does not run natively.
 pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
     try validate(a, config);
     var targets: std.ArrayList(src.Value) = .empty;
@@ -362,7 +364,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
     for (host_names) |host| _ = try shardCount(src.get(shards, host));
-    for ([_][]const u8{ "compile_once", "windows_git_latest" }) |name| {
+    for ([_][]const u8{ "compile_once", "windows_git_latest", "land", "attest" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
     }
@@ -540,7 +542,7 @@ test "cross targets no run has measured cost 90 s each, and get as many jobs as 
     }
 }
 
-test "cross targets a run measured are balanced by their seconds, the benchmarks counted in the merge tier" {
+test "cross targets a run measured are balanced by their seconds, the benchmarks counted in the release tier" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -670,25 +672,32 @@ test "portable shards share one compilation per host and mode" {
     try std.testing.expectEqual(@as(usize, 3), sharing);
 }
 
-test "the merge tier adds the benchmarks and the Debug suite on macOS and Windows to the fast tier, and nothing more" {
+test "the merge tier is four jobs: the source checks and the Debug suite on Linux, macOS and Windows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"shards\":{\"windows\":2},\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\",\"hardened\":true}", .{})).value;
     const jobs = try plan(a, config, .merge);
-    try std.testing.expectEqual(@as(usize, 6), jobs.len);
+    try std.testing.expectEqual(@as(usize, 4), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
     try std.testing.expectEqualStrings("ci", jobs[1].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
-    try std.testing.expectEqualStrings("preflight-cross-bench", jobs[2].step);
-    try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[3].name);
-    try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", jobs[5].name);
-    for (jobs[3..]) |job| {
+    try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[2].name);
+    try std.testing.expectEqualStrings("test (windows-latest, Debug)", jobs[3].name);
+    for (jobs[1..]) |job| {
         try std.testing.expectEqualStrings("ci", job.step);
         try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", job.args);
-        try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
+        try std.testing.expect(job.operation == .execute);
+    }
+    // Cross targets, SDK links, benchmarks, sanitizers and the hardened checks are the release tier's.
+    for (jobs) |job| {
+        try std.testing.expect(job.targets.len == 0);
+        try std.testing.expect(!std.mem.startsWith(u8, job.step, "hardened"));
+        try std.testing.expect(!std.mem.eql(u8, job.step, "ci-link"));
     }
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
+    const shards = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":2}}", .{})).value;
+    try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", (try plan(a, shards, .merge))[4].name);
 }
 
 test "the merge tier links macOS and Windows Debug once on native runners and runs every shard of it" {
@@ -697,8 +706,8 @@ test "the merge tier links macOS and Windows Debug once on native runners and ru
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":2}}", .{})).value;
     const tiers = try split(a, config, try plan(a, config, .merge), .merge);
-    // The source checks, the Linux tests and the cross compile stay on Linux.
-    try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
+    // The source checks and the Linux tests stay on Linux.
+    try std.testing.expectEqual(@as(usize, 2), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 2), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 3), tiers.run.len);
     for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=debug") != null);
@@ -763,7 +772,7 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     try std.testing.expectEqualStrings("-Dcpu=baseline", argv[5]);
     try std.testing.expectEqualStrings("-Dfeature=true", argv[6]);
     try std.testing.expectEqualStrings("-Dtrust-store=true", argv[7]);
-    for ([_]Tier{ .merge, .release }) |tier| {
+    for ([_]Tier{.release}) |tier| {
         const tiers = try split(a, config, try plan(a, config, tier), tier);
         var linked: usize = 0;
         for (tiers.native) |job| if (std.mem.eql(u8, job.step, "ci-link")) {
@@ -792,7 +801,7 @@ test "hardened planner schedules native execution with no portable sanitizer rep
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"hardened\":true}", .{})).value;
-    const tiers = try split(a, config, try plan(a, config, .merge), .merge);
+    const tiers = try split(a, config, try plan(a, config, .release), .release);
     var executed: usize = 0;
     for (tiers.native) |job| if (std.mem.startsWith(u8, job.step, "hardened")) {
         executed += 1;

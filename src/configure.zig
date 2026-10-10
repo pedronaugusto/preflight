@@ -59,3 +59,15 @@ test "a build's outputs, fetched packages and hidden directories are not sources
     for ([_][]const u8{ "zig-out", "zig-pkg", ".zig-cache", ".git" }) |name| try std.testing.expect(generated(name));
     for ([_][]const u8{ "src", "conformance", "zig", "pkg", "zig-pkgs" }) |name| try std.testing.expect(!generated(name));
 }
+
+/// The dependency `name` of the package under test `b`, or preflight's own pin
+/// of it when the package declares none. A package preflight adds to the test
+/// and benchmark artifacts (aegis, shakedown) is the package's own revision
+/// where it has one: two revisions of it in an artifact do not unify, and
+/// the family keeps one revision of each package in any build graph.
+pub fn dependency(b: *std.Build, pkg: *std.Build, name: []const u8, args: anytype) error{LazyDependencyNeeded}!*std.Build.Dependency {
+    for (b.available_deps) |declared| {
+        if (std.mem.eql(u8, declared[0], name)) return b.dependencyLazy(name, args);
+    }
+    return pkg.dependencyLazy(name, args);
+}

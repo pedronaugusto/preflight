@@ -15,6 +15,10 @@ on:
       attest:
         type: boolean
         default: false
+      land:
+        description: Fast-forward main to the commit the merge tier tested, once every job of it is green
+        type: boolean
+        default: false
       fast-matrix:
         description: Static Linux Debug shards generated from ci/workflow.json
         type: string
@@ -68,7 +72,7 @@ jobs:
   # job compiles the toolchain. The same job tells a fast run whether the
   # change is documentation alone, which needs none of the gate.
   toolchain:
-    if: '(!inputs.attest || github.event_name == ''push'') && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    if: '!inputs.attest && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
     runs-on: ubuntu-latest
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
@@ -122,7 +126,7 @@ jobs:
   # a gate job's setup, once a week per runner, and finds all of it cached the rest of the time.
   warm:
     needs: toolchain
-    if: inputs.attest && github.event_name == 'push'
+    if: github.event_name == 'schedule'
     name: warm (${{ matrix.os }} ${{ matrix.copy }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -232,7 +236,7 @@ jobs:
     # Zig master (the next release in development) never blocks: its result is
     # read at each merge, and a break is a note for the next port's codemod table.
     # It builds its own checks, since they must be built by the Zig they read.
-    if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'')'
+    if: '!inputs.attest && inputs.tier == ''release'''
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -448,3 +452,21 @@ jobs:
             .preflight-timings/durations.json
             .preflight-timings/costs.json
           retention-days: 90
+  # Main moves to the commit this run tested, by a fast-forward and by nothing
+  # else, when every job of the merge tier is green. The zig master leg is advisory
+  # and the release tier lands nothing. What moves main is this job's token, whose
+  # pushes start no run of their own, so a landing is not tested twice.
+  land:
+    needs: [gate, compile, execute, profile]
+    if: always() && inputs.land && inputs.tier == 'merge' && !inputs.attest && github.event_name == 'workflow_dispatch' && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') && needs.profile.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/land

@@ -1,0 +1,30 @@
+name: Land
+description: Fast-forward main to the commit this run proved, and to nothing else
+inputs:
+  sha:
+    description: The commit the run tested
+    default: ${{ github.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Fast-forward main
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        SHA: ${{ inputs.sha }}
+      run: |
+        # Never forced: the API refuses a ref update that is not a fast-forward,
+        # and a main that moved since the run began is reported, not overwritten.
+        main=$(gh api "repos/$REPO/commits/main" --jq .sha)
+        if [ "$main" = "$SHA" ]; then
+          echo "main is already at $SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        status=$(gh api "repos/$REPO/compare/$main...$SHA" --jq .status)
+        if [ "$status" != ahead ]; then
+          echo "::error title=Not a fast-forward::main is at $main, and $SHA is $status of it; rebase the branch on main and run the merge tier again"
+          exit 1
+        fi
+        gh api --method PATCH "repos/$REPO/git/refs/heads/main" -f sha="$SHA" -F force=false > /dev/null
+        echo "Landed: main moved from $main to $SHA" | tee -a "$GITHUB_STEP_SUMMARY"

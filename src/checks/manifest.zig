@@ -10,6 +10,26 @@ pub const shipped = [_][]const u8{ "build.zig", "build.zig.zon", "LICENSE", "REA
 
 const Manifest = struct { paths: []const []const u8 };
 
+/// The package's name, as its manifest declares it.
+pub fn name(c: *src.Context) ![]const u8 {
+    const source = try c.a.dupeSentinel(u8, try c.read("build.zig.zon"), 0);
+    const ast = try std.zig.Ast.parse(c.a, source, .{ .mode = .zon });
+    const zoir = try std.zig.ZonGen.generate(c.a, ast, .{});
+    if (zoir.hasCompileErrors()) {
+        c.fail("build.zig.zon: not valid ZON", .{});
+        return error.InvalidManifest;
+    }
+    const root = std.zig.Zoir.Node.Index.root.get(&zoir);
+    if (root != .struct_literal) return error.InvalidManifest;
+    for (root.struct_literal.names, 0..) |field, i| {
+        if (!std.mem.eql(u8, field.get(&zoir), "name")) continue;
+        const value = root.struct_literal.vals.at(@intCast(i)).get(&zoir);
+        if (value != .enum_literal) return error.InvalidManifest;
+        return try c.a.dupe(u8, value.enum_literal.get(&zoir));
+    }
+    return error.InvalidManifest;
+}
+
 pub fn paths(c: *src.Context, config: src.Value) !void {
     const text = try c.a.dupeSentinel(u8, try c.read("build.zig.zon"), 0);
     var diagnostics: std.zon.parse.Diagnostics = undefined;

@@ -105,14 +105,14 @@ runs:
         CPU: ${{ steps.global.outputs.cpu_name }}
       working-directory: ${{ inputs.working-directory }}
       run: |
-        before=$(ls "$ZIG_GLOBAL_CACHE_DIR/o" 2> /dev/null | wc -l)
+        before=$(ls "$ZIG_GLOBAL_CACHE_DIR/o" 2> /dev/null | wc -l || true)
         started=$(date +%s)
         if [ -n "$PREBUILT" ]; then
           preflight fetch
         else
           zig build --build-file "$GITHUB_WORKSPACE/.preflight/build.zig" -Drepo-root="$PWD" fetch
         fi
-        after=$(ls "$ZIG_GLOBAL_CACHE_DIR/o" | wc -l)
+        after=$(ls "$ZIG_GLOBAL_CACHE_DIR/o" 2> /dev/null | wc -l || true)
         echo "- phase \`fetch\`: $(($(date +%s) - started)) s; Zig's own cache held $before entries before it and $after after, on $CPU" | tee -a "$GITHUB_STEP_SUMMARY"
       shell: bash
     - name: Record cache hits

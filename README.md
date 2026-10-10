@@ -264,12 +264,16 @@ Test artifacts that share a root module share its runner options and timing reco
 The gate has four tiers. Each one runs more than the one before it:
 
 - **local**: the tests a change touches, run by hand while working. Not CI.
-- **fast**: the source checks and the Linux Debug suite in one Ubuntu job, which
-  also compiles objects for public roots, tests, benchmarks and helpers on macOS,
-  Windows and every configured cross target. This proves compilation, not linking.
-- **merge**: fast, plus the Debug suite run on macOS and Windows, sharded as
-  configured, and links every configured macOS and Windows target on its native
-  SDK runner. It runs once per wave, on the candidate for main.
+- **fast**: three kinds of Ubuntu job that run side by side: the source checks, the
+  Linux Debug suite in as many shards as `fast_shards` asks for, and an object
+  compile of every configured cross target (macOS and Windows among them) in as
+  many jobs as `cross_jobs` asks for. Test, helper and public-module objects are
+  compiled for each target, and the benchmarks in Debug. This proves compilation,
+  not linking.
+- **merge**: fast, plus the benchmarks compiled in ReleaseFast for every target,
+  the Debug suite run on macOS and Windows, sharded as configured, and every
+  configured macOS and Windows target linked on its native SDK runner, in one of
+  the test jobs of that host. It runs once per wave, on the candidate for main.
 - **release**: every mode on every host (Debug and ReleaseSafe everywhere,
   ReleaseFast on Linux), ReleaseSmall, every cross target and TSan where
   supported. It runs before a release cut, or by hand when a wave touched
@@ -340,14 +344,18 @@ These flags must be individual whitespace-free `-D` arguments. Malformed
 triples, arrays, CPUs, shard counts, booleans and portable-host declarations are
 refused. `windows_git_latest` controls the shared Windows Git setup. A
 workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test.
-`fast_shards` splits Linux Debug; the first shard owns source checks and the
-cross-object bundle. Static jobs explicitly distinguish `execute`, `objects`,
+`fast_shards` splits the Linux Debug tests; the source checks and the cross
+compile are jobs of their own. `cross_jobs` sets how many jobs share the cross
+targets. Static jobs explicitly distinguish `execute`, `objects`,
 `link` and `replay` operations. `compile_once` enables the separate native link
 and shard replay matrices; it never moves SDK linking to Linux.
 
-`ci-check` now emits objects for the configured test graph, installed artifacts,
-the `check` graph and public modules, including benchmark smoke and ReleaseFast programs,
-helpers, generated inputs and transitive native libraries. The compile
+`ci-check` emits objects for the configured test graph, installed artifacts,
+the `check` graph and public modules, the benchmarks in Debug,
+helpers, generated inputs and transitive native libraries. `ci-check-bench` emits
+the benchmarks as they are built to run, in ReleaseFast: the merge and release tiers
+compile them for every target, and the fast tier does not, since that optimizing
+compile takes longer than all the other objects together. The compile
 projection carries target, CPU, optimization and source/header options; SDK
 link requests stay on the original native modules. Zig resolves framework and
 system-library names even in object mode, so those link-only requests are not
@@ -360,7 +368,7 @@ local build option for native links, including an explicit macOS target or CPU.
 The SDK search paths also reach transitive native dependencies. Foreign object
 jobs do not require an Apple SDK.
 
-A shared `skip` job filters changes before the fast tier. Changes touching only
+The first job of a fast run filters changes. Changes touching only
 Markdown outside `src`, LICENSE or images run the documented-snippet check alone.
 The change is the branch since it left its base, as a pull request shows it:
 the pull request's or merge queue's base, or `origin/main` for a dispatch, never
@@ -376,11 +384,29 @@ first onto the least-loaded shard, by the seconds recorded for that target in
 without records the split is by count. Every shard computes the same split, so
 each test runs exactly once. Repository-specific jobs stay in the caller and run
 on the tiers they belong to.
-Cross targets run in one Linux job, retaining each target and optional CPU while
-sharing setup and compiled products. The checker uses its host's baseline CPU
-target so its cached executable is reusable across hosted runner CPU models.
+Cross targets are dealt out in turn to `cross_jobs` Linux jobs (one for every four
+targets when it is not set), each target keeping its optional CPU and flags. The
+checks run on their host's baseline CPU target, so a binary built once serves
+every runner model.
 
-Fetched packages, compiled builds and pinned external tools have separate caches.
+Every job takes the checks as a binary, and none compiles them. The first job of a
+run, `toolchain`, builds `preflight` for Linux, macOS and Windows with `zig build
+toolchain` (about a minute apiece, cross compiled in one job), or takes the build
+that preflight's own run made of the pinned commit: that run keeps it ninety days as
+the artifact `toolchain-<commit>`, and a caller reads it from there. The other
+jobs download the run's copy and put it on the path; their `fetch`, `prepare` and
+`run` are its subcommands, and its `run` hands the build it starts as `-Dci-checks`,
+which `addCi` takes in place of compiling the checks (a build without the option
+compiles them, as local runs do). The Zig master leg builds its own, since the checks
+read the configuration of the Zig that compiled them.
+
+Fetched packages, what Zig builds for itself and pinned external tools have separate
+caches; what a job builds of the package is kept in none, since the next run changes
+the sources and a gigabyte of objects per job evicted the rest of the repository's
+caches. What Zig builds for itself is the build runner and each target's runtime,
+which every `zig build` compiles first and which a run on main renews weekly in the
+`warm` job: a branch sees the caches of main and its own, so its first jobs restore
+the runner instead of compiling it.
 Each job fetches what its own build asks for: it configures the build with the
 job's arguments (`zig build --list-steps`) and builds nothing, retrying three times
 with backoff, as tool setup does. Zig compiles the build script of every package a

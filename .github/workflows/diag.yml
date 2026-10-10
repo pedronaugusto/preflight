@@ -3,25 +3,53 @@ on:
   push:
     branches: [ci-time-diag]
 jobs:
-  diag:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  a:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
           use-cache: false
-      - name: Cold, then warm global with a cold local
+      - name: Build the runner and show what it made
         shell: bash
         run: |
           export ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-global" ZIG_LOCAL_CACHE_DIR="$RUNNER_TEMP/zig-local"
           mkdir -p "$RUNNER_TEMP/triv" && cd "$RUNNER_TEMP/triv"
           printf 'const std = @import("std");\npub fn build(b: *std.Build) void {\n    _ = b.step("t", "t");\n}\n' > build.zig
-          date +%T; time zig build --list-steps > /dev/null
-          du -sh "$ZIG_GLOBAL_CACHE_DIR"/* "$ZIG_LOCAL_CACHE_DIR"/* | sort -h | tail -8
-          rm -rf "$ZIG_LOCAL_CACHE_DIR"
-          date +%T; time zig build --list-steps > /dev/null
-          date +%T
+          time zig build --list-steps > /dev/null
+          echo "zig at $(command -v zig)"; zig env | head -5
+          (cd "$ZIG_GLOBAL_CACHE_DIR" && find . -maxdepth 2 | sort | head -40; ls -la h | head; ls o/*/ | head -20)
+      - uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/zig-global/o
+            ${{ runner.temp }}/zig-global/h
+            ${{ runner.temp }}/zig-global/z
+            ${{ runner.temp }}/zig-global/b
+          key: diag-${{ github.run_id }}
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ runner.temp }}/zig-global/o
+            ${{ runner.temp }}/zig-global/h
+            ${{ runner.temp }}/zig-global/z
+            ${{ runner.temp }}/zig-global/b
+          key: diag-${{ github.run_id }}
+      - name: Use it
+        shell: bash
+        run: |
+          export ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-global" ZIG_LOCAL_CACHE_DIR="$RUNNER_TEMP/zig-local"
+          mkdir -p "$RUNNER_TEMP/triv" && cd "$RUNNER_TEMP/triv"
+          printf 'const std = @import("std");\npub fn build(b: *std.Build) void {\n    _ = b.step("t", "t");\n}\n' > build.zig
+          echo "zig at $(command -v zig)"
+          (cd "$ZIG_GLOBAL_CACHE_DIR" && ls o | sort > $RUNNER_TEMP/before.txt; cat $RUNNER_TEMP/before.txt)
+          time zig build --list-steps > /dev/null
+          (cd "$ZIG_GLOBAL_CACHE_DIR" && ls o | sort > $RUNNER_TEMP/after.txt; echo "new entries:"; comm -13 $RUNNER_TEMP/before.txt $RUNNER_TEMP/after.txt)

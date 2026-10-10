@@ -58,6 +58,15 @@ runs:
       run: |
         echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global" >> "$GITHUB_ENV"
         echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+        # Zig builds its own build runner for the CPU it runs on, so what it built on one
+        # model of the runners' CPUs is of no use on another.
+        case "$RUNNER_OS" in
+          Linux) cpu=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2) ;;
+          macOS) cpu=$(sysctl -n machdep.cpu.brand_string) ;;
+          *) cpu=$PROCESSOR_IDENTIFIER ;;
+        esac
+        echo "cpu=$(printf %s "$cpu" | cksum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        echo "cpu_name=$cpu" >> "$GITHUB_OUTPUT"
       id: global
     - name: Cache fetched Zig packages
       id: packages
@@ -81,9 +90,9 @@ runs:
           ${{ runner.temp }}/zig-global/h
           ${{ runner.temp }}/zig-global/z
           ${{ runner.temp }}/zig-global/b
-        key: zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ steps.global.outputs.week }}
+        key: zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ steps.global.outputs.cpu }}-${{ steps.global.outputs.week }}
         restore-keys: |
-          zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-
+          zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ steps.global.outputs.cpu }}-
     - name: Cache external tools
       uses: actions/cache@v4
       with:
@@ -93,6 +102,7 @@ runs:
       env:
         BUILD_ARGS: ${{ inputs.build-args }}
         PREBUILT: ${{ inputs.toolchain }}
+        CPU: ${{ steps.global.outputs.cpu_name }}
       working-directory: ${{ inputs.working-directory }}
       run: |
         before=$(ls "$ZIG_GLOBAL_CACHE_DIR/o" 2> /dev/null | wc -l)
@@ -103,7 +113,7 @@ runs:
           zig build --build-file "$GITHUB_WORKSPACE/.preflight/build.zig" -Drepo-root="$PWD" fetch
         fi
         after=$(ls "$ZIG_GLOBAL_CACHE_DIR/o" | wc -l)
-        echo "- phase \`fetch\`: $(($(date +%s) - started)) s; Zig's own cache held $before entries before it and $after after" | tee -a "$GITHUB_STEP_SUMMARY"
+        echo "- phase \`fetch\`: $(($(date +%s) - started)) s; Zig's own cache held $before entries before it and $after after, on $CPU" | tee -a "$GITHUB_STEP_SUMMARY"
       shell: bash
     - name: Record cache hits
       env:

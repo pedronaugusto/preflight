@@ -26,7 +26,12 @@ runs:
       if: runner.os == 'Windows' && inputs.windows-git-latest == 'true'
       shell: pwsh
       run: |
-        choco upgrade git -y --no-progress
+        # Chocolatey's mirror fails now and then; the rest of the job should not.
+        foreach ($attempt in 1..3) {
+          choco upgrade git -y --no-progress
+          if ($LASTEXITCODE -eq 0) { break }
+          Start-Sleep -Seconds (5 * $attempt)
+        }
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         git --version
     - uses: actions/download-artifact@v4

@@ -139,8 +139,8 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8
     const roots = try facts.testRoots(a, snapshot);
     var root_values: std.ArrayList(src.Value) = .empty;
     const sources = try std.mem.concat(a, src.Source, &.{ try src.collect(c.*, config), try facts.generatedSources(a, snapshot) });
-    for (roots) |root| for (sources) |source| if (std.mem.eql(u8, root, source.path)) {
-        try root_values.append(a, .{ .string = root });
+    for (roots) |root| for (sources) |source| if (src.samePath(root, source.path)) {
+        try root_values.append(a, .{ .string = source.path });
         break;
     };
     try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });

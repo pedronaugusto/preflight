@@ -251,3 +251,22 @@ test "malformed test support fails even after a matching pattern or with no sour
     const config = (try std.json.parseFromSlice(Value, a, "{\"test_support\":[\"**\",\"[\"]}", .{})).value;
     try std.testing.expectError(error.InvalidPattern, testCode(a, "src/a.zig", config));
 }
+
+/// Two relative paths naming the same file, whichever separator each was written with:
+/// the build graph gives Windows paths with `\`, the source walk may give `/`.
+pub fn samePath(x: []const u8, y: []const u8) bool {
+    if (x.len != y.len) return false;
+    for (x, y) |p, q| if (p != q and !(isSeparator(p) and isSeparator(q))) return false;
+    return true;
+}
+
+fn isSeparator(byte: u8) bool {
+    return byte == '/' or byte == '\\';
+}
+
+test "a test root matches its source whichever separator either path uses" {
+    try std.testing.expect(samePath("src\\zero.zig", "src/zero.zig"));
+    try std.testing.expect(samePath("src/zero.zig", "src/zero.zig"));
+    try std.testing.expect(!samePath("src/zero.zig", "src/zeros.zig"));
+    try std.testing.expect(!samePath("src/a.zig", "src_a.zig"));
+}

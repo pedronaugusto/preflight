@@ -24,11 +24,13 @@ pub fn build(b: *std.Build) void {
     const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
     const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
     const target = ci.ciTarget(b);
-    const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch {
+    // Zig is read through gantry's frontend module, which takes glint's token tier.
+    const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug, .zig = true }) catch {
         _ = ci.declareCiOptions(b, null);
         return;
     };
     const gantry = gantry_dep.module("gantry");
+    const gantry_zig = gantry_dep.module("gantry.zig");
     _ = b.addModule("rules", .{ .root_source_file = b.path("src/rules.zig"), .target = target, .imports = &.{.{ .name = "gantry", .module = gantry }} });
     // A package consumer needs only the family policies. Its gate installs
     // the tools through addCi; our suite and benchmarks belong to this checkout.
@@ -37,6 +39,17 @@ pub fn build(b: *std.Build) void {
         _ = ci.declareCiOptions(b, null);
         return;
     }).module("aegis");
+    // Code rules are glint's; the checks import it as a library. A module that
+    // sets no optimize mode takes its importer's, so the tests, which build
+    // aegis in Debug for themselves, take glint in Debug and share it.
+    const glint = (b.dependencyLazy("glint", .{ .target = target, .optimize = .debug }) catch {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    }).module("glint");
+    const glint_safe = (b.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    }).module("glint");
     // The test doubles are shakedown's, which only preflight's own suite
     // imports: a build that runs preflight for another repository never
     // fetches it.
@@ -49,7 +62,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "preflight_aegis", .module = safety } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "preflight_aegis", .module = safety } },
     }), .filters = test_filters });
     if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
@@ -79,15 +92,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .safe,
-        .imports = &.{.{ .name = "gantry", .module = gantry }},
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint_safe } },
     }) });
     b.installArtifact(executable);
     if (repo_root == null) {
-        const lint_tool = b.dependencyLazy("ziglint", .{ .target = target, .optimize = .safe }) catch {
-            _ = ci.declareCiOptions(b, null);
-            return;
-        };
-        options.addOptionPath("ziglint", lint_tool.artifact("ziglint").getEmittedBin());
         // preflight gates its own sources with the checks it ships.
         const profile = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path("src/profile_test.zig"),
@@ -116,15 +124,19 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("ci/toolchain.zig"),
             .target = target,
             .optimize = .debug,
-            .imports = &.{.{ .name = "gantry", .module = gantry }},
+            .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig } },
         }), &.{ executable.root_module, b.modules.get("rules").?, b.createModule(.{
             .root_source_file = b.path("src/build.zig"),
             .target = target,
             .imports = &.{.{ .name = "gantry", .module = gantry }},
         }) }, &.{ tests.root_module, profile.root_module });
     }
-    const root = repo_root orelse ".";
-    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "findings" }) |name| {
+    addCommands(b, executable, repo_root orelse ".");
+}
+
+/// The steps that run one of the installed command's subcommands in `root`.
+fn addCommands(b: *std.Build, executable: *std.Build.Step.Compile, root: []const u8) void {
+    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip" }) |name| {
         if (b.top_level_steps.contains(name)) continue;
         const command = b.addRunArtifact(executable);
         command.addArg(name);
@@ -135,8 +147,10 @@ pub fn build(b: *std.Build) void {
 }
 
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
-    const gantry = (b.dependencyLazy("gantry", .{ .target = target, .optimize = optimize }) catch unreachable).module("gantry"); // unreachable: build returns before addOwnCi if gantry is not available
-    const imports: []const std.Build.Module.Import = &.{.{ .name = "gantry", .module = gantry }};
+    const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = optimize, .zig = true }) catch unreachable; // unreachable: build returns before addOwnCi if gantry is not available
+    const gantry = gantry_dep.module("gantry");
+    const glint = (b.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: build returns before addOwnCi if glint is not available
+    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint } };
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = b.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = b.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },

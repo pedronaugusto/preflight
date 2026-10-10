@@ -30,6 +30,7 @@ pub fn main(init: std.process.Init) !void {
     const scratch = try a.print(".zig-cache/preflight-ab/{s}-{x}", .{ sha, random });
     try Io.Dir.cwd().createDirPath(init.io, scratch);
     const absolute = try Io.Dir.cwd().realPathFileAlloc(init.io, scratch, a);
+    // glint-ignore: Z026 -- scratch removal is best effort after the run; a leftover directory is in the cache
     defer Io.Dir.cwd().deleteTree(init.io, scratch) catch {};
     const checkout = try Io.Dir.path.join(a, &.{ absolute, "base" });
     _ = try command(a, init.io, candidate, &.{ "git", "clone", "--shared", "--no-checkout", "--", candidate, checkout });

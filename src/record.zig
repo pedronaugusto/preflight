@@ -125,6 +125,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         // Zig 0.17's test runner reads its cache directory and seed from
         // argv, which only `.zig_test` passes, and a `.protocol` run cannot
         // fuzz. std's own `addRunArtifact` still sets `.zig_test`.
+        // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; this needs .zig_test
         if (run.stdio != .zig_test) run.enableTestRunnerMode();
     }
     if (options.test_timeout.toNanoseconds() != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});

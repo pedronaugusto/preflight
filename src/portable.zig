@@ -40,6 +40,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, checker: *std.Build.Step.Compi
         run.addArgs(command.argv[1..]);
         run.setCwd(if (command.scratch) b.tmpPath() else b.path(command.cwd orelse "."));
         run.has_side_effects = true;
+        // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; the recorded command needs .zig_test
         if (command.test_runner) run.enableTestRunnerMode();
         run.step.dependOn(&executable.step);
         execute.dependOn(&run.step);

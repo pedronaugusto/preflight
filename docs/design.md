@@ -1,6 +1,18 @@
 # Preflight design
 
-Preflight owns repository gates, build and process orchestration, and the canonical hosted workflow planner. Gantry owns semantic architecture checks. Code-level rules belong to glint; the current supported ziglint behavior remains available until that integration supplies reliable completion outcomes. The legacy tool can silently omit traversal or final-flush failures, so F04 remains open. Independently observable input, signal, cancellation and capture failures still fail the gate.
+Preflight owns repository gates, build and process orchestration, and the canonical hosted workflow planner. Gantry owns semantic architecture checks. Code-level rules belong to glint, which preflight runs for the repository: which files, with which imports and under which policy are preflight's; what a rule finds is glint's.
+
+## Code rules
+
+Preflight runs glint as a library in its own process, in one in-memory project, not as a child process. A child would need a result protocol to be told from a crash, and the repository's path dialect (which files are test code, which a vendored fork, which have a lower function ceiling) has no surface in a command line that treats every file alike. In-process, a file that cannot be read is an error, a panic is a failed step, and the verdict is read from the report itself, so no outcome has to be recovered from text or a receipt. The cost is that glint's runtime, and aegis under it, is built for every repository's checks.
+
+Files are the repository's `glint_paths`, or the shipped `sources` and the directories a repository keeps code in beside them. Selection is separate from `sources` because `sources` is the set `.paths` ships and must list; a benchmark is gated without being shipped. Every import is resolved from the build's configuration, the same facts the structure and toolchain checks use: `std` from the compiler's library, a relative path as itself, a named module as the configuration binds it in each module that compiles the file. A name two modules bind to different files, or none binds, stays unresolved, never guessed. The cost is one read of every file the selection imports, standard library included, once per run.
+
+The policy is the group review's. Z026 (a discarded error needs its reason) and the style rules are reported, and a package gates each as it becomes clean: glint's Z026 finds about three times the sites the fork's did, about 430 across the family against 136 suppressed today, and the review's order is reported, then gated. glint's `gate` couples two things: a finding fails, and a site the rule could not decide makes the run incomplete. That is right for a rule that can decide every site it names (a cast, a discarded error, a function's length) and for the aegis rules, which a repository adopts knowing what they cannot see. It is wrong for deprecated calls and debug prints: glint resolves a call through a receiver of unknown type to nothing, and a run that must resolve every call never completes. Those two are *findings* in the family's policy: glint reports them, any finding fails, and the calls it could not resolve are counted and are not a verdict. A repository may still gate them in glint's sense by naming them.
+
+A run is complete or it is not a pass. The run fails on a file that does not parse or lower, on an exhausted fact budget, on a site a gating rule could not decide, on a file that cannot be read, and on a suppression that suppresses nothing (the family default; a repository may turn it off). A finding the policy allows never hides one of these. This closes the review's finding F04, which the ziglint fork could not close: it had no outcome for an analysis that stopped. There is no profile to select: the family's policy is preflight's, a repository amends it rule by rule, and a setting preflight cannot honour fails by name rather than turn a gate off.
+
+Exceptions are glint's inline `glint-ignore` with a reason, one site each. The exact-match ledgers (`ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`) and their shrinking budget retire with the tool they were for; they were empty across the family. A retired key fails the repository that still names it.
 
 ## Configured builds and target projection
 
@@ -66,14 +78,7 @@ values keep clock and scale together. No guard, confined state or borrowed lock
 capability enters the public API. Raw-site comments state the permitted reason at
 the retained parser, generated-schema, one-owner naming and measured-loop sites.
 
-The package config declares Glint A004 at `gate` for the adopted scalar domains.
-Its source root is `src`, with tests inside it under the same rule; `sources`
-stays the shipped roots, which `.paths` must list, so the benchmarks under
-`bench` are outside this declaration until Glint can select roots a fetched
-package does not ship. The index/count relation is a reasoned safe-type-internals
-exception at the one representation comparison. The declaration takes effect
-once Glint accepts the setting and its gating policy: published Preflight still
-invokes ziglint, and published Glint admits A004 only in report mode.
+The package config declares glint's A004 at `gate` for the adopted scalar domains, across the sources, the tests, the benchmarks and the build script: the default selection reaches `bench`, `ci` and `build.zig`, which `sources` does not list because they are not shipped. A reasoned `glint-ignore` marks the one index/count comparison that is safe-type internals, and the sites that glint cannot resolve through a field of a struct are written so that they resolve.
 
 The toolchain closure follows the `test` blocks of a test artifact's root module
 and not those of the modules it imports, as the compiler builds them. A

@@ -28,7 +28,7 @@ test "cache pruning keeps fetched packages and tools, missing cache stays missin
     const a = std.testing.allocator;
     const path = try tmp.dir.realPathFileAlloc(io, ".", a);
     defer a.free(path);
-    for ([_][]const u8{ "o", "h", "z", "tmp", "p", "ziglint" }) |name| {
+    for ([_][]const u8{ "o", "h", "z", "tmp", "p", "tools" }) |name| {
         try tmp.dir.createDir(io, name, .default_dir);
         const file = try std.Io.Dir.path.join(a, &.{ name, "kept" });
         defer a.free(file);
@@ -40,7 +40,7 @@ test "cache pruning keeps fetched packages and tools, missing cache stays missin
     try trim(c, path, 1);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "o", .{}));
     try tmp.dir.access(io, "p/kept", .{});
-    try tmp.dir.access(io, "ziglint/kept", .{});
+    try tmp.dir.access(io, "tools/kept", .{});
     try trim(c, path, 1);
     const missing = try std.Io.Dir.path.join(a, &.{ path, "absent" });
     defer a.free(missing);

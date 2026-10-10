@@ -59,7 +59,7 @@ const Watchdog = struct {
 
     fn watch(watchdog: *Watchdog) void {
         // The global single-threaded Io never cancels a wait.
-        if (!bound.expired(io, &watchdog.done, test_timeout.toIoDuration() catch unreachable)) return; // unreachable: u64 nanoseconds fit std i96 duration
+        if (!bound.expired(io, &watchdog.done, test_timeout.toIoDuration())) return;
         report("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
             watchdog.name, (test_timeout.convert(.millisecond, u64, .down) catch unreachable).raw(), watchdog.phase.load(.acquire), testing.random_seed, // unreachable: dividing unsigned nanoseconds fits u64
         });

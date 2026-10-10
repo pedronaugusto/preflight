@@ -8,9 +8,7 @@ pub const Context = struct {
     io: std.Io,
     dir: ?std.Io.Dir = null,
     errors: usize = 0,
-    ledger_base: ?[]const u8 = null,
     summary_path: ?[]const u8 = null,
-    adopt: bool = false,
     /// The environment a child process gets; null passes this process's own.
     environ_map: ?*const std.process.Environ.Map = null,
 
@@ -72,6 +70,16 @@ pub fn strings(a: std.mem.Allocator, v: Value) ![]const []const u8 {
     for (items(v), out) |item, *text| text.* = if (item == .string) item.string else return error.ExpectedStrings;
     return out;
 }
+
+/// A module of the configured build: where its root file is, and which module
+/// each name its code imports leads to (an index into the same list).
+pub const BuildModule = struct {
+    /// The root file, relative to the repository or absolute; null when the
+    /// build generates it.
+    root: ?[]const u8,
+    imports: []const Binding,
+    pub const Binding = struct { name: []const u8, module: usize };
+};
 
 /// Test files by name, wherever they sit.
 pub const test_files = [_][]const u8{ "*_test.zig", "test_*.zig", "tests.zig" };

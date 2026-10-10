@@ -6,10 +6,6 @@ on:
         description: fast, merge or release
         type: string
         default: fast
-      adopt:
-        description: Initialize absent source ledgers from exact findings already on main
-        type: boolean
-        default: false
       working-directory:
         type: string
         default: .
@@ -136,7 +132,6 @@ jobs:
           PREFLIGHT_SHARD: ${{ matrix.shard }}
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: 'true'
-          PREFLIGHT_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}
           FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - name: Verify the shared checker
@@ -204,8 +199,6 @@ jobs:
           PREFLIGHT_SHARD: ${{ matrix.shard }}
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
-          PREFLIGHT_ADOPT: ${{ inputs.adopt }}
-          PREFLIGHT_LEDGER_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'origin/main' }}
           FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
       - uses: actions/upload-artifact@v4

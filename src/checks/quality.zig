@@ -1,107 +1,8 @@
-//! Zig source checks share exact ledgers, with independent budgets per rule.
+//! The assertion-density report. Code rules that gate are glint's.
 const std = @import("std");
-const gantry = @import("gantry");
 const src = @import("source.zig");
-const ledger = @import("ledger.zig");
 
-pub const Finding = struct { rule: []const u8, path: []const u8, source: []const u8, detail: []const u8, line: usize };
 pub const Density = struct { path: []const u8, function: []const u8, asserts: usize, lines: usize };
-pub const rules = [_][]const u8{ "catch-unreachable", "debug-print" };
-pub const keys = [_][]const u8{ "unreachable_exceptions", "debug_print_exceptions" };
-
-pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
-    const found = try findings(c.a, sources, config);
-    const baseline = if (c.adopt and c.ledger_base != null) try baseFindings(c, sources, config) else src.Value.null;
-    for (rules, keys) |rule, key| {
-        var allowed = try ledger.Ledger.loadWithBaseline(c, config, key, baseline);
-        for (found) |f| {
-            if (!std.mem.eql(u8, f.rule, rule)) continue;
-            if (!allowed.consume(f.rule, f.path, f.source, f.detail)) c.fail("{s}: {s}:{d}: {s}", .{ f.rule, f.path, f.line, f.detail });
-        }
-        try allowed.finish();
-    }
-}
-
-fn baseFindings(c: *src.Context, sources: []const src.Source, config: src.Value) !src.Value {
-    const prefix = try ledger.git(c, &.{ "rev-parse", "--show-prefix" });
-    if (!ledger.success(prefix)) return error.MissingRepository;
-    var old_sources: std.ArrayList(src.Source) = .empty;
-    for (sources) |s| {
-        const spec = try c.a.print("{s}:{s}{s}", .{ c.ledger_base.?, std.mem.trim(u8, prefix.stdout, "\r\n"), s.path });
-        const shown = try ledger.git(c, &.{ "show", spec });
-        if (!ledger.success(shown)) continue;
-        try old_sources.append(c.a, try src.Source.parse(c.a, s.path, shown.stdout));
-    }
-    const json = try std.json.Stringify.valueAlloc(c.a, try findings(c.a, old_sources.items, config), .{});
-    return (try std.json.parseFromSlice(src.Value, c.a, json, .{})).value;
-}
-
-pub fn findings(a: std.mem.Allocator, sources: []const src.Source, config: src.Value) ![]Finding {
-    var result: std.ArrayList(Finding) = .empty;
-    var globs: gantry.rules.Globs = .{ .arena = a };
-    const tests = try globs.list(.path, try src.testPaths(a, config));
-    for (sources) |s| {
-        if (s.tree.errors.len != 0) return error.InvalidZigSource;
-        const test_file = gantry.rules.anyOf(tests, s.path);
-        for (s.tree.nodes.items(.tag), 0..) |tag, i| {
-            if (tag != .@"catch") continue;
-            const node: std.zig.Ast.Node.Index = @fromBackingInt(@intCast(i));
-            const token = s.tree.nodeMainToken(node);
-            var rhs = s.tree.nodeData(node).node_and_node[1];
-            while (s.tree.nodeTag(rhs) == .grouped_expression) rhs = s.tree.nodeData(rhs).node_and_token[0];
-            if (s.tree.nodeTag(rhs) == .unreachable_literal and !test_file and !s.inTest(token) and !unreachableReason(s, token))
-                try add(a, &result, s, token, rules[0], "catch unreachable needs // unreachable: <why> on the same or previous line");
-        }
-        const tags = s.tree.tokens.items(.tag);
-        for (tags, 0..) |tag, i| {
-            const token: std.zig.Ast.TokenIndex = @intCast(i);
-            if (test_file or s.inTest(token)) continue;
-            if (tag == .identifier and debugPrint(s, token))
-                try add(a, &result, s, token, rules[1], "std.debug.print outside tests and src/testing/");
-        }
-    }
-    return result.items;
-}
-
-fn add(a: std.mem.Allocator, list: *std.ArrayList(Finding), s: src.Source, token: std.zig.Ast.TokenIndex, rule: []const u8, detail: []const u8) !void {
-    try list.append(a, .{ .rule = rule, .path = s.path, .source = std.mem.trim(u8, s.lineText(token), " \t\r"), .detail = detail, .line = s.line(token) });
-}
-
-fn debugPrint(s: src.Source, token: std.zig.Ast.TokenIndex) bool {
-    const parts = [_][]const u8{ "std", ".", "debug", ".", "print", "(" };
-    if (token + parts.len > s.tree.tokens.len) return false;
-    for (parts, 0..) |part, j| {
-        if (!std.mem.eql(u8, s.tree.tokenSlice(token + @as(u32, @intCast(j))), part)) return false;
-    }
-    return true;
-}
-
-fn unreachableReason(s: src.Source, token: std.zig.Ast.TokenIndex) bool {
-    if (commentReason(s.lineText(token))) return true;
-    const offset = s.tree.tokens.items(.start)[token];
-    const end = std.mem.findScalarLast(u8, s.text[0..offset], '\n') orelse return false;
-    const start = if (std.mem.findScalarLast(u8, s.text[0..end], '\n')) |n| n + 1 else 0;
-    return commentReason(s.text[start..end]);
-}
-
-fn commentReason(line: []const u8) bool {
-    if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "\\\\")) return false;
-    var quote: ?u8 = null;
-    var escaped = false;
-    var i: usize = 0;
-    while (i < line.len) : (i += 1) {
-        const char = line[i];
-        if (quote) |q| {
-            if (escaped) escaped = false else if (char == '\\') escaped = true else if (char == q) quote = null;
-        } else if (char == '"' or char == '\'') {
-            quote = char;
-        } else if (char == '/' and i + 1 < line.len and line[i + 1] == '/') {
-            const comment = std.mem.trim(u8, line[i + 2 ..], " \t\r");
-            return std.mem.startsWith(u8, comment, "unreachable:") and std.mem.trim(u8, comment[12..], " \t\r").len > 0;
-        }
-    }
-    return false;
-}
 
 pub fn density(a: std.mem.Allocator, sources: []const src.Source) ![]Density {
     var result: std.ArrayList(Density) = .empty;
@@ -156,34 +57,6 @@ pub fn summary(c: *src.Context, sources: []const src.Source, output: ?[]const u8
     }
 }
 
-test "each source policy finds code and ignores literals, tests and justified unreachable" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const bad = try src.Source.parse(a, "src/value.zig", "field: u8,\nfn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{bad}, .null)).len);
-    const clean = try src.Source.parse(a, "src/Value.zig", "field: u8,\nfn work() void {\n // unreachable: checked earlier\n foo() catch unreachable;\n foo() catch unreachable; // unreachable: invariant\n const literal = \"std.debug.print catch unreachable // unreachable: fake\";\n}\ntest { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{clean}, .null)).len);
-    for ([_][]const u8{ "src/work_test.zig", "src/test_work.zig", "src/tests.zig", "src/testing/helper.zig" }) |path| {
-        const ignored = try src.Source.parse(a, path, "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-        try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{ignored}, .null)).len);
-    }
-    const plural = try src.Source.parse(a, "src/work_tests.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{plural}, .null)).len);
-    try std.testing.expect(!commentReason("foo(\"// unreachable: fake\") catch unreachable;"));
-    try std.testing.expect(!commentReason("foo() catch unreachable; // unreachable: "));
-    try std.testing.expect(!commentReason("\\\\ // unreachable: fake"));
-    const grouped = try src.Source.parse(a, "src/value.zig", "fn work() void { foo() catch |err| (unreachable); }\n");
-    try std.testing.expectEqual(@as(usize, 1), (try findings(a, &.{grouped}, .null)).len);
-    const namespace = try src.Source.parse(a, "src/Namespace.zig", "const S = struct { field: u8 };\n");
-    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{namespace}, .null)).len);
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_support\":[\"src/fixtures/**\"]}", .{})).value;
-    const configured = try src.Source.parse(a, "src/fixtures/deep/helper.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 0), (try findings(a, &.{configured}, config)).len);
-    const unconfigured = try src.Source.parse(a, "src/testing/helper.zig", "fn work() void { foo() catch unreachable; std.debug.print(\"hi\", .{}); }\n");
-    try std.testing.expectEqual(@as(usize, 2), (try findings(a, &.{unconfigured}, config)).len);
-}
-
 test "assertion density counts per function without comments or nested double counting" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -195,12 +68,4 @@ test "assertion density counts per function without comments or nested double co
     try std.testing.expectEqual(@as(usize, 1), rows[1].asserts);
     try std.testing.expectEqual(@as(usize, 0), rows[2].asserts);
     try std.testing.expectEqual(@as(usize, 0), rows[3].asserts);
-}
-
-test "source quality validates test path patterns with no sources" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_support\":[\"[\"]}", .{})).value;
-    try std.testing.expectError(error.InvalidPattern, findings(a, &.{}, config));
 }

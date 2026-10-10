@@ -117,15 +117,16 @@ const Steps = struct {
     /// `pkg` is the preflight package whose sources and tools the gate runs.
     fn install(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
-        const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug }) catch return;
+        const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
         const gantry = gantry_dep.module("gantry");
+        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return;
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
             .root_module = b.createModule(.{
                 .root_source_file = pkg.path("src/main.zig"),
                 .target = host,
                 .optimize = .safe,
-                .imports = &.{.{ .name = "gantry", .module = gantry }},
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint_dep.module("glint") } },
             }),
         });
         const timeout = config.test_timeout.duration() orelse fail: {
@@ -164,11 +165,12 @@ const Steps = struct {
         deprecations.addPassthruArgs();
         deprecations.setCwd(b.path("."));
         b.step("deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
-        steps.addLint(b, pkg, config, executable, gantry);
+        steps.addLint(b, pkg, config, executable, gantry_dep);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry: *std.Build.Module) void {
+    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry_dep: *std.Build.Dependency) void {
         const host = ciTarget(b);
+        const gantry = gantry_dep.module("gantry");
         const layers = b.createModule(.{
             .root_source_file = b.path(config.layers),
             .target = host,
@@ -180,7 +182,7 @@ const Steps = struct {
                 .root_source_file = pkg.path("src/structure.zig"),
                 .target = host,
                 .optimize = .debug,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "layers", .module = layers } },
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "layers", .module = layers } },
             }),
         });
         var format_paths: std.ArrayList([]const u8) = .empty;
@@ -205,11 +207,9 @@ const Steps = struct {
         lint_structure.addArgs(&.{ "--config", config.config });
         lint_structure.setCwd(b.path("."));
         lint_structure.step.dependOn(&format.step);
-        const ziglint_dep = pkg.dependencyLazy("ziglint", .{ .target = host, .optimize = .safe }) catch return;
         const checks = b.addRunArtifact(executable);
-        checks.addArgs(&.{ "lint", "--config", config.config, "--ziglint" });
-        checks.addArtifactArg2(ziglint_dep.artifact("ziglint"), .{});
-        checks.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+        checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
+        checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         configurationOptions(b, checks);
         checks.setCwd(b.path("."));
         checks.step.dependOn(&lint_structure.step);

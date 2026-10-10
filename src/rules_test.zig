@@ -1,5 +1,6 @@
 const std = @import("std");
 const gantry = @import("gantry");
+const zig = @import("gantry.zig");
 const family = @import("rules.zig");
 
 const Item = struct { path: []const u8, text: []const u8 };
@@ -33,6 +34,7 @@ test "family policies gate calls and production imports, with one definition per
     const paths = [_][]const u8{ "src/app.zig", "src/app_test.zig", "src/fixtures/helper.zig", "src/inline.zig" };
     const owned = family.durability ++ family.no_async;
     var graph = try gantry.scan(std.testing.allocator, std.testing.io, &paths, Reader{ .items = &items }, Reader.read, .{
+        .frontends = &.{zig.frontend},
         .manifests = false,
         .tokens = &owned,
         .test_paths = &.{ "*_test.zig", "src/fixtures/**" },

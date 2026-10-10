@@ -70,11 +70,11 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     defer env.deinit();
     if (env.get("PREFLIGHT_TEST_SEED")) |value| seed = std.fmt.parseUnsigned(u32, value, 0) catch return error.InvalidSeed;
     std.testing.random_seed = seed;
-    const shard = try Shard.parse(env.get("PREFLIGHT_SHARD") orelse "");
+    const shard: Shard = try Shard.parse(env.get("PREFLIGHT_SHARD") orelse "");
     const names = try gpa.alloc([]const u8, tests.len);
     defer gpa.free(names);
     for (tests, names) |test_fn, *name| name.* = test_fn.name;
-    const weights = try weigh(gpa, if (shard.count.raw() > 1 and durations.len > 0) durations else "{}", names, key);
+    const weights = try weigh(gpa, if (shard.count.compare(.fromRaw(1)) == .gt and durations.len > 0) durations else "{}", names, key);
     defer gpa.free(weights);
     const selected = try assign(gpa, names, weights, shard);
     var random = std.Random.DefaultPrng.init(seed);
@@ -82,7 +82,12 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     var buffer: [256]u8 = undefined;
     var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
     try stderr.interface.print("preflight: test seed {d} (reproduce with PREFLIGHT_TEST_SEED={d})\n", .{ seed, seed });
-    if (shard.count.raw() > 1) try stderr.interface.print("preflight: shard {d}/{d} runs {d} of {d} tests\n", .{ shard.index.raw() + 1, shard.count.raw(), selected.len, tests.len });
+    if (shard.count.compare(.fromRaw(1)) == .gt) {
+        const index: ShardIndex = shard.index;
+        const count: ShardCount = shard.count;
+        // glint-ignore: A004 -- no-danger: Shard.init keeps the index below the count; the log line shows it one-based
+        try stderr.interface.print("preflight: shard {d}/{d} runs {d} of {d} tests\n", .{ index.raw() + 1, count.raw(), selected.len, tests.len });
+    }
     try stderr.interface.flush();
     return selected;
 }
@@ -174,7 +179,7 @@ pub fn assign(gpa: std.mem.Allocator, names: []const []const u8, weights: []cons
             if (loads[candidate] < loads[least]) least = candidate;
         }
         loads[least] += weights[test_index];
-        if (least == shard.index.raw()) try selected.append(gpa, test_index);
+        if (ShardIndex.fromRaw(least).eql(shard.index)) try selected.append(gpa, test_index);
     }
     std.mem.sort(usize, selected.items, {}, std.sort.asc(usize));
     return selected.toOwnedSlice(gpa);

@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const gantry = @import("gantry");
+const zig = @import("gantry.zig");
 const zig_version = @import("zig_version");
 const Kind = enum { runtime, @"test", bootstrap };
 const Dep = struct { name: []const u8, hash: []const u8 };
@@ -26,6 +27,7 @@ pub fn main(init: std.process.Init) !void {
     const config = try std.json.parseFromSliceLeaky(Config, a, text, .{ .max_value_len = 64 << 20 });
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stderr().writerStreaming(init.io, &buffer);
+    // glint-ignore: Z026 -- a flush that fails on the error path loses only the report; the success path flushes with try
     defer output.interface.flush() catch {};
     const reader: Reader = .{ .io = init.io, .args = args };
     try validate(a, config, reader, Reader.read, &output.interface);
@@ -35,7 +37,14 @@ const Reader = struct {
     io: std.Io,
     args: []const []const u8,
     fn read(self: Reader, a: std.mem.Allocator, p: []const u8) ![]const u8 {
-        return std.Io.Dir.cwd().readFileAlloc(self.io, p, a, .limited(1 << 20));
+        return std.Io.Dir.cwd().readFileAlloc(self.io, p, a, .limited(1 << 20)) catch |err| {
+            var buffer: [1024]u8 = undefined;
+            var output = std.Io.File.stderr().writerStreaming(self.io, &buffer);
+            // glint-ignore: Z026 -- the original error is the one returned
+            output.interface.print("check-toolchain: cannot read {s} ({t})\n", .{ p, err }) catch {};
+            output.interface.flush() catch {}; // glint-ignore: Z026 -- the original error is the one returned
+            return err;
+        };
     }
     fn source(self: Reader, module: Module) ![]const u8 {
         const index = module.source_arg orelse return error.MissingConfiguredSource;
@@ -90,7 +99,7 @@ fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: any
             }
             try pending_packages.append(a, child);
             // These are declaration facts, not assertions of runtime reachability.
-            if (pinned.family and (std.mem.eql(u8, pinned.name, "preflight") or std.mem.eql(u8, pinned.name, "ziglint"))) {
+            if (pinned.family and (std.mem.eql(u8, pinned.name, "preflight"))) {
                 if (!try isLazy(a, manifest, dependency.name)) return error.UnboundedBootstrap;
                 try out.print("check-toolchain: bootstrap {s} -> {s} pin={s} materialized={}\n", .{ identities[index].?.name, pinned.name, resolved.hash, child_package.available });
             }
@@ -122,7 +131,7 @@ fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: any
         const source = try read(reader, a, node.file);
         if (source.len > (64 << 20) - bytes) return error.ClosureTooLarge;
         bytes += source.len;
-        var facts = try gantry.imports(a, .zig, source);
+        var facts = try gantry.importsWith(a, zig.frontend, source);
         defer facts.deinit();
         if (facts.unsupported().len != 0) return error.UnsupportedReachabilityFacts;
         for (facts.items()) |reference| {
@@ -135,14 +144,17 @@ fn validate(a: std.mem.Allocator, c: Config, reader: anytype, comptime read: any
             if (node.module != node.root and reference.kind == .@"test") continue;
             const kind: Kind = if (node.kind == .@"test" or reference.kind == .@"test") .@"test" else .runtime;
             if (std.mem.eql(u8, reference.name, "std") or std.mem.eql(u8, reference.name, "builtin") or std.mem.eql(u8, reference.name, "root")) continue;
-            if (std.mem.endsWith(u8, reference.name, ".zig") or std.mem.endsWith(u8, reference.name, ".zon")) {
-                const path = try std.Io.Dir.path.resolve(a, &.{ std.Io.Dir.path.dirname(node.file) orelse ".", reference.name });
+            // A name the module binds is a module, whatever it ends with: gantry's
+            // Zig frontend is the module `gantry.zig`. Otherwise `.zig` is a file.
+            const bound = for (module.imports) |imported| {
+                if (std.mem.eql(u8, imported.name, reference.name)) break imported;
+            } else null;
+            if (bound == null and (std.mem.endsWith(u8, reference.name, ".zig") or std.mem.endsWith(u8, reference.name, ".zon"))) {
+                const path = try std.Io.Dir.path.resolveAlloc(a, &.{ std.Io.Dir.path.dirname(node.file) orelse ".", reference.name });
                 try pending.append(a, .{ .module = node.module, .root = node.root, .file = path, .kind = kind });
                 continue;
             }
-            const imported = for (module.imports) |imported| {
-                if (std.mem.eql(u8, imported.name, reference.name)) break imported;
-            } else {
+            const imported = bound orelse {
                 try out.print("check-toolchain: unresolved {t} import {s} in {s} (module {d})\n", .{ kind, reference.name, node.file, node.module });
                 return error.UnresolvedProductionImport;
             };
@@ -174,7 +186,7 @@ fn rank(name: []const u8) ?usize {
 }
 fn familyName(name: []const u8) bool {
     // Resolved identity policy; URL aliases do not supply identity.
-    for ([_][]const u8{ "aegis", "sweep", "glint", "gantry", "preflight", "shakedown", "ziglint", "airlock", "strand", "conduit", "uplink", "relic", "lookout", "cloak", "warp", "morse", "visor", "chronicle", "reactor", "parallax", "tycho" }) |value| if (std.mem.eql(u8, value, name)) return true;
+    for ([_][]const u8{ "aegis", "sweep", "glint", "gantry", "preflight", "shakedown", "airlock", "strand", "conduit", "uplink", "relic", "lookout", "cloak", "warp", "morse", "visor", "chronicle", "reactor", "parallax", "tycho" }) |value| if (std.mem.eql(u8, value, name)) return true;
     return false;
 }
 fn pin(a: std.mem.Allocator, dep: gantry.Dependency) !Pin {

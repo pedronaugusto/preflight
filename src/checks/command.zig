@@ -10,6 +10,11 @@ pub fn execute(c: src.Context, argv: []const []const u8) !void {
     if (term != .exited or term.exited != 0) return error.CommandFailed;
 }
 
+/// Whether a finished child exited with status 0.
+pub fn succeeded(result: std.process.RunResult) bool {
+    return result.term == .exited and result.term.exited == 0;
+}
+
 /// The waits between attempts: 5 s, then 10 s.
 pub const backoff = [_]std.Io.Duration{ .fromSeconds(5), .fromSeconds(10) };
 

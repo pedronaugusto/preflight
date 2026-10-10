@@ -79,10 +79,6 @@ pub fn main(init: std.process.Init) !void {
         const generator = src.get(src.get(config, "docs"), label);
         if (generator == .null) return error.UnknownDocumentationRegion;
         try stdout(c, try checks.docs.generate(c, generator));
-    } else if (std.mem.eql(u8, command, "findings")) {
-        const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
-        const sources = try qualitySources(&c, try src.collect(c, config), config);
-        try stdout(c, try std.json.Stringify.valueAlloc(a, try checks.quality.findings(a, sources, config), .{}));
     } else if (std.mem.eql(u8, command, "deprecations")) {
         var std_dir = try std.Io.Dir.cwd().openDir(init.io, option(args, "--std") orelse return error.MissingStd, .{});
         defer std_dir.close(init.io);
@@ -114,11 +110,7 @@ pub fn main(init: std.process.Init) !void {
         };
         try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
         c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-        c.adopt = std.mem.eql(u8, environment(init.environ_map, "PREFLIGHT_ADOPT") orelse "false", "true");
-        const branch = try checks.ledger.git(&c, &.{ "branch", "--show-current" });
-        const name = environment(init.environ_map, "GITHUB_HEAD_REF") orelse environment(init.environ_map, "GITHUB_REF_NAME") orelse std.mem.trim(u8, branch.stdout, "\r\n");
-        if (!std.mem.eql(u8, name, "main")) c.ledger_base = environment(init.environ_map, "PREFLIGHT_LEDGER_BASE") orelse environment(init.environ_map, "GITHUB_BASE_REF") orelse "main";
-        try lint(&c, config, option(args, "--ziglint") orelse return error.MissingZiglint, sources);
+        try lint(&c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") });
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
 }
@@ -188,26 +180,17 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, config: src.Value, ziglint: []const u8, sources: []const src.Source) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, build: checks.glint.assembly.Build) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
     if (c.errors != 0) return;
-    const cast_sources = try qualitySources(c, sources, config);
     try checks.quality.summary(c, sources, c.summary_path);
-    c.report("preflight: source quality\n", .{});
-    try checks.quality.check(c, cast_sources, config);
-    c.report("preflight: ziglint\n", .{});
-    try checks.ziglint.check(c, ziglint, config);
+    c.report("preflight: glint\n", .{});
+    try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build });
     if (c.errors != 0) return;
     c.report("preflight: namespace layout\n", .{});
     try checks.policy.layout(c, sources, config);
-    if (c.errors != 0) return;
-    c.report("preflight: cast reasons\n", .{});
-    checks.policy.casts(c, cast_sources, config);
-    if (c.errors != 0) return;
-    c.report("preflight: function length\n", .{});
-    try checks.policy.lengths(c, sources, config);
     if (c.errors != 0) return;
     c.report("preflight: documentation\n", .{});
     try checks.docs.check(c, config);
@@ -219,21 +202,6 @@ fn lint(c: *src.Context, config: src.Value, ziglint: []const u8, sources: []cons
     try checks.manifest.paths(c, config);
     if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| try checks.command.execute(c.*, try checks.docs.zigCommand(c.a, command));
-}
-
-fn qualitySources(c: *src.Context, sources: []const src.Source, config: src.Value) ![]src.Source {
-    var cast_sources: std.ArrayList(src.Source) = .empty;
-    try cast_sources.appendSlice(c.a, sources);
-    for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |path| {
-        if (!c.exists(path)) continue;
-        var collected = false;
-        for (src.items(src.get(config, "sources"))) |configured| {
-            if (std.mem.eql(u8, src.string(configured, ""), path)) collected = true;
-        }
-        if (!collected) try src.collectRoot(c.*, path, &cast_sources);
-    }
-    if (c.exists("build.zig")) try cast_sources.append(c.a, try src.Source.parse(c.a, "build.zig", try c.read("build.zig")));
-    return cast_sources.items;
 }
 
 fn stdout(c: src.Context, text: []const u8) !void {

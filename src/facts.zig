@@ -247,6 +247,48 @@ test "build protocol distinguishes compiler messages and rejects truncated unkno
     try std.testing.expectError(error.MalformedConfiguration, configuration.load(arena.allocator(), "bad"));
 }
 
+/// The configured modules, as lint resolves a name an import leads by: each
+/// module a compile step reaches, its root file where the build names one
+/// (generated roots are not on disk) and what each of its import names leads to.
+pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.BuildModule {
+    const c = &snapshot.config;
+    var indices: std.array_hash_map.Auto(C.Module.Index, void) = .empty;
+    var pending: std.ArrayList(C.Module.Index) = .empty;
+    for (c.steps) |step| {
+        const compiled = step.extended.cast(c, C.Step.Compile) orelse continue;
+        try pending.append(a, compiled.root_module);
+    }
+    while (pending.pop()) |id| {
+        if ((try indices.getOrPut(a, id)).found_existing) continue;
+        const imports = id.get(c).import_table.get(c).imports.mal;
+        for (imports.items(.module)) |imported| try pending.append(a, imported);
+    }
+    const out = try a.alloc(src.BuildModule, indices.count());
+    for (indices.keys(), out) |id, *module| {
+        const configured = id.get(c);
+        const table = configured.import_table.get(c).imports.mal;
+        const bindings = try a.alloc(src.BuildModule.Binding, table.len);
+        for (table.items(.name), table.items(.module), bindings) |name, imported, *binding| {
+            binding.* = .{ .name = name.slice(c), .module = indices.getIndex(imported).? };
+        }
+        module.* = .{ .root = try rootPath(a, c, configured.root_source_file), .imports = bindings };
+    }
+    return out;
+}
+
+/// Where a module's root file is, relative to the repository's root.
+fn rootPath(a: std.mem.Allocator, c: *const C, index: C.LazyPath.OptionalIndex) !?[]const u8 {
+    const path = (index.unwrap() orelse return null).get(c);
+    switch (path) {
+        .source_path => |source| {
+            const package = source.owner.get(c) orelse return try a.dupe(u8, source.sub_path.slice(c));
+            return try Io.Dir.path.join(a, &.{ package.root_path.slice(c), source.sub_path.slice(c) });
+        },
+        .relative => |relative| return if (relative.flags.base == .cwd) try a.dupe(u8, relative.sub_path.slice(c)) else null,
+        .generated => return null,
+    }
+}
+
 /// Source roots of configured root-package test artifacts. Compiler module IDs supply roots;
 /// generated roots remain explicit rather than being guessed from path spelling.
 pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot) ![]const []const u8 {

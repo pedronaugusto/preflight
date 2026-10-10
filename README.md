@@ -1,11 +1,11 @@
 # preflight
 
 preflight gives a Zig package one local gate and one hosted gate. The build helper
-runs format, gantry structure rules, ziglint, namespace layout, cast reasons,
-function length, documented snippets and test imports, then the package's tests.
+runs format, gantry structure rules, [glint](https://github.com/pedronaugusto/glint)'s
+code rules, namespace layout, documented snippets and test imports, then the package's tests.
 It is a build dependency; a consumer's module never imports it.
 
-**WIP:** hardened checks are opt-in and the configured-build adapter supports Zig 0.17.0 and Zig 0.18.0-dev master builds. F04 completion remains deferred to future glint integration. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
+**WIP:** hardened checks are opt-in and the configured-build adapter supports Zig 0.17.0 and Zig 0.18.0-dev master builds. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
 
 ## Install
 
@@ -124,32 +124,76 @@ region, module import and whether that import is shown are facts in the JSON
 configuration. Other generated blocks may use an explicit `zig build` argument-array command.
 Missing markers, stale blocks and failed generators fail the gate.
 
-### Ledgers
+### Code rules
 
-Existing ziglint findings may be recorded in a repository's `ziglint_exceptions`
-file with their rule, path, exact source line, diagnostic and reason. The allowance
-is consumed once per finding: duplicates, changed code and new findings fail.
-This records migration debt without disabling a rule or admitting growth.
-On branches, git supplies the PR base ledger (or main locally). Every exception
-must already exist there; removals are allowed. Unused exceptions fail on every
-branch, including main. Git renames preserve allowances only when the rule,
-source and diagnostic still match exactly. Hosted checks fetch the base history;
-`PREFLIGHT_LEDGER_BASE` can select an explicit base for a local reproduction.
+The code rules are glint's, and `zig build lint` runs them as a library: preflight
+reads the files, classifies them, resolves each import the way the configured build
+does and hands glint the family's policy in one project. Nothing is parsed twice and
+no child process stands between a finding and the gate.
 
-Zig sources also reject `catch unreachable` without a nonempty
-`// unreachable: <why>` on the same or preceding line, and `std.debug.print`
-outside test blocks and test code. File naming is ziglint Z009's rule. Existing source findings use
-independent `unreachable_exceptions` and `debug_print_exceptions` JSON ledgers with the same five fields and shrinking
-budget as ziglint. Assertion counts per function and package appear in the run
-summary as a report, without affecting the gate.
+**Files.** `glint_paths` names the files and directories to check; a path that is
+not there fails. Without it the selection is `sources` and, where they exist,
+`examples`, `ci`, `conformance`, `bench` and `build.zig`. It is separate from
+`sources`, which stays the shipped roots `.paths` must list, so benchmarks,
+examples and CI code are linted and gated without shipping.
 
-The reusable workflow's `adopt` input defaults to false. For a package's first
-adoption it can initialize an absent source ledger only from exact findings
-already present in the base source, with the reason
-`existing at gate adoption; burned down in the cleanup pass`. Existing ledgers
-always retain the shrinking budget, even when this input is enabled.
-`zig build findings -Drepo-root=<package>` prints the new source findings as JSON
-for preparing an initial ledger; it does not change the package or approve debt.
+**Imports.** `std` is the standard library of the Zig that builds the package. A
+relative file is itself. A named module is what the configured build binds the
+name to in each module that compiles the file; two modules that bind one name
+differently leave it unresolved, and so does a name the build does not bind.
+That is how glint recognizes aegis in a package: by the module the build gives
+it, at any revision that keeps its public names.
+
+**Policy.** The group review's, as the family runs it:
+
+| Rule | Weight |
+|---|---|
+| Z003 syntax, Z013 dead import, P001 cast reasons, P002 safety-off reasons, P003 function length, P004 `catch unreachable` | gate |
+| Z011 deprecated call, P005 debug print | finding: any finding fails, and a call glint cannot resolve is counted, not a verdict |
+| Z026 discarded error, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
+| Z024 line length, P006 disallowed declarations, D001 dead declarations | off (P006 gates once `disallowed` names something) |
+
+`gate` is glint's: a finding fails the run, and so does any site the rule could
+not decide. A *finding* rule fails on what glint finds and does not fail on the
+calls it could not resolve: a call through a receiver of unknown type is not a
+verdict either way. Casts are the four pointer casts in production code
+(`@constCast`, `@ptrCast`, `@alignCast`, `@intFromPtr`), each with a nonempty
+`// safe: <reason>` on its line; test support (`test_support`) is code the package
+writes, so its casts need the reason as well. A `vendored` file is exempt from the
+cast and length rules and names its upstream and how the fork is verified.
+
+**A repository amends the policy** in the `glint` object of `ci/preflight.json`:
+
+```json
+"glint": {
+  "rules": [{"id": "A004", "level": "gate"}, {"id": "Z006", "level": "gate"}],
+  "casts": "pointer", "cast_scope": "production",
+  "strict_suppressions": true, "fact_budget": 4000000, "max_line_length": 100,
+  "disallowed": [{"source": "src/io.zig", "declaration": "write", "reason": "...", "replacement": "..."}]
+}
+```
+
+`rules` sets a rule to `off`, `report` or `gate` (the aegis rules A001 to A005 are off
+until a repository names them); an unknown or removed id fails. There is no profile:
+the family's policy is preflight's, and a deviation is a visible line. `function_limit`
+(120), `function_limits` (a lower ceiling by path) and `function_exceptions` (an exact
+`path:function`, a ceiling and a reason; growth fails, and one that names no function
+fails) stay at the top level.
+
+**An analysis that did not finish is not a pass.** The run fails when a selected file
+does not parse or lower, when glint ran out of its fact budget, when a gating rule
+could not decide a site, when a file cannot be read, and, with `strict_suppressions`
+(the default), when a suppression suppresses nothing. A finding that policy allows
+never hides one of these.
+
+**Suppression** is glint's: one real comment, one site, a reason,
+`// glint-ignore: Z026 -- cleanup after a failure the caller already gets`. There are
+no ledgers: `ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`,
+`ziglint_paths` and `glint_config` are retired, and a repository that still names one
+fails by name, so that no gate is believed that is not there.
+
+Assertion counts per function and package appear in the run summary as a report,
+without affecting the gate.
 
 Layout exceptions likewise name their exact member set and a reason.
 `zig build docs -- usage` renders a configured region for updating its block.
@@ -316,19 +360,6 @@ local build option for native links, including an explicit macOS target or CPU.
 The SDK search paths also reach transitive native dependencies. Foreign object
 jobs do not require an Apple SDK.
 
-`ziglint_paths` is an array of nonempty literal paths. Explicit inputs are
-forwarded even when inaccessible; malformed declarations fail before invocation.
-Option-shaped filenames are prefixed with `./`. Default input probing preserves
-access, I/O and cancellation failures; only absent optional roots are skipped.
-
-The pinned ziglint `924b6b5` retains its existing clean/findings/exception
-behavior. Signals, cancellation, reported input errors, malformed diagnostics,
-output-limit and capture failures remain failures even when findings are allowed.
-The retiring fork cannot reliably report completion: it can silently lose
-traversal or flush failures. **F04 completion guarantees are deferred to glint**,
-whose outcome classes will distinguish completed analysis from failure. This
-batch neither implements F04 nor repairs ziglint; its remaining gates stay enabled.
-
 A shared `skip` job filters changes before the fast tier. Changes touching only
 Markdown outside `src`, LICENSE or images run the documented-snippet check alone.
 The change is the branch since it left its base, as a pull request shows it:
@@ -466,9 +497,9 @@ Unmaterialized bootstrap pins are reported explicitly; they are never runtime pr
 Unsupported reachability, unresolved identities/bindings, mutable pins and I/O
 failures fail the check. This own-gate adapter uses version-specific Zig configure
 internals; it is not a stable external compiler API.
-ziglint is pinned to its v0.5.3 ported to Zig 0.17 (pedronaugusto/ziglint, branch
-`zig-0.17`, commit 924b6b5), with all rules except Z024 as in tycho;
-`zig fmt` owns line formatting. The linter is a pinned Zig build dependency.
+glint is a pinned build dependency, built in ReleaseSafe for the checks and used as a library: its
+module and its std-only runtime. The gate fetches it and aegis, which it depends on, and
+nothing else for the code rules.
 
 ## Family rules
 
@@ -493,10 +524,10 @@ exports a `rules` module for direct use in a build.
 Gantry owns path syntax, compilation and matching. Preflight compiles configured
 patterns through `gantry.rules.Globs`, returning malformed-pattern errors even for
 empty sources or after an earlier pattern matches. It has no direct sweep dependency.
-Generic Zig lint rules belong to the pinned ziglint fork: Z009 owns file-name case
-and Z011 gates deprecations. Gantry's declaration liveness is the deeper unused-import
-check, so the gate disables Z013. The `deprecations` command remains a separately
-invoked codemod and does not run as a lint gate.
+Generic Zig lint rules belong to glint: Z009 owns file-name case, Z011 gates
+deprecations and Z013 dead private imports. Gantry's declaration liveness still
+reports an import in a declaration nothing reaches. The `deprecations` command remains
+a separately invoked codemod and does not run as a lint gate.
 
 ## Licence
 

@@ -30,7 +30,3 @@ pub const no_async = [_]gantry.rules.TokenRule{.{
     .name = "async belongs to the caller",
     .sequences = &.{&.{ "io", ".", "async", "(" }},
 }};
-
-test {
-    _ = @import("rules_test.zig");
-}

@@ -4,6 +4,7 @@
 //! layer than its file. An import no build compiles is unused.
 const std = @import("std");
 const gantry = @import("gantry");
+const zig = @import("gantry.zig");
 const source = @import("../checks/source.zig");
 
 /// A package's declared structure, from its `ci/layers.zig` and the test
@@ -62,6 +63,7 @@ pub const Reexport = struct { from: []const u8, to: []const u8 };
 
 pub fn options(d: Declared) gantry.Options {
     return .{
+        .frontends = &.{zig.frontend},
         .manifests = false,
         .strict_imports = true,
         .named_modules = d.modules,

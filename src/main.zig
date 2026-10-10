@@ -186,22 +186,38 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     };
     if (c.errors != 0) return;
     try checks.quality.summary(c, sources, c.summary_path);
-    c.report("preflight: glint\n", .{});
+    var timer = stage(c, "glint");
     try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build });
+    timer.end(c.*, c.summary_path);
     if (c.errors != 0) return;
-    c.report("preflight: namespace layout\n", .{});
+    timer = stage(c, "namespace layout");
     try checks.policy.layout(c, sources, config);
+    timer.end(c.*, c.summary_path);
     if (c.errors != 0) return;
-    c.report("preflight: documentation\n", .{});
+    timer = stage(c, "documentation");
     try checks.docs.check(c, config);
+    timer.end(c.*, c.summary_path);
     if (c.errors != 0) return;
-    c.report("preflight: test imports\n", .{});
+    timer = stage(c, "test imports");
     try checks.imports.check(c, sources, config);
+    timer.end(c.*, c.summary_path);
     if (c.errors != 0) return;
-    c.report("preflight: package paths\n", .{});
+    timer = stage(c, "package paths");
     try checks.manifest.paths(c, config);
+    timer.end(c.*, c.summary_path);
     if (c.errors != 0) return;
-    for (src.items(src.get(config, "extra_checks"))) |command| try checks.command.execute(c.*, try checks.docs.zigCommand(c.a, command));
+    for (src.items(src.get(config, "extra_checks"))) |command| {
+        const argv = try checks.docs.zigCommand(c.a, command);
+        timer = stage(c, try std.mem.join(c.a, " ", argv));
+        try checks.command.execute(c.*, argv);
+        timer.end(c.*, c.summary_path);
+    }
+}
+
+/// Starts the timer of one source check, which `lint` names in the log.
+fn stage(c: *src.Context, label: []const u8) checks.phases.Timer {
+    c.report("preflight: {s}\n", .{label});
+    return .begin(c.*, label);
 }
 
 fn stdout(c: src.Context, text: []const u8) !void {
@@ -251,39 +267,24 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
-    if (std.mem.eql(u8, step, "preflight-fast")) {
-        var fast_env = try env.clone(c.a);
-        defer fast_env.deinit();
-        try fast_env.put("STEP", "ci");
-        try runGate(c, &fast_env);
-        if (std.mem.eql(u8, env.get("FAST_COMPILE") orelse "true", "true")) {
-            for (try checks.matrix.fastTargets(c.a, config)) |target| {
-                const argv = try checks.matrix.fastCrossArgs(c.a, config, target);
-                c.report("preflight fast compile: {s}\n", .{argv[4]});
-                try checks.command.execute(c, argv);
-            }
-        }
-        return;
-    }
-    if (std.mem.eql(u8, step, "preflight-cross")) {
-        const targets = src.items(src.get(config, "targets"));
-        if (targets.len == 0) return error.MissingCrossTargets;
-        for (targets) |target| {
-            const argv = try checks.matrix.crossArgs(c.a, config, target);
-            c.report("preflight cross: {s}\n", .{argv[4]});
-            try checks.command.execute(c, argv);
-        }
-        return;
-    }
+    const summary = env.get("GITHUB_STEP_SUMMARY");
+    if (std.mem.startsWith(u8, step, "preflight-cross")) return crossCompile(c, env, config, std.mem.eql(u8, step, "preflight-cross-bench"));
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         const setup_step = src.get(config, "setup_step");
-        if (setup_step == .string and !std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true"))
+        if (setup_step == .string and !std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
+            const timer = checks.phases.Timer.begin(c, "install the external tools");
+            defer timer.end(c, summary);
             try checks.command.retry(c, &.{ "zig", "build", setup_step.string });
+        }
         const before = src.get(config, "before_tests_step");
-        if (before == .string) try checks.command.execute(c, &.{ "zig", "build", before.string });
+        if (before == .string) {
+            const timer = checks.phases.Timer.begin(c, "before the tests");
+            defer timer.end(c, summary);
+            try checks.command.execute(c, &.{ "zig", "build", before.string });
+        }
     }
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(c.a, &.{ "zig", "build", env.get("STEP") orelse "ci" });
+    try argv.appendSlice(c.a, &.{ "zig", "build", step });
     var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
     while (tokens.next()) |token| {
         // The canonical planner may already specify this hosted control.
@@ -298,13 +299,48 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     }
     // Custom legacy steps may not use addCi. Ask the configured compiler
     // graph whether it declares this control instead of guessing from source.
-    const snapshot = try facts.read(c, "zig", argv.items[3..]);
-    for (snapshot.config.available_options) |available_option| {
-        if (std.mem.eql(u8, available_option.name.slice(&snapshot.config), "ci-bench-smoke")) {
-            try argv.append(c.a, "-Dci-bench-smoke=false");
-            break;
+    {
+        const timer = checks.phases.Timer.begin(c, "configure the build");
+        defer timer.end(c, summary);
+        const snapshot = try facts.read(c, "zig", argv.items[3..]);
+        for (snapshot.config.available_options) |available_option| {
+            if (std.mem.eql(u8, available_option.name.slice(&snapshot.config), "ci-bench-smoke")) {
+                try argv.append(c.a, "-Dci-bench-smoke=false");
+                break;
+            }
         }
     }
     // PREFLIGHT_SHARD reaches the test runners through the environment.
+    const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
+    defer timer.end(c, summary);
     try checks.command.execute(c, argv.items);
+}
+
+/// Compiles the targets this job covers, `PREFLIGHT_TARGETS` by name, to
+/// objects: one build each, in Debug, and with `bench` the ReleaseFast
+/// benchmarks as well. A name the configuration lacks fails the job, since
+/// the generated workflow no longer matches `ci/workflow.json`.
+fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value, bench: bool) !void {
+    const summary = env.get("GITHUB_STEP_SUMMARY");
+    const wanted = env.get("PREFLIGHT_TARGETS") orelse "";
+    var names = std.mem.tokenizeScalar(u8, wanted, ' ');
+    var covered: usize = 0;
+    const targets = try checks.matrix.fastTargets(c.a, config);
+    while (names.next()) |name| {
+        var found = false;
+        for (targets) |target| {
+            if (!std.mem.eql(u8, checks.matrix.targetName(target), name)) continue;
+            found = true;
+            covered += 1;
+            const argv = try checks.matrix.crossArgs(c.a, config, target, bench);
+            const timer = checks.phases.Timer.begin(c, try c.a.print("compile {s}", .{name}));
+            defer timer.end(c, summary);
+            try checks.command.execute(c, argv);
+        }
+        if (!found) {
+            c.report("preflight: {s} is no target of ci/workflow.json; regenerate the workflow\n", .{name});
+            return error.UnknownCrossTarget;
+        }
+    }
+    if (covered == 0) return error.MissingCrossTargets;
 }

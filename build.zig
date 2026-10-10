@@ -107,6 +107,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{ .{ .name = "gantry", .module = gantry_safe_dep.module("gantry") }, .{ .name = "gantry.zig", .module = gantry_safe_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint_safe } },
     }) });
     b.installArtifact(executable);
+    if (!addToolchain(b)) return;
     if (repo_root == null) {
         // preflight gates its own sources with the checks it ships.
         const profile = b.addTest(.{ .root_module = b.createModule(.{
@@ -144,6 +145,39 @@ pub fn build(b: *std.Build) void {
         }) }, &.{ tests.root_module, profile.root_module });
     }
     addCommands(b, executable, repo_root orelse ".");
+}
+
+/// The hosted runners the checks are built for.
+const runners = [_]struct { name: []const u8, query: std.Target.Query }{
+    .{ .name = "linux", .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .cpu_model = .baseline } },
+    .{ .name = "macos", .query = .{ .cpu_arch = .aarch64, .os_tag = .macos, .cpu_model = .baseline } },
+    .{ .name = "windows", .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .cpu_model = .baseline } },
+};
+
+/// Adds `toolchain`, which builds the checks for every hosted runner under
+/// `<prefix>/toolchain/<runner>/`, so that one job compiles them and the
+/// others take the result. False while a lazy dependency is still to be fetched.
+fn addToolchain(b: *std.Build) bool {
+    const step = b.step("toolchain", "Build the checks for the Linux, macOS and Windows runners under <prefix>/toolchain");
+    for (runners) |runner| {
+        const target = b.resolveTargetQuery(runner.query);
+        const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch {
+            _ = ci.declareCiOptions(b, null);
+            return false;
+        };
+        const glint_dep = b.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch {
+            _ = ci.declareCiOptions(b, null);
+            return false;
+        };
+        const executable = b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .safe,
+            .imports = &.{ .{ .name = "gantry", .module = gantry_dep.module("gantry") }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint_dep.module("glint") } },
+        }) });
+        step.dependOn(&b.addInstallArtifact(executable, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
+    }
+    return true;
 }
 
 /// The steps that run one of the installed command's subcommands in `root`.

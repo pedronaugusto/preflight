@@ -1,11 +1,11 @@
 name: Zig setup
-description: Install Zig and restore package, build and external-tool caches; fetch with retries
+description: Install Zig, take the prebuilt checks and restore the package, product and external-tool caches; fetch with retries
 inputs:
   working-directory:
     description: Package root
     default: .
   build-key:
-    description: Stable cache scope without commas
+    description: The kind of job, which scopes the caches; no commas
     default: extras
   build-args:
     description: The arguments the job builds with; the fetch configures that build and fetches what it asks for
@@ -13,6 +13,9 @@ inputs:
   zig-version:
     description: The Zig to install, 0.17.0 or master; cache keys carry it
     default: 0.17.0
+  toolchain:
+    description: The artifact holding the checks built for this runner; empty builds them here, as the Zig master leg must with its own Zig
+    default: ''
   windows-git-latest:
     description: Upgrade Git for Windows to the latest release
     default: 'false'
@@ -26,35 +29,55 @@ runs:
         choco upgrade git -y --no-progress
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         git --version
+    - uses: actions/download-artifact@v4
+      if: inputs.toolchain != ''
+      with:
+        name: ${{ inputs.toolchain }}
+        path: .preflight-bin
+    - name: Put the prebuilt checks on the path
+      if: inputs.toolchain != ''
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in Linux) dir=linux ;; macOS) dir=macos ;; Windows) dir=windows ;; esac
+        chmod +x .preflight-bin/$dir/preflight* 2> /dev/null || true
+        echo "$GITHUB_WORKSPACE/.preflight-bin/$dir" >> "$GITHUB_PATH"
     - uses: mlugg/setup-zig@v2
       with:
         version: ${{ inputs.zig-version }}
         use-cache: false
+    # What the build of the package makes stays in .zig-cache and is not kept:
+    # the next run changes the sources, and what a run built from them is of no
+    # use to it, though it fills a gigabyte. Zig's own cache holds what lasts.
+    - name: Keep Zig's own cache apart from the package's
+      shell: bash
+      run: |
+        echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global" >> "$GITHUB_ENV"
+        echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      id: global
     - name: Cache fetched Zig packages
       id: packages
       uses: actions/cache@v4
       with:
-        path: ${{ env.ZIG_GLOBAL_CACHE_DIR }}/p
+        path: ${{ runner.temp }}/zig-global/p
         # Zig compiles the build script of every package it finds here, asked
-        # for or not, so a job restores only what a configured fetch saved:
-        # the Zig master leg never meets a script written for another Zig.
-        key: zig-packages-configured-${{ runner.os }}-${{ inputs.zig-version }}-${{ hashFiles('**/build.zig.zon') }}
-        restore-keys: |
-          zig-packages-configured-${{ runner.os }}-${{ inputs.zig-version }}-
-    - name: Cache compiled builds
-      id: builds
+        # for or not, so a job restores only what a configured fetch of its own
+        # kind saved: the Zig master leg never meets a script written for another Zig.
+        key: zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ hashFiles('**/build.zig.zon') }}
+    # The build runner and the compiler's runtime for each target: Zig builds
+    # them on first use. Renewed weekly, so that the cache does not keep what
+    # an old pin of a dependency needed.
+    - name: Cache what Zig builds for itself
+      id: products
       uses: actions/cache@v4
       with:
         path: |
-          ${{ inputs.working-directory }}/.zig-cache
-          .preflight/.zig-cache
-          ${{ env.ZIG_GLOBAL_CACHE_DIR }}/o
-          ${{ env.ZIG_GLOBAL_CACHE_DIR }}/h
-          ${{ env.ZIG_GLOBAL_CACHE_DIR }}/z
-        key: zig-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ hashFiles('**/*.zig', '**/*.zon', '**/ci/*.json') }}
+          ${{ runner.temp }}/zig-global/o
+          ${{ runner.temp }}/zig-global/h
+          ${{ runner.temp }}/zig-global/z
+          ${{ runner.temp }}/zig-global/b
+        key: zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ steps.global.outputs.week }}
         restore-keys: |
-          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-
-          zig-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-
+          zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-
     - name: Cache external tools
       uses: actions/cache@v4
       with:
@@ -63,11 +86,24 @@ runs:
     - name: Fetch what the job's build asks for, with retries
       env:
         BUILD_ARGS: ${{ inputs.build-args }}
-      run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" fetch
+        PREBUILT: ${{ inputs.toolchain }}
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ -n "$PREBUILT" ]; then
+          preflight fetch
+        else
+          zig build --build-file "$GITHUB_WORKSPACE/.preflight/build.zig" -Drepo-root="$PWD" fetch
+        fi
       shell: bash
     - name: Record cache hits
       env:
         PREFLIGHT_PACKAGE_HIT: ${{ steps.packages.outputs.cache-hit }}
-        PREFLIGHT_BUILD_HIT: ${{ steps.builds.outputs.cache-hit }}
-      run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" setup -- --report
+        PREFLIGHT_BUILD_HIT: ${{ steps.products.outputs.cache-hit }}
+        PREBUILT: ${{ inputs.toolchain }}
+      run: |
+        if [ -n "$PREBUILT" ]; then
+          preflight setup
+        else
+          zig build --build-file "$GITHUB_WORKSPACE/.preflight/build.zig" -Drepo-root="$GITHUB_WORKSPACE" setup -- --report
+        fi
       shell: bash

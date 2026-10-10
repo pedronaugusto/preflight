@@ -117,7 +117,8 @@ const Steps = struct {
         const ci = b.step("ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);
-        _ = b.step("ci-check", "Compile root, test, benchmark and helper objects without linking or executing");
+        _ = b.step("ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
+        _ = b.step("ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         _ = b.step("ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
         return .{ .lint = lint, .ci = ci, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .smoke = controls.smoke, .profile_options = controls.profile_options };
     }

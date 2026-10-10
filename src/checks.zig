@@ -14,6 +14,7 @@ pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 pub const manifest = @import("checks/manifest.zig");
 pub const command = @import("checks/command.zig");
+pub const phases = @import("checks/phases.zig");
 
 test {
     _ = @import("rules.zig");
@@ -43,6 +44,7 @@ test {
     _ = manifest;
     _ = command;
     _ = paths;
+    _ = phases;
     _ = @import("checks/workflow_test.zig");
     _ = @import("deprecations.zig");
 }

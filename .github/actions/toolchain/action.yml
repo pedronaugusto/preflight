@@ -1,0 +1,62 @@
+name: Toolchain
+description: Put preflight's checks, built for the Linux, macOS and Windows runners, in .preflight-bin; compiled once per pinned commit and never by the jobs that use them
+inputs:
+  preflight-ref:
+    description: The preflight commit the caller is pinned to, checked out at .preflight
+    required: true
+outputs:
+  source:
+    description: Where the toolchain came from, cache, published or built
+    value: ${{ steps.cache.outputs.cache-hit == 'true' && 'cache' || steps.published.outputs.found == 'true' && 'published' || 'built' }}
+runs:
+  using: composite
+  steps:
+    - name: Restore the toolchain of this commit
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: .preflight-bin
+        key: preflight-toolchain-${{ inputs.preflight-ref }}
+    # preflight's own run of a commit builds the toolchain for it and keeps it
+    # ninety days under this name, so the callers pinned to the commit take it.
+    - name: Take the toolchain preflight built for this commit
+      id: published
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REF: ${{ inputs.preflight-ref }}
+      run: |
+        mkdir -p .preflight-bin
+        id=$(gh api "repos/pedronaugusto/preflight/actions/artifacts?name=toolchain-$REF&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | first | .id // empty' || true)
+        if [ -n "$id" ] && gh api "repos/pedronaugusto/preflight/actions/artifacts/$id/zip" > "$RUNNER_TEMP/toolchain.zip" && unzip -q -o "$RUNNER_TEMP/toolchain.zip" -d .preflight-bin; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "Took preflight's toolchain for $REF (artifact $id)"
+        else
+          rm -rf .preflight-bin
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "No published toolchain for $REF; building it"
+        fi
+    - uses: mlugg/setup-zig@v2
+      if: steps.cache.outputs.cache-hit != 'true' && steps.published.outputs.found != 'true'
+      with:
+        version: 0.17.0
+    - name: Build the toolchain for every runner
+      if: steps.cache.outputs.cache-hit != 'true' && steps.published.outputs.found != 'true'
+      shell: bash
+      run: |
+        zig build --build-file .preflight/build.zig toolchain -p "$RUNNER_TEMP/toolchain"
+        mkdir -p .preflight-bin
+        for runner in linux macos windows; do
+          mkdir -p ".preflight-bin/$runner"
+          find "$RUNNER_TEMP/toolchain/toolchain/$runner" -type f ! -name '*.pdb' -exec cp {} ".preflight-bin/$runner/" \;
+        done
+    - name: Allow the checks to run
+      shell: bash
+      run: chmod +x .preflight-bin/*/preflight*
+    - name: Keep the toolchain for the next run of this commit
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .preflight-bin
+        key: preflight-toolchain-${{ inputs.preflight-ref }}

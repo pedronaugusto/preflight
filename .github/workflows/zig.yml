@@ -64,6 +64,42 @@ jobs:
       - env:
           TIER: ${{ inputs.tier }}
         run: echo "tier must be fast, merge or release, not '$TIER'" && exit 1
+  # The checks are built once, for every runner, and every job takes them: no
+  # job compiles the toolchain. The same job tells a fast run whether the
+  # change is documentation alone, which needs none of the gate.
+  toolchain:
+    if: '!inputs.attest && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.paths.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/toolchain
+        with:
+          preflight-ref: ${{ inputs.preflight-ref }}
+      # preflight keeps its own run's toolchain ninety days, for the callers
+      # pinned to its commit; a caller's run keeps it for the run.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-${{ inputs.preflight-ref }}
+          path: .preflight-bin
+          include-hidden-files: true
+          retention-days: ${{ github.repository == 'pedronaugusto/preflight' && 90 || 1 }}
+          overwrite: true
+      - name: Filter paths and check documentation when it is the only change
+        id: paths
+        if: inputs.tier == 'fast'
+        env:
+          PREFLIGHT_TIER: ${{ inputs.tier }}
+          PREFLIGHT_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: .preflight-bin/linux/preflight skip --config "${{ inputs.working-directory }}/ci/preflight.json"
   main:
     if: inputs.attest
     runs-on: ubuntu-latest
@@ -73,93 +109,22 @@ jobs:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
           path: .preflight
-      - uses: mlugg/setup-zig@v2
+      - uses: ./.preflight/.github/actions/toolchain
         with:
-          version: 0.17.0
-      - uses: actions/cache@v4
-        with:
-          path: .preflight/.zig-cache
-          key: preflight-main-${{ runner.os }}-0.17.0-${{ inputs.preflight-ref }}
-          restore-keys: |
-            preflight-main-${{ runner.os }}-0.17.0-
+          preflight-ref: ${{ inputs.preflight-ref }}
       - name: Confirm a merge or release tier passed for this commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" attest
-  fast:
-    if: '!inputs.attest && inputs.tier == ''fast'''
-    name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.job_timeout }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.fast-matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/checkout@v4
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: ./.preflight/.github/actions/setup
-        with:
-          windows-git-latest: ${{ inputs.windows-git-latest }}
-          working-directory: ${{ inputs.working-directory }}
-          build-args: ${{ matrix.args }}
-          build-key: ${{ matrix.cache_key }}
-      - name: Set up test tools (attempt 1/3)
-        id: tools1
-        timeout-minutes: 5
-        continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
-      - name: Set up test tools (attempt 2/3)
-        id: tools2
-        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
-        timeout-minutes: 5
-        continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
-      - name: Set up test tools (attempt 3/3)
-        id: tools3
-        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
-        timeout-minutes: 5
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
-      - name: Check sources, run Linux Debug and compile other test targets
-        env:
-          STEP: ${{ matrix.step }}
-          BUILD_ARGS: ${{ matrix.args }}
-          PREFLIGHT_SHARD: ${{ matrix.shard }}
-          PREFLIGHT_PREPARED: 'true'
-          PREFLIGHT_SETUP: 'true'
-          FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
-      - name: Verify the shared checker
-        if: github.repository == 'pedronaugusto/preflight' && matrix.step == 'preflight-fast'
-        run: zig build verify -Dci-bench-smoke=false
-      - uses: actions/upload-artifact@v4
-        if: always() && matrix.step == 'hardened-fuzz'
-        with:
-          name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
-          path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        if: contains(matrix.args, '-Dci-timings=true')
-        with:
-          name: timings-${{ matrix.cache_key }}
-          path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
-          include-hidden-files: true
-          retention-days: 7
+        run: .preflight-bin/linux/preflight attest
   gate:
-    if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'')'
+    needs: toolchain
+    if: '!inputs.attest && needs.toolchain.outputs.docs-only != ''true'' && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.merge-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'merge' && inputs.merge-matrix || inputs.fast-matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -174,33 +139,38 @@ jobs:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
-          build-key: ${{ matrix.cache_key }}
+          build-key: ${{ matrix.step }}
+          toolchain: toolchain-${{ inputs.preflight-ref }}
       - name: Set up test tools (attempt 1/3)
         id: tools1
         if: matrix.setup
         timeout-minutes: 5
         continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
         timeout-minutes: 5
         continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
         timeout-minutes: 5
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Run the gate
+        working-directory: ${{ inputs.working-directory }}
         env:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_SHARD: ${{ matrix.shard }}
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
-          FAST_COMPILE: ${{ !contains(matrix.args, '-Dci-lint=false') }}
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+          PREFLIGHT_TARGETS: ${{ matrix.targets }}
+        run: preflight run
       - uses: actions/upload-artifact@v4
         if: always() && matrix.step == 'hardened-fuzz'
         with:
@@ -219,6 +189,7 @@ jobs:
   master:
     # Zig master (the next release in development) never blocks: its result is
     # read at each merge, and a break is a note for the next port's codemod table.
+    # It builds its own checks, since they must be built by the Zig they read.
     if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'')'
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
@@ -280,6 +251,7 @@ jobs:
           echo "Zig master $version: tool setup $TOOLS; suite $OUTCOME (non-blocking)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass; a note for the next port"; fi
   compile:
+    needs: toolchain
     if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'') && inputs.compile-once'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -299,38 +271,43 @@ jobs:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
-          build-key: ${{ matrix.cache_key }}
+          build-key: ${{ matrix.step }}
+          toolchain: toolchain-${{ inputs.preflight-ref }}
       - name: Set up test tools (attempt 1/3)
         id: tools1
         if: matrix.setup
         timeout-minutes: 5
         continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
         timeout-minutes: 5
         continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
         timeout-minutes: 5
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Link test executables with the native SDK
+        working-directory: ${{ inputs.working-directory }}
         env:
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: 'true'
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+        run: preflight run
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ inputs.working-directory }}/zig-out/preflight
           retention-days: 1
   execute:
-    needs: compile
+    needs: [toolchain, compile]
     if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.compile.result == 'success'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -350,7 +327,8 @@ jobs:
           windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
-          build-key: execute-${{ matrix.cache_key }}
+          build-key: ${{ matrix.step }}
+          toolchain: toolchain-${{ inputs.preflight-ref }}
       - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -360,26 +338,30 @@ jobs:
         if: matrix.setup
         timeout-minutes: 5
         continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
         timeout-minutes: 5
         continue-on-error: true
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
         timeout-minutes: 5
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
+        working-directory: ${{ inputs.working-directory }}
+        run: preflight prepare
       - name: Run test executables
+        working-directory: ${{ inputs.working-directory }}
         env:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_SHARD: ${{ matrix.shard }}
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+        run: preflight run
       - uses: actions/upload-artifact@v4
         if: always() && matrix.step == 'hardened-fuzz'
         with:
@@ -396,26 +378,24 @@ jobs:
           include-hidden-files: true
           retention-days: 7
   profile:
-    needs: [gate, compile, execute]
+    needs: [toolchain, gate, compile, execute]
     if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0
+          name: toolchain-${{ inputs.preflight-ref }}
+          path: .preflight-bin
       - uses: actions/download-artifact@v4
         with:
           pattern: timings-*
           path: .preflight-timings
           merge-multiple: true
       - name: Refresh the per-test durations the shards balance by
-        run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}" profile -- --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json
+        run: |
+          chmod +x .preflight-bin/linux/preflight
+          .preflight-bin/linux/preflight profile --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json
       - uses: actions/upload-artifact@v4
         with:
           name: preflight-${{ inputs.tier }}-${{ github.sha }}

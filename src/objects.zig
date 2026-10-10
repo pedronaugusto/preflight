@@ -2,14 +2,26 @@
 //! intact; this graph emits objects and never proves a successful SDK link.
 const std = @import("std");
 
+/// `ci-check` compiles the tests, the installed artifacts, the package's
+/// `check` graph, its public modules and, in Debug, its benchmarks.
+/// `ci-check-bench` compiles the benchmarks as they are built to run, which in
+/// ReleaseFast takes longer than all the rest: the fast tier leaves it to the
+/// merge tier, since a benchmark's Debug object already holds what a target
+/// accepts of its source.
 pub fn add(b: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8) void {
     const objects = &b.top_level_steps.get("ci-check").?.step;
+    const bench_objects = &b.top_level_steps.get("ci-check-bench").?.step;
     const links = &b.top_level_steps.get("ci-link").?.step;
     var projection: Projection = .{ .b = b, .objects = objects, .sdk = sdk };
     projection.collect(tests, links);
     projection.collect(b.getInstallStep(), links);
-    if (b.top_level_steps.get("bench-build")) |bench| projection.collect(&bench.step, links);
     if (b.top_level_steps.get("check")) |check| projection.collect(&check.step, links);
+    if (b.top_level_steps.get("bench-build")) |bench| {
+        var debug: Projection = .{ .b = b, .objects = objects, .sdk = null, .debug = true };
+        debug.collect(&bench.step, links);
+        var release: Projection = .{ .b = b, .objects = bench_objects, .sdk = sdk };
+        release.collect(&bench.step, links);
+    }
     for (b.modules.values()) |module| {
         const object = b.addObject(.{ .name = "ci-root", .root_module = projection.module(module) });
         _ = object.getEmittedBin();
@@ -21,6 +33,8 @@ const Projection = struct {
     b: *std.Build,
     objects: *std.Build.Step,
     sdk: ?[]const u8,
+    /// Compile every module in Debug, whatever the graph asks.
+    debug: bool = false,
     steps: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty,
     modules: std.AutoHashMapUnmanaged(*std.Build.Module, *std.Build.Module) = .empty,
     sdks: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty,
@@ -80,6 +94,7 @@ const Projection = struct {
         // the original modules used by ci-link, ci and ci-build.
         const copy = p.b.allocator.create(std.Build.Module) catch @panic("OOM");
         copy.* = original.*;
+        if (p.debug) copy.optimize = .Debug;
         copy.cached_graph = .{ .modules = &.{}, .names = &.{} };
         copy.import_table = .empty;
         copy.link_objects = .empty;

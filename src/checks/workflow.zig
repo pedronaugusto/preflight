@@ -54,10 +54,9 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
             try matrices.writer.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try std.json.Stringify.valueAlloc(a, .{ .include = group }, .{}) });
         }
     }
-    const skip = if (own) "./.github/workflows/skip.yml" else try a.print("pedronaugusto/preflight/.github/workflows/skip.yml@{s}", .{pin});
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
-    const tokens = [_][]const u8{ "@SKIP@", "@GATE@", "@PIN@", "@DIRECTORY@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
-    const values = [_][]const u8{ skip, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
+    const tokens = [_][]const u8{ "@GATE@", "@PIN@", "@DIRECTORY@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
+    const values = [_][]const u8{ gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -78,8 +77,7 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     }
     if (own) try text.writer.writeAll(
         \\  checks:
-        \\    needs: skip
-        \\    if: needs.skip.outputs.docs-only != 'true' && github.event_name != 'push' && !inputs.status-only && (github.event_name != 'workflow_dispatch' || inputs.tier != 'fast')
+        \\    if: github.event_name != 'push' && !inputs.status-only
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - uses: actions/checkout@v4

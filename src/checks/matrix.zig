@@ -20,6 +20,8 @@ pub const Job = struct {
     cache_key: []const u8 = "",
     artifact: []const u8 = "",
     operation: enum { execute, objects, link, replay } = .execute,
+    /// The cross targets a compile job covers, by name, space-separated.
+    targets: []const u8 = "",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -58,9 +60,9 @@ fn title(mode: Mode) []const u8 {
 
 /// How much of the gate a run executes.
 pub const Tier = enum {
-    /// Linux Debug and the source checks; every other host and target compiles only.
+    /// The source checks, Linux Debug and an object compile of every target; every other host compiles only.
     fast,
-    /// The candidate for main: fast, and the Debug suite on macOS and Windows.
+    /// The candidate for main: fast, the ReleaseFast benchmarks compiled for every target, and the Debug suite on macOS and Windows.
     merge,
     /// Before a release: every mode on every host, cross targets and TSan.
     release,
@@ -88,7 +90,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     // The watchdog bounds each test (`Config.test_timeout`).
     if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
     switch (tier) {
-        .fast => return fastPlan(a, config, false),
+        .fast => return fastPlan(a, config, .fast),
         .merge => return mergePlan(a, config),
         .release => {},
     }
@@ -97,18 +99,18 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
         const modes: []const Mode = if (std.mem.eql(u8, host, hosts[0])) &.{ .debug, .safe, .fast } else &.{ .debug, .safe };
         try hostJobs(a, config, &jobs, host, host_name, modes);
     }
-    try jobs.append(a, .{ .os = hosts[0], .name = "source checks and documented snippets", .step = "lint", .job_timeout = src.number(src.get(config, "source_job_timeout"), 20) });
+    try jobs.append(a, try lintJob(a, config));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
     for (jobs.items) |*job| job.cache_key = try key(a, job.*);
     return jobs.items;
 }
 
-/// The fast tier's Linux jobs, recording durations, and the Debug suite
-/// executed on macOS and Windows.
+/// The fast tier's jobs, recording durations, the ReleaseFast benchmarks
+/// compiled for every target, and the Debug suite executed on macOS and Windows.
 fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
-    try jobs.appendSlice(a, try fastPlan(a, config, true));
+    try jobs.appendSlice(a, try fastPlan(a, config, .merge));
     const start = jobs.items.len;
     for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{.debug});
     try sdkJobs(a, config, &jobs);
@@ -185,25 +187,76 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
 /// Linux Debug in `fast_shards` jobs; the first also checks sources and
 /// compiles the other targets. They record durations when `timing` is set
 /// or they are shards.
-fn fastPlan(a: std.mem.Allocator, config: src.Value, timing: bool) ![]Job {
+fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
+    const timing = tier != .fast;
+    var jobs: std.ArrayList(Job) = .empty;
+    try jobs.append(a, try lintJob(a, config));
     const count = try shardCount(src.get(config, "fast_shards"));
-    const jobs = try a.alloc(Job, count);
-    for (jobs, 0..) |*job, i| {
+    for (0..count) |i| {
         const shard = try shardName(a, i, count);
-        job.* = .{
+        try jobs.append(a, .{
             .os = hosts[0],
             .name = try a.print("Linux Debug{s}{s}", .{ if (count > 1) " shard " else "", shard }),
-            .step = "preflight-fast",
-            .args = try a.print("-Doptimize=debug{s}{s}{s}", .{ if (i == 0) "" else " -Dci-lint=false", if (timing or count > 1) " -Dci-timings=true" else "", try buildArgs(a, src.get(config, "build_args")) }),
+            .args = try a.print("-Doptimize=debug -Dci-lint=false{s}{s}", .{ if (timing or count > 1) " -Dci-timings=true" else "", try buildArgs(a, src.get(config, "build_args")) }),
             .shard = shard,
             .setup = true,
             .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
             .cache_key = try a.print("fast-linux-debug-{d}", .{i}),
-        };
+        });
     }
-    return jobs;
+    try crossJobs(a, config, &jobs, try fastTargets(a, config), tier != .fast);
+    return jobs.items;
 }
 
+/// The source checks: format, structure, the code rules, layout, snippets and
+/// the package's own extra checks. Nothing in them runs a test, so they need
+/// neither the external tools nor a test build.
+fn lintJob(a: std.mem.Allocator, config: src.Value) !Job {
+    return .{
+        .os = hosts[0],
+        .name = "source checks and documented snippets",
+        .step = "lint",
+        .args = std.mem.trimStart(u8, try buildArgs(a, src.get(config, "build_args")), " "),
+        .job_timeout = src.number(src.get(config, "source_job_timeout"), 20),
+        .cache_key = "lint",
+    };
+}
+
+/// The target a `targets` entry names: a triple, or an object's `target`.
+pub fn targetName(target: src.Value) []const u8 {
+    return if (target == .string) target.string else src.string(src.get(target, "target"), "");
+}
+
+/// The object compile of `targets`, in as many jobs as `cross_jobs` asks for,
+/// or one for every four targets. Targets are dealt out in turn, so the
+/// neighbours of one family in the list land in different jobs. With `bench`,
+/// each job also compiles the ReleaseFast benchmarks.
+fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), targets: []const src.Value, bench: bool) !void {
+    if (targets.len == 0) return;
+    const wanted = src.get(config, "cross_jobs");
+    if (wanted != .null and (wanted != .integer or wanted.integer < 1)) return error.InvalidCrossJobs;
+    const count = @min(if (wanted == .null) (targets.len + 3) / 4 else @as(usize, @intCast(wanted.integer)), targets.len);
+    for (0..count) |group| {
+        var names: std.ArrayList(u8) = .empty;
+        var at = group;
+        while (at < targets.len) : (at += count) {
+            if (names.items.len > 0) try names.append(a, ' ');
+            try names.appendSlice(a, targetName(targets[at]));
+        }
+        try jobs.append(a, .{
+            .os = hosts[0],
+            .name = try a.print("Cross compile{s}{s}", .{ if (count > 1) " " else "", try shardName(a, group, count) }),
+            .step = if (bench) "preflight-cross-bench" else "preflight-cross",
+            .operation = .objects,
+            .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20),
+            .cache_key = try a.print("cross-{s}-{d}", .{ if (bench) "bench" else "objects", group }),
+            .targets = names.items,
+        });
+    }
+}
+
+/// The targets the fast and merge tiers compile: the configured ones, and
+/// the macOS and Windows targets those tiers do not run natively.
 pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
     try validate(a, config);
     var targets: std.ArrayList(src.Value) = .empty;
@@ -211,28 +264,17 @@ pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
     for ([_][]const u8{ "aarch64-macos", "x86_64-windows-gnu" }) |native| {
         var found = false;
         for (targets.items) |target| {
-            const name = if (target == .string) target.string else src.string(src.get(target, "target"), "");
-            if (std.mem.eql(u8, name, native)) found = true;
+            if (std.mem.eql(u8, targetName(target), native)) found = true;
         }
         if (!found) try targets.append(a, .{ .string = native });
     }
     return targets.items;
 }
 
-pub fn fastCrossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
-    const args = try crossArgs(a, config, target);
-    const result = try a.alloc([]const u8, args.len + 1);
-    @memcpy(result[0..args.len], args);
-    result[2] = "ci-check";
-    result[args.len] = "-Doptimize=debug";
-    return result;
-}
-
 fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     const compile = src.string(src.get(config, "compile_step"), "check");
     try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=small" });
-    if (src.items(src.get(config, "targets")).len > 0)
-        try jobs.append(a, .{ .os = hosts[0], .name = "cross (all configured targets)", .step = "preflight-cross", .operation = .objects, .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20) });
+    try crossJobs(a, config, jobs, src.items(src.get(config, "targets")), true);
     const sanitizer = src.get(config, "sanitizer");
     if (sanitizer == .string) try jobs.append(a, .{
         .os = hosts[0],
@@ -248,7 +290,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     if (config != .object) return error.InvalidWorkflowConfig;
     const targets = src.get(config, "targets");
     if (targets != .null and targets != .array) return error.InvalidCrossTargets;
-    for (src.items(targets)) |target| _ = try crossArgs(a, config, target);
+    for (src.items(targets)) |target| _ = try crossOptions(a, config, target);
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
@@ -272,8 +314,9 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
 
 fn sdkJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     for (src.items(src.get(config, "targets"))) |target| {
-        const argv = try crossArgs(a, config, target);
-        const query = try std.Target.Query.parse(.{ .arch_os_abi = argv[4][9..] });
+        const options = try crossOptions(a, config, target);
+        const name = options[1]["-Dtarget=".len..];
+        const query = try std.Target.Query.parse(.{ .arch_os_abi = name });
         const host = switch (query.os_tag orelse return error.InvalidCrossTarget) {
             .macos => hosts[1],
             .windows => hosts[2],
@@ -281,8 +324,8 @@ fn sdkJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !
         };
         var text: std.Io.Writer.Allocating = .init(a);
         defer text.deinit();
-        for (argv[3..]) |arg| try text.writer.print("{s}{s}", .{ if (text.written().len == 0) "" else " ", arg });
-        try jobs.append(a, .{ .os = host, .name = try a.print("SDK link ({s})", .{argv[4][9..]}), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link });
+        for (options) |arg| try text.writer.print("{s}{s}", .{ if (text.written().len == 0) "" else " ", arg });
+        try jobs.append(a, .{ .os = host, .name = try a.print("SDK link ({s})", .{name}), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link });
     }
 }
 
@@ -304,13 +347,26 @@ fn buildArgs(a: std.mem.Allocator, value: src.Value) ![]const u8 {
     return text.toOwnedSlice();
 }
 
-pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
-    const name = if (target == .string) target.string else src.string(src.get(target, "target"), "");
+/// The command that compiles `target` to objects: Debug, with the ReleaseFast
+/// benchmarks too when `bench` is set.
+pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value, bench: bool) ![]const []const u8 {
+    var args: std.ArrayList([]const u8) = .empty;
+    try args.appendSlice(a, &.{ "zig", "build", "ci-check" });
+    if (bench) try args.append(a, "ci-check-bench");
+    try args.appendSlice(a, try crossOptions(a, config, target));
+    try args.append(a, "-Doptimize=debug");
+    return args.toOwnedSlice(a);
+}
+
+/// The build options that make a build target `target`: lint off, the target
+/// and CPU, and the caller's flags.
+pub fn crossOptions(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
+    const name = targetName(target);
     if (name.len == 0) return error.InvalidCrossTarget;
     const cpu = src.get(target, "cpu");
     _ = std.Target.Query.parse(.{ .arch_os_abi = name, .cpu_features = if (cpu == .string) cpu.string else null }) catch return error.InvalidCrossTarget;
     var args: std.ArrayList([]const u8) = .empty;
-    try args.appendSlice(a, &.{ "zig", "build", "ci-check", "-Dci-lint=false" });
+    try args.append(a, "-Dci-lint=false");
     try args.append(a, try a.print("-Dtarget={s}", .{name}));
     if (cpu != .null and cpu != .string) return error.InvalidCrossCpu;
     if (cpu == .string) {
@@ -333,21 +389,22 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     , .{})).value;
     const jobs = try plan(a, config, .release);
     var bundles: usize = 0;
-    for (jobs) |job| if (std.mem.eql(u8, job.step, "preflight-cross")) {
+    for (jobs) |job| if (std.mem.eql(u8, job.step, "preflight-cross-bench")) {
         bundles += 1;
+        try std.testing.expectEqualStrings("x86_64-windows-gnu aarch64-linux-gnu", job.targets);
     };
     try std.testing.expectEqual(@as(usize, 1), bundles);
     const targets = src.items(src.get(config, "targets"));
-    const first = try crossArgs(a, config, targets[0]);
-    const second = try crossArgs(a, config, targets[1]);
+    const first = try crossArgs(a, config, targets[0], false);
+    const second = try crossArgs(a, config, targets[1], true);
     try std.testing.expectEqualStrings("ci-check", first[2]);
     try std.testing.expectEqualStrings("-Dtarget=x86_64-windows-gnu", first[4]);
-    try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[4]);
-    try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[5]);
-    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null));
+    try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[5]);
+    try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[6]);
+    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null, false));
 }
 
-test "fast gate executes only Linux Debug and compiles all other test targets" {
+test "the fast tier checks sources, runs Linux Debug and compiles every target without the ReleaseFast benchmarks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -355,18 +412,52 @@ test "fast gate executes only Linux Debug and compiles all other test targets" {
         \\{"compile_step":"install","compile_once":true,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
     , .{})).value;
     const jobs = try plan(a, config, .fast);
-    try std.testing.expectEqual(@as(usize, 1), jobs.len);
-    try std.testing.expectEqualStrings(hosts[0], jobs[0].os);
-    try std.testing.expectEqualStrings("-Doptimize=debug", jobs[0].args);
+    try std.testing.expectEqual(@as(usize, 3), jobs.len);
+    for (jobs) |job| try std.testing.expectEqualStrings(hosts[0], job.os);
+    try std.testing.expectEqualStrings("lint", jobs[0].step);
+    try std.testing.expect(!jobs[0].setup);
+    try std.testing.expectEqualStrings("ci", jobs[1].step);
+    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false", jobs[1].args);
+    try std.testing.expectEqualStrings("preflight-cross", jobs[2].step);
+    try std.testing.expectEqualStrings("aarch64-linux-gnu aarch64-macos x86_64-windows-gnu", jobs[2].targets);
     const targets = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 3), targets.len);
-    const args = try fastCrossArgs(a, config, targets[0]);
+    const args = try crossArgs(a, config, targets[0], false);
     try std.testing.expectEqualStrings("ci-check", args[2]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", args[5]);
     try std.testing.expectEqualStrings("-Doptimize=debug", args[6]);
+    const bench = try crossArgs(a, config, targets[0], true);
+    try std.testing.expectEqualStrings("ci-check-bench", bench[3]);
     const tiers = try split(a, config, jobs, .fast);
-    try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
+    try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
+}
+
+test "cross targets are dealt out in turn to as many jobs as asked for, or one per four" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const many = (try std.json.parseFromSlice(src.Value, a,
+        \\{"targets":["a-linux-gnu","b","c","d","e","f","g"]}
+    , .{})).value;
+    var jobs: std.ArrayList(Job) = .empty;
+    try crossJobs(a, many, &jobs, src.items(src.get(many, "targets")), false);
+    try std.testing.expectEqual(@as(usize, 2), jobs.items.len);
+    try std.testing.expectEqualStrings("a-linux-gnu c e g", jobs.items[0].targets);
+    try std.testing.expectEqualStrings("b d f", jobs.items[1].targets);
+    try std.testing.expectEqualStrings("Cross compile 2/2", jobs.items[1].name);
+    const asked = (try std.json.parseFromSlice(src.Value, a,
+        \\{"cross_jobs":3,"targets":["a","b"]}
+    , .{})).value;
+    jobs.clearRetainingCapacity();
+    try crossJobs(a, asked, &jobs, src.items(src.get(asked, "targets")), true);
+    try std.testing.expectEqual(@as(usize, 2), jobs.items.len);
+    try std.testing.expectEqualStrings("preflight-cross-bench", jobs.items[0].step);
+    try std.testing.expectEqualStrings("Cross compile 1/2", jobs.items[0].name);
+    const bad = (try std.json.parseFromSlice(src.Value, a,
+        \\{"cross_jobs":0,"targets":["a"]}
+    , .{})).value;
+    try std.testing.expectError(error.InvalidCrossJobs, crossJobs(a, bad, &jobs, src.items(src.get(bad, "targets")), false));
 }
 
 test "portable matrix links macOS and Windows binaries on their SDK runners without losing native coverage" {
@@ -439,18 +530,19 @@ test "a workflow-level test timeout is refused; the watchdog bounds each test" {
         try std.testing.expect(std.mem.find(u8, job.args, "test-timeout") == null);
 }
 
-test "fast shards split Linux Debug, and only the first checks sources and compiles other targets" {
+test "fast shards split the Linux Debug tests, which no other job runs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"fast_shards\":3}", .{})).value;
     const jobs = try plan(a, config, .fast);
-    try std.testing.expectEqual(@as(usize, 3), jobs.len);
-    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-timings=true", jobs[0].args);
-    try std.testing.expectEqualStrings("1/3", jobs[0].shard);
-    try std.testing.expectEqualStrings("Linux Debug shard 2/3", jobs[1].name);
+    try std.testing.expectEqual(@as(usize, 4), jobs.len);
+    try std.testing.expectEqualStrings("lint", jobs[0].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
-    try std.testing.expectEqualStrings("3/3", jobs[2].shard);
+    try std.testing.expectEqualStrings("1/3", jobs[1].shard);
+    try std.testing.expectEqualStrings("Linux Debug shard 2/3", jobs[2].name);
+    try std.testing.expectEqualStrings("3/3", jobs[3].shard);
+    for (jobs[1..]) |job| try std.testing.expect(std.mem.find(u8, job.args, "-Dci-lint=false") != null);
 }
 
 test "portable shards share one compilation per host and mode" {
@@ -475,18 +567,20 @@ test "portable shards share one compilation per host and mode" {
     try std.testing.expectEqual(@as(usize, 3), sharing);
 }
 
-test "the merge tier adds the Debug suite on macOS and Windows to the fast tier, and nothing more" {
+test "the merge tier adds the benchmarks and the Debug suite on macOS and Windows to the fast tier, and nothing more" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":2},\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
     const jobs = try plan(a, config, .merge);
-    try std.testing.expectEqual(@as(usize, 4), jobs.len);
-    try std.testing.expectEqualStrings("preflight-fast", jobs[0].step);
-    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-timings=true", jobs[0].args);
-    try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[1].name);
-    try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", jobs[3].name);
-    for (jobs[1..]) |job| {
+    try std.testing.expectEqual(@as(usize, 6), jobs.len);
+    try std.testing.expectEqualStrings("lint", jobs[0].step);
+    try std.testing.expectEqualStrings("ci", jobs[1].step);
+    try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
+    try std.testing.expectEqualStrings("preflight-cross-bench", jobs[2].step);
+    try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[3].name);
+    try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", jobs[5].name);
+    for (jobs[3..]) |job| {
         try std.testing.expectEqualStrings("ci", job.step);
         try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", job.args);
         try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
@@ -516,7 +610,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         "test (ubuntu-latest, Debug)",        "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
         "test (macos-latest, Debug)",         "test (macos-latest, ReleaseSafe)",      "test (windows-latest, Debug)",
         "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
-        "cross (all configured targets)",     "ThreadSanitizer (Linux)",
+        "Cross compile",                      "ThreadSanitizer (Linux)",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {
@@ -528,7 +622,6 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     }
     // Every host the tier executes records its durations; none of it is the fast job.
     for (jobs) |job| {
-        try std.testing.expect(!std.mem.eql(u8, job.step, "preflight-fast"));
         if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
     }
 }
@@ -561,7 +654,7 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     , .{})).value;
     const cross = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 5), cross.len);
-    const argv = try fastCrossArgs(a, config, cross[0]);
+    const argv = try crossArgs(a, config, cross[0], false);
     try std.testing.expectEqualStrings("ci-check", argv[2]);
     try std.testing.expectEqualStrings("-Dcpu=baseline", argv[5]);
     try std.testing.expectEqualStrings("-Dfeature=true", argv[6]);

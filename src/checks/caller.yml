@@ -23,16 +23,7 @@ permissions:
   contents: read
   actions: read
 jobs:
-  skip:
-    if: github.event_name != 'push' && !inputs.status-only
-    uses: @SKIP@
-    with:
-      tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}
-      preflight-ref: @PIN@
-      working-directory: @DIRECTORY@
   gate:
-    needs: skip
-    if: always() && (github.event_name == 'push' || inputs.status-only || (needs.skip.result == 'success' && needs.skip.outputs.docs-only != 'true'))
     uses: @GATE@
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || 'merge' }}

@@ -220,6 +220,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8
     try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
+    try checks.lazy_import.check(c);
 }
 
 fn exportFacts(c: src.Context, args: []const []const u8) !void {

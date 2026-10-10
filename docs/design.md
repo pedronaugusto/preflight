@@ -73,6 +73,8 @@ What preflight adds to an artifact obeys the same rule. The test runner, its sha
 watchdog link std alone; benchmarks and fuzzing measure through the package's own shakedown,
 declared by the package. Nothing of preflight's pins reaches a package's artifact.
 
+A `build.zig` function that calls `lazyImport` raises the branch quota before it: std compares every package of the tree at comptime, so the failure depends on the size of the tree and not on the code, and it appears in whichever function calls it. `lint` reads the function bodies and reports the call with no earlier `@setEvalBranchQuota`.
+
 A nested manifest (a fixture's, a conformance build's) pins each package the root also pins
 exactly as the root does; the check names the drift. A fixture generated at build time from the
 root's dependency cannot drift at all: `addConsumerCheck` writes its project under the cache, and

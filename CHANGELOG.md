@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `lint` fails a function of `build.zig` that calls `lazyImport` without an earlier `@setEvalBranchQuota` in it: std's `lazyImport` compares every package of the tree at comptime, and a large tree passes the default 1000 branches.
+
 ## [0.4.1] - 2026-10-13
 
 ### Added

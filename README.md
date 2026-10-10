@@ -73,7 +73,7 @@ project, and preflight's own gate runs it on every host.
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
 
-`zig build lint` runs source checks. `zig build ci` checks sources before running
+`zig build lint` runs source checks, among them that a function of `build.zig` that calls `lazyImport` calls `@setEvalBranchQuota` first: std compares every package of the tree there at comptime, and a large tree passes the default 1000 branches. `zig build ci` checks sources before running
 tests. A watchdog in the shared test runner fails a test that runs longer than
 120 s, its Io teardown included, by name, phase and seed, in local runs too. A
 package that needs another bound says why: `.test_timeout = .{ .bound = .{ .limit =
@@ -106,8 +106,7 @@ cannot reach the package's CI dependencies or anything cached for them. `.module
 and `.packages` the dependencies the package itself needs. `.options` gives the package
 the options a consumer would (`.{ .name = "http", .value = .{ .flag = false } }` builds it
 without its optional HTTP), so that a feature a package makes optional is built both ways.
-The consumer builds
-for the host in Debug.
+The consumer builds for the host in Debug.
 
 A build nested in the package (a conformance build against an emulator that is not yours, a
 fixture) that uses a package the root also pins takes the pin from the root:

@@ -346,7 +346,7 @@ refused. `windows_git_latest` controls the shared Windows Git setup. A
 workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test.
 `fast_shards` splits the Linux Debug tests; the source checks and the cross
 compile are jobs of their own. `cross_jobs` sets how many jobs share the cross
-targets. Static jobs explicitly distinguish `execute`, `objects`,
+targets, and `cross_seconds` how many seconds of compiling each may hold. Static jobs explicitly distinguish `execute`, `objects`,
 `link` and `replay` operations. `compile_once` enables the separate native link
 and shard replay matrices; it never moves SDK linking to Linux.
 
@@ -384,10 +384,13 @@ first onto the least-loaded shard, by the seconds recorded for that target in
 without records the split is by count. Every shard computes the same split, so
 each test runs exactly once. Repository-specific jobs stay in the caller and run
 on the tiers they belong to.
-Cross targets are dealt out in turn to `cross_jobs` Linux jobs (one for every four
-targets when it is not set), each target keeping its optional CPU and flags. The
-checks run on their host's baseline CPU target, so a binary built once serves
-every runner model.
+Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) of
+compiling each, longest target first onto the job with the least, each target keeping
+its optional CPU and flags. A target costs what the last merge or release run measured
+of it (`ci/costs.json`, which the run's proof artifact carries beside
+`ci/durations.json`), and 90 s, or the mean of the others, where none did. `cross_jobs`
+fixes the count instead. The checks run on their host's baseline CPU target, so a
+binary built once serves every runner model.
 
 Every job takes the checks as a binary, and none compiles them. The first job of a
 run, `toolchain`, builds `preflight` for Linux, macOS and Windows with `zig build

@@ -15,10 +15,6 @@ on:
       attest:
         type: boolean
         default: false
-      land:
-        description: Fast-forward main to the commit the merge tier tested, once every job of it is green
-        type: boolean
-        default: false
       fast-matrix:
         description: Static Linux Debug shards generated from ci/workflow.json
         type: string
@@ -46,17 +42,10 @@ on:
       compile-once:
         type: boolean
         default: false
-      test-job-timeout:
-        description: Zig master suite step timeout in minutes, capped at 20
-        type: number
-        default: 20
       windows-git-latest:
         description: Upgrade Git for Windows before setting up test tools
         type: boolean
         default: false
-      windows-job-timeout:
-        type: number
-        default: 20
 permissions:
   contents: read
   actions: read
@@ -97,13 +86,20 @@ jobs:
           include-hidden-files: true
           retention-days: ${{ github.repository == 'pedronaugusto/preflight' && 90 || 1 }}
           overwrite: true
+      # A documentation generator may run zig.
+      - uses: mlugg/setup-zig@v2
+        if: inputs.tier == 'fast'
+        with:
+          version: 0.17.0
+          use-cache: false
+      # The fast tier compares the branch with main; a merge or release candidate keeps the whole gate.
       - name: Filter paths and check documentation when it is the only change
         id: paths
         if: inputs.tier == 'fast'
+        working-directory: ${{ inputs.working-directory }}
         env:
           PREFLIGHT_TIER: ${{ inputs.tier }}
-          PREFLIGHT_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-        run: .preflight-bin/linux/preflight skip --config "${{ inputs.working-directory }}/ci/preflight.json"
+        run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight skip
   main:
     if: inputs.attest
     runs-on: ubuntu-latest
@@ -181,7 +177,7 @@ jobs:
       - uses: ./.preflight/.github/actions/setup
         with:
           windows-git-latest: ${{ inputs.windows-git-latest }}
-          working-directory: ${{ inputs.working-directory }}
+          working-directory: ${{ matrix.directory || inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
           toolchain: toolchain-${{ inputs.preflight-ref }}
@@ -190,23 +186,29 @@ jobs:
         if: matrix.setup
         timeout-minutes: 5
         continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ matrix.directory || inputs.working-directory }}
+        env:
+          PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
         timeout-minutes: 5
         continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ matrix.directory || inputs.working-directory }}
+        env:
+          PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
         timeout-minutes: 5
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ matrix.directory || inputs.working-directory }}
+        env:
+          PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
       - name: Run the gate
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
@@ -215,6 +217,7 @@ jobs:
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_TARGETS: ${{ matrix.targets }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
+          PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight run
       - uses: actions/upload-artifact@v4
         if: always() && matrix.step == 'hardened-fuzz'
@@ -228,7 +231,7 @@ jobs:
         if: always()
         with:
           name: timings-${{ matrix.cache_key }}
-          path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
+          path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-timings
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
@@ -279,7 +282,7 @@ jobs:
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run the Debug suite on Zig master
         id: suite
-        timeout-minutes: ${{ inputs.test-job-timeout < 20 && inputs.test-job-timeout || 20 }}
+        timeout-minutes: 20
         env:
           STEP: ci
           BUILD_ARGS: -Doptimize=debug -Dci-lint=false
@@ -452,21 +455,3 @@ jobs:
             .preflight-timings/durations.json
             .preflight-timings/costs.json
           retention-days: 90
-  # Main moves to the commit this run tested, by a fast-forward and by nothing
-  # else, when every job of the merge tier is green. The zig master leg is advisory
-  # and the release tier lands nothing. What moves main is this job's token, whose
-  # pushes start no run of their own, so a landing is not tested twice.
-  land:
-    needs: [gate, compile, execute, profile]
-    if: always() && inputs.land && inputs.tier == 'merge' && !inputs.attest && github.event_name == 'workflow_dispatch' && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') && needs.profile.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: ./.preflight/.github/actions/land

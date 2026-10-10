@@ -564,3 +564,5 @@ a separately invoked codemod and does not run as a lint gate.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+<!-- ci-time: a documentation-only change, to see the gate skip -->

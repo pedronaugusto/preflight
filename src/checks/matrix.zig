@@ -184,9 +184,9 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
     return .{ .native = native.items, .compile = compile.items, .run = run.items };
 }
 
-/// Linux Debug in `fast_shards` jobs; the first also checks sources and
-/// compiles the other targets. They record durations when `timing` is set
-/// or they are shards.
+/// The source checks, Linux Debug in `fast_shards` jobs, and the object compile of
+/// the other targets, side by side. The tests record durations when `timing` is
+/// set or they are shards.
 fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     const timing = tier != .fast;
     var jobs: std.ArrayList(Job) = .empty;

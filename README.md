@@ -407,8 +407,10 @@ Fetched packages, what Zig builds for itself and pinned external tools have sepa
 caches; what a job builds of the package is kept in none, since the next run changes
 the sources and a gigabyte of objects per job evicted the rest of the repository's
 caches. What Zig builds for itself is the build runner and each target's runtime,
-which every `zig build` compiles first and which a run on main renews weekly in the
-`warm` job, together with the package's external tools: a branch sees the caches of main
+which every `zig build` compiles first, for the CPU model it runs on (the hosted runners
+have several, and a runner built on one is of no use on another, so the cache is keyed
+by the model) and which a run on main renews weekly in the `warm` job, on a few runners
+of each kind, together with the package's external tools: a branch sees the caches of main
 and its own, so its first jobs restore the runner instead of compiling it, and the tools
 instead of building them.
 Each job fetches what its own build asks for: it configures the build with the

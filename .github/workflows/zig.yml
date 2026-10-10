@@ -123,12 +123,22 @@ jobs:
   warm:
     needs: toolchain
     if: inputs.attest && github.event_name == 'push'
-    name: warm (${{ matrix.os }})
+    name: warm (${{ matrix.os }} ${{ matrix.copy }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Zig's own cache is keyed by the CPU model, and the hosted runners have several
+      # of them; each copy lands on one, so that most of them have an entry on main.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - { os: ubuntu-latest, copy: 1 }
+          - { os: ubuntu-latest, copy: 2 }
+          - { os: ubuntu-latest, copy: 3 }
+          - { os: ubuntu-latest, copy: 4 }
+          - { os: windows-latest, copy: 1 }
+          - { os: windows-latest, copy: 2 }
+          - { os: windows-latest, copy: 3 }
+          - { os: macos-latest, copy: 1 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4

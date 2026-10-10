@@ -151,10 +151,12 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     const repo_arg = try a.print("-Drepo-root={s}", .{fixture_root});
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
-    // Match setup-zig: local and global caches share an absolute directory.
+    // The caches the surrounding build uses, as a hosted job sets them, so the
+    // gate it builds is not compiled again from nothing; with none set, one
+    // absolute directory for both, as setup-zig gives.
     const cache = try std.Io.Dir.cwd().realPathFileAlloc(io, ".zig-cache", a);
-    try env.put("ZIG_LOCAL_CACHE_DIR", cache);
-    try env.put("ZIG_GLOBAL_CACHE_DIR", cache);
+    if (env.get("ZIG_LOCAL_CACHE_DIR") == null) try env.put("ZIG_LOCAL_CACHE_DIR", cache);
+    if (env.get("ZIG_GLOBAL_CACHE_DIR") == null) try env.put("ZIG_GLOBAL_CACHE_DIR", cache);
     try env.put("STEP", "probe");
     try env.put("BUILD_ARGS", "");
     try env.put("PREFLIGHT_SETUP", "true");

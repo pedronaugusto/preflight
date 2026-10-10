@@ -124,6 +124,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Under `zig build` the test runner no longer writes the seed line on a passing run. Zig 0.17's build runner shows any stderr of a successful run step under `failed command:` (its `Run` step keeps the command it records before spawning), so every package's passing `zig build test` read as failed. A direct run still prints the seed; failures name it. `preflight_order.init` takes `announce`.
+
 - The test runner says which tests called `std.testing.fuzz`, so `zig build test --fuzz`
   finds them: a build learns its fuzz tests from an unfuzzed run first, where the runner
   answered that none was one, and every fuzzing session ended with `no fuzz tests found`.

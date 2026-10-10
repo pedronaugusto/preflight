@@ -266,13 +266,12 @@ const default_cross_seconds = 200;
 /// The seconds `name` takes to compile, as the last merge or release run
 /// measured them (`ci/costs.json`, which the plan reads as `measured`), the
 /// benchmarks too when `bench` is set; null when nothing was measured.
-fn targetSeconds(config: src.Value, name: []const u8, bench: bool) ?f64 {
+fn targetSeconds(a: std.mem.Allocator, config: src.Value, name: []const u8, bench: bool) !?f64 {
     const phases = src.get(src.get(config, "measured"), "phases");
     if (phases != .object) return null;
-    var buffer: [256]u8 = undefined;
-    const compiled = number(phases.object.get(std.fmt.bufPrint(&buffer, "compile {s}", .{name}) catch return null) orelse return null) orelse return null;
+    const compiled = number(phases.object.get(try a.print("compile {s}", .{name})) orelse return null) orelse return null;
     if (!bench) return compiled;
-    const benchmarks = number(phases.object.get(std.fmt.bufPrint(&buffer, "benchmarks {s}", .{name}) catch return null) orelse return null) orelse return null;
+    const benchmarks = number(phases.object.get(try a.print("benchmarks {s}", .{name})) orelse return null) orelse return null;
     return compiled + benchmarks;
 }
 
@@ -299,7 +298,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     var known: f64 = 0;
     var measured: usize = 0;
     for (targets, cost) |target, *seconds| {
-        seconds.* = targetSeconds(config, targetName(target), bench) orelse -1;
+        seconds.* = try targetSeconds(a, config, targetName(target), bench) orelse -1;
         if (seconds.* >= 0) {
             known += seconds.*;
             measured += 1;

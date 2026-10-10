@@ -8,6 +8,7 @@ pub const matrix = @import("checks/matrix.zig");
 pub const cache = @import("checks/cache.zig");
 pub const glint = @import("checks/glint.zig");
 pub const quality = @import("checks/quality.zig");
+pub const fuzz = @import("checks/fuzz.zig");
 pub const integration = @import("checks/integration.zig");
 pub const profile = @import("checks/profile.zig");
 pub const paths = @import("checks/paths.zig");
@@ -39,6 +40,7 @@ test {
     _ = cache;
     _ = glint;
     _ = quality;
+    _ = fuzz;
     _ = integration;
     _ = profile;
     _ = attest;

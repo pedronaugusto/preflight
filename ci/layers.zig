@@ -6,7 +6,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "supported Zig versions", .patterns = &.{"src/zig_version.zig"} },
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig", "src/rules.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
-    .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/tool.zig", "src/build.zig", "src/toolchain_build.zig" } },
+    .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/fuzz.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/tool.zig", "src/build.zig", "src/toolchain_build.zig" } },
     .{ .name = "checks", .patterns = &.{ "src/checks/*.zig", "src/checks/glint/*.zig" } },
     .{ .name = "deprecation codemod", .patterns = &.{ "src/deprecations/*.zig", "src/deprecations.zig" } },
     .{ .name = "configuration validation", .patterns = &.{"src/facts/*.zig"} },

@@ -6,6 +6,7 @@ const objects = @import("objects.zig");
 const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
 const bench = @import("bench.zig");
+const fuzz = @import("fuzz.zig");
 const hardened = @import("hardened.zig");
 const Tool = @import("tool.zig").Tool;
 
@@ -161,6 +162,7 @@ const Steps = struct {
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
         bench.add(b, pkg, config.tests, config.bench, steps.smoke);
+        fuzz.add(b, pkg);
         hardened.add(b, config.tests, config.hardened, steps.profile_options);
         objects.add(b, config.tests, steps.sdk);
         if (config.portable_tests) portable.add(b, config.tests, executable);

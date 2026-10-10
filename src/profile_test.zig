@@ -2,29 +2,43 @@ const std = @import("std");
 const facts = @import("facts.zig");
 const configuration = @import("facts/configuration.zig");
 const fixture = @import("facts_test.zig");
+const shakedown = @import("shakedown");
 
 test "bounded protocol and configuration fuzzer" {
-    try std.testing.fuzz({}, struct {
-        fn one(_: void, smith: *std.testing.Smith) !void {
+    try shakedown.check(std.testing.allocator, {}, struct {
+        fn one(_: void, case: *shakedown.Case) !void {
+            const s = case.source;
+            const a = case.gpa;
             var bytes: [256]u8 = undefined;
-            smith.bytes(&bytes);
-            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-            defer arena.deinit();
-            var reader = std.Io.Reader.fixed(&bytes);
-            _ = facts.notification(arena.allocator(), &reader) catch |err| switch (err) {
+            const input = bytes[0..shakedown.gen.intRange(s, usize, 0, bytes.len)];
+            s.bytes(input);
+            var reader = std.Io.Reader.fixed(input);
+            _ = facts.notification(a, &reader) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => {},
             };
-            const seed = try fixture.seed(arena.allocator());
-            const mutated = try arena.allocator().dupe(u8, seed);
-            const position = smith.valueRangeLessThan(u32, 0, @intCast(mutated.len));
-            mutated[position] = smith.value(u8);
-            _ = configuration.load(arena.allocator(), mutated) catch |err| switch (err) {
+            const seed = try fixture.seed(a);
+            const mutated = try a.dupe(u8, seed);
+            const position = shakedown.gen.intRange(s, usize, 0, mutated.len - 1);
+            mutated[position] = shakedown.gen.int(s, u8);
+            _ = configuration.load(a, mutated) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => {},
             };
         }
-    }.one, .{ .corpus = &.{ "", "seed", "\x00\xff" } });
+    }.one, .{});
+}
+
+test "the protocol reader takes the shortest inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "", "seed", "\x00\xff" }) |input| {
+        var reader = std.Io.Reader.fixed(input);
+        _ = facts.notification(arena.allocator(), &reader) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {},
+        };
+    }
 }
 
 test "thread safety synchronized counter" {

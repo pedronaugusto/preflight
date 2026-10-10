@@ -219,7 +219,9 @@ Fuzzing is continuous and off the landing path: no landing fuzzes. `zig build fu
 runs shakedown's `shakedown-fuzz` over the package's `check` properties, as many sessions
 of `zig build test --fuzz=<limit>` as it is given, with the fuzzer's corpora in a store
 outside the repository and every failure shrunk to the tape to add to the property's
-`.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. The fuzzing,
+`.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. It fuzzes
+`Config.fuzz_step`, `test` unless the package names a step whose every test binary has a
+property (the fuzzer refuses a binary with none). The fuzzing,
 the corpora and the shrinking are shakedown's; preflight wires the step.
 
 What is not fuzzed is visible. `zig build lint` reports, without failing, the parsers of

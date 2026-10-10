@@ -15,15 +15,21 @@ jobs:
           repository: pedronaugusto/sweep
           ref: ci-time-after
           path: sweep
-      - name: Sweep, cold, then with only the package cache cold
+      - name: Take the prebuilt checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/pedronaugusto/preflight/actions/artifacts?name=toolchain-9b813323207ea78e607a5fc8ad49dd30ae62978a" --jq '.artifacts[0].id')
+          gh api "repos/pedronaugusto/preflight/actions/artifacts/$id/zip" > "$RUNNER_TEMP/t.zip"
+          mkdir -p "$RUNNER_TEMP/bin" && unzip -q "$RUNNER_TEMP/t.zip" -d "$RUNNER_TEMP/bin" && chmod +x "$RUNNER_TEMP/bin/linux/preflight"
+      - name: Plain zig, then preflight fetch, on one warm global cache
         shell: bash
         run: |
-          export ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-global" ZIG_LOCAL_CACHE_DIR="$GITHUB_WORKSPACE/.zig-cache"
+          export ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-global" ZIG_LOCAL_CACHE_DIR="$GITHUB_WORKSPACE/.zig-cache" BUILD_ARGS="-Doptimize=debug -Dci-lint=false"
           cd sweep
-          date +%T; time zig build --list-steps > /dev/null 2> "$RUNNER_TEMP/first.txt"; date +%T
-          grep -c . "$RUNNER_TEMP/first.txt"; grep "info:" "$RUNNER_TEMP/first.txt" | head
-          rm -rf "$ZIG_GLOBAL_CACHE_DIR/p" "$ZIG_LOCAL_CACHE_DIR"
           date +%T; time zig build --list-steps > /dev/null 2>&1; date +%T
+          rm -rf "$ZIG_LOCAL_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR/p"
+          date +%T; time "$RUNNER_TEMP/bin/linux/preflight" fetch > /dev/null 2>&1; date +%T
           rm -rf "$ZIG_LOCAL_CACHE_DIR"
-          date +%T; time zig build --list-steps > /dev/null 2>&1; date +%T
-          du -sh "$ZIG_GLOBAL_CACHE_DIR"/* "$ZIG_LOCAL_CACHE_DIR"/* | sort -h | tail
+          date +%T; time "$RUNNER_TEMP/bin/linux/preflight" fetch > /dev/null 2>&1; date +%T

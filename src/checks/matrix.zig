@@ -22,6 +22,8 @@ pub const Job = struct {
     operation: enum { execute, objects, link, replay } = .execute,
     /// The cross targets a compile job covers, by name, space-separated.
     targets: []const u8 = "",
+    /// The `ci-link` arguments of the SDK links this job runs after its own step, `;` apart.
+    links: []const u8 = "",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -181,7 +183,36 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         executor.artifact = artifact;
         try run.append(a, executor);
     }
+    try foldLinks(a, &native, &compile);
     return .{ .native = native.items, .compile = compile.items, .run = run.items };
+}
+
+/// An SDK link job needs a runner of its host, which the host's test jobs
+/// already hold. The link runs in one of them, once its tests have, so the
+/// runner, the checkout and the setup are paid for once; a host with no test
+/// job keeps its link jobs. The jobs that link are the compile jobs where a
+/// host has them, and its test shards otherwise, dealt out in turn.
+fn foldLinks(a: std.mem.Allocator, native: *std.ArrayList(Job), compile: *std.ArrayList(Job)) !void {
+    for (hosts[1..]) |host| {
+        var carriers: std.ArrayList(*Job) = .empty;
+        for (compile.items) |*job| if (std.mem.eql(u8, job.os, host)) try carriers.append(a, job);
+        if (carriers.items.len == 0) for (native.items) |*job| {
+            if (std.mem.eql(u8, job.os, host) and std.mem.eql(u8, job.step, "ci")) try carriers.append(a, job);
+        };
+        if (carriers.items.len == 0) continue;
+        var folded: usize = 0;
+        for (native.items) |job| {
+            if (!std.mem.eql(u8, job.os, host) or !std.mem.eql(u8, job.step, "ci-link")) continue;
+            const carrier = carriers.items[folded % carriers.items.len];
+            carrier.links = if (carrier.links.len == 0) job.args else try a.print("{s};{s}", .{ carrier.links, job.args });
+            folded += 1;
+        }
+        var kept: std.ArrayList(Job) = .empty;
+        for (native.items) |job| {
+            if (!std.mem.eql(u8, job.os, host) or !std.mem.eql(u8, job.step, "ci-link")) try kept.append(a, job);
+        }
+        native.* = kept;
+    }
 }
 
 /// Linux Debug in `fast_shards` jobs; the first also checks sources and
@@ -663,22 +694,23 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     try std.testing.expectEqualStrings("-Dtrust-store=true", argv[7]);
     for ([_]Tier{ .merge, .release }) |tier| {
         const tiers = try split(a, config, try plan(a, config, tier), tier);
+        // The links run in the compile job of their host, one after the other.
+        for (tiers.native) |job| try std.testing.expect(!std.mem.eql(u8, job.step, "ci-link"));
         var linked: usize = 0;
-        for (tiers.native) |job| if (std.mem.eql(u8, job.step, "ci-link")) {
-            linked += 1;
-            try std.testing.expect(job.operation == .link);
-            try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
-            try std.testing.expect(std.mem.find(u8, job.args, "-Dfeature=true") != null);
-            if (std.mem.find(u8, job.args, "x86_64-macos") != null) {
-                try std.testing.expect(std.mem.find(u8, job.args, "-Dcpu=baseline") != null);
-                try std.testing.expect(std.mem.find(u8, job.args, "-Dtrust-store=true") != null);
-            }
-        };
-        try std.testing.expectEqual(@as(usize, 3), linked);
         for (tiers.compile) |job| {
             try std.testing.expect(job.operation == .link);
             try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
+            var links = std.mem.tokenizeScalar(u8, job.links, ';');
+            while (links.next()) |args| {
+                linked += 1;
+                try std.testing.expect(std.mem.find(u8, args, "-Dfeature=true") != null);
+                if (std.mem.find(u8, args, "x86_64-macos") != null) {
+                    try std.testing.expect(std.mem.find(u8, args, "-Dcpu=baseline") != null);
+                    try std.testing.expect(std.mem.find(u8, args, "-Dtrust-store=true") != null);
+                }
+            }
         }
+        try std.testing.expectEqual(@as(usize, 3), linked);
         for (tiers.run) |job| try std.testing.expect(job.operation == .replay);
     }
     const bad = (try std.json.parseFromSlice(src.Value, a, "{\"build_args\":[\"-Dtarget=x86_64-macos\"]}", .{})).value;
@@ -699,4 +731,38 @@ test "hardened planner schedules native execution with no portable sanitizer rep
         try std.testing.expectEqualStrings("", job.artifact);
     };
     try std.testing.expectEqual(@as(usize, 3), executed);
+}
+
+test "SDK links run in the test jobs of their host, dealt out in turn, and stay jobs of their own on a host without any" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"shards":{"windows":2},"targets":["x86_64-windows-gnu","aarch64-windows-gnu","x86_64-macos"]}
+    , .{})).value;
+    const tiers = try split(a, config, try plan(a, config, .merge), .merge);
+    var carried: usize = 0;
+    for (tiers.native) |job| {
+        try std.testing.expect(!std.mem.eql(u8, job.step, "ci-link"));
+        if (std.mem.eql(u8, job.name, "test (windows-latest, Debug) shard 1/2")) {
+            try std.testing.expectEqualStrings("-Dci-lint=false -Dtarget=x86_64-windows-gnu", job.links);
+            carried += 1;
+        }
+        if (std.mem.eql(u8, job.name, "test (windows-latest, Debug) shard 2/2")) {
+            try std.testing.expectEqualStrings("-Dci-lint=false -Dtarget=aarch64-windows-gnu", job.links);
+            carried += 1;
+        }
+        if (std.mem.eql(u8, job.name, "test (macos-latest, Debug)")) {
+            try std.testing.expectEqualStrings("-Dci-lint=false -Dtarget=x86_64-macos", job.links);
+            carried += 1;
+        }
+        if (std.mem.eql(u8, job.os, hosts[0])) try std.testing.expectEqualStrings("", job.links);
+    }
+    try std.testing.expectEqual(@as(usize, 3), carried);
+    // Without a test job on the host there is nothing to carry the link.
+    var native: std.ArrayList(Job) = .empty;
+    try native.append(a, .{ .os = hosts[1], .name = "SDK link (x86_64-macos)", .step = "ci-link", .args = "-Dtarget=x86_64-macos" });
+    var compile: std.ArrayList(Job) = .empty;
+    try foldLinks(a, &native, &compile);
+    try std.testing.expectEqual(@as(usize, 1), native.items.len);
 }

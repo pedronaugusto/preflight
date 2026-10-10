@@ -283,9 +283,18 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
             try checks.command.execute(c, &.{ "zig", "build", before.string });
         }
     }
+    try buildStep(c, env, step, env.get("BUILD_ARGS") orelse "");
+    // The SDK links of this job's host, which the plan folded into it.
+    var links = std.mem.tokenizeScalar(u8, env.get("PREFLIGHT_LINKS") orelse "", ';');
+    while (links.next()) |args| try buildStep(c, env, "ci-link", args);
+}
+
+/// Runs `zig build <step> <build_args>` as the hosted gate does, timed.
+fn buildStep(c: src.Context, env: *std.process.Environ.Map, step: []const u8, build_args: []const u8) !void {
+    const summary = env.get("GITHUB_STEP_SUMMARY");
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, &.{ "zig", "build", step });
-    var tokens = std.mem.tokenizeAny(u8, env.get("BUILD_ARGS") orelse "", " \t\r\n");
+    var tokens = std.mem.tokenizeAny(u8, build_args, " \t\r\n");
     while (tokens.next()) |token| {
         // The canonical planner may already specify this hosted control.
         // Repeating a boolean turns it into a Zig list, so emit it once.

@@ -23,9 +23,23 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     defer a.free(package_root);
     const relative = try std.Io.Dir.path.relativeAlloc(a, package_root, null, fixture_root, package_root);
     defer a.free(relative);
-    const manifest = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }} }} }}", .{std.zig.fmtString(relative)});
+    // The benchmarks take the package's own shakedown: preflight's pin, read from its manifest, so it never drifts.
+    const shakedown = try shakedownPin(a);
+    const manifest = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\", .lazy = true }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) });
     defer a.free(manifest);
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = manifest });
+}
+
+const Pin = struct { url: []const u8, hash: []const u8 };
+
+/// The shakedown preflight's own manifest pins.
+fn shakedownPin(a: std.mem.Allocator) !Pin {
+    const path = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1024 * 1024));
+    const Manifest = struct { dependencies: struct { shakedown: Pin } };
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const manifest = try std.zon.parse.fromSlice(Manifest, .{ .gpa = a, .arena = a, .source = try a.dupeSentinel(u8, text, 0), .diagnostics = &diagnostics, .ignore_unknown_fields = true });
+    return manifest.dependencies.shakedown;
 }
 
 fn run(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {

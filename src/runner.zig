@@ -7,7 +7,7 @@ const timings = @import("preflight_timings");
 const order_module = @import("preflight_order");
 const options = @import("preflight_runner_options");
 const bound = @import("watchdog.zig");
-const test_timeout = bound.Nanoseconds.fromRaw(options.test_timeout_ns);
+const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
@@ -71,9 +71,9 @@ const Watchdog = struct {
 
     fn watch(watchdog: *Watchdog) void {
         // The global single-threaded Io never cancels a wait.
-        if (!bound.expired(io, &watchdog.done, test_timeout.toIoDuration())) return;
+        if (!bound.expired(io, &watchdog.done, test_timeout)) return;
         report("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
-            watchdog.name, test_timeout.convert(.millisecond, u64, .down).raw(), watchdog.phase.load(.acquire), testing.random_seed,
+            watchdog.name, options.test_timeout_ns / std.time.ns_per_ms, watchdog.phase.load(.acquire), testing.random_seed,
         });
         std.process.exit(1);
     }

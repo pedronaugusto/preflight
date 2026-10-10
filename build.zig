@@ -1,6 +1,5 @@
 const std = @import("std");
 const ci = @import("src/build.zig");
-const toolchain_build = @import("src/toolchain_build.zig");
 /// Adds the package's local gate and the steps the hosted gate runs.
 pub const addCi = ci.addCi;
 /// What `addCi` checks and how its tests run.
@@ -23,6 +22,9 @@ pub fn build(b: *std.Build) void {
     // pass on an empty package cache accepts it.
     const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
     const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
+    // A package that depends on preflight builds nothing of it here: its gate
+    // installs the tools through addCi, and our suite belongs to this checkout.
+    if (b.pkg_hash.len != 0) return;
     const target = ci.ciTarget(b);
     // Zig is read through gantry's frontend module, which takes glint's token tier.
     const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .debug, .zig = true }) catch {
@@ -37,14 +39,6 @@ pub fn build(b: *std.Build) void {
         _ = ci.declareCiOptions(b, null);
         return;
     };
-    _ = b.addModule("rules", .{ .root_source_file = b.path("src/rules.zig"), .target = target, .imports = &.{.{ .name = "gantry", .module = gantry }} });
-    // A package consumer needs only the family policies. Its gate installs
-    // the tools through addCi; our suite and benchmarks belong to this checkout.
-    if (b.pkg_hash.len != 0) return;
-    const safety = (b.dependencyLazy("aegis", .{ .target = target, .optimize = .debug }) catch {
-        _ = ci.declareCiOptions(b, null);
-        return;
-    }).module("aegis");
     // Code rules are glint's; the checks import it as a library. A module that
     // sets no optimize mode takes its importer's, so the tests, which build
     // aegis in Debug for themselves, take glint in Debug and share it.
@@ -68,7 +62,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "preflight_aegis", .module = safety } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint } },
     }), .filters = test_filters });
     if (shakedown) |module| tests.root_module.addImport("shakedown", module);
     const options = b.addOptions();
@@ -79,7 +73,7 @@ pub fn build(b: *std.Build) void {
     // consumer's tests; the order module and the watchdog the runner
     // imports run their own tests beside it.
     const suite = &b.addRunArtifact(tests).step;
-    const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/order.zig"), .target = target, .optimize = .debug, .imports = &.{.{ .name = "preflight_aegis", .module = safety }} }) });
+    const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("src/order.zig"), .target = target, .optimize = .debug }) });
     const order_run = b.addRunArtifact(order);
     test_step.dependOn(suite);
     test_step.dependOn(&order_run.step);
@@ -88,7 +82,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/watchdog_test.zig"),
             .target = target,
             .optimize = .debug,
-            .imports = &.{ .{ .name = "shakedown", .module = module }, .{ .name = "preflight_aegis", .module = safety } },
+            .imports = &.{.{ .name = "shakedown", .module = module }},
         }), .filters = test_filters });
         const run = &b.addRunArtifact(watch).step;
         test_step.dependOn(run);
@@ -133,16 +127,6 @@ pub fn build(b: *std.Build) void {
         if (watch_run) |run| verify.dependOn(run);
         verify.dependOn(&b.addFmt(.{ .paths = b.pathList(&.{"."}), .check = true }).step);
         verify.dependOn(&executable.step);
-        toolchain_build.add(b, b.createModule(.{
-            .root_source_file = b.path("ci/toolchain.zig"),
-            .target = target,
-            .optimize = .debug,
-            .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig } },
-        }), &.{ executable.root_module, b.modules.get("rules").?, b.createModule(.{
-            .root_source_file = b.path("src/build.zig"),
-            .target = target,
-            .imports = &.{.{ .name = "gantry", .module = gantry }},
-        }) }, &.{ tests.root_module, profile.root_module });
     }
     addCommands(b, executable, repo_root orelse ".");
 }

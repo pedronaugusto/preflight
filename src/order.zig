@@ -2,11 +2,8 @@
 //! runs its share of the tests, balanced by the durations the package records.
 const std = @import("std");
 const builtin = @import("builtin");
-const aegis = @import("preflight_aegis");
-
-/// A shard identity and a shard count occupy different scalar domains.
-pub const ShardIndex = aegis.id.Id(struct {}, usize);
-pub const ShardCount = aegis.units.Count(struct {}, usize);
+// Compiled into every package's test binaries, so it links std alone: any
+// package it imported could be a second copy beside the tested package's own.
 
 /// The column of `ci/durations.json` this test binary reads.
 pub const key = @tagName(builtin.target.os.tag) ++ "-" ++ @tagName(builtin.optimize);
@@ -15,20 +12,19 @@ pub const key = @tagName(builtin.target.os.tag) ++ "-" ++ @tagName(builtin.optim
 const floor_seconds = 0.001;
 
 pub const Shard = struct {
-    /// Zero-based.
-    index: ShardIndex,
-    count: ShardCount,
+    /// Zero-based, below `count`.
+    index: usize,
+    /// At least one.
+    count: usize,
 
-    pub const all: Shard = .{ .index = .fromRaw(0), .count = .fromRaw(1) };
+    pub const all: Shard = .{ .index = 0, .count = 1 };
 
     pub const ParseError = error{InvalidShard};
 
     /// Validate the index/count relation before any shard arithmetic.
     /// Zig permits direct field construction; assign rechecks this boundary.
-    pub fn init(index: ShardIndex, count: ShardCount) ParseError!Shard {
-        if (count == ShardCount.fromRaw(0)) return error.InvalidShard;
-        // glint-ignore: A004 -- safe-type-internals: docs/design.md#shard-and-watchdog-boundaries; compare representations once to establish the index/count relation
-        if (index.raw() >= count.raw()) return error.InvalidShard;
+    pub fn init(index: usize, count: usize) ParseError!Shard {
+        if (count == 0 or index >= count) return error.InvalidShard;
         return .{ .index = index, .count = count };
     }
 
@@ -41,8 +37,7 @@ pub const Shard = struct {
         const number = std.fmt.parseUnsigned(usize, text[0..slash], 10) catch return error.InvalidShard;
         const count = std.fmt.parseUnsigned(usize, text[slash + 1 ..], 10) catch return error.InvalidShard;
         if (number == 0 or number > count) return error.InvalidShard;
-        const index = aegis.int.Checked(usize).init(number).sub(1) catch return error.InvalidShard;
-        return .{ .index = .fromRaw(index.raw()), .count = .fromRaw(count) };
+        return .{ .index = number - 1, .count = count };
     }
 };
 
@@ -74,7 +69,7 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     const names = try gpa.alloc([]const u8, tests.len);
     defer gpa.free(names);
     for (tests, names) |test_fn, *name| name.* = test_fn.name;
-    const weights = try weigh(gpa, if (shard.count.compare(.fromRaw(1)) == .gt and durations.len > 0) durations else "{}", names, key);
+    const weights = try weigh(gpa, if (shard.count > 1 and durations.len > 0) durations else "{}", names, key);
     defer gpa.free(weights);
     const selected = try assign(gpa, names, weights, shard);
     var random = std.Random.DefaultPrng.init(seed);
@@ -82,11 +77,8 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     var buffer: [256]u8 = undefined;
     var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
     try stderr.interface.print("preflight: test seed {d} (reproduce with PREFLIGHT_TEST_SEED={d})\n", .{ seed, seed });
-    if (shard.count.compare(.fromRaw(1)) == .gt) {
-        const index: ShardIndex = shard.index;
-        const count: ShardCount = shard.count;
-        // glint-ignore: A004 -- no-danger: Shard.init keeps the index below the count; the log line shows it one-based
-        try stderr.interface.print("preflight: shard {d}/{d} runs {d} of {d} tests\n", .{ index.raw() + 1, count.raw(), selected.len, tests.len });
+    if (shard.count > 1) {
+        try stderr.interface.print("preflight: shard {d}/{d} runs {d} of {d} tests\n", .{ shard.index + 1, shard.count, selected.len, tests.len });
     }
     try stderr.interface.flush();
     return selected;
@@ -148,10 +140,10 @@ pub const AssignError = std.mem.Allocator.Error || error{ InvalidShard, InvalidW
 pub fn assign(gpa: std.mem.Allocator, names: []const []const u8, weights: []const f64, shard: Shard) AssignError![]usize {
     if (names.len != weights.len) return error.InvalidWeights;
     _ = try Shard.init(shard.index, shard.count);
-    _ = shard.count.mul(@sizeOf(f64)) catch return error.InvalidShard;
+    _ = std.math.mul(usize, shard.count, @sizeOf(f64)) catch return error.InvalidShard;
     // One shard index domain, a nonzero count with count*sizeof(f64) fitting usize, and
     // equal name/weight lengths: start+step < 2*count cannot overflow.
-    const count = shard.count.raw();
+    const count = shard.count;
     const order = try gpa.alloc(usize, weights.len);
     defer gpa.free(order);
     for (order, 0..) |*index, i| index.* = i;
@@ -178,14 +170,14 @@ pub fn assign(gpa: std.mem.Allocator, names: []const []const u8, weights: []cons
             if (loads[candidate] < loads[least]) least = candidate;
         }
         loads[least] += weights[test_index];
-        if (ShardIndex.fromRaw(least).eql(shard.index)) try selected.append(gpa, test_index);
+        if (least == shard.index) try selected.append(gpa, test_index);
     }
     std.mem.sort(usize, selected.items, {}, std.sort.asc(usize));
     return selected.toOwnedSlice(gpa);
 }
 
 test "a shard is i of n, one-based, and nothing else" {
-    try std.testing.expectEqual(Shard{ .index = .fromRaw(1), .count = .fromRaw(5) }, try Shard.parse("2/5"));
+    try std.testing.expectEqual(Shard{ .index = 1, .count = 5 }, try Shard.parse("2/5"));
     try std.testing.expectEqual(Shard.all, try Shard.parse(""));
     for ([_][]const u8{ "0/5", "6/5", "2", "a/b", "2/", "/5" }) |text| try std.testing.expectError(error.InvalidShard, Shard.parse(text));
 }
@@ -196,7 +188,7 @@ test "every test runs on exactly one shard and the measured loads come out even"
     const weights = [_]f64{ 1, 2, 3, 4, 5, 6 };
     var seen: [names.len]usize = @splat(0);
     for (0..3) |index| {
-        const selected = try assign(a, &names, &weights, try Shard.init(.fromRaw(index), .fromRaw(3)));
+        const selected = try assign(a, &names, &weights, try Shard.init(index, 3));
         defer a.free(selected);
         var total: f64 = 0;
         for (selected) |test_index| {
@@ -214,7 +206,7 @@ test "one long test does not pull its neighbours onto the same shard" {
     const weights = [_]f64{ 10, 2, 2, 2, 2 };
     var alone = false;
     for (0..2) |index| {
-        const selected = try assign(a, &names, &weights, try Shard.init(.fromRaw(index), .fromRaw(2)));
+        const selected = try assign(a, &names, &weights, try Shard.init(index, 2));
         defer a.free(selected);
         if (std.mem.eql(usize, selected, &.{0})) alone = true;
     }
@@ -251,7 +243,7 @@ test "unmeasured binaries split by count, and their single tests spread over the
     for ([_][]const u8{ "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta" }) |name| {
         const names = [_][]const u8{name};
         for (0..4) |index| {
-            const selected = try assign(a, &names, &.{1}, try Shard.init(.fromRaw(index), .fromRaw(4)));
+            const selected = try assign(a, &names, &.{1}, try Shard.init(index, 4));
             defer a.free(selected);
             if (selected.len == 1) firsts[index] = true;
         }
@@ -262,7 +254,7 @@ test "unmeasured binaries split by count, and their single tests spread over the
     const many = [_][]const u8{ "1", "2", "3", "4", "5", "6", "7", "8" };
     const weights = [_]f64{ 1, 1, 1, 1, 1, 1, 1, 1 };
     for (0..4) |index| {
-        const selected = try assign(a, &many, &weights, try Shard.init(.fromRaw(index), .fromRaw(4)));
+        const selected = try assign(a, &many, &weights, try Shard.init(index, 4));
         defer a.free(selected);
         try std.testing.expectEqual(@as(usize, 2), selected.len);
     }
@@ -274,11 +266,11 @@ comptime {
 
 test "shard boundaries reject zero escaped indices and impossible load storage" {
     const a = std.testing.allocator;
-    try std.testing.expectError(error.InvalidShard, Shard.init(.fromRaw(0), .fromRaw(0)));
-    try std.testing.expectError(error.InvalidShard, Shard.init(.fromRaw(3), .fromRaw(3)));
-    try std.testing.expectError(error.InvalidShard, assign(a, &.{}, &.{}, .{ .index = .fromRaw(0), .count = .fromRaw(std.math.maxInt(usize)) }));
-    try std.testing.expectError(error.InvalidShard, assign(a, &.{"one"}, &.{1}, .{ .index = .fromRaw(1), .count = .fromRaw(1) }));
-    try std.testing.expectError(error.InvalidShard, assign(a, &.{}, &.{}, .{ .index = .fromRaw(0), .count = .fromRaw(0) }));
+    try std.testing.expectError(error.InvalidShard, Shard.init(0, 0));
+    try std.testing.expectError(error.InvalidShard, Shard.init(3, 3));
+    try std.testing.expectError(error.InvalidShard, assign(a, &.{}, &.{}, .{ .index = 0, .count = std.math.maxInt(usize) }));
+    try std.testing.expectError(error.InvalidShard, assign(a, &.{"one"}, &.{1}, .{ .index = 1, .count = 1 }));
+    try std.testing.expectError(error.InvalidShard, assign(a, &.{}, &.{}, .{ .index = 0, .count = 0 }));
     try std.testing.expectError(error.InvalidWeights, assign(a, &.{"one"}, &.{}, Shard.all));
     try std.testing.expectError(error.InvalidShard, Shard.parse("999999999999999999999999999999999999/1"));
     const empty = try assign(a, &.{}, &.{}, Shard.all);

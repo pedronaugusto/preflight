@@ -5,11 +5,6 @@
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
-        .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#28e8df5b3fde1fca2d5b61f6ab110c4acac2f688",
-            .hash = "aegis-0.0.0-rsxougITBwB_VYWvOCMfzQ4ra79s9U5QTAiuKH6ZWOl5",
-            .lazy = true,
-        },
         .glint = .{
             .url = "git+https://github.com/pedronaugusto/glint#fb28f6dfcba36fc6edb21ea1591e5d7c1bffaa88",
             .hash = "glint-0.1.0-3jcpoTNvBgBRF7ZXRxot751NdsILX21h_IJP-4ohOBSN",

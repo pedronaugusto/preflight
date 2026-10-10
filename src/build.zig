@@ -31,10 +31,12 @@ pub const Config = struct {
     bench: ?Bench = null,
     /// Opt-in native safety checks; release artifacts keep their chosen mode.
     hardened: ?Hardened = null,
-    /// The step `zig build fuzz` fuzzes: one whose every test binary has a
-    /// `check` property or a fuzz test, since the fuzzer refuses a binary
-    /// with none.
-    fuzz_step: []const u8 = "test",
+    /// Opt-in continuous fuzzing: the step `zig build fuzz` fuzzes, one whose
+    /// every test binary has a `check` property or a fuzz test, since the
+    /// fuzzer refuses a binary with none. It runs the package's own shakedown,
+    /// whose properties the tests are written with. Null adds no `fuzz` step
+    /// and fetches nothing for one.
+    fuzz_step: ?[]const u8 = null,
 };
 
 pub const Bench = bench.Bench;
@@ -166,7 +168,7 @@ const Steps = struct {
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
         bench.add(b, pkg, config.tests, config.bench, steps.smoke);
-        fuzz.add(b, pkg, config.fuzz_step);
+        if (config.fuzz_step) |step| fuzz.add(b, config.tests, step);
         hardened.add(b, config.tests, config.hardened, steps.profile_options);
         objects.add(b, config.tests, steps.sdk);
         if (config.portable_tests) portable.add(b, config.tests, executable);
@@ -202,10 +204,11 @@ const Steps = struct {
 
     fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
         const host = ciTarget(b);
+        // A package that declares no structure is held to none.
         const layers = b.createModule(.{
-            .root_source_file = b.path(config.layers),
+            .root_source_file = if (configure.exists(b, config.layers)) b.path(config.layers) else pkg.path("src/layers_default.zig"),
             .target = host,
-            .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "preflight_rules", .module = b.createModule(.{ .root_source_file = pkg.path("src/rules.zig"), .target = host, .imports = &.{.{ .name = "gantry", .module = gantry }} }) } },
+            .imports = &.{.{ .name = "gantry", .module = gantry }},
         });
         const checker = b.addExecutable(.{
             .name = "preflight-structure",

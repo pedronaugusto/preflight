@@ -1,10 +1,7 @@
 //! The bound on one test: the wait a watchdog thread makes, on any `Io`'s
 //! awake clock, until the test is done or its time is up.
 const std = @import("std");
-const aegis = @import("preflight_aegis");
-
-/// The build runner exports a validated nanosecond bound in this domain.
-pub const Nanoseconds = aegis.units.Duration(.nanosecond, u64);
+// Compiled into every package's test binaries: std alone, as order.zig.
 
 /// Waits until `done` is nonzero or `limit` has passed on `io`'s awake
 /// clock, from when this is called. Returns whether the limit passed first.

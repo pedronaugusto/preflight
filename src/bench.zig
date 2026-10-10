@@ -18,7 +18,12 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
         if (configure.exists(b, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench").step);
         return;
     };
-    const dep = configure.dependency(b, pkg, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return;
+    // The programs measure through shakedown.bench, and the comparison reads what they write: both are the
+    // package's own shakedown, never a copy of preflight's.
+    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return) orelse {
+        tests.dependOn(&b.addFail("addCi .bench: benchmarks measure through shakedown.bench; declare shakedown in build.zig.zon (lazy: only the benchmarks fetch it)").step);
+        return;
+    };
     const comparison = dep.artifact("shakedown-bench-compare");
     const build = b.step("bench-build", "Build benchmarks and shakedown comparison in ReleaseFast; execute nothing");
     const step = b.step("bench", "Build and manually measure benchmark rows through shakedown");
@@ -27,7 +32,7 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
     var previous: ?*std.Build.Step = null;
     const commit = provenance(b);
     for (given.programs) |program| {
-        const compile = executable(b, pkg, given, program, .fast, commit);
+        const compile = executable(b, given, program, .fast, commit);
         build.dependOn(&b.addInstallArtifact(compile, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
         if (program.timed) {
             const run = b.addRunArtifact(compile);
@@ -38,7 +43,7 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
             step.dependOn(&run.step);
         }
         if (smoke) {
-            const run = b.addRunArtifact(executable(b, pkg, given, program, given.optimize, commit));
+            const run = b.addRunArtifact(executable(b, given, program, given.optimize, commit));
             run.addArg(smoke_flag);
             run.setCwd(b.tmpPath());
             run.has_side_effects = true;
@@ -87,10 +92,15 @@ fn provenance(b: *std.Build) []const u8 {
     return std.mem.trim(u8, result.stdout, "\r\n");
 }
 
-fn executable(b: *std.Build, pkg: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
-    const dep = configure.dependency(b, pkg, "shakedown", .{ .target = bench.target, .optimize = optimize }) catch unreachable; // unreachable: lazy discovery restarts configuration
+fn executable(b: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
     const mod = b.createModule(.{ .root_source_file = b.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
-    if (!mod.import_table.contains("shakedown")) mod.addImport("shakedown", dep.module("shakedown"));
+    // `imports` may give a shakedown bound to the package's own dependencies; otherwise the declared one.
+    if (!mod.import_table.contains("shakedown")) {
+        const declared = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
+        // unreachable: `add` fetched it first, and refused a package that declares none
+        const dep = (declared catch unreachable).?;
+        mod.addImport("shakedown", dep.module("shakedown"));
+    }
     const metadata = b.addOptions();
     metadata.addOption([]const u8, "commit", commit);
     const root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, b.root.toString(b.allocator) catch @panic("OOM"), b.allocator) catch @panic("benchmark root unavailable");

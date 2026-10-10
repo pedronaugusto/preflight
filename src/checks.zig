@@ -18,8 +18,6 @@ pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
 
 test {
-    _ = @import("rules.zig");
-    _ = @import("rules_test.zig");
     _ = @import("structure/check.zig");
     _ = @import("consumer.zig");
     _ = @import("record.zig");

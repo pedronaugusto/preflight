@@ -4,5 +4,13 @@
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x5460136369dcf618,
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md", "CHANGELOG.md" },
-    .dependencies = .{ .preflight = .{ .path = ".." } },
+    .dependencies = .{
+        .preflight = .{ .path = ".." },
+        // The benchmarks measure through shakedown; nothing else fetches it.
+        .shakedown = .{
+            .url = "git+https://github.com/pedronaugusto/shakedown#9109af53a261bf10f047bdef7e6e04396d30a1cd",
+            .hash = "shakedown-0.1.0-BR8U4-C_FQAbsCcYY10dTaGMmi0oqCk3vTYx7iSYqYpU",
+            .lazy = true,
+        },
+    },
 }

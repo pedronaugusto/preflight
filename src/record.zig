@@ -89,15 +89,9 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
     if (artifact.root_module.import_table.get("preflight_runner_options") == null) {
         const module = b.createModule(.{ .root_source_file = context.pkg.path("src/timings.zig") });
         artifact.root_module.addImport("preflight_timings", module);
-        const target = artifact.root_module.resolved_target.?;
-        const optimize = artifact.root_module.optimize.?;
-        // Lazy: a consumer that builds no test run never fetches aegis.
-        const safety = (configure.dependency(b, context.pkg, "aegis", .{ .target = target, .optimize = optimize }) catch return).module("aegis");
-        artifact.root_module.addImport("preflight_aegis", safety);
-        artifact.root_module.addAnonymousImport("preflight_order", .{
-            .root_source_file = context.pkg.path("src/order.zig"),
-            .imports = &.{.{ .name = "preflight_aegis", .module = safety }},
-        });
+        // The runner and its modules link std alone, so the artifact holds no
+        // package it did not ask for.
+        artifact.root_module.addAnonymousImport("preflight_order", .{ .root_source_file = context.pkg.path("src/order.zig") });
         const runner = b.addOptions();
         // The generated options schema is raw u64, validated by TestTimeout.duration and
         // wrapped by the runner.

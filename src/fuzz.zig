@@ -3,9 +3,13 @@
 //! the corpora kept outside the package and the shrinking of what it finds
 //! are shakedown's; this wires the step, as `bench` wires measuring.
 const std = @import("std");
+const configure = @import("configure.zig");
 
-pub fn add(b: *std.Build, pkg: *std.Build, step: []const u8) void {
-    const dep = pkg.dependencyLazy("shakedown", .{ .target = b.graph.host, .optimize = .safe }) catch return;
+pub fn add(b: *std.Build, tests: *std.Build.Step, step: []const u8) void {
+    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .safe }) catch return) orelse {
+        tests.dependOn(&b.addFail("addCi .fuzz_step: the fuzzer is shakedown's, as are the properties it fuzzes; declare shakedown in build.zig.zon (lazy)").step);
+        return;
+    };
     const run = b.addRunArtifact(dep.artifact("shakedown-fuzz"));
     run.addArg("--package");
     run.addDirectoryArg2(b.path("."), .{});

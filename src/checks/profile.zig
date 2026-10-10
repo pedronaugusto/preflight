@@ -39,6 +39,8 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const value = (try std.json.parseFromSlice(src.Value, c.a, line, .{})).value;
+            // A phase of a job is not a test.
+            if (src.get(value, "phase") != .null) continue;
             const seconds = try number(src.get(value, "seconds"));
             result.records += 1;
             const column = src.string(src.get(value, "key"), "");
@@ -169,4 +171,87 @@ test "a test recorded on two shards of one column fails the refresh" {
     _ = try summarize(c, ".", .null);
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-2of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":2,\"status\":\"pass\",\"key\":\"windows-Debug\",\"shard\":\"2/2\"}\n" });
     try std.testing.expectError(error.TestOnTwoShards, summarize(c, ".", .null));
+}
+
+/// Seconds per phase of a hosted job (`compile aarch64-macos`), as a run
+/// measured them. A plan balances its jobs by these.
+pub const Costs = struct {
+    phases: std.array_hash_map.String(f64) = .empty,
+};
+
+/// Reads the phase records under `root`. A phase this run measured replaces
+/// the one in `previous`; the others are kept, since a tier does not run them
+/// all. Several records of one phase keep the longest.
+pub fn measure(c: src.Context, root: []const u8, previous: src.Value) !Costs {
+    var result: Costs = .{};
+    var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
+    defer dir.close(c.io);
+    var walker = try dir.walk(c.a);
+    defer walker.deinit();
+    while (try walker.next(c.io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ndjson")) continue;
+        const text = try dir.readFileAlloc(c.io, entry.path, c.a, .limited(64 * 1024 * 1024));
+        var lines = std.mem.tokenizeScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            const value = (try std.json.parseFromSlice(src.Value, c.a, line, .{})).value;
+            const label = src.get(value, "phase");
+            if (label != .string) continue;
+            const seconds = try number(src.get(value, "seconds"));
+            const cell = try result.phases.getOrPut(c.a, try c.a.dupe(u8, label.string));
+            cell.value_ptr.* = if (cell.found_existing) @max(cell.value_ptr.*, seconds) else seconds;
+        }
+    }
+    const kept = src.get(previous, "phases");
+    if (kept == .object) {
+        var rows = kept.object.iterator();
+        while (rows.next()) |row| {
+            if (result.phases.contains(row.key_ptr.*)) continue;
+            try result.phases.put(c.a, row.key_ptr.*, try number(row.value_ptr.*));
+        }
+    }
+    return result;
+}
+
+/// One line per phase, sorted, so a refresh diffs by phase.
+pub fn renderCosts(a: std.mem.Allocator, costs: Costs) ![]const u8 {
+    const labels = try a.dupe([]const u8, costs.phases.keys());
+    std.mem.sort([]const u8, labels, {}, lessThan);
+    var out: std.Io.Writer.Allocating = .init(a);
+    const w = &out.writer;
+    try w.writeAll("{\n  \"phases\": {");
+    for (labels, 0..) |label, i| {
+        try w.writeAll(if (i == 0) "\n    " else ",\n    ");
+        try std.json.Stringify.value(label, .{}, w);
+        try w.print(": {d:.2}", .{costs.phases.get(label).?});
+    }
+    try w.writeAll("\n  }\n}\n");
+    return out.written();
+}
+
+test "a refresh of the phase costs takes the longest record and keeps the phases it did not measure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "phases-cross-objects-0.ndjson", .data = "{\"phase\":\"compile x86_64-macos\",\"seconds\":61.5}\n{\"phase\":\"compile x86_64-macos\",\"seconds\":70}\n{\"phase\":\"compile aarch64-macos\",\"seconds\":3}\n" });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"name\":\"second\",\"seconds\":0.25,\"status\":\"skip\",\"key\":\"linux-debug\"}\n" });
+    const previous = (try std.json.parseFromSlice(src.Value, a,
+        \\{"phases":{"compile aarch64-macos":99,"benchmarks aarch64-macos":40.25}}
+    , .{})).value;
+    const costs = try measure(c, ".", previous);
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  "phases": {
+        \\    "benchmarks aarch64-macos": 40.25,
+        \\    "compile aarch64-macos": 3.00,
+        \\    "compile x86_64-macos": 70.00
+        \\  }
+        \\}
+        \\
+    , try renderCosts(a, costs));
+    // The durations refresh passes the phase records over.
+    const durations = try summarize(c, ".", .null);
+    try std.testing.expectEqual(@as(usize, 1), durations.records);
 }

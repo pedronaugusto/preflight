@@ -29,8 +29,14 @@ pub fn build(b: *std.Build) void {
         _ = ci.declareCiOptions(b, null);
         return;
     };
-    const gantry = gantry_dep.module("gantry");
-    const gantry_zig = gantry_dep.module("gantry.zig");
+    const gantry = ci.dependencyModule(gantry_dep, "gantry") orelse {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    };
+    const gantry_zig = ci.dependencyModule(gantry_dep, "gantry.zig") orelse {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    };
     _ = b.addModule("rules", .{ .root_source_file = b.path("src/rules.zig"), .target = target, .imports = &.{.{ .name = "gantry", .module = gantry }} });
     // A package consumer needs only the family policies. Its gate installs
     // the tools through addCi; our suite and benchmarks belong to this checkout.

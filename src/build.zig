@@ -36,6 +36,14 @@ pub const Hardened = hardened.Profile;
 
 pub const TestTimeout = record.TestTimeout;
 
+/// A module of a dependency, or null while the dependency is still waiting for
+/// one of its own lazy dependencies: its script ends before it adds modules, and
+/// the script that asked for it ends too, so that Zig fetches what is missing
+/// and configures again. gantry's Zig frontend waits for glint this way.
+pub fn dependencyModule(dep: *std.Build.Dependency, name: []const u8) ?*std.Build.Module {
+    return dep.builder.modules.get(name);
+}
+
 /// CI tools use a stable CPU target across hosted runner models.
 pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
     const host = b.graph.host.result;
@@ -118,7 +126,8 @@ const Steps = struct {
     fn install(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
-        const gantry = gantry_dep.module("gantry");
+        const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
+        const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
         const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return;
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
@@ -126,7 +135,7 @@ const Steps = struct {
                 .root_source_file = pkg.path("src/main.zig"),
                 .target = host,
                 .optimize = .safe,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint_dep.module("glint") } },
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint_dep.module("glint") } },
             }),
         });
         const timeout = config.test_timeout.duration() orelse fail: {
@@ -165,12 +174,11 @@ const Steps = struct {
         deprecations.addPassthruArgs();
         deprecations.setCwd(b.path("."));
         b.step("deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
-        steps.addLint(b, pkg, config, executable, gantry_dep);
+        steps.addLint(b, pkg, config, executable, gantry, gantry_zig);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry_dep: *std.Build.Dependency) void {
+    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
         const host = ciTarget(b);
-        const gantry = gantry_dep.module("gantry");
         const layers = b.createModule(.{
             .root_source_file = b.path(config.layers),
             .target = host,
@@ -182,7 +190,7 @@ const Steps = struct {
                 .root_source_file = pkg.path("src/structure.zig"),
                 .target = host,
                 .optimize = .debug,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "layers", .module = layers } },
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "layers", .module = layers } },
             }),
         });
         var format_paths: std.ArrayList([]const u8) = .empty;

@@ -760,11 +760,16 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
     }
-    // The timed ReleaseFast program is a distinct artifact from Debug smoke.
-    // A successful smoke compile must not hide an error in that artifact.
+    // The timed ReleaseFast program is a distinct artifact from the Debug one
+    // `ci-check` compiles. A successful Debug compile must not hide an error in
+    // that artifact, so `ci-check-bench`, which the merge and release tiers run,
+    // compiles it; the fast tier's `ci-check` leaves it out, since its
+    // optimizing compile costs more than all the other objects together.
     const good_bench = try tmp.dir.readFileAlloc(io, "bench/main.zig", a, .limited(4096));
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/main.zig", .data = "const sample = @import(\"sample\");\nconst builtin = @import(\"builtin\");\npub fn main() void { if (builtin.mode == .fast) @compileError(\"broken fast benchmark\"); _ = sample.value(\"bench\"); }\n" });
-    const fast_bench = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const debug_only = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(debug_only.term == .exited and debug_only.term.exited == 0);
+    const fast_bench = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check-bench", "-Dtarget=x86_64-macos", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(fast_bench.term == .exited and fast_bench.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, fast_bench.stderr, "broken fast benchmark") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/main.zig", .data = good_bench });

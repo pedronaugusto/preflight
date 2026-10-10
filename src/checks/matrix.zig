@@ -536,13 +536,14 @@ test "fast shards split the Linux Debug tests, which no other job runs" {
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"fast_shards\":3}", .{})).value;
     const jobs = try plan(a, config, .fast);
-    try std.testing.expectEqual(@as(usize, 4), jobs.len);
+    try std.testing.expectEqual(@as(usize, 5), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
     try std.testing.expectEqualStrings("1/3", jobs[1].shard);
     try std.testing.expectEqualStrings("Linux Debug shard 2/3", jobs[2].name);
     try std.testing.expectEqualStrings("3/3", jobs[3].shard);
-    for (jobs[1..]) |job| try std.testing.expect(std.mem.find(u8, job.args, "-Dci-lint=false") != null);
+    for (jobs[1..4]) |job| try std.testing.expectEqualStrings("ci", job.step);
+    try std.testing.expectEqualStrings("preflight-cross", jobs[4].step);
 }
 
 test "portable shards share one compilation per host and mode" {
@@ -594,7 +595,8 @@ test "the merge tier links macOS and Windows Debug once on native runners and ru
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":2}}", .{})).value;
     const tiers = try split(a, config, try plan(a, config, .merge), .merge);
-    try std.testing.expectEqual(@as(usize, 1), tiers.native.len);
+    // The source checks, the Linux tests and the cross compile stay on Linux.
+    try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 2), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 3), tiers.run.len);
     for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=debug") != null);

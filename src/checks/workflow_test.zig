@@ -29,7 +29,7 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "fast", "gate", "master", "compile", "execute" }) |name| {
+    for ([_][]const u8{ "gate", "master", "compile", "execute" }) |name| {
         const body = try job(text, name);
         for (1..4) |attempt| {
             const marker = try arena.allocator().print("        id: tools{d}\n", .{attempt});
@@ -76,11 +76,11 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "fast", "gate", "compile", "execute" }) |name| {
+    for ([_][]const u8{ "toolchain", "gate", "compile", "execute" }) |name| {
         try std.testing.expect(std.mem.find(u8, try job(workflow, name), "\n    continue-on-error:") == null);
     }
     // Publishing the blocking gate's proof never depends on master.
-    try contains(try job(workflow, "profile"), "needs: [gate, compile, execute]");
+    try contains(try job(workflow, "profile"), "needs: [toolchain, gate, compile, execute]");
 }
 
 test "generated caller uses the shared gate and exactly the planned matrices" {
@@ -182,23 +182,44 @@ test "SDK artifacts link on their matrix runner before native replay" {
     try contains(compile, "Link test executables with the native SDK");
     try contains(compile, "PREFLIGHT_PREPARED: 'true'");
     try contains(compile, "PREFLIGHT_SETUP: 'true'");
-    try contains(try job(workflow, "execute"), "needs: compile");
+    try contains(try job(workflow, "execute"), "needs: [toolchain, compile]");
 }
 
-test "toolchain hosted profile jobs execute their own steps and compile benches only" {
+test "the gate runs the step each planned job names, on the targets it names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "fast");
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "gate");
     try contains(body, "STEP: ${{ matrix.step }}");
-    try contains(body, "zig build verify -Dci-bench-smoke=false");
+    try contains(body, "PREFLIGHT_TARGETS: ${{ matrix.targets }}");
     try contains(body, "hardened-fuzz");
+    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'merge' && inputs.merge-matrix || inputs.fast-matrix) }}");
+}
+
+test "one job builds the checks, and the others take them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
+    const built = try job(workflow, "toolchain");
+    try contains(built, ".github/actions/toolchain");
+    try contains(built, "name: toolchain-${{ inputs.preflight-ref }}");
+    // The documentation-only filter runs on what that job built.
+    try contains(built, "preflight skip");
+    for ([_][]const u8{ "gate", "compile", "execute" }) |name| {
+        const body = try job(workflow, name);
+        try contains(body, "toolchain: toolchain-${{ inputs.preflight-ref }}");
+        try contains(body, "needs:");
+        try std.testing.expect(std.mem.find(u8, body, "build.zig") == null);
+    }
+    // Zig master builds its own, by the Zig that the checks read.
+    try contains(try job(workflow, "master"), "--build-file .preflight/build.zig");
+    try std.testing.expect(std.mem.find(u8, try job(workflow, "master"), "toolchain: ") == null);
 }
 
 test "toolchain fuzz artifacts follow the configured shared local cache" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "fast", "gate", "execute" }) |name| {
+    for ([_][]const u8{ "gate", "execute" }) |name| {
         const body = try job(workflow, name);
         try contains(body, "path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v");
         try contains(body, "if-no-files-found: error");

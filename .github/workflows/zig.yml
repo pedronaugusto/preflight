@@ -116,6 +116,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: .preflight-bin/linux/preflight attest
+  # A branch sees the caches of main and its own, so main keeps the one thing
+  # every job of a new branch would otherwise compile for itself: the build runner.
+  warm:
+    if: inputs.attest && github.event_name == 'push'
+    name: warm (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/warm
   gate:
     needs: toolchain
     if: '!inputs.attest && needs.toolchain.outputs.docs-only != ''true'' && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'

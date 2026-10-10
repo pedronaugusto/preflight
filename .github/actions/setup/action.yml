@@ -63,9 +63,10 @@ runs:
         # for or not, so a job restores only what a configured fetch of its own
         # kind saved: the Zig master leg never meets a script written for another Zig.
         key: zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ hashFiles('**/build.zig.zon') }}
-    # The build runner and the compiler's runtime for each target: Zig builds
-    # them on first use. Renewed weekly, so that the cache does not keep what
-    # an old pin of a dependency needed.
+    # The build runner every `zig build` compiles first, and the compiler's
+    # runtime for each target, which Zig builds on first use. The key is the
+    # same for every kind of job and is renewed weekly; a run on main fills it
+    # (the warm job), since a branch sees the caches of main and its own.
     - name: Cache what Zig builds for itself
       id: products
       uses: actions/cache@v4
@@ -75,9 +76,9 @@ runs:
           ${{ runner.temp }}/zig-global/h
           ${{ runner.temp }}/zig-global/z
           ${{ runner.temp }}/zig-global/b
-        key: zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ steps.global.outputs.week }}
+        key: zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ steps.global.outputs.week }}
         restore-keys: |
-          zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-
+          zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-
     - name: Cache external tools
       uses: actions/cache@v4
       with:

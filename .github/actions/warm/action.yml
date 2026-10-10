@@ -1,0 +1,34 @@
+name: Warm Zig's cache
+description: Build what every `zig build` compiles first, the build runner, and keep it where every branch can restore it. Runs on main, so that a new branch does not pay for it in each of its jobs.
+runs:
+  using: composite
+  steps:
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.17.0
+        use-cache: false
+    - name: Name this week
+      id: week
+      shell: bash
+      run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+    # The key is the setup action's, which restores it.
+    - name: Cache what Zig builds for itself
+      id: products
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ runner.temp }}/zig-global/o
+          ${{ runner.temp }}/zig-global/h
+          ${{ runner.temp }}/zig-global/z
+          ${{ runner.temp }}/zig-global/b
+        key: zig-products-${{ runner.os }}-${{ runner.arch }}-0.17.0-${{ steps.week.outputs.week }}
+    - name: Build the build runner
+      if: steps.products.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global
+        ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local
+      run: |
+        mkdir -p "$RUNNER_TEMP/warm"
+        printf 'const std = @import("std");\npub fn build(b: *std.Build) void {\n    _ = b.step("warm", "warm");\n}\n' > "$RUNNER_TEMP/warm/build.zig"
+        cd "$RUNNER_TEMP/warm" && zig build --list-steps

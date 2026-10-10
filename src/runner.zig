@@ -23,8 +23,20 @@ pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), compti
     upstream.log(level, scope, format, args);
 }
 
-// A fuzz test reports itself only to a build with fuzzing, which upstream's runner serves.
-pub const fuzz = upstream.fuzz;
+/// Whether the test running now called `std.testing.fuzz`. A build finds
+/// its fuzz tests by running them unfuzzed first and asking each whether it
+/// was one; the fuzzing build itself is upstream's runner's to serve.
+var fuzz_called: bool = false;
+
+pub fn fuzz(
+    context: anytype,
+    comptime testOne: fn (context: @TypeOf(context), *std.testing.Smith) anyerror!void,
+    fuzz_options: testing.FuzzInputOptions,
+) anyerror!void {
+    @disableInstrumentation();
+    fuzz_called = true;
+    return upstream.fuzz(context, testOne, fuzz_options);
+}
 
 /// The runner's own lines on stderr, under the lock `std.log` takes.
 fn report(comptime format: []const u8, args: anytype) void {
@@ -132,6 +144,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     testing.allocator_instance = .init(std.heap.page_allocator, allocator_options);
     testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
     errors.store(0, .monotonic);
+    fuzz_called = false;
     try server.serveStringMessage(.test_started, &.{});
     const start: std.Io.Clock.Timestamp = .now(io, .awake);
     const status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
@@ -151,7 +164,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     try recorder.record(io, test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{
         .status = status,
-        .fuzz = false,
+        .fuzz = fuzz_called,
         .log_err_count = std.math.lossyCast(@FieldType(std.zig.Server.Message.TestResults.Flags, "log_err_count"), errors.load(.monotonic)),
         .leak_count = std.math.lossyCast(@FieldType(std.zig.Server.Message.TestResults.Flags, "leak_count"), leaks),
     } });

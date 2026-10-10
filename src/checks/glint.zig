@@ -1,5 +1,5 @@
 //! The code rules are glint's. This is the linter that runs them for a
-//! repository: the family's policy over the repository's files, in one
+//! repository: the default policy, amended, over the repository's files, in one
 //! project glint holds in memory, so that nothing stands between a finding
 //! and the gate, and a run that did not finish is not a run that passed.
 const std = @import("std");
@@ -67,7 +67,10 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             if (quiet) c.errors += 1 else c.fail("{s}: {s}:{d}:{d}: {s}", .{ d.name, file, d.span.line, d.span.column, d.message });
             failing += 1;
         } else {
-            if (!quiet) c.report("glint: {s}: {s}:{d}:{d}: {s}\n", .{ d.name, file, d.span.line, d.span.column, d.message });
+            if (!quiet) {
+                c.report("glint: {s}: {s}:{d}:{d}: {s}\n", .{ d.name, file, d.span.line, d.span.column, d.message });
+                c.notes += 1;
+            }
             warned += 1;
         }
     }

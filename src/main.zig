@@ -30,7 +30,10 @@ pub fn main(init: std.process.Init) !void {
             const own = hasFlag(args, "--self");
             const pin = if (own) "" else try checks.workflow.pinned(c, option(args, "--manifest") orelse "build.zig.zon");
             const text = try checks.workflow.render(a, config, pin, option(args, "--working-directory") orelse ".", own, path);
-            if (c.exists(path)) try checks.workflow.keepsEveryJob(try c.read(path), text);
+            // `--drop <job>`, repeated, names each job of the old caller to let go.
+            var drops: std.ArrayList([]const u8) = .empty;
+            for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--drop") and i + 1 < args.len) try drops.append(a, args[i + 1]);
+            if (c.exists(path)) try checks.workflow.keepsEveryJob(try c.read(path), text, drops.items);
             try checks.workflow.write(c, path, text);
             return;
         }
@@ -115,7 +118,8 @@ pub fn main(init: std.process.Init) !void {
             // glint-ignore: Z026 -- the summary is a copy for the hosted job; the outcome below is the check's
             append(c, path, try a.print("<details><summary>lint</summary>\n\n```\n{s}```\n</details>\n", .{held.written()})) catch {};
         };
-        if (std.meta.isError(outcome) or c.errors != 0) c.report("{s}", .{held.written()});
+        // A finding reported without failing is shown: it is there to be seen.
+        if (std.meta.isError(outcome) or c.errors != 0 or c.notes != 0) c.report("{s}", .{held.written()});
         try outcome;
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
@@ -183,7 +187,7 @@ fn planOptions(args: []const []const u8) !void {
         const flag = args[index];
         if (std.mem.eql(u8, flag, "--self")) continue;
         var known = false;
-        for ([_][]const u8{ "--config", "--tier", "--output", "--workflow", "--manifest", "--working-directory", "--full" }) |name| {
+        for ([_][]const u8{ "--config", "--tier", "--output", "--workflow", "--manifest", "--working-directory", "--full", "--drop" }) |name| {
             if (std.mem.eql(u8, name, flag)) known = true;
         }
         if (!known) return error.UnknownPlanOption;
@@ -191,7 +195,7 @@ fn planOptions(args: []const []const u8) !void {
         if (index == args.len or std.mem.startsWith(u8, args[index], "--")) return error.MissingPlanOptionValue;
     }
     if (hasFlag(args, "--workflow") and hasFlag(args, "--output")) return error.ConflictingPlanOutputs;
-    if (!hasFlag(args, "--workflow") and (hasFlag(args, "--self") or hasFlag(args, "--manifest") or hasFlag(args, "--working-directory"))) return error.WorkflowOptionWithoutOutput;
+    if (!hasFlag(args, "--workflow") and (hasFlag(args, "--self") or hasFlag(args, "--manifest") or hasFlag(args, "--working-directory") or hasFlag(args, "--drop"))) return error.WorkflowOptionWithoutOutput;
 }
 
 fn option(args: []const []const u8, name: []const u8) ?[]const u8 {

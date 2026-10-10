@@ -35,11 +35,12 @@ const generated_jobs = [_][]const u8{ "gate", "land", "checks", "skip" };
 /// The last job `keepsEveryJob` refused to drop, for the command to name.
 pub var undeclared: []const u8 = "";
 
-/// Refuses to replace `existing` while it holds a job `generated` does not: the
+/// Refuses to replace `existing` while it holds a job `generated` does not, unless
+/// `drops` names it, as `--drop` does for one the configuration now declares: the
 /// generator owns the whole caller, and a package's own job is declared in
 /// `ci/workflow.json` `jobs`, so it is rendered with the gate and a landing
 /// waits for it. Nothing is dropped unseen.
-pub fn keepsEveryJob(existing: []const u8, generated: []const u8) !void {
+pub fn keepsEveryJob(existing: []const u8, generated: []const u8, drops: []const []const u8) !void {
     var missing = false;
     var in_jobs = false;
     var lines = std.mem.splitScalar(u8, existing, '\n');
@@ -52,6 +53,7 @@ pub fn keepsEveryJob(existing: []const u8, generated: []const u8) !void {
         const name = jobKey(line) orelse continue;
         var known = false;
         for (generated_jobs) |job| known = known or std.mem.eql(u8, job, name);
+        for (drops) |job| known = known or std.mem.eql(u8, job, name);
         if (known) continue;
         if (hasJob(generated, name)) continue;
         undeclared = name;
@@ -324,17 +326,19 @@ test "regeneration refuses to drop a job the configuration does not declare, and
     const a = arena.allocator();
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const base = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true}", .{})).value, pin, ".", false, "ci.yml");
-    try keepsEveryJob("", base);
-    try keepsEveryJob(base, base);
+    try keepsEveryJob("", base, &.{});
+    try keepsEveryJob(base, base, &.{});
     // What an earlier generator wrote goes with it.
-    try keepsEveryJob(try std.mem.concat(a, u8, &.{ base, "  skip:\n    uses: ./skip.yml\n  checks:\n    runs-on: ubuntu-latest\n" }), base);
+    try keepsEveryJob(try std.mem.concat(a, u8, &.{ base, "  skip:\n    uses: ./skip.yml\n  checks:\n    runs-on: ubuntu-latest\n" }), base, &.{});
     const own = try std.mem.concat(a, u8, &.{ base, "  sizes:  # kept\n    needs: gate\n    runs-on: ubuntu-latest\n" });
-    try std.testing.expectError(error.UndeclaredCallerJob, keepsEveryJob(own, base));
+    try std.testing.expectError(error.UndeclaredCallerJob, keepsEveryJob(own, base, &.{}));
     // Declared, the job is a gate job: in the matrices, with no job of its own to keep.
     const declared = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"jobs\":[{\"name\":\"sizes\",\"step\":\"check-sizes\"}]}", .{})).value, pin, ".", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, declared, "\"step\":\"check-sizes\"") != null);
-    try std.testing.expectError(error.UndeclaredCallerJob, keepsEveryJob(own, declared));
-    try keepsEveryJob(declared, declared);
+    try std.testing.expectError(error.UndeclaredCallerJob, keepsEveryJob(own, declared, &.{}));
+    // Named to go, it goes.
+    try keepsEveryJob(own, declared, &.{"sizes"});
+    try keepsEveryJob(declared, declared, &.{});
 }
 
 test "a project with nothing set gets pull requests, dispatch and a nightly release run, and no landing or main status run" {

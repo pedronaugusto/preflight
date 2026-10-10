@@ -17,6 +17,8 @@ pub const Context = struct {
     /// a passing check writes nothing, since Zig 0.17 shows any stderr of a passing
     /// build step under a "failed command:" line.
     held: ?*std.Io.Writer.Allocating = null,
+    /// Findings a check reports without failing: a run with any shows what it held.
+    notes: usize = 0,
 
     pub fn directory(c: Context) std.Io.Dir {
         return c.dir orelse .cwd();

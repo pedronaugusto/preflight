@@ -253,7 +253,7 @@ fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !
     if (result.term != .exited or result.term.exited != 0) return error.FixtureGitFailed;
 }
 
-test "sample rejects each code rule the family gates and passes clean code" {
+test "sample rejects each code rule the default policy gates and passes clean code" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

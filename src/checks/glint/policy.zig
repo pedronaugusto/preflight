@@ -1,4 +1,4 @@
-//! What glint's rules mean for the family, and where the exceptions are.
+//! What glint's rules weigh in preflight's default policy, and where the exceptions are.
 //! glint decides what a rule finds; this decides which rules run, at which
 //! level, on which file, from `ci/preflight.json`.
 const std = @import("std");
@@ -6,17 +6,17 @@ const gantry = @import("gantry");
 const glint = @import("glint");
 const src = @import("../source.zig");
 
-/// The rules a program can adopt beyond the family's: glint's aegis pack.
+/// The rules a program can adopt beyond the default: glint's aegis pack.
 pub const project_rules = glint.AegisPack.rules;
 
-/// Work glint may do on one run. The family's largest repository fits in
+/// Work glint may do on one run. The largest repository preflight checks fits in
 /// a fraction of it; a run that spends it is incomplete, never green.
 pub const fact_budget: usize = 4_000_000;
 
-/// How a rule weighs on the family's gate.
+/// How a rule weighs on the gate.
 ///
 /// `gate` is glint's: its findings fail the run, and so does any site it
-/// could not decide. `finding` is the family's for rules whose sites glint
+/// could not decide. `finding` is preflight's for rules whose sites glint
 /// can only partly resolve (a call through an unknown receiver is not a
 /// verdict either way): glint reports them, and any finding it does make
 /// fails the run, while the sites it could not resolve are counted and do not.
@@ -24,14 +24,14 @@ pub const fact_budget: usize = 4_000_000;
 pub const Weight = enum { gate, finding, report, off };
 
 const Entry = struct { rule: glint.Rule, weight: Weight };
-/// The group review's policy (glint's G1r), as the family runs it. Correctness
-/// and the family's own policy gate, as the ziglint fork's selection did; the
+/// preflight's default policy. Correctness and the
+/// package's own declared policy gate, as the ziglint fork's selection did; the
 /// Zig style rules, and the discarded errors (Z026), are reported until a
 /// package is clean under them and gates them itself: glint finds 3 times the
-/// sites the fork's Z026 did (about 430 in the family, 136 suppressed today),
+/// sites the fork's Z026 did,
 /// and the review's order is reported, then gated. The readability report
 /// (Z024) stays off, as the fork's selection kept it.
-const family = [_]Entry{
+const defaults = [_]Entry{
     .{ .rule = .Z003, .weight = .gate },
     .{ .rule = .Z011, .weight = .finding },
     .{ .rule = .Z013, .weight = .gate },
@@ -167,7 +167,7 @@ fn levelOf(weight: Weight) glint.Config.Level {
     };
 }
 
-/// Reads the family's policy and the repository's amendments to it. Anything
+/// Reads the default policy and the repository's amendments to it. Anything
 /// the repository wrote that cannot be honoured is reported and yields null:
 /// a setting that is ignored is a gate that is not there.
 pub fn parse(c: *src.Context, config: src.Value) !?Policy {
@@ -189,23 +189,23 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
         while (keys.next()) |entry| {
             const key = entry.key_ptr.*;
             if (std.mem.eql(u8, key, "profile")) {
-                c.fail("glint: `profile` is not a setting: the family's policy is preflight's, and a repository amends it by rule in `rules`", .{});
+                c.fail("glint: `profile` is not a setting: the default policy is preflight's, and a repository amends it by rule in `rules`", .{});
             } else if (!known(&glint_keys, key)) c.fail("glint: unknown setting `{s}`", .{key});
         }
         try parseBlock(c, block, &base, &chosen);
     }
     if (c.errors != before) return null;
 
-    // The family's rules at their weight, each amended by the repository's
+    // The default rules at their weight, each amended by the repository's
     // choice; then the rules only the repository chose.
     var all: std.ArrayList(glint.Config.Selection) = .empty;
     var findings: std.ArrayList(glint.Rule) = .empty;
-    for (family) |entry| {
+    for (defaults) |entry| {
         var weight = entry.weight;
         for (chosen.items) |amendment| if (amendment.rule == entry.rule) {
             weight = switch (amendment.level) {
                 .gate => .gate,
-                // A finding rule stays one: its weight is the family's, not a lesser level of glint's.
+                // A finding rule stays one: its weight is the default's, not a lesser level of glint's.
                 .report => if (entry.weight == .finding) .finding else .report,
                 .off => .off,
             };
@@ -215,7 +215,7 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
     }
     for (chosen.items) |amendment| {
         var named = false;
-        for (family) |entry| named = named or entry.rule == amendment.rule;
+        for (defaults) |entry| named = named or entry.rule == amendment.rule;
         if (!named) try all.append(a, amendment);
     }
     if (base.disallowed.len != 0) {
@@ -404,7 +404,7 @@ fn parsed(a: std.mem.Allocator, text: []const u8) !src.Value {
     return (try std.json.parseFromSlice(src.Value, a, text, .{ .allocate = .alloc_always })).value;
 }
 
-test "the family's policy gates what the fork gated and reports the rest" {
+test "the default policy gates what the fork gated and reports the rest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
@@ -435,7 +435,7 @@ test "a repository amends the policy by rule and cannot swap it for another prof
     try std.testing.expect(!amended.fails(.P005) and amended.fails(.Z011));
     try std.testing.expectEqual(.all, amended.base.cast_scope);
     try std.testing.expect(!amended.base.strict_suppressions);
-    // Asking a finding rule to report keeps it a finding: its weight is the family's.
+    // Asking a finding rule to report keeps it a finding: its weight is the default's.
     const same = (try parse(&c, try parsed(c.a, "{\"glint\":{\"rules\":[{\"id\":\"Z011\",\"level\":\"report\"}]}}"))).?;
     try std.testing.expect(same.fails(.Z011));
     try std.testing.expectEqual(@as(usize, 0), c.errors);

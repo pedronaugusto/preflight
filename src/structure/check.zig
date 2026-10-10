@@ -231,7 +231,14 @@ fn layerRules(a: std.mem.Allocator, d: Declared) !gantry.rules.Rules {
 fn references(a: std.mem.Allocator, d: Declared) ![]const gantry.rules.ReferenceRule {
     var rules: std.ArrayList(gantry.rules.ReferenceRule) = .empty;
     try rules.appendSlice(a, d.references);
-    for (d.test_dependencies) |name| try rules.append(a, .{ .name = "test dependencies", .target = name, .kind = .import, .except_from = d.test_paths });
+    for (d.test_dependencies) |name| {
+        // A package that already declares this full production restriction is not told twice.
+        for (d.references) |rule| {
+            if (rule.kind == .import and std.mem.eql(u8, rule.from, "**") and std.mem.eql(u8, rule.target, name) and rule.member == null and rule.suffix == null and !rule.relative and !rule.unresolved_only and rule.except_targets.len == 0 and rule.except_from.len == 0) break;
+        } else {
+            try rules.append(a, .{ .name = "test dependencies", .target = name, .kind = .import, .except_from = d.test_paths });
+        }
+    }
     return rules.items;
 }
 

@@ -82,7 +82,7 @@ pub fn claim(b: *std.Build, name: []const u8, description: []const u8) *std.Buil
     taken.append(b.allocator, name) catch @panic("OOM");
     // A step of the top-level kind that no name reaches; others of preflight's may still depend on it.
     const detached = b.allocator.create(std.Build.Step.TopLevel) catch @panic("OOM");
-    detached.* = .{ .step = .init(.{ .tag = .top_level, .name = name, .owner = b }), .description = b.dupe(description) };
+    detached.* = .{ .step = .init(.{ .tag = .top_level, .name = name, .owner = b }), .description = b.graph.dupeString(description) };
     return &detached.step;
 }
 

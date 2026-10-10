@@ -397,7 +397,8 @@ zig build plan -- --workflow .github/workflows/ci.yml
 First refresh preflight in `build.zig.zon` to the intended published commit.
 The generator reads that manifest's full immutable preflight URL pin; it never
 uses an old workflow's pin. It refuses to replace a caller holding a job the
-configuration does not declare, naming it, so nothing is dropped unseen. It replaces one relative `.yml` or `.yaml` file,
+configuration does not declare, naming it, so nothing is dropped unseen; `--drop <job>`,
+repeated, lets go of a job the configuration now declares under `jobs`. It replaces one relative `.yml` or `.yaml` file,
 refuses traversal and symlinks, and renders/validates all inputs before opening
 it. Its parent directories must already exist. Repeated generation is byte
 identical. There is no package-local planner or Python dependency. This is an

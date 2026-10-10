@@ -258,22 +258,90 @@ pub fn targetName(target: src.Value) []const u8 {
     return if (target == .string) target.string else src.string(src.get(target, "target"), "");
 }
 
+/// What compiling one target costs a job when no run has measured it, in seconds.
+const unmeasured_target_seconds = 90;
+/// The seconds of compiling one cross job is given, when `cross_seconds` does not say.
+const default_cross_seconds = 200;
+
+/// The seconds `name` takes to compile, as the last merge or release run
+/// measured them (`ci/costs.json`, which the plan reads as `measured`), the
+/// benchmarks too when `bench` is set; null when nothing was measured.
+fn targetSeconds(config: src.Value, name: []const u8, bench: bool) ?f64 {
+    const phases = src.get(src.get(config, "measured"), "phases");
+    if (phases != .object) return null;
+    var buffer: [256]u8 = undefined;
+    const compiled = number(phases.object.get(std.fmt.bufPrint(&buffer, "compile {s}", .{name}) catch return null) orelse return null) orelse return null;
+    if (!bench) return compiled;
+    const benchmarks = number(phases.object.get(std.fmt.bufPrint(&buffer, "benchmarks {s}", .{name}) catch return null) orelse return null) orelse return null;
+    return compiled + benchmarks;
+}
+
+fn number(value: src.Value) ?f64 {
+    return switch (value) {
+        .float => |seconds| seconds,
+        .integer => |seconds| @floatFromInt(seconds),
+        else => null,
+    };
+}
+
 /// The object compile of `targets`, in as many jobs as `cross_jobs` asks for,
-/// or one for every four targets. Targets are dealt out in turn, so the
-/// neighbours of one family in the list land in different jobs. With `bench`,
-/// each job also compiles the ReleaseFast benchmarks.
+/// or as few as hold `cross_seconds` (200) of compiling each, by what the last
+/// run measured of every target and 90 s for one it has not. The longest
+/// target goes first onto the job with the least, so the jobs end together.
+/// With `bench`, each job also compiles the ReleaseFast benchmarks.
 fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), targets: []const src.Value, bench: bool) !void {
     if (targets.len == 0) return;
     const wanted = src.get(config, "cross_jobs");
     if (wanted != .null and (wanted != .integer or wanted.integer < 1)) return error.InvalidCrossJobs;
-    const count = @min(if (wanted == .null) (targets.len + 3) / 4 else @as(usize, @intCast(wanted.integer)), targets.len);
+    const budget = src.get(config, "cross_seconds");
+    if (budget != .null and !(number(budget) orelse 0 > 0)) return error.InvalidCrossSeconds;
+    const cost = try a.alloc(f64, targets.len);
+    var known: f64 = 0;
+    var measured: usize = 0;
+    for (targets, cost) |target, *seconds| {
+        seconds.* = targetSeconds(config, targetName(target), bench) orelse -1;
+        if (seconds.* >= 0) {
+            known += seconds.*;
+            measured += 1;
+        }
+    }
+    // A target nobody measured costs what the others do on average.
+    for (cost) |*seconds| if (seconds.* < 0) {
+        seconds.* = if (measured > 0) known / @as(f64, @floatFromInt(measured)) else unmeasured_target_seconds;
+    };
+    const order = try a.alloc(usize, targets.len);
+    for (order, 0..) |*index, i| index.* = i;
+    std.mem.sort(usize, order, cost, struct {
+        fn longer(costs: []const f64, x: usize, y: usize) bool {
+            return costs[x] > costs[y];
+        }
+    }.longer);
+    // A job cannot be shorter than the longest target, so more jobs stop helping there.
+    const limit = @max(number(budget) orelse default_cross_seconds, std.mem.max(f64, cost));
+    const assignment = try a.alloc(usize, targets.len);
+    const load = try a.alloc(f64, targets.len);
+    var count: usize = if (wanted == .null) 1 else @min(@as(usize, @intCast(wanted.integer)), targets.len);
+    while (true) : (count += 1) {
+        @memset(load[0..count], 0);
+        var longest: f64 = 0;
+        for (order) |index| {
+            var least: usize = 0;
+            for (load[0..count], 0..) |seconds, group| if (seconds < load[least]) {
+                least = group;
+            };
+            assignment[index] = least;
+            load[least] += cost[index];
+            longest = @max(longest, load[least]);
+        }
+        if (wanted != .null or count == targets.len or longest <= limit) break;
+    }
     for (0..count) |group| {
         var names: std.ArrayList(u8) = .empty;
-        var at = group;
-        while (at < targets.len) : (at += count) {
+        for (targets, assignment) |target, owner| if (owner == group) {
             if (names.items.len > 0) try names.append(a, ' ');
-            try names.appendSlice(a, targetName(targets[at]));
-        }
+            try names.appendSlice(a, targetName(target));
+        };
+        if (names.items.len == 0) continue;
         try jobs.append(a, .{
             .os = hosts[0],
             .name = try a.print("Cross compile{s}{s}", .{ if (count > 1) " " else "", try shardName(a, group, count) }),
@@ -378,12 +446,11 @@ fn buildArgs(a: std.mem.Allocator, value: src.Value) ![]const u8 {
     return text.toOwnedSlice();
 }
 
-/// The command that compiles `target` to objects: Debug, with the ReleaseFast
-/// benchmarks too when `bench` is set.
-pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value, bench: bool) ![]const []const u8 {
+/// The command that makes the objects of `target` in Debug: the build's `step`,
+/// `ci-check`, or `ci-check-bench` for the ReleaseFast benchmarks.
+pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value, step: []const u8) ![]const []const u8 {
     var args: std.ArrayList([]const u8) = .empty;
-    try args.appendSlice(a, &.{ "zig", "build", "ci-check" });
-    if (bench) try args.append(a, "ci-check-bench");
+    try args.appendSlice(a, &.{ "zig", "build", step });
     try args.appendSlice(a, try crossOptions(a, config, target));
     try args.append(a, "-Doptimize=debug");
     return args.toOwnedSlice(a);
@@ -426,13 +493,14 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     };
     try std.testing.expectEqual(@as(usize, 1), bundles);
     const targets = src.items(src.get(config, "targets"));
-    const first = try crossArgs(a, config, targets[0], false);
-    const second = try crossArgs(a, config, targets[1], true);
+    const first = try crossArgs(a, config, targets[0], "ci-check");
+    const second = try crossArgs(a, config, targets[1], "ci-check-bench");
     try std.testing.expectEqualStrings("ci-check", first[2]);
     try std.testing.expectEqualStrings("-Dtarget=x86_64-windows-gnu", first[4]);
-    try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[5]);
-    try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[6]);
-    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null, false));
+    try std.testing.expectEqualStrings("ci-check-bench", second[2]);
+    try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[4]);
+    try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[5]);
+    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null, "ci-check"));
 }
 
 test "the fast tier checks sources, runs Linux Debug and compiles every target without the ReleaseFast benchmarks" {
@@ -440,7 +508,7 @@ test "the fast tier checks sources, runs Linux Debug and compiles every target w
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_step":"install","compile_once":true,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
+        \\{"compile_step":"install","compile_once":true,"cross_jobs":1,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
     , .{})).value;
     const jobs = try plan(a, config, .fast);
     try std.testing.expectEqual(@as(usize, 3), jobs.len);
@@ -453,18 +521,32 @@ test "the fast tier checks sources, runs Linux Debug and compiles every target w
     try std.testing.expectEqualStrings("aarch64-linux-gnu aarch64-macos x86_64-windows-gnu", jobs[2].targets);
     const targets = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 3), targets.len);
-    const args = try crossArgs(a, config, targets[0], false);
+    const args = try crossArgs(a, config, targets[0], "ci-check");
     try std.testing.expectEqualStrings("ci-check", args[2]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", args[5]);
     try std.testing.expectEqualStrings("-Doptimize=debug", args[6]);
-    const bench = try crossArgs(a, config, targets[0], true);
-    try std.testing.expectEqualStrings("ci-check-bench", bench[3]);
+    const bench = try crossArgs(a, config, targets[0], "ci-check-bench");
+    try std.testing.expectEqualStrings("ci-check-bench", bench[2]);
     const tiers = try split(a, config, jobs, .fast);
     try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
 }
 
-test "cross targets are dealt out in turn to as many jobs as asked for, or one per four" {
+fn allTargets(jobs: []const Job, a: std.mem.Allocator) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (jobs) |job| {
+        var each = std.mem.tokenizeScalar(u8, job.targets, ' ');
+        while (each.next()) |name| try names.append(a, name);
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn before(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.before);
+    return std.mem.join(a, " ", names.items);
+}
+
+test "cross targets no run has measured cost 90 s each, and get as many jobs as hold 200 s of them" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -473,10 +555,9 @@ test "cross targets are dealt out in turn to as many jobs as asked for, or one p
     , .{})).value;
     var jobs: std.ArrayList(Job) = .empty;
     try crossJobs(a, many, &jobs, src.items(src.get(many, "targets")), false);
-    try std.testing.expectEqual(@as(usize, 2), jobs.items.len);
-    try std.testing.expectEqualStrings("a-linux-gnu c e g", jobs.items[0].targets);
-    try std.testing.expectEqualStrings("b d f", jobs.items[1].targets);
-    try std.testing.expectEqualStrings("Cross compile 2/2", jobs.items[1].name);
+    try std.testing.expectEqual(@as(usize, 4), jobs.items.len);
+    try std.testing.expectEqualStrings("a-linux-gnu b c d e f g", try allTargets(jobs.items, a));
+    try std.testing.expectEqualStrings("Cross compile 4/4", jobs.items[3].name);
     const asked = (try std.json.parseFromSlice(src.Value, a,
         \\{"cross_jobs":3,"targets":["a","b"]}
     , .{})).value;
@@ -485,10 +566,32 @@ test "cross targets are dealt out in turn to as many jobs as asked for, or one p
     try std.testing.expectEqual(@as(usize, 2), jobs.items.len);
     try std.testing.expectEqualStrings("preflight-cross-bench", jobs.items[0].step);
     try std.testing.expectEqualStrings("Cross compile 1/2", jobs.items[0].name);
-    const bad = (try std.json.parseFromSlice(src.Value, a,
-        \\{"cross_jobs":0,"targets":["a"]}
+    for ([_][]const u8{ "{\"cross_jobs\":0,\"targets\":[\"a\"]}", "{\"cross_seconds\":0,\"targets\":[\"a\"]}" }) |text| {
+        const bad = (try std.json.parseFromSlice(src.Value, a, text, .{})).value;
+        try std.testing.expect(std.meta.isError(crossJobs(a, bad, &jobs, src.items(src.get(bad, "targets")), false)));
+    }
+}
+
+test "cross targets a run measured are balanced by their seconds, the benchmarks counted in the merge tier" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"targets":["a","b","c","d","e"],"measured":{"phases":{"compile a":150,"compile b":40.5,"compile c":40,"compile d":30,"benchmarks a":100,"benchmarks b":10,"benchmarks c":10,"benchmarks d":10}}}
     , .{})).value;
-    try std.testing.expectError(error.InvalidCrossJobs, crossJobs(a, bad, &jobs, src.items(src.get(bad, "targets")), false));
+    const targets = src.items(src.get(config, "targets"));
+    var fast: std.ArrayList(Job) = .empty;
+    try crossJobs(a, config, &fast, targets, false);
+    // e is unmeasured and costs the mean of the four others, 65 s: 325 s in all.
+    try std.testing.expectEqual(@as(usize, 2), fast.items.len);
+    try std.testing.expectEqualStrings("a", fast.items[0].targets);
+    try std.testing.expectEqualStrings("b c d e", fast.items[1].targets);
+    var merge: std.ArrayList(Job) = .empty;
+    try crossJobs(a, config, &merge, targets, true);
+    // The benchmarks lengthen a to 250 s, which no job of 200 s holds alone: it has one to itself.
+    try std.testing.expectEqual(@as(usize, 2), merge.items.len);
+    try std.testing.expectEqualStrings("a", merge.items[0].targets);
+    try std.testing.expectEqualStrings("b c d e", merge.items[1].targets);
 }
 
 test "portable matrix links macOS and Windows binaries on their SDK runners without losing native coverage" {
@@ -603,7 +706,7 @@ test "the merge tier adds the benchmarks and the Debug suite on macOS and Window
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":2},\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"shards\":{\"windows\":2},\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
     const jobs = try plan(a, config, .merge);
     try std.testing.expectEqual(@as(usize, 6), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
@@ -687,7 +790,7 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     , .{})).value;
     const cross = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 5), cross.len);
-    const argv = try crossArgs(a, config, cross[0], false);
+    const argv = try crossArgs(a, config, cross[0], "ci-check");
     try std.testing.expectEqualStrings("ci-check", argv[2]);
     try std.testing.expectEqualStrings("-Dcpu=baseline", argv[5]);
     try std.testing.expectEqualStrings("-Dfeature=true", argv[6]);

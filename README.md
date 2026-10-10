@@ -213,6 +213,23 @@ zig build bench-ab -- --base <commit> --program workflow --row 'caller generatio
 
 The driver resolves an immutable base, clones it beneath the caller's `.zig-cache`, builds each revision's `bench-build`, then alternates base/candidate order between pairs, with fresh working directories. It delegates every pair to shakedown's comparator, preserving raw JSONL with `--output`. Both revisions must implement `bench-build` and the selected program's `--row` contract; earlier revisions fail explicitly rather than being patched. Candidate tracked edits and untracked source files are refused; use an ignored output directory for repeated runs. Provenance must match both Git commits. Source archives report `source-archive` rather than inventing a commit. CPU provenance names the physical build host, separate from a selected target's CPU; native executions are required for comparisons. Unknown, missing or duplicate options, nonzero/signal exits, timeouts, capture limits, malformed/truncated JSONL, smoke output and output failures fail infrastructure. Changes beyond observed noise are reports, never speed pass/fail thresholds.
 
+### Fuzzing
+
+Fuzzing is continuous and off the landing path: no landing fuzzes. `zig build fuzz`
+runs shakedown's `shakedown-fuzz` over the package's `check` properties, as many sessions
+of `zig build test --fuzz=<limit>` as it is given, with the fuzzer's corpora in a store
+outside the repository and every failure shrunk to the tape to add to the property's
+`.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. The fuzzing,
+the corpora and the shrinking are shakedown's; preflight wires the step.
+
+What is not fuzzed is visible. `zig build lint` reports, without failing, the parsers of
+untrusted input the package exports with no fuzz target: public functions named as
+parsers (`parse…`, `decode…`, `deserialize…`, `unpack…`, `unmarshal…`, `fromBytes…`)
+that take bytes or a reader, and any named under `fuzz.parsers` in `ci/preflight.json`. A
+parser is fuzzed when a test that runs a `check` property or `std.testing.fuzz` reaches it
+by name, a few calls deep. `fuzz.trusted` names a parser whose input is the package's own,
+with the reason: `"fuzz": { "trusted": { "parseCache": "the package's own cache file" } }`.
+
 ### Hardened profile
 
 Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, and `"hardened": true` in `ci/workflow.json`, then regenerate the caller. Dedicated steps must execute tests. Defaults select `test`, so a package without fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign.

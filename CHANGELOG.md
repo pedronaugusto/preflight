@@ -75,6 +75,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `zig build fuzz`: shakedown's continuous fuzzing of the package's `check` properties,
+  off the landing path, its corpora and findings outside the repository
+  (`-- --limit 50M --sessions 4 --store ~/fuzz`).
+- `zig build lint` reports the parsers of untrusted input with no fuzz target, without
+  failing: public parser-named functions taking bytes or a reader, and `fuzz.parsers`;
+  `fuzz.trusted` leaves one out with its reason.
+- The protocol fuzzer of preflight's own suite is a shakedown `check` property.
+
 - `toolchain`, the first job of a hosted run, builds the checks once for Linux, macOS and Windows (`zig build toolchain`) or takes the build that preflight's own run made of the pinned commit (the artifact `toolchain-<commit>`, kept ninety days), and every other job downloads it. A cold job spent four to six minutes compiling the checks, two or three times (the docs filter, the lint, the driver); none does now. The Zig master leg builds its own, since the checks read the configuration of the Zig that built them.
 - `addCi` takes `-Dci-checks=<path>`, a preflight built from the same commit, in place of compiling the checks into the consumer's graph; the hosted `run` passes its own path. A local build compiles them as before.
 - Every command the gate runs and every source check reports its seconds in the log, the job summary and a record (`phases-<job>.ndjson` in the timings artifact). The merge and release tiers' profile job folds them into `ci/costs.json` beside `ci/durations.json`, in the proof artifact, and the plan balances the cross jobs by them: the longest target first onto the job with the least, a target nobody measured at the mean of the others (90 s with none). `cross_seconds` (200) is the compile each job may hold; `cross_jobs` fixes the count instead.

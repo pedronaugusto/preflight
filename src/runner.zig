@@ -89,7 +89,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--listen=-")) listen = true;
     }
-    order = order_module.init(io, init, args, builtin.test_functions, options.durations) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
+    order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
     serve(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
 }

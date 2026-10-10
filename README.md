@@ -272,8 +272,10 @@ copy. From a package root, `zig build --build-file <preflight>/build.zig
 -Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
 `ci/durations.json` in place.
 The shared runner shuffles test order using the test seed in every tier and in local
-runs. It prints the seed, including on failure; set `PREFLIGHT_TEST_SEED` to
-reproduce an order. Direct test binaries also accept `--seed=<number>`.
+runs. A direct run prints the seed; under `zig build` a passing run prints
+nothing, each failure line names the seed, and a crash shows it as the failed
+command's `--seed`. Set `PREFLIGHT_TEST_SEED` to reproduce an order. Direct
+test binaries also accept `--seed=<number>`.
 Custom runners can import `preflight_order`, whose `init` seeds, selects the
 shard's tests and orders them, and `preflight_timings` to record durations;
 `preflight_runner_options` carries the recorded durations and the record's name.

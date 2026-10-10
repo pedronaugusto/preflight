@@ -52,8 +52,11 @@ pub const WeighError = error{ InvalidDurations, OutOfMemory };
 
 /// Seeds std.testing and returns the indices of this shard's tests in seeded
 /// order. `PREFLIGHT_SHARD` (`i/n`) selects the shard; `durations`, the text of
-/// the package's `ci/durations.json` or empty, balances the split.
-pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.lang.TestFn, durations: []const u8) InitError![]usize {
+/// the package's `ci/durations.json` or empty, balances the split. With
+/// `announce`, the seed and the shard's share go to stderr. A runner serving
+/// the build runner passes false: Zig 0.17 shows any stderr of a passing run
+/// step under a "failed command:" line, and each failure names its seed.
+pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.lang.TestFn, durations: []const u8, announce: bool) InitError![]usize {
     const gpa = std.heap.page_allocator;
     var bytes: [4]u8 = undefined;
     std.Io.random(io, &bytes);
@@ -74,6 +77,7 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     const selected = try assign(gpa, names, weights, shard);
     var random = std.Random.DefaultPrng.init(seed);
     random.random().shuffle(usize, selected);
+    if (!announce) return selected;
     var buffer: [256]u8 = undefined;
     var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
     try stderr.interface.print("preflight: test seed {d} (reproduce with PREFLIGHT_TEST_SEED={d})\n", .{ seed, seed });

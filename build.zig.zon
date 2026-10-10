@@ -16,13 +16,13 @@
             .lazy = true,
         },
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry#b7990442f75f50b6a70e44f0a3d12f79a4654e2d",
-            .hash = "gantry-0.1.0-1iNrkZnYCwBSNFxjfe1FaPIVcWDxI_LZiA7S4C3S4X4Z",
+            .url = "git+https://github.com/pedronaugusto/gantry#c6eb11eaa41bc1ac12ba114cd9c459039afe39c8",
+            .hash = "gantry-0.1.0-1iNrkZnYCwDHwlA_QGa3KF_PjdcBnovIa9K2iQNc88Q0",
             .lazy = true,
         },
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown#99418acb02deacefe8cc555c4205dce98f54ef68",
-            .hash = "shakedown-0.1.0-BR8U409YEgCLU7igVgkutLKZ1u5FzuaC6geo-4n84d_G",
+            .url = "git+https://github.com/pedronaugusto/shakedown#caf380381a49ace7c13beba70dd512c4faf24ce7",
+            .hash = "shakedown-0.1.0-BR8U4yVfEgCS2Vw6zWMqw0wRjxct8g3tePy1UKNZ8Q89",
             .lazy = true,
         },
     },

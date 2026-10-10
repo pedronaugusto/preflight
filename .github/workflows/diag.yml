@@ -53,3 +53,12 @@ jobs:
           (cd "$ZIG_GLOBAL_CACHE_DIR" && ls o | sort > $RUNNER_TEMP/before.txt; cat $RUNNER_TEMP/before.txt)
           time zig build --list-steps > /dev/null
           (cd "$ZIG_GLOBAL_CACHE_DIR" && ls o | sort > $RUNNER_TEMP/after.txt; echo "new entries:"; comm -13 $RUNNER_TEMP/before.txt $RUNNER_TEMP/after.txt)
+      - uses: actions/checkout@v4
+      - name: The sample against the cached runner
+        shell: bash
+        run: |
+          export ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-global" ZIG_LOCAL_CACHE_DIR="$GITHUB_WORKSPACE/.zig-cache"
+          cd sample
+          date +%T; time zig build --list-steps > /dev/null; date +%T
+          cd "$RUNNER_TEMP/triv"
+          date +%T; time zig build --list-steps > /dev/null

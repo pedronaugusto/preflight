@@ -272,8 +272,8 @@ The gate has four tiers. Each one runs more than the one before it:
   not linking.
 - **merge**: fast, plus the benchmarks compiled in ReleaseFast for every target,
   the Debug suite run on macOS and Windows, sharded as configured, and every
-  configured macOS and Windows target linked on its native SDK runner, in one of
-  the test jobs of that host. It runs once per wave, on the candidate for main.
+  configured macOS and Windows target linked on its native SDK runner. It runs
+  once per wave, on the candidate for main.
 - **release**: every mode on every host (Debug and ReleaseSafe everywhere,
   ReleaseFast on Linux), ReleaseSmall, every cross target and TSan where
   supported. It runs before a release cut, or by hand when a wave touched

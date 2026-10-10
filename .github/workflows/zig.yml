@@ -200,7 +200,6 @@ jobs:
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_TARGETS: ${{ matrix.targets }}
-          PREFLIGHT_LINKS: ${{ matrix.links }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
         run: preflight run
       - uses: actions/upload-artifact@v4
@@ -333,7 +332,6 @@ jobs:
           PREFLIGHT_SETUP: 'true'
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
-          PREFLIGHT_LINKS: ${{ matrix.links }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
         run: preflight run
       - uses: actions/upload-artifact@v4

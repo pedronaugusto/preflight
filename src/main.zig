@@ -293,9 +293,6 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         }
     }
     try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
-    // The SDK links of this job's host, which the plan folded into it.
-    var links = std.mem.tokenizeScalar(u8, env.get("PREFLIGHT_LINKS") orelse "", ';');
-    while (links.next()) |args| try buildStep(c, env, log, "ci-link", args);
 }
 
 /// Runs `zig build <step> <build_args>` as the hosted gate does, timed.

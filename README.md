@@ -306,7 +306,7 @@ Test artifacts that share a root module share its runner options and timing reco
 
 ### Hosted gate
 
-The gate has four tiers. Each one runs more than the one before it:
+The gate has four tiers. The merge and release tiers run more than the fast one does, with one exception: the fast tier object-compiles every cross target, which the merge tier leaves to the nightly release run, so a landing stays four jobs:
 
 - **local**: the tests a change touches, run by hand while working. Not CI.
 - **fast**: three kinds of Ubuntu job that run side by side: the source checks, the

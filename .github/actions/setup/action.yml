@@ -97,7 +97,9 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/preflight-tools
-        key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ hashFiles('**/ci/setup.zig') }}
+        # The tools are what the package's setup step installs, which its build script and
+        # manifest say: any change to either renews them.
+        key: preflight-tools-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ hashFiles(format('{0}/build.zig', inputs.working-directory), format('{0}/build.zig.zon', inputs.working-directory), format('{0}/ci/**', inputs.working-directory)) }}
     - name: Fetch what the job's build asks for, with retries
       env:
         BUILD_ARGS: ${{ inputs.build-args }}

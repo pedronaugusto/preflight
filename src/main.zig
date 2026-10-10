@@ -17,7 +17,11 @@ pub fn main(init: std.process.Init) !void {
         try exportFacts(c, args);
     } else if (std.mem.eql(u8, command, "plan")) {
         try planOptions(args[2..]);
-        const config = try c.json(option(args, "--config") orelse "ci/workflow.json");
+        const config_path = option(args, "--config") orelse "ci/workflow.json";
+        var config = try c.json(config_path);
+        // What the last merge or release run measured, kept beside the configuration.
+        const costs_path = try std.Io.Dir.path.join(a, &.{ std.Io.Dir.path.dirname(config_path) orelse ".", "costs.json" });
+        if (config == .object and c.exists(costs_path)) try config.object.put(a, "measured", try c.json(costs_path));
         if (option(args, "--full") != null) return error.FullReplacedByTier;
         const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
         if (option(args, "--workflow")) |path| {
@@ -57,8 +61,13 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "profile")) {
         const durations = option(args, "--durations") orelse "ci/durations.json";
         const previous = if (c.exists(durations)) try c.json(durations) else .null;
-        const summary = try checks.profile.summarize(c, option(args, "--input") orelse ".preflight-timings", previous);
+        const input = option(args, "--input") orelse ".preflight-timings";
+        const summary = try checks.profile.summarize(c, input, previous);
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse durations, .data = try checks.profile.render(a, summary) });
+        // The phases the jobs timed, beside the test durations.
+        const costs = option(args, "--costs") orelse "ci/costs.json";
+        const measured = try checks.profile.measure(c, input, if (c.exists(costs)) try c.json(costs) else .null);
+        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--costs-output") orelse costs, .data = try checks.profile.renderCosts(a, measured) });
     } else if (std.mem.eql(u8, command, "fetch")) {
         for (try checks.command.fetches(a, init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv);
     } else if (std.mem.eql(u8, command, "run")) {
@@ -110,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
         };
         try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
         c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-        try lint(&c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") });
+        try lint(&c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
 }
@@ -180,7 +189,7 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, build: checks.glint.assembly.Build) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, build: checks.glint.assembly.Build, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
@@ -188,29 +197,29 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     try checks.quality.summary(c, sources, c.summary_path);
     var timer = stage(c, "glint");
     try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build });
-    timer.end(c.*, c.summary_path);
+    timer.end(c.*, log);
     if (c.errors != 0) return;
     timer = stage(c, "namespace layout");
     try checks.policy.layout(c, sources, config);
-    timer.end(c.*, c.summary_path);
+    timer.end(c.*, log);
     if (c.errors != 0) return;
     timer = stage(c, "documentation");
     try checks.docs.check(c, config);
-    timer.end(c.*, c.summary_path);
+    timer.end(c.*, log);
     if (c.errors != 0) return;
     timer = stage(c, "test imports");
     try checks.imports.check(c, sources, config);
-    timer.end(c.*, c.summary_path);
+    timer.end(c.*, log);
     if (c.errors != 0) return;
     timer = stage(c, "package paths");
     try checks.manifest.paths(c, config);
-    timer.end(c.*, c.summary_path);
+    timer.end(c.*, log);
     if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| {
         const argv = try checks.docs.zigCommand(c.a, command);
         timer = stage(c, try std.mem.join(c.a, " ", argv));
         try checks.command.execute(c.*, argv);
-        timer.end(c.*, c.summary_path);
+        timer.end(c.*, log);
     }
 }
 
@@ -267,31 +276,30 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
-    const summary = env.get("GITHUB_STEP_SUMMARY");
+    const log = try checks.phases.Log.init(c.a, env);
     if (std.mem.startsWith(u8, step, "preflight-cross")) return crossCompile(c, env, config, std.mem.eql(u8, step, "preflight-cross-bench"));
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         const setup_step = src.get(config, "setup_step");
         if (setup_step == .string and !std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
             const timer = checks.phases.Timer.begin(c, "install the external tools");
-            defer timer.end(c, summary);
+            defer timer.end(c, log);
             try checks.command.retry(c, &.{ "zig", "build", setup_step.string });
         }
         const before = src.get(config, "before_tests_step");
         if (before == .string) {
             const timer = checks.phases.Timer.begin(c, "before the tests");
-            defer timer.end(c, summary);
+            defer timer.end(c, log);
             try checks.command.execute(c, &.{ "zig", "build", before.string });
         }
     }
-    try buildStep(c, env, step, env.get("BUILD_ARGS") orelse "");
+    try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
     // The SDK links of this job's host, which the plan folded into it.
     var links = std.mem.tokenizeScalar(u8, env.get("PREFLIGHT_LINKS") orelse "", ';');
-    while (links.next()) |args| try buildStep(c, env, "ci-link", args);
+    while (links.next()) |args| try buildStep(c, env, log, "ci-link", args);
 }
 
 /// Runs `zig build <step> <build_args>` as the hosted gate does, timed.
-fn buildStep(c: src.Context, env: *std.process.Environ.Map, step: []const u8, build_args: []const u8) !void {
-    const summary = env.get("GITHUB_STEP_SUMMARY");
+fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, step: []const u8, build_args: []const u8) !void {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, &.{ "zig", "build", step });
     var tokens = std.mem.tokenizeAny(u8, build_args, " \t\r\n");
@@ -310,7 +318,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, step: []const u8, bu
     // graph whether it declares this control instead of guessing from source.
     {
         const timer = checks.phases.Timer.begin(c, "configure the build");
-        defer timer.end(c, summary);
+        defer timer.end(c, log);
         const snapshot = try facts.read(c, "zig", argv.items[3..]);
         for (snapshot.config.available_options) |available_option| {
             const name = available_option.name.slice(&snapshot.config);
@@ -321,16 +329,17 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, step: []const u8, bu
     }
     // PREFLIGHT_SHARD reaches the test runners through the environment.
     const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
-    defer timer.end(c, summary);
+    defer timer.end(c, log);
     try checks.command.execute(c, argv.items);
 }
 
 /// Compiles the targets this job covers, `PREFLIGHT_TARGETS` by name, to
 /// objects: one build each, in Debug, and with `bench` the ReleaseFast
-/// benchmarks as well. A name the configuration lacks fails the job, since
+/// benchmarks in a second build, timed apart so that a plan can tell the two
+/// costs. A name the configuration lacks fails the job, since
 /// the generated workflow no longer matches `ci/workflow.json`.
 fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value, bench: bool) !void {
-    const summary = env.get("GITHUB_STEP_SUMMARY");
+    const log = try checks.phases.Log.init(c.a, env);
     const wanted = env.get("PREFLIGHT_TARGETS") orelse "";
     var names = std.mem.tokenizeScalar(u8, wanted, ' ');
     var covered: usize = 0;
@@ -341,10 +350,13 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
             if (!std.mem.eql(u8, checks.matrix.targetName(target), name)) continue;
             found = true;
             covered += 1;
-            const argv = try checks.matrix.crossArgs(c.a, config, target, bench);
-            const timer = checks.phases.Timer.begin(c, try c.a.print("compile {s}", .{name}));
-            defer timer.end(c, summary);
-            try checks.command.execute(c, argv);
+            for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
+                if (index == 1 and !bench) break;
+                const argv = try checks.matrix.crossArgs(c.a, config, target, kind.step);
+                const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
+                defer timer.end(c, log);
+                try checks.command.execute(c, argv);
+            }
         }
         if (!found) {
             c.report("preflight: {s} is no target of ci/workflow.json; regenerate the workflow\n", .{name});

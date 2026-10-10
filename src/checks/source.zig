@@ -9,6 +9,8 @@ pub const Context = struct {
     dir: ?std.Io.Dir = null,
     errors: usize = 0,
     summary_path: ?[]const u8 = null,
+    /// The Zig that runs the configured commands: the one running the build, else the first on PATH.
+    zig: []const u8 = "zig",
     /// The environment a child process gets; null passes this process's own.
     environ_map: ?*const std.process.Environ.Map = null,
 

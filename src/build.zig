@@ -181,7 +181,7 @@ const Steps = struct {
         cache.setCwd(b.path("."));
         b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
         const docs = executable.run(b);
-        docs.addArgs(&.{ "docs", "--config", config.config });
+        docs.addArgs(&.{ "docs", "--config", config.config, "--zig-exe", b.graph.zig_exe });
         docs.addPassthruArgs();
         docs.setCwd(b.path("."));
         b.step("docs", "Render a configured documentation region").dependOn(&docs.step);

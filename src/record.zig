@@ -5,6 +5,7 @@
 //! the rest.
 const std = @import("std");
 const configure = @import("configure.zig");
+const Tool = @import("tool.zig").Tool;
 
 pub const Options = struct {
     timing: bool,
@@ -45,7 +46,7 @@ pub const TestTimeout = union(enum) {
 
 /// `checker` is preflight's command program, which refuses a shard at run
 /// time for a test runner that cannot honour one.
-pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, checker: *std.Build.Step.Compile, options: Options) void {
+pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) void {
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
     var names = std.StringHashMap(void).init(b.allocator);
     const durations = configure.read(b, options.durations, .limited(64 * 1024 * 1024)) orelse "";
@@ -55,7 +56,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, checker: *std
 
 const Context = struct {
     pkg: *std.Build,
-    checker: *std.Build.Step.Compile,
+    checker: Tool,
     options: Options,
     /// The recorded durations' text, built into each runner.
     durations: []const u8,
@@ -109,7 +110,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
     if (artifact.test_runner != null) {
         // That runner neither arms the watchdog nor reads the shard.
         if (options.test_timeout.toNanoseconds() != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
-        const unsharded = b.addRunArtifact(context.checker);
+        const unsharded = context.checker.run(b);
         unsharded.addArgs(&.{ "unsharded", artifact.name });
         unsharded.has_side_effects = true;
         run.step.dependOn(&unsharded.step);

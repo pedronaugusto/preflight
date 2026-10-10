@@ -1,6 +1,7 @@
 //! Export relocatable test executables for Linux compilation and native execution.
 const std = @import("std");
 const configure = @import("configure.zig");
+const Tool = @import("tool.zig").Tool;
 
 pub const Command = struct {
     argv: []const []const u8,
@@ -15,7 +16,7 @@ const manifest_path = "zig-out/preflight/tests.json";
 
 /// `checker` is preflight's command program, which restores the executables'
 /// permission to run that an artifact upload drops.
-pub fn add(b: *std.Build, tests: *std.Build.Step, checker: *std.Build.Step.Compile) void {
+pub fn add(b: *std.Build, tests: *std.Build.Step, checker: Tool) void {
     const compile = b.step("ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
@@ -30,7 +31,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, checker: *std.Build.Step.Compi
     };
     const stored = std.json.parseFromSlice([]Command, b.allocator, bytes, .{}) catch @panic("invalid portable test manifest");
     if (stored.value.len == 0) @panic("portable test manifest contains no tests");
-    const executable = b.addRunArtifact(checker);
+    const executable = checker.run(b);
     executable.addArg("executable");
     executable.setCwd(b.path("."));
     executable.has_side_effects = true;

@@ -313,10 +313,10 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, step: []const u8, bu
         defer timer.end(c, summary);
         const snapshot = try facts.read(c, "zig", argv.items[3..]);
         for (snapshot.config.available_options) |available_option| {
-            if (std.mem.eql(u8, available_option.name.slice(&snapshot.config), "ci-bench-smoke")) {
-                try argv.append(c.a, "-Dci-bench-smoke=false");
-                break;
-            }
+            const name = available_option.name.slice(&snapshot.config);
+            if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
+            // This program is the checks the build would compile, built from the same commit.
+            if (std.mem.eql(u8, name, "ci-checks")) try argv.append(c.a, try c.a.print("-Dci-checks={s}", .{try std.process.executablePathAlloc(c.io, c.a)}));
         }
     }
     // PREFLIGHT_SHARD reaches the test runners through the environment.

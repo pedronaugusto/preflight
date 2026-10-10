@@ -7,6 +7,7 @@ const record = @import("record.zig");
 pub const consumer = @import("consumer.zig");
 const bench = @import("bench.zig");
 const hardened = @import("hardened.zig");
+const Tool = @import("tool.zig").Tool;
 
 pub const Config = struct {
     tests: *std.Build.Step,
@@ -90,6 +91,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true,
         .sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner"),
         .lint_enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true,
+        .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
     };
 }
@@ -100,6 +102,7 @@ pub const CiOptions = struct {
     sdk: ?[]const u8,
     lint_enabled: bool,
     timing: bool,
+    checks: ?[]const u8,
 };
 
 const Steps = struct {
@@ -108,6 +111,7 @@ const Steps = struct {
     lint_enabled: bool,
     timing: bool,
     sdk: ?[]const u8,
+    checks: ?[]const u8,
     smoke: bool,
     profile_options: hardened.Options,
 
@@ -120,7 +124,28 @@ const Steps = struct {
         _ = b.step("ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         _ = b.step("ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         _ = b.step("ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .ci = ci, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .smoke = controls.smoke, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .ci = ci, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .profile_options = controls.profile_options };
+    }
+
+    /// The program that runs the checks: the binary the runner holds, or the
+    /// checks compiled here, in ReleaseSafe with glint as one module, so that
+    /// gantry's Zig frontend and glint are built the same way. Null while a
+    /// lazy dependency is still to be fetched.
+    fn checksTool(steps: Steps, b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget) ?Tool {
+        if (steps.checks) |path| return .{ .prebuilt = path };
+        const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .safe, .zig = true }) catch return null;
+        const gantry = dependencyModule(gantry_dep, "gantry") orelse return null;
+        const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return null;
+        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return null;
+        return .{ .compiled = b.addExecutable(.{
+            .name = "preflight-checks",
+            .root_module = b.createModule(.{
+                .root_source_file = pkg.path("src/main.zig"),
+                .target = host,
+                .optimize = .safe,
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint_dep.module("glint") } },
+            }),
+        }) };
     }
 
     /// `pkg` is the preflight package whose sources and tools the gate runs.
@@ -129,21 +154,7 @@ const Steps = struct {
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
         const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
-        // The checks run in ReleaseSafe, and glint is one module: the executable takes gantry's Zig
-        // frontend and glint built the same way, and the structure checker keeps its Debug build.
-        const checks_gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .safe, .zig = true }) catch return;
-        const checks_gantry = dependencyModule(checks_gantry_dep, "gantry") orelse return;
-        const checks_gantry_zig = dependencyModule(checks_gantry_dep, "gantry.zig") orelse return;
-        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return;
-        const executable = b.addExecutable(.{
-            .name = "preflight-checks",
-            .root_module = b.createModule(.{
-                .root_source_file = pkg.path("src/main.zig"),
-                .target = host,
-                .optimize = .safe,
-                .imports = &.{ .{ .name = "gantry", .module = checks_gantry }, .{ .name = "gantry.zig", .module = checks_gantry_zig }, .{ .name = "glint", .module = glint_dep.module("glint") } },
-            }),
-        });
+        const executable = steps.checksTool(b, pkg, host) orelse return;
         const timeout = config.test_timeout.duration() orelse fail: {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
             break :fail std.Io.Duration.zero;
@@ -153,28 +164,28 @@ const Steps = struct {
         hardened.add(b, config.tests, config.hardened, steps.profile_options);
         objects.add(b, config.tests, steps.sdk);
         if (config.portable_tests) portable.add(b, config.tests, executable);
-        const plan = b.addRunArtifact(executable);
+        const plan = executable.run(b);
         plan.addArg("plan");
         plan.addPassthruArgs();
         plan.setCwd(b.path("."));
         b.step("plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
-        const facts = b.addRunArtifact(executable);
+        const facts = executable.run(b);
         facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
         configurationOptions(b, facts);
         facts.addPassthruArgs();
         facts.setCwd(b.path("."));
         facts.has_side_effects = true;
         b.step("facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
-        const cache = b.addRunArtifact(executable);
+        const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));
         b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
-        const docs = b.addRunArtifact(executable);
+        const docs = executable.run(b);
         docs.addArgs(&.{ "docs", "--config", config.config });
         docs.addPassthruArgs();
         docs.setCwd(b.path("."));
         b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
-        const deprecations = b.addRunArtifact(executable);
+        const deprecations = executable.run(b);
         deprecations.addArgs(&.{ "deprecations", "--std" });
         deprecations.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         deprecations.addPassthruArgs();
@@ -183,7 +194,7 @@ const Steps = struct {
         steps.addLint(b, pkg, config, executable, gantry, gantry_zig);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: *std.Build.Step.Compile, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
+    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
         const host = ciTarget(b);
         const layers = b.createModule(.{
             .root_source_file = b.path(config.layers),
@@ -221,7 +232,7 @@ const Steps = struct {
         lint_structure.addArgs(&.{ "--config", config.config });
         lint_structure.setCwd(b.path("."));
         lint_structure.step.dependOn(&format.step);
-        const checks = b.addRunArtifact(executable);
+        const checks = executable.run(b);
         checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         configurationOptions(b, checks);

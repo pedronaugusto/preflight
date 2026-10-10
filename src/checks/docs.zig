@@ -60,7 +60,7 @@ fn dedent(a: std.mem.Allocator, text: []const u8) ![]const u8 {
 pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     const command = src.get(generator, "command");
     if (command == .null) return snippet(c, generator);
-    const argv = try zigCommand(c.a, command);
+    const argv = try zigCommand(c.a, c.zig, command);
     const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
     if (result.term != .exited or result.term.exited != 0) {
         c.report("docs: generator failed: {s}\n", .{result.stderr});
@@ -71,11 +71,12 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     return c.a.print("{s}\n", .{std.mem.trimEnd(u8, normalized, "\n")});
 }
 
-pub fn zigCommand(a: std.mem.Allocator, command: src.Value) ![]const []const u8 {
+pub fn zigCommand(a: std.mem.Allocator, zig: []const u8, command: src.Value) ![]const []const u8 {
     const values = src.items(command);
     if (values.len < 2 or !std.mem.eql(u8, src.string(values[0], ""), "zig") or !std.mem.eql(u8, src.string(values[1], ""), "build")) return error.CheckMustUseZigBuild;
     const argv = try a.alloc([]const u8, values.len);
     for (values, argv) |value, *arg| arg.* = src.string(value, "");
+    argv[0] = zig;
     return argv;
 }
 
@@ -128,7 +129,7 @@ test "configured generators cannot call other runtimes" {
     const a = std.testing.allocator;
     const value = try std.json.parseFromSlice(src.Value, a, "[\"python3\",\"ci/docs.py\"]", .{});
     defer value.deinit();
-    try std.testing.expectError(error.CheckMustUseZigBuild, zigCommand(a, value.value));
+    try std.testing.expectError(error.CheckMustUseZigBuild, zigCommand(a, "zig", value.value));
 }
 
 test "documentation matches examples and refuses drift and missing markers" {
@@ -157,7 +158,7 @@ test "documentation matches examples and refuses drift and missing markers" {
 pub fn region(args: []const []const u8) []const u8 {
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--config")) {
+        if (std.mem.eql(u8, args[i], "--config") or std.mem.eql(u8, args[i], "--zig-exe")) {
             i += 1;
         } else return args[i];
     }
@@ -166,6 +167,6 @@ pub fn region(args: []const []const u8) []const u8 {
 
 test "the docs region is the first argument after the options, else usage" {
     try std.testing.expectEqualStrings("usage", region(&.{ "--config", "ci/preflight.json" }));
-    try std.testing.expectEqualStrings("api", region(&.{ "--config", "ci/preflight.json", "api" }));
+    try std.testing.expectEqualStrings("api", region(&.{ "--config", "ci/preflight.json", "--zig-exe", "/z/zig", "api" }));
     try std.testing.expectEqualStrings("api", region(&.{"api"}));
 }

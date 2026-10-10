@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(a);
     var root = try std.Io.Dir.cwd().openDir(init.io, metadata.root, .{});
     defer root.close(init.io);
-    const snapshot = try facts.read(.{ .a = a, .io = init.io, .dir = root }, "zig", &.{"-Dci-bench-smoke=false"});
+    const snapshot = try facts.read(.{ .a = a, .io = init.io, .dir = root }, metadata.zig, &.{"-Dci-bench-smoke=false"});
     var c: Context = .{ .scratch = .init(init.gpa), .bytes = snapshot.bytes };
     defer c.scratch.deinit();
     var buffer: [4096]u8 = undefined;

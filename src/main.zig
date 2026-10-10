@@ -75,6 +75,7 @@ pub fn main(init: std.process.Init) !void {
         try checks.attest.run(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "docs")) {
         const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+        if (option(args, "--zig-exe")) |zig| c.zig = zig;
         const label = try a.print("zig build docs -- {s}", .{checks.docs.region(args[2..])});
         const generator = src.get(src.get(config, "docs"), label);
         if (generator == .null) return error.UnknownDocumentationRegion;
@@ -95,6 +96,7 @@ pub fn main(init: std.process.Init) !void {
         try out.interface.flush();
     } else if (std.mem.eql(u8, command, "lint")) {
         var config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+        if (option(args, "--zig-exe")) |zig| c.zig = zig;
         var build_options: std.ArrayList([]const u8) = .empty;
         for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--build-option")) {
             if (i + 1 == args.len) return error.MissingConfigurationOption;
@@ -201,7 +203,7 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     c.report("preflight: package paths\n", .{});
     try checks.manifest.paths(c, config);
     if (c.errors != 0) return;
-    for (src.items(src.get(config, "extra_checks"))) |command| try checks.command.execute(c.*, try checks.docs.zigCommand(c.a, command));
+    for (src.items(src.get(config, "extra_checks"))) |command| try checks.command.execute(c.*, try checks.docs.zigCommand(c.a, c.zig, command));
 }
 
 fn stdout(c: src.Context, text: []const u8) !void {

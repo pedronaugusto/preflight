@@ -11,8 +11,8 @@
             .lazy = true,
         },
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint#ce01c5e31de13b9d807fd13f265473355b6b490c",
-            .hash = "glint-0.1.0-3jcpof9YBgBmqCzl2W2KXeYaTvdfRDFoHDJA9s8Xy4xo",
+            .url = "git+https://github.com/pedronaugusto/glint#7fc902dd8e19238ce6a9303fdbc2e6fc099769f3",
+            .hash = "glint-0.1.0-3jcpoUFZBgDePb4q5mboiPFXl4HhbuF7lNABYfBKnjg7",
             .lazy = true,
         },
         .gantry = .{

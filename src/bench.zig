@@ -97,6 +97,7 @@ fn executable(b: *std.Build, pkg: *std.Build, bench: Bench, program: Bench.Progr
     metadata.addOption([]const u8, "root", root);
     metadata.addOption([]const u8, "cpu", b.graph.host.result.cpu.model.name);
     metadata.addOption([]const u8, "os", @tagName(b.graph.host.result.os.tag));
+    metadata.addOption([]const u8, "zig", b.graph.zig_exe);
     mod.addOptions("preflight_bench_options", metadata);
     return b.addExecutable(.{ .name = program.name, .root_module = mod });
 }

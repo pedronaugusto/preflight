@@ -8,6 +8,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- The linked graph is held to one revision of each package and no cycle between packages, the package under test included: a test dependency that links the package back takes the package's own module, bound by the build script. `ci/toolchain.zig`, `check-toolchain` and the toolchain closure policy are gone; this general check replaces them, and preflight needs no `revision_exceptions`. preflight no longer pins aegis.
+- Nothing of preflight's own pins reaches a package's artifact. The test runner, `preflight_order` and the watchdog link std alone: `Shard` holds a plain `index` below a nonzero `count` (`Shard.init(index, count)`). Benchmarks and fuzzing use the package's own `shakedown`, which it must declare; `Config.fuzz_step` is opt-in (null by default), and without it there is no `fuzz` step and nothing is fetched for one.
+- The family rule sets leave preflight: the `rules` module and `preflight_rules` are gone. Test-only packages are `test_dependencies` in `ci/preflight.json`; token rules are a package's own, in its `ci/layers.zig`.
+- `ci/workflow.json` `jobs` declares a package's own CI jobs as build steps (hosts, tiers, directory, arguments, setup step, timeout), rendered into the gate's matrices; a landing waits for them. The generator owns the whole caller and refuses to replace one holding a job the configuration does not declare; the earlier splice of hand-written jobs is gone. `sanitizer` and `sanitizer_job_timeout` are refused: declare the run in `jobs`, or use `hardened`. Every key is validated, and an unknown one (`package` among them) is refused.
+- Landing moves into the caller: one `land` job that needs the gate and alone may write, rendered with its input only when `land` is set, so a caller without `land` asks for no write permission (before, every caller pinned to a commit with landing failed to start unless it set `land`). zig.yml loses its `land`, `test-job-timeout` and `windows-job-timeout` inputs. Pull requests queue by number, so two of them never cancel each other or a run on main.
+- A step name preflight claims that the package already has fails the package's tests with a message naming it, instead of crashing the build.
+- attest finds the proof by its artifact name, in whichever workflow file the caller lives, one request per tier.
+
+### Added
+
+- A project with no `ci/preflight.json`, `ci/workflow.json` or `ci/layers.zig` gets every default; `.paths` need not name a README or changelog the package does not have. `sample/zero`, such a project, runs in preflight's own gate on every host.
+- `lint` checks that every nested manifest pins each package the root also pins exactly as the root does.
+- A passing test run and a passing lint write nothing under `zig build`, which shows any stderr of a passing step under "failed command:"; a failure prints all of it. A hosted job keeps lint's report in its summary.
+
 - The merge tier is the gate a landing passes, four jobs: the source checks and the Debug suite on Linux, macOS and Windows. The cross compile, the ReleaseFast benchmarks, the SDK links, ThreadSanitizer, the hardened checks and the Zig master leg move to the release tier, which a nightly schedule runs (`nightly` in `ci/workflow.json`: `false`, or `{ "cron", "tier" }`). Regenerate callers.
 - `land` in `ci/workflow.json` (default off): a merge-tier dispatch whose jobs are all green fast-forwards main to the commit it tested, never forced, with the run's own token, whose push starts no run. `attest` (default off) adds the push-to-main job that checks for a recorded merge or release run. A caller kept by hand no longer loses its own jobs: regeneration keeps every job the generator does not write.
 - `lint` fails an artifact that links two revisions of one package, naming both and who pulls each; `revision_exceptions` in `ci/preflight.json` names a package with the reason. The test runner and benchmark programs take the package's own aegis and shakedown when it declares them.

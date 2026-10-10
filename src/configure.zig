@@ -70,3 +70,26 @@ pub fn declared(b: *std.Build, name: []const u8, args: anytype) error{LazyDepend
     }
     return null;
 }
+
+/// The names of preflight's steps the package already had, for `refuseTaken`.
+var taken: std.ArrayList([]const u8) = .empty;
+
+/// A top-level step of preflight's, `name`, or, when the package already has a step
+/// by that name, one under no name: the package's own step keeps the name, nothing
+/// is overwritten and the build does not crash, and `refuseTaken` says what to do.
+pub fn claim(b: *std.Build, name: []const u8, description: []const u8) *std.Build.Step {
+    if (b.top_level_steps.get(name) == null) return b.step(name, description);
+    taken.append(b.allocator, name) catch @panic("OOM");
+    // A step of the top-level kind that no name reaches; others of preflight's may still depend on it.
+    const detached = b.allocator.create(std.Build.Step.TopLevel) catch @panic("OOM");
+    detached.* = .{ .step = .init(.{ .tag = .top_level, .name = name, .owner = b }), .description = b.dupe(description) };
+    return &detached.step;
+}
+
+/// Fails `tests` naming each step `claim` found the package already had: the
+/// gate runs preflight's steps by name, so a package step of the same name would
+/// run in their place.
+pub fn refuseTaken(b: *std.Build, tests: *std.Build.Step) void {
+    for (taken.items) |name| tests.dependOn(&b.addFail(b.fmt("preflight: this package declares a step `{s}`, which preflight's gate runs by name as its own; give the package's step another name", .{name})).step);
+    taken.clearRetainingCapacity();
+}

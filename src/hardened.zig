@@ -1,5 +1,6 @@
 //! Opt-in build/test orchestration; source-site safety rules belong to glint.
 const std = @import("std");
+const configure = @import("configure.zig");
 const builtin = @import("builtin");
 const zig_version = @import("zig_version.zig");
 
@@ -51,12 +52,12 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Op
     forward(b, normal);
     normal.setCwd(b.path("."));
     normal.has_side_effects = true;
-    b.step("hardened", "Execute opt-in safety-on tests using the existing std.testing allocator").dependOn(&normal.step);
+    configure.claim(b, "hardened", "Execute opt-in safety-on tests using the existing std.testing allocator").dependOn(&normal.step);
     const fuzz = b.addSystemCommand(&.{ b.graph.zig_exe, "build", given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
     forward(b, fuzz);
     fuzz.setCwd(b.path("."));
     fuzz.has_side_effects = true;
-    const fuzz_step = b.step("hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
+    const fuzz_step = configure.claim(b, "hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
     if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
         fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support").step);
     } else fuzz_step.dependOn(&fuzz.step);
@@ -64,7 +65,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Op
     forward(b, tsan);
     tsan.setCwd(b.path("."));
     tsan.has_side_effects = true;
-    const tsan_step = b.step("hardened-tsan", "Execute native x86_64 Linux tests with LLVM ThreadSanitizer");
+    const tsan_step = configure.claim(b, "hardened-tsan", "Execute native x86_64 Linux tests with LLVM ThreadSanitizer");
     if (b.graph.host.result.os.tag != .linux or b.graph.host.result.cpu.arch != .x86_64) {
         tsan_step.dependOn(&b.addFail("hardened-tsan: unsupported target; requires native x86_64 Linux").step);
     } else tsan_step.dependOn(&tsan.step);

@@ -8,11 +8,11 @@ Preflight runs glint as a library in its own process, in one in-memory project, 
 
 Files are the repository's `glint_paths`, or the shipped `sources` and the directories a repository keeps code in beside them. Selection is separate from `sources` because `sources` is the set `.paths` ships and must list; a benchmark is gated without being shipped. Every import is resolved from the build's configuration, the same facts the structure and toolchain checks use: `std` from the compiler's library, a relative path as itself, a named module as the configuration binds it in each module that compiles the file. A name two modules bind to different files, or none binds, stays unresolved, never guessed. The cost is one read of every file the selection imports, standard library included, once per run.
 
-The policy is the group review's. Z026 (a discarded error needs its reason) and the style rules are reported, and a package gates each as it becomes clean: glint's Z026 finds about three times the sites the fork's did, about 430 across the family against 136 suppressed today, and the review's order is reported, then gated. glint's `gate` couples two things: a finding fails, and a site the rule could not decide makes the run incomplete. That is right for a rule that can decide every site it names (a cast, a discarded error, a function's length) and for the aegis rules, which a repository adopts knowing what they cannot see. It is wrong for deprecated calls and debug prints: glint resolves a call through a receiver of unknown type to nothing, and a run that must resolve every call never completes. Those two are *findings* in the family's policy: glint reports them, any finding fails, and the calls it could not resolve are counted and are not a verdict. A repository may still gate them in glint's sense by naming them.
+The policy is the group review's. Z026 (a discarded error needs its reason) and the style rules are reported, and a package gates each as it becomes clean: glint's Z026 finds about three times the sites the fork's did and the review's order is reported, then gated. glint's `gate` couples two things: a finding fails, and a site the rule could not decide makes the run incomplete. That is right for a rule that can decide every site it names (a cast, a discarded error, a function's length) and for the aegis rules, which a repository adopts knowing what they cannot see. It is wrong for deprecated calls and debug prints: glint resolves a call through a receiver of unknown type to nothing, and a run that must resolve every call never completes. Those two are *findings* in the default policy: glint reports them, any finding fails, and the calls it could not resolve are counted and are not a verdict. A repository may still gate them in glint's sense by naming them.
 
-A run is complete or it is not a pass. The run fails on a file that does not parse or lower, on an exhausted fact budget, on a site a gating rule could not decide, on a file that cannot be read, and on a suppression that suppresses nothing (the family default; a repository may turn it off). A finding the policy allows never hides one of these. This closes the review's finding F04, which the ziglint fork could not close: it had no outcome for an analysis that stopped. There is no profile to select: the family's policy is preflight's, a repository amends it rule by rule, and a setting preflight cannot honour fails by name rather than turn a gate off.
+A run is complete or it is not a pass. The run fails on a file that does not parse or lower, on an exhausted fact budget, on a site a gating rule could not decide, on a file that cannot be read, and on a suppression that suppresses nothing (the default; a repository may turn it off). A finding the policy allows never hides one of these. This closes the review's finding F04, which the ziglint fork could not close: it had no outcome for an analysis that stopped. There is no profile to select: the default policy is preflight's, a repository amends it rule by rule, and a setting preflight cannot honour fails by name rather than turn a gate off.
 
-Exceptions are glint's inline `glint-ignore` with a reason, one site each. The exact-match ledgers (`ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`) and their shrinking budget retire with the tool they were for; they were empty across the family. A retired key fails the repository that still names it.
+Exceptions are glint's inline `glint-ignore` with a reason, one site each. The exact-match ledgers (`ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`) and their shrinking budget retire with the tool they were for. A retired key fails the repository that still names it.
 
 ## Configured builds and target projection
 
@@ -42,33 +42,64 @@ A caller enables `Config.hardened` and the canonical workflow's hardened option.
 
 ## Canonical orchestration and costs
 
-One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. CI controls have one declaration owner, including early root lazy-discovery returns. A caller-provided `Config.timings_enabled` retains its existing option ownership: preflight uses that value without declaring a second `ci-timings` option. Declarative repository facts stay with the caller. Hardened opt-in adds three native jobs per enabled tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
+One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. CI controls have one declaration owner, including early root lazy-discovery returns. A caller-provided `Config.timings_enabled` retains its existing option ownership: preflight uses that value without declaring a second `ci-timings` option. Declarative repository facts stay with the caller. Hardened opt-in adds three native jobs to the release tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
 
 Runner protocol, timeout, test ordering, allocation ownership and portable shard records remain separate from benchmark measurement. The runtime build dependency closure remains unchanged; shakedown is lazy test/benchmark support. Configuration and driver fault tests use deterministic child/input/output failures, rather than timing thresholds.
 
 
-The own-tree toolchain gate consumes Zig 0.17.0's resolved `package_map`, dependency-name-to-hash mappings and actual module import tables. Native LazyPath arguments retain generated-source producers. Gantry supplies manifest dependency and source import facts (including dead and test-only references); preflight applies the repository closure policy and follows those facts recursively in their configured module context. Exported build-helper source, the installed command and public rules are production roots. Configured test artifacts supply separate test roots, so tests in a production file are visited only in their test artifact's binding context. A manifest's lazy flag is never treated as test scope.
-
-The gate validates immutable git revisions, declared content hashes against resolved hashes and canonical remote family names against fetched manifest identities. All materialized declaration dependencies are checked recursively, including different published bootstrap versions. Unmaterialized lazy bootstrap entries are named as such and cannot supply production facts. Runtime family edges descend aegis/sweep, glint, gantry, preflight; test-support and pinned lazy bootstrap edges are separate. Required source, identity, binding, version, parser and output failures remain errors. Source reachability is gantry's current lexical/declaration analysis, not a claim of Zig compiler semantic reachability; unsupported recovered constructs fail clearly. Configure internals and the build protocol are distinct version-gated source-of-facts adapters, neither a stable external graph API. Closure scanning is an own-gate cost outside consumer runtime; no dependency or consumer changes are needed.
-
 Cross projections retain each compile step's expected-error union and diagnostic limit. Zig's build runner owns matching (`contains`, `exact`, `starts_with`, `stderr_contains`) and failure outcomes. Deliberate failures do not request emitted binaries, since Zig returns after matching rather than producing a file. Positive projections still emit objects; original native artifacts retain their diagnostic and SDK-link contracts. The integration fixture exercises expected failures, wrong diagnostics and unexpected success across Linux, both macOS architectures and both Windows architectures, with a positive object beside each rejection.
+
+## The linked graph and tooling
+
+A package has two graphs. The linked graph is what its artifacts link; tooling edges are what
+only its CI uses (the checker, test support it pins), lazy, so a project depending on the
+package never fetches them. A tool is a program that reads the package and links none of it,
+so it may be built with any revision of anything, the package itself included: a tool checks
+itself with the revision of itself it pins, and a library it uses moves without waiting for it.
+The pins of the tooling graph may therefore form cycles; the linked graph may not.
+
+`lint` holds every artifact the package's build configures to one revision of each package,
+the package under test included, and to no cycle between packages. A package cannot pin its own
+commit, so a cycle back to it always shows as a second revision of it; a dependency bound to
+the package's own module (test support built on its types) is one copy and no pin, and is
+neither. Programs built from another package's sources are that package's tools and not
+counted. The check reads Zig's configuration of the build, by package hash and module import
+table, not manifests, so a revision that an injected module or a dependency's pin brings is
+seen where it is linked. A family of packages whose tools check each other stays a DAG to every
+consumer this way, and its moves are a release train: re-pin in dependency order, each landing
+on its own green run.
+
+What preflight adds to an artifact obeys the same rule. The test runner, its shard order and its
+watchdog link std alone; benchmarks and fuzzing measure through the package's own shakedown,
+declared by the package. Nothing of preflight's pins reaches a package's artifact.
+
+A nested manifest (a fixture's, a conformance build's) pins each package the root also pins
+exactly as the root does; the check names the drift. A fixture generated at build time from the
+root's dependency, as `addConsumerCheck` makes one, cannot drift at all.
+
+## Generated caller
+
+The caller is generated whole from `ci/workflow.json`: the gate call with every tier's matrices,
+the package's declared jobs among them, the triggers, the concurrency groups and, with `land`,
+the landing job. A package's own job is a build step with hosts, tiers, a directory and a setup
+step, run by the gate's job with its setup and caches, so its refs, inputs and `needs` cannot go
+stale and a landing waits for it like any job of the gate. The generator refuses to replace a
+caller holding a job the configuration does not declare. Landing is one caller job that needs the
+gate and alone holds write permission; without `land` the caller asks for none, since a reusable
+workflow cannot be granted more than its caller holds whatever its jobs' conditions say.
 
 ## Shard and watchdog boundaries
 
-Aegis is the std-only scalar safety leaf used by test-order and watchdog modules.
-`ShardIndex` and `ShardCount` retain `usize` layout but cannot be interchanged.
 `Shard.init` and `Shard.parse` establish a nonzero count and an index below it.
 `assign` rechecks those contracts because Zig permits direct field construction,
 checks that `count * sizeof(f64)` fits before load allocation, and rejects unequal
-name/weight lengths before allocating or indexing. Its measured inner loop uses
-raw shard positions in that one domain after validation; the storage bound also
-proves `start + step` cannot overflow. Test indices remain native slice positions.
+name/weight lengths before allocating or indexing. The modules link std alone: they
+are compiled into every package's test binaries, where any package they imported could
+be a second copy beside the package's own.
 
 The build helper retains `std.Io.Duration` through `TestTimeout.duration`, validates
-the generated options' `u64` nanosecond range and exports that schema once. The
-published aegis build helper does not export scalar namespaces to build scripts;
-the runtime runner wraps the generated value in aegis `Duration(.nanosecond, u64)`.
-Conversion to the public std wait vocabulary is explicit and checked. The disabled
+the generated options' `u64` nanosecond range and exports that schema once; the runner
+reads it back as a `std.Io.Duration`. The disabled
 watchdog remains zero; nonpositive custom durations retain their one-nanosecond
 floor. Missing reasons and oversized custom durations fail configuration.
 
@@ -76,14 +107,8 @@ The watchdog owns an awake-clock deadline and only observes an atomic completion
 flag. The test thread publishes completion, wakes it and joins before reclaiming
 storage. There is no lock beside borrowed data: a spin guard cannot implement this
 futex publication/wait protocol. Std clock-tagged timestamp comparison and timeout
-values keep clock and scale together. No guard, confined state or borrowed lock
-capability enters the public API. Raw-site comments state the permitted reason at
-the retained parser, generated-schema, one-owner naming and measured-loop sites.
+values keep clock and scale together.
 
-The package config declares glint's A004 and Z026 at `gate` (A004 for the adopted scalar domains), across the sources, the tests, the benchmarks and the build script: the default selection reaches `bench`, `ci` and `build.zig`, which `sources` does not list because they are not shipped. A reasoned `glint-ignore` marks the one index/count comparison that is safe-type internals, and the sites that glint cannot resolve through a field of a struct are written so that they resolve.
-
-The toolchain closure follows the `test` blocks of a test artifact's root module
-and not those of the modules it imports, as the compiler builds them. A
-dependency's embedded tests may name modules, such as shakedown, that only its own
-test build binds; they are not part of the consumer's closure, and the gate neither
-binds nor exempts them.
+Under the build runner's protocol a passing test run and a passing lint write nothing: Zig 0.17
+shows any stderr of a passing build step under a "failed command:" line. A failure names its
+seed, and lint prints all it held when it fails.

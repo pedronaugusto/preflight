@@ -17,14 +17,14 @@ const manifest_path = "zig-out/preflight/tests.json";
 /// `checker` is preflight's command program, which restores the executables'
 /// permission to run that an artifact upload drops.
 pub fn add(b: *std.Build, tests: *std.Build.Step, checker: Tool) void {
-    const compile = b.step("ci-build", "Compile test executables for execution on another runner");
+    const compile = configure.claim(b, "ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
     collect(b, tests, compile, &commands, &seen);
     const json = std.json.Stringify.valueAlloc(b.allocator, commands.items, .{}) catch @panic("OOM");
     const manifest = b.addWriteFiles().add("tests.json", json);
     compile.dependOn(&b.addInstallFile(manifest, "preflight/tests.json").step);
-    const execute = b.step("ci-run", "Run the previously compiled test executables");
+    const execute = configure.claim(b, "ci-run", "Run the previously compiled test executables");
     const bytes = configure.read(b, manifest_path, .limited(1024 * 1024)) orelse {
         execute.dependOn(&b.addFail("portable test manifest missing; run ci-build or download its artifact first").step);
         return;

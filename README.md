@@ -16,13 +16,32 @@ See [the design](docs/design.md) for ownership and invariants.
 
 ## Usage
 
-In `build.zig`, after creating the test step:
+Adopting preflight takes three steps and no configuration file:
 
-```zig
-const preflight = @import("preflight");
-// Inside build(b), after assembling test_step:
-preflight.addCi(b, .{ .tests = test_step });
-```
+1. Pin it lazily, so a project that depends on yours never fetches it:
+   `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
+   then add `.lazy = true` to the entry in `build.zig.zon`.
+2. In `build.zig`, after creating the test step:
+
+   ```zig
+   if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, .{ .tests = test_step });
+   ```
+
+3. Generate the hosted workflow: `mkdir -p .github/workflows && zig build plan -- --workflow .github/workflows/ci.yml`.
+
+Pull requests then run the merge tier (source checks and the Debug suite on Linux, macOS
+and Windows), a dispatch runs the tier it names, and a nightly run takes the full matrix.
+Every option has a default: `ci/preflight.json` chooses what the source checks read and
+hold, `ci/workflow.json` what the hosted gate runs, and `ci/layers.zig` a source layering
+to enforce; a project needs none of them to start. [sample/zero](sample/zero) is such a
+project, and preflight's own gate runs it on every host.
+
+`addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
+`ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
+`check-imports`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
+`hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
+step by one of those names keeps it, and its tests fail with a message naming the step to
+rename, since the gate would otherwise run the package's step in place of its own.
 
 `zig build lint` runs source checks. `zig build ci` checks sources before running
 tests. A watchdog in the shared test runner fails a test that runs longer than
@@ -131,7 +150,7 @@ Missing markers, stale blocks and failed generators fail the gate.
 
 The code rules are glint's, and `zig build lint` runs them as a library: preflight
 reads the files, classifies them, resolves each import the way the configured build
-does and hands glint the family's policy in one project. Nothing is parsed twice and
+does and hands glint its policy in one project. Nothing is parsed twice and
 no child process stands between a finding and the gate.
 
 **Files.** `glint_paths` names the files and directories to check; a path that is
@@ -147,7 +166,7 @@ differently leave it unresolved, and so does a name the build does not bind.
 That is how glint recognizes aegis in a package: by the module the build gives
 it, at any revision that keeps its public names.
 
-**Policy.** The group review's, as the family runs it:
+**Policy.** preflight's default, which a repository amends:
 
 | Rule | Weight |
 |---|---|
@@ -178,7 +197,7 @@ cast and length rules and names its upstream and how the fork is verified.
 
 `rules` sets a rule to `off`, `report` or `gate` (the aegis rules A001 to A005 are off
 until a repository names them); an unknown or removed id fails. There is no profile:
-the family's policy is preflight's, and a deviation is a visible line. `function_limit`
+the default policy is preflight's, and a deviation is a visible line. `function_limit`
 (120), `function_limits` (a lower ceiling by path) and `function_exceptions` (an exact
 `path:function`, a ceiling and a reason; growth fails, and one that names no function
 fails) stay at the top level.
@@ -223,8 +242,10 @@ runs shakedown's `shakedown-fuzz` over the package's `check` properties, as many
 of `zig build test --fuzz=<limit>` as it is given, with the fuzzer's corpora in a store
 outside the repository and every failure shrunk to the tape to add to the property's
 `.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. It fuzzes
-`Config.fuzz_step`, `test` unless the package names a step whose every test binary has a
-property (the fuzzer refuses a binary with none). The fuzzing,
+`Config.fuzz_step`, which a package sets to opt in: a step whose every test binary has a
+property (the fuzzer refuses a binary with none). The fuzzer and the properties are the
+package's own shakedown, which it declares; a package that sets no `fuzz_step` has no `fuzz`
+step and fetches nothing for one. The fuzzing,
 the corpora and the shrinking are shakedown's; preflight wires the step.
 
 What is not fuzzed is visible. `zig build lint` reports, without failing, the parsers of
@@ -243,7 +264,7 @@ Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "pr
 
 `zig build hardened-fuzz` executes the installed Zig 0.17 bounded native fuzzer, with caller options forwarded. The current compiler supports native 64-bit non-Windows hosts; foreign targets and unsupported backends must fail execution. Seed corpora belong in `std.testing.fuzz` options. Zig reports campaign counts and instrumented coverage, retains corpus/coverage beneath `.zig-cache/v`, and reports failing inputs and reproduction details. Hosted jobs retain the actual configured local-cache v directory, including on failure, for seven days. Preserve those files and the printed test seed when reproducing; accumulated coverage is not a coverage guarantee.
 
-`zig build hardened-tsan` compiles with LLVM ThreadSanitizer and executes the selected tests on native x86_64 Linux. Every selected module's target is checked. Other hosts fail with an explicit eligibility message. The sample executes real concurrent tests; preflight's Linux regression first runs a synchronized consumer, then requires a real intentional-race diagnostic. Sanitizer startup failures remain failures. The existing test runner continues to own `std.testing.allocator`, using std's SafeAllocator with `check_write_after_free = true`; a real consumer test frees storage and writes through it to prove detection. There is no substitute allocator, verifier, future language feature or aegis prerequisite.
+`zig build hardened-tsan` compiles with LLVM ThreadSanitizer and executes the selected tests on native x86_64 Linux. Every selected module's target is checked. Other hosts fail with an explicit eligibility message. The sample executes real concurrent tests; preflight's Linux regression first runs a synchronized consumer, then requires a real intentional-race diagnostic. Sanitizer startup failures remain failures. The existing test runner continues to own `std.testing.allocator`, using std's SafeAllocator with `check_write_after_free = true`; a real consumer test frees storage and writes through it to prove detection. There is no substitute allocator, verifier or future language feature.
 
 ### Configured build facts
 
@@ -320,30 +341,54 @@ repository shows the trigger and concurrency policy:
 
 - Work-branch pushes start no run. Dispatch runs the tier it names, fast by default.
 - Pull requests and merge queue candidates run the merge tier, which is the gate to
-  require as a status check. Nothing family-specific is needed for that.
+  require as a status check.
 - A schedule runs the release tier nightly.
 - The caller owns one concurrency group per branch, with cancellation enabled
   for work branches and disabled for main's status job.
 
-The options of `ci/workflow.json` that shape the caller, all off or defaulted in a new project:
+The options of `ci/workflow.json`, all off or defaulted in a new project. Any other key is
+refused, so a misspelt option fails the plan instead of quietly changing nothing.
 
-- `land` (default `false`): a merge-tier dispatch whose jobs are all green fast-forwards main to
-  the commit it tested, with the run's own token and never forced; a main that moved fails the
-  job and says so. The token's push starts no run, so a landing is tested once. Dispatch with
+- `land` (default `false`): the caller gains a `land` job and a `land` dispatch input. A
+  merge-tier dispatch whose gate is green fast-forwards main to the commit it tested, with the
+  run's own token and never forced; a main that moved since fails the job and says so. That job
+  alone may write, and only to move main; without `land` nothing in the caller asks for more than
+  read. The token's push starts no run, so a landing is tested once. Dispatch with
   `-f land=false` to test without landing.
-- `attest` (default `false`): a push to main runs a cheap job that checks for a successful merge
-  or release run on its exact SHA, with its proof artifact, and fails without one. For repositories
-  that push to main by hand.
+- `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
+  merge or release run left for its exact SHA, and fails without one. For repositories that push
+  to main by hand.
 - `nightly` (default: the release tier at `23 3 * * *` UTC): `false` for no schedule, or
   `{ "cron": "5 1 * * 0", "tier": "merge" }` for another time or tier. The run also warms main's caches.
-- `ci/preflight.json` `revision_exceptions`: see the one-revision check below.
+- `jobs`: the package's own jobs, each a build step the gate runs beside its own:
 
-A job of the caller that the generator does not write (a package's own `indicative` or `sizes`)
-is kept verbatim when the caller is regenerated.
+  ```json
+  {"jobs": [
+    {"name": "conformance", "step": "test", "directory": "conformance", "os": ["ubuntu-latest", "macos-latest"]},
+    {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["merge", "release"]},
+    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["fast", "merge", "release"], "setup": false, "timeout": 30}
+  ]}
+  ```
 
-`ci/workflow.json` is the declarative input. A consumer using `addCi` regenerates
-its entire caller, including both reusable-workflow references, the checkout
-pin, triggers, concurrency policy and all seven tier matrices, with:
+  `os` defaults to Ubuntu and `tiers` to merge and release; `args` holds whitespace-free `-D`
+  flags (the package's `build_args` are its own builds', not a declared job's); `directory` is
+  relative to the repository and defaults to the package; `setup` runs the package's
+  `setup_step` (true, the default), nothing (false) or a step of the job's own; `timeout` is
+  in minutes. A declared job has the gate's setup, caches and toolchain, and a landing waits for
+  it. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
+  of its own.
+- `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
+  `compile_once`, `portable_hosts`, `hardened`: what the tiers build and run, described below.
+- `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
+- `setup_step`: a build step that installs the package's external tools, run before its tests
+  with three attempts of five minutes; `before_tests_step`: a step run before the tests.
+- `windows_git_latest`: upgrade Git for Windows first.
+- `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`:
+  minutes, 20 by default.
+
+`ci/workflow.json` is the declarative input, and the caller is wholly generated from it:
+both reusable-workflow references, the checkout pin, triggers, concurrency policy, the
+seven tier matrices with the declared jobs, and the landing. Regenerate it with:
 
 ```sh
 zig build plan -- --workflow .github/workflows/ci.yml
@@ -351,7 +396,8 @@ zig build plan -- --workflow .github/workflows/ci.yml
 
 First refresh preflight in `build.zig.zon` to the intended published commit.
 The generator reads that manifest's full immutable preflight URL pin; it never
-uses an old workflow's pin. It replaces one relative `.yml` or `.yaml` file,
+uses an old workflow's pin. It refuses to replace a caller holding a job the
+configuration does not declare, naming it, so nothing is dropped unseen. It replaces one relative `.yml` or `.yaml` file,
 refuses traversal and symlinks, and renders/validates all inputs before opening
 it. Its parent directories must already exist. Repeated generation is byte
 identical. There is no package-local planner or Python dependency. This is an
@@ -370,23 +416,63 @@ single-file workflow replacement. `--workflow` renders every tier and cannot
 be combined with `--output`. Consumer repositories keep only declarative inputs
 and their generated caller, never copied planner code or consumer plan dumps.
 
-### One revision of each package
+### The linked graph
 
-`lint` reads the configured build and fails a package whose artifact links two
-revisions of one dependency: types of one revision do not unify with the other's, and
-state a package holds once per program is held twice. The message names the package,
-both revisions, and the packages whose modules import each:
+A package has two graphs. Its *linked* graph is the code an artifact of it links: its own
+modules and what they import. Its *tooling* edges are the packages only its CI and checks
+use: preflight itself, a linter, test support it pins for its own tests. A tooling edge is
+a lazy dependency only CI steps ask for, so a project depending on the package never fetches
+it, the way Cargo and Go leave out a dependency's dev-dependencies. A tool is a separate
+program: it reads the package and links none of it, so it may be built with any revision of
+anything, including an older one of the package it checks. That is how a tool checks itself:
+its CI runs the revision of itself it pins, and moving a library the tool uses never waits for
+the tool to move.
 
-```
-aegis is linked in 2 revisions:
-  aegis-0.0.0-rsxouifg... pulled by conduit, reactor
-  aegis-0.0.0-rsxoutrd... pulled by shakedown
-```
+`lint` reads the configured build and holds every artifact the package builds to two rules,
+for any project:
 
-The test runner and benchmark programs preflight adds take the package's own `aegis` and
-`shakedown` when it declares them, and preflight's pin otherwise. The package under test is
-exempt from a second revision of itself, which it cannot pin. `revision_exceptions` in
-`ci/preflight.json` maps a package to the reason two of its revisions may meet.
+- **One revision of each package.** Two revisions of a package in one artifact are two sets
+  of types that do not unify, and two sets of any state it holds once per program. The message
+  names the package, both revisions and who pulls each:
+
+  ```
+  core is linked in 2 revisions:
+    core-0.1.0-rsxouifg... pulled by net, store
+    core-0.1.0-rsxoutrd... pulled by testkit
+  ```
+
+- **No cycle between packages.** A package linked by another must not link it back: then a
+  move of either ripples through both. The package under test is held to both rules as much as
+  any other. It cannot pin its own commit, so a second revision of itself in its own artifact is
+  always a cycle through a dependency's pin, and it is reported as one:
+
+  ```
+  the linked packages form a cycle: core -> testkit -> core
+  ```
+
+A test dependency that is built on the package's own types (test doubles taking the package's
+ids, say) is the usual way in. It must take the package's own module, bound by the build script,
+instead of its own pin of the package: the dependency offers an option to leave its pin unfetched
+and a way to give it the module, and the package's test modules and benchmarks import that one
+copy. An import into the package's own module is one copy and no pin, so it is neither a second
+revision nor a cycle. Programs built in the package's graph from another package's sources
+(a checker's own tools) are not the package's artifacts and are not counted.
+
+What preflight adds to a package's artifacts follows the same rule. Its test runner, shard
+order and watchdog link std alone; benchmarks and fuzzing measure through the package's own
+`shakedown`, which the package declares, and are refused by name when it does not. Nothing
+of preflight's own pins reaches a package's artifact.
+
+`revision_exceptions` in `ci/preflight.json` maps a package to the reason two of its
+revisions may meet, for a case the package cannot fix, such as a dependency it does not own
+that pins another revision.
+
+Every other manifest in the repository, a fixture's or a conformance build's, must pin each
+package the root manifest also pins exactly as the root does: a fixture with its own pin goes
+stale at the next re-pin and tests a revision nothing ships. Better, a fixture takes the
+package from the root's dependency at build time, as `addConsumerCheck` does, and cannot drift.
+
+### Hosted gate options
 
 Targets are strings or objects with `target`, optional `cpu`, and optional
 `args` (an array of `-D` feature flags). `build_args` supplies flags to every
@@ -425,13 +511,12 @@ local build option for native links, including an explicit macOS target or CPU.
 The SDK search paths also reach transitive native dependencies. Foreign object
 jobs do not require an Apple SDK.
 
-The first job of a fast run filters changes. Changes touching only
-Markdown outside `src`, LICENSE or images run the documented-snippet check alone.
-The change is the branch since it left its base, as a pull request shows it:
-the pull request's or merge queue's base, or `origin/main` for a dispatch, never
-the last commit alone. Mixed changes, source Markdown and unavailable diff bases
-keep the test gate.
-Merge and release candidates always keep the whole gate, docs-only or not.
+The first job of a fast run filters changes. A dispatched branch whose commits since
+it left `origin/main` touch only Markdown outside `src`, LICENSE or images runs the
+documented-snippet check alone. Mixed changes, source Markdown and an unavailable base
+keep the test gate. A pull request, a merge queue entry and the release tier always
+run the whole gate, documentation or not: what a landing passes does not depend on a
+path filter.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
 jobs. Every job compiles the whole suite once, or downloads it with
@@ -439,8 +524,8 @@ jobs. Every job compiles the whole suite once, or downloads it with
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`. A test with no record weighs the mean of those with one;
 without records the split is by count. Every shard computes the same split, so
-each test runs exactly once. Repository-specific jobs stay in the caller and run
-on the tiers they belong to.
+each test runs exactly once. A package's own jobs are declared in `ci/workflow.json`
+`jobs` and run in the tiers they name (see the options below).
 Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) of
 compiling each, longest target first onto the job with the least, each target keeping
 its optional CPU and flags. A target costs what the last release run measured
@@ -543,9 +628,9 @@ A test runner of a package's own can import `preflight_order` and
 `preflight_timings`. `preflight_order.init(io, init, args, tests, durations)` seeds,
 selects the shard's tests and orders them, returning `InitError` for a seed that is no
 `u32`, a shard that is not `i/n` or durations of the wrong shape. Its `weigh` and
-`assign` are the shard split by themselves. `Shard.index` is a `ShardIndex` and
-`Shard.count` is a `ShardCount`, backed by aegis distinct scalar types. Construct a
-shard with `Shard.init(.fromRaw(index), .fromRaw(count))` or parse hosted `i/n` text.
+`assign` are the shard split by themselves. `Shard` holds a zero-based `index` below a
+nonzero `count`; construct one with `Shard.init(index, count)` or parse hosted `i/n` text.
+These modules link std alone, as everything preflight adds to a test binary does.
 `assign` rejects invalid shards, overflowing load-storage counts or unequal name/weight lengths in every build
 mode. `TestTimeout.duration()` returns a checked `std.Io.Duration`; a custom bound
 above `u64` nanoseconds fails configuration. Public waits keep std's Io vocabulary. `preflight_timings.Recorder.init(io,
@@ -576,39 +661,14 @@ unexpected success fail. Expected-failure steps request no emitted binary.
 Ordinary positive artifacts still emit objects, and native SDK links retain the
 original artifact graph.
 
-`zig build check-toolchain` validates the installed Zig 0.17.0 runner's resolved
-package hashes recursively against gantry's manifest declarations and the fetched
-packages' names and fingerprints. It follows gantry's production import facts in
-the actual configured module bindings, including relative and generated sources.
-Runtime edges must stay below their owner in aegis/sweep → glint → gantry → preflight;
-shakedown remains test-only and lazy pinned bootstrap edges remain separate.
-Unmaterialized bootstrap pins are reported explicitly; they are never runtime proof.
-Unsupported reachability, unresolved identities/bindings, mutable pins and I/O
-failures fail the check. This own-gate adapter uses version-specific Zig configure
-internals; it is not a stable external compiler API.
-glint is a pinned build dependency, built in ReleaseSafe for the checks and used as a library: its
-module and its std-only runtime. The gate fetches it and aegis, which it depends on, and
-nothing else for the code rules.
+glint and gantry are lazy build dependencies, built in ReleaseSafe for the checks and used
+as libraries; the checks are a tool, and nothing of them reaches a package's artifacts.
 
-## Family rules
+## Rules a package declares
 
-`addCi` makes `preflight_rules` available to `ci/layers.zig`. Import the family's policies once:
-
-```zig
-const gantry = @import("gantry");
-const family = @import("preflight_rules");
-// package_references is the package's array of gantry ReferenceRules.
-pub const owned: []const gantry.rules.TokenRule = &(family.durability ++ family.no_async);
-pub const references: []const gantry.rules.ReferenceRule = &(package_references ++ family.shakedown);
-```
-
-`durability` forbids raw sync calls and `createFileAtomic`; adopt it outside airlock,
-which owns durability. `no_async` forbids `io.async(` in packages whose callers own
-asynchronous work; omit it in packages that permit spawning. `shakedown` forbids
-production imports while allowing test blocks, test-only declarations and configured
-test paths. These are ordinary gantry rules, so each package composes the applicable
-sets with its own rules. The sample adopts all three. The preflight dependency also
-exports a `rules` module for direct use in a build.
+A package's own token and reference rules are ordinary gantry rules in its `ci/layers.zig`,
+next to its layers; packages that only tests may import are `test_dependencies` in
+`ci/preflight.json`, which no production file may import.
 
 Gantry owns path syntax, compilation and matching. Preflight compiles configured
 patterns through `gantry.rules.Globs`, returning malformed-pattern errors even for

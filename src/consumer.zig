@@ -2,6 +2,7 @@
 //! only the packages the package itself needs: the build a consumer gets.
 //! The build runs this file as a program to write the project.
 const std = @import("std");
+const configure = @import("configure.zig");
 
 pub const Options = struct {
     /// The dependency name a consumer gives the package, as in its build.zig.zon.
@@ -57,7 +58,7 @@ pub fn add(b: *std.Build, options: Options) void {
     });
     build.addArgs(if (options.modules.len > 0) options.modules else &.{options.package});
     build.has_side_effects = true;
-    b.step("check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
+    configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
 }
 
 /// Writes the project and builds it: `<zig> <project> <packages> <package

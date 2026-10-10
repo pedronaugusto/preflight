@@ -16,5 +16,5 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, step: []const u8) void {
     run.addArgs(&.{ "--zig", b.graph.zig_exe, "--step", step });
     run.addPassthruArgs();
     run.has_side_effects = true;
-    b.step("fuzz", "Fuzz the check properties off the landing path, corpora and findings outside the package: -- --limit 10M --sessions 1 --store ~/shakedown-fuzz --filter <test>").dependOn(&run.step);
+    configure.claim(b, "fuzz", "Fuzz the check properties off the landing path, corpora and findings outside the package: -- --limit 10M --sessions 1 --store ~/shakedown-fuzz --filter <test>").dependOn(&run.step);
 }

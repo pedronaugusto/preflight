@@ -13,20 +13,21 @@ pub const Bench = struct {
 };
 pub const smoke_flag = "--smoke";
 
-pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench, smoke: bool) void {
+/// The step that builds the benchmarks, or null when there are none.
+pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench, smoke: bool) ?*std.Build.Step {
     const given = bench orelse {
         if (configure.exists(b, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench").step);
-        return;
+        return null;
     };
     // The programs measure through shakedown.bench, and the comparison reads what they write: both are the
     // package's own shakedown, never a copy of preflight's.
-    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return) orelse {
+    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return null) orelse {
         tests.dependOn(&b.addFail("addCi .bench: benchmarks measure through shakedown.bench; declare shakedown in build.zig.zon (lazy: only the benchmarks fetch it)").step);
-        return;
+        return null;
     };
     const comparison = dep.artifact("shakedown-bench-compare");
-    const build = b.step("bench-build", "Build benchmarks and shakedown comparison in ReleaseFast; execute nothing");
-    const step = b.step("bench", "Build and manually measure benchmark rows through shakedown");
+    const build = configure.claim(b, "bench-build", "Build benchmarks and shakedown comparison in ReleaseFast; execute nothing");
+    const step = configure.claim(b, "bench", "Build and manually measure benchmark rows through shakedown");
     step.dependOn(build);
     build.dependOn(&b.addInstallArtifact(comparison, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
     var previous: ?*std.Build.Step = null;
@@ -66,7 +67,8 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
     ab.addPassthruArgs();
     ab.setCwd(b.path("."));
     ab.has_side_effects = true;
-    b.step("bench-ab", "Build an immutable base, interleave chosen ReleaseFast workloads, compare through shakedown").dependOn(&ab.step);
+    configure.claim(b, "bench-ab", "Build an immutable base, interleave chosen ReleaseFast workloads, compare through shakedown").dependOn(&ab.step);
+    return build;
 }
 
 fn provenance(b: *std.Build) []const u8 {

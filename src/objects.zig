@@ -8,19 +8,21 @@ const std = @import("std");
 /// ReleaseFast takes longer than all the rest: the fast tier leaves it to the
 /// merge tier, since a benchmark's Debug object already holds what a target
 /// accepts of its source.
-pub fn add(b: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8) void {
-    const objects = &b.top_level_steps.get("ci-check").?.step;
-    const bench_objects = &b.top_level_steps.get("ci-check-bench").?.step;
-    const links = &b.top_level_steps.get("ci-link").?.step;
+pub const Steps = struct { objects: *std.Build.Step, bench_objects: *std.Build.Step, links: *std.Build.Step, bench: ?*std.Build.Step };
+
+pub fn add(b: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8, steps: Steps) void {
+    const objects = steps.objects;
+    const bench_objects = steps.bench_objects;
+    const links = steps.links;
     var projection: Projection = .{ .b = b, .objects = objects, .sdk = sdk };
     projection.collect(tests, links);
     projection.collect(b.getInstallStep(), links);
     if (b.top_level_steps.get("check")) |check| projection.collect(&check.step, links);
-    if (b.top_level_steps.get("bench-build")) |bench| {
+    if (steps.bench) |bench| {
         var debug: Projection = .{ .b = b, .objects = objects, .sdk = null, .debug = true };
-        debug.collect(&bench.step, links);
+        debug.collect(bench, links);
         var release: Projection = .{ .b = b, .objects = bench_objects, .sdk = sdk };
-        release.collect(&bench.step, links);
+        release.collect(bench, links);
     }
     for (b.modules.values()) |module| {
         const object = b.addObject(.{ .name = "ci-root", .root_module = projection.module(module) });

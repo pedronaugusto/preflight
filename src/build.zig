@@ -66,6 +66,7 @@ pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
 pub fn addCi(b: *std.Build, config: Config) void {
     if (b.pkg_hash.len != 0) return;
     const steps: Steps = .create(b, config);
+    defer configure.refuseTaken(b, config.tests);
     const dep = b.dependencyLazy("preflight", .{}) catch return;
     steps.install(b, dep.builder, config);
 }
@@ -73,6 +74,7 @@ pub fn addCi(b: *std.Build, config: Config) void {
 /// preflight's own gate, built from this checkout rather than a dependency.
 pub fn addOwnCi(b: *std.Build, config: Config) void {
     const steps: Steps = .create(b, config);
+    defer configure.refuseTaken(b, config.tests);
     steps.install(b, b, config);
 }
 
@@ -115,6 +117,9 @@ pub const CiOptions = struct {
 const Steps = struct {
     lint: *std.Build.Step,
     ci: *std.Build.Step,
+    objects: *std.Build.Step,
+    bench_objects: *std.Build.Step,
+    links: *std.Build.Step,
     lint_enabled: bool,
     timing: bool,
     sdk: ?[]const u8,
@@ -124,14 +129,14 @@ const Steps = struct {
 
     fn create(b: *std.Build, config: Config) Steps {
         const controls = declareCiOptions(b, config.timings_enabled);
-        const lint = b.step("lint", "Check format, structure, Zig policy, docs and test imports");
-        const ci = b.step("ci", "Run source checks, then the tests");
+        const lint = configure.claim(b, "lint", "Check format, structure, Zig policy, docs and test imports");
+        const ci = configure.claim(b, "ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);
-        _ = b.step("ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
-        _ = b.step("ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
-        _ = b.step("ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .ci = ci, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .profile_options = controls.profile_options };
+        const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
+        const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
+        const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
+        return .{ .lint = lint, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -167,38 +172,38 @@ const Steps = struct {
             break :fail std.Io.Duration.zero;
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
-        bench.add(b, pkg, config.tests, config.bench, steps.smoke);
+        const bench_build = bench.add(b, pkg, config.tests, config.bench, steps.smoke);
         if (config.fuzz_step) |step| fuzz.add(b, config.tests, step);
         hardened.add(b, config.tests, config.hardened, steps.profile_options);
-        objects.add(b, config.tests, steps.sdk);
+        objects.add(b, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
         if (config.portable_tests) portable.add(b, config.tests, executable);
         const plan = executable.run(b);
         plan.addArg("plan");
         plan.addPassthruArgs();
         plan.setCwd(b.path("."));
-        b.step("plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
+        configure.claim(b, "plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
         const facts = executable.run(b);
         facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
         configurationOptions(b, facts);
         facts.addPassthruArgs();
         facts.setCwd(b.path("."));
         facts.has_side_effects = true;
-        b.step("facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
+        configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));
-        b.step("cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
+        configure.claim(b, "cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
         const docs = executable.run(b);
         docs.addArgs(&.{ "docs", "--config", config.config, "--zig-exe", b.graph.zig_exe });
         docs.addPassthruArgs();
         docs.setCwd(b.path("."));
-        b.step("docs", "Render a configured documentation region").dependOn(&docs.step);
+        configure.claim(b, "docs", "Render a configured documentation region").dependOn(&docs.step);
         const deprecations = executable.run(b);
         deprecations.addArgs(&.{ "deprecations", "--std" });
         deprecations.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         deprecations.addPassthruArgs();
         deprecations.setCwd(b.path("."));
-        b.step("deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
+        configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
         steps.addLint(b, pkg, config, executable, gantry, gantry_zig);
     }
 
@@ -235,7 +240,7 @@ const Steps = struct {
         const structure = b.addRunArtifact(checker);
         structure.addArgs(&.{ "--config", config.config });
         structure.setCwd(b.path("."));
-        b.step("check-imports", "Check declared source structure").dependOn(&structure.step);
+        configure.claim(b, "check-imports", "Check declared source structure").dependOn(&structure.step);
         structure.addPassthruArgs();
         const lint_structure = b.addRunArtifact(checker);
         lint_structure.addArgs(&.{ "--config", config.config });

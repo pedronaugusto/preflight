@@ -61,7 +61,7 @@ const Watchdog = struct {
         // The global single-threaded Io never cancels a wait.
         if (!bound.expired(io, &watchdog.done, test_timeout.toIoDuration())) return;
         report("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
-            watchdog.name, (test_timeout.convert(.millisecond, u64, .down) catch unreachable).raw(), watchdog.phase.load(.acquire), testing.random_seed, // unreachable: dividing unsigned nanoseconds fits u64
+            watchdog.name, test_timeout.convert(.millisecond, u64, .down).raw(), watchdog.phase.load(.acquire), testing.random_seed,
         });
         std.process.exit(1);
     }

@@ -9,9 +9,8 @@ pub const Nanoseconds = aegis.units.Duration(.nanosecond, u64);
 /// Waits until `done` is nonzero or `limit` has passed on `io`'s awake
 /// clock, from when this is called. Returns whether the limit passed first.
 /// A wake that leaves `done` at zero waits on for what is left.
-// aegis-raw: design: std owns clock-tagged waits;
-// done is an atomic completion flag, with one publisher and one observer.
-// It protects no borrowed data, and cannot be replaced by a spin guard.
+// std owns clock-tagged waits; `done` is an atomic completion flag, with one publisher and
+// one observer. It protects no borrowed data, and cannot be replaced by a spin guard.
 pub fn expired(io: std.Io, done: *std.atomic.Value(u32), limit: std.Io.Duration) bool {
     const deadline: std.Io.Clock.Timestamp = .fromNow(io, .{ .raw = limit, .clock = .awake });
     while (done.load(.acquire) == 0) {

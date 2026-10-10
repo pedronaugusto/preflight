@@ -26,6 +26,10 @@
       {
         "id": "A004",
         "level": "gate"
+      },
+      {
+        "id": "Z026",
+        "level": "gate"
       }
     ]
   }

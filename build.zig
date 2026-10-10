@@ -94,11 +94,17 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(run);
         break :run run;
     } else null;
+    // The executable runs in ReleaseSafe with glint, which gantry's Zig frontend shares, so it takes
+    // gantry built the same way.
+    const gantry_safe_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch {
+        _ = ci.declareCiOptions(b, null);
+        return;
+    };
     const executable = b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .safe,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint_safe } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry_safe_dep.module("gantry") }, .{ .name = "gantry.zig", .module = gantry_safe_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint_safe } },
     }) });
     b.installArtifact(executable);
     if (repo_root == null) {

@@ -78,7 +78,7 @@ values keep clock and scale together. No guard, confined state or borrowed lock
 capability enters the public API. Raw-site comments state the permitted reason at
 the retained parser, generated-schema, one-owner naming and measured-loop sites.
 
-The package config declares glint's A004 at `gate` for the adopted scalar domains, across the sources, the tests, the benchmarks and the build script: the default selection reaches `bench`, `ci` and `build.zig`, which `sources` does not list because they are not shipped. A reasoned `glint-ignore` marks the one index/count comparison that is safe-type internals, and the sites that glint cannot resolve through a field of a struct are written so that they resolve.
+The package config declares glint's A004 and Z026 at `gate` (A004 for the adopted scalar domains), across the sources, the tests, the benchmarks and the build script: the default selection reaches `bench`, `ci` and `build.zig`, which `sources` does not list because they are not shipped. A reasoned `glint-ignore` marks the one index/count comparison that is safe-type internals, and the sites that glint cannot resolve through a field of a struct are written so that they resolve.
 
 The toolchain closure follows the `test` blocks of a test artifact's root module
 and not those of the modules it imports, as the compiler builds them. A

@@ -128,6 +128,11 @@ const Steps = struct {
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
         const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
+        // The checks run in ReleaseSafe, and glint is one module: the executable takes gantry's Zig
+        // frontend and glint built the same way, and the structure checker keeps its Debug build.
+        const checks_gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .safe, .zig = true }) catch return;
+        const checks_gantry = dependencyModule(checks_gantry_dep, "gantry") orelse return;
+        const checks_gantry_zig = dependencyModule(checks_gantry_dep, "gantry.zig") orelse return;
         const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return;
         const executable = b.addExecutable(.{
             .name = "preflight-checks",
@@ -135,7 +140,7 @@ const Steps = struct {
                 .root_source_file = pkg.path("src/main.zig"),
                 .target = host,
                 .optimize = .safe,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint_dep.module("glint") } },
+                .imports = &.{ .{ .name = "gantry", .module = checks_gantry }, .{ .name = "gantry.zig", .module = checks_gantry_zig }, .{ .name = "glint", .module = glint_dep.module("glint") } },
             }),
         });
         const timeout = config.test_timeout.duration() orelse fail: {

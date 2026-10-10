@@ -36,8 +36,8 @@ pub const Shard = struct {
     pub fn parse(text: []const u8) ParseError!Shard {
         if (text.len == 0) return all;
         const slash = std.mem.findScalar(u8, text, '/') orelse return error.InvalidShard;
-        // aegis-raw: safe-type-internals: the parser imports raw decimal values
-        // once, then constructs the checked shard identity and count.
+        // The parser imports raw decimal values once, then constructs the checked
+        // shard identity and count.
         const number = std.fmt.parseUnsigned(usize, text[0..slash], 10) catch return error.InvalidShard;
         const count = std.fmt.parseUnsigned(usize, text[slash + 1 ..], 10) catch return error.InvalidShard;
         if (number == 0 or number > count) return error.InvalidShard;
@@ -130,8 +130,8 @@ pub fn weigh(gpa: std.mem.Allocator, json: []const u8, names: []const []const u8
         known += weight.*;
         count += 1;
     }
-    // aegis-raw: no-danger: count is solely the number of recorded tests
-    // and cannot exceed names.len; floating-point seconds stay one domain.
+    // `count` is solely the number of recorded tests and cannot exceed names.len;
+    // floating-point seconds stay one domain.
     const mean = if (count == 0) 1 else known / @as(f64, @floatFromInt(count));
     for (weights) |*weight| if (weight.* < 0) {
         weight.* = mean;
@@ -149,9 +149,8 @@ pub fn assign(gpa: std.mem.Allocator, names: []const []const u8, weights: []cons
     if (names.len != weights.len) return error.InvalidWeights;
     _ = try Shard.init(shard.index, shard.count);
     _ = shard.count.mul(@sizeOf(f64)) catch return error.InvalidShard;
-    // aegis-raw: measured-boundary: a single shard
-    // index domain, a nonzero count with count*sizeof(f64) fitting usize, and
-    // equal name/weight lengths. Thus start+step < 2*count cannot overflow.
+    // One shard index domain, a nonzero count with count*sizeof(f64) fitting usize, and
+    // equal name/weight lengths: start+step < 2*count cannot overflow.
     const count = shard.count.raw();
     const order = try gpa.alloc(usize, weights.len);
     defer gpa.free(order);

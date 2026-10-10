@@ -143,7 +143,7 @@ const Loader = struct {
         entry.value_ptr.* = &.{};
         var scratch: std.heap.ArenaAllocator = .init(self.gpa);
         defer scratch.deinit();
-        const facts = glint.Token.scan(scratch.allocator(), bytes, null) catch |err| switch (err) {
+        const facts = glint.token.scan(scratch.allocator(), bytes, null) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return entry.value_ptr.*,
         };

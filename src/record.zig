@@ -27,9 +27,8 @@ pub const TestTimeout = union(enum) {
     pub const default_limit: std.Io.Duration = .fromSeconds(120);
 
     /// The bound, zero for none, or null for a missing reason or overflow.
-    /// aegis-raw: design: retain std's duration in the
-    /// build helper, checking the generated runner's u64 schema before export.
-    /// The published aegis build helper exports no scalar namespaces.
+    /// The build helper keeps std's duration and checks the generated runner's u64 schema
+    /// before export.
     pub fn duration(timeout: TestTimeout) ?std.Io.Duration {
         return switch (timeout) {
             .default => default_limit,
@@ -99,8 +98,8 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
             .imports = &.{.{ .name = "preflight_aegis", .module = safety }},
         });
         const runner = b.addOptions();
-        // aegis-raw: design: the generated options schema
-        // is raw u64, validated by TestTimeout.duration and wrapped by the runner.
+        // The generated options schema is raw u64, validated by TestTimeout.duration and
+        // wrapped by the runner.
         runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds())); // safe: validated export range
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         runner.addOption(?[]const u8, "timings", if (options.timing) timings(b, artifact, names) else null);
@@ -138,8 +137,8 @@ fn timings(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringH
     const stem = b.fmt("{s}-{s}-{s}", .{ artifact.name, @tagName(target.os.tag), @tagName(artifact.root_module.optimize.?) });
     // Two runs that share a name would truncate each other's records.
     var name = stem;
-    // aegis-raw: no-danger: one build owns this name suffix; it is not an ID
-    // or an externally supplied count and never meets another number domain.
+    // One build owns this name suffix; it is not an ID or an externally supplied count and
+    // never meets another number domain.
     var count: usize = 2;
     while ((names.getOrPut(name) catch @panic("OOM")).found_existing) : (count += 1) name = b.fmt("{s}-{d}", .{ stem, count });
     return b.fmt(".zig-cache/preflight-timings/{s}", .{name});

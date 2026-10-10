@@ -17,8 +17,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/triv" && cd "$RUNNER_TEMP/triv"
           printf 'const std = @import("std");\npub fn build(b: *std.Build) void {\n    _ = b.step("t", "t");\n}\n' > build.zig
           time zig build --list-steps > /dev/null
-          echo "zig at $(command -v zig)"; zig env | head -5
-          (cd "$ZIG_GLOBAL_CACHE_DIR" && find . -maxdepth 2 | sort | head -40; ls -la h | head; ls o/*/ | head -20)
+          echo "zig at $(command -v zig)"
+          (cd "$ZIG_GLOBAL_CACHE_DIR" && ls o | sort)
       - uses: actions/cache/save@v4
         with:
           path: |

@@ -16,7 +16,9 @@ Exceptions are glint's inline `glint-ignore` with a reason, one site each. The e
 
 ## Configured builds and target projection
 
-`addCi` consumes the caller's actual `std.Build` graph. Foreign target checks project configured artifacts to objects, including test, helper, benchmark and transitive native-source modules. Native `ci-link` and portable test-build steps retain the original artifacts and their SDK libraries/frameworks. Object compilation certifies compilation; only native linking and execution certify those operations. Benchmark modules include the selected ordinary graph and the separate ReleaseFast graph.
+`addCi` consumes the caller's actual `std.Build` graph. Foreign target checks project configured artifacts to objects, including test, helper, benchmark and transitive native-source modules. Native `ci-link` and portable test-build steps retain the original artifacts and their SDK libraries/frameworks. Object compilation certifies compilation; only native linking and execution certify those operations. Benchmark modules include the selected ordinary graph, which `ci-check` compiles in Debug, and the separate ReleaseFast graph, which `ci-check-bench` compiles: a benchmark's optimizing compile outweighs every other object of its target, so the fast tier leaves it to the merge tier.
+
+The checks are one binary per runner kind, built once per commit by `zig build toolchain` and passed to every job and to the build as `-Dci-checks`; a build without the option compiles them from source (`tool.zig`). One job per run owns the build, so the only compile of the checks in a run is the one a commit has not had yet.
 
 The `facts` adapter asks the installed Zig 0.17.0 compiler/build runner to configure through `zig build --listen=-`. Build-system handshake version 1 and configuration notifications differ from compiler messages. The serialized configuration is read while the child lives, then the supported exit message ends the session without requesting artifact execution. Both compiling and invoked compiler versions are exact gates; this native internal format is not a stable external API.
 

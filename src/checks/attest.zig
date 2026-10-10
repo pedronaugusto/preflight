@@ -5,13 +5,6 @@ const src = @import("source.zig");
 /// The tiers whose successful run, with its proof artifact, stands for a commit.
 const proof_tiers = [_][]const u8{ "merge", "release" };
 
-/// A successful run other than this one.
-fn passed(candidate: src.Value, current: []const u8) bool {
-    return std.mem.eql(u8, src.string(src.get(candidate, "conclusion"), ""), "success") and
-        src.get(candidate, "id") == .integer and
-        src.get(candidate, "id").integer != (std.fmt.parseInt(i64, current, 10) catch return false);
-}
-
 /// Whether `artifact` is a merge or release tier's proof for commit `sha`:
 /// `preflight-merge-<sha>` or `preflight-release-<sha>`.
 fn proves(artifact: []const u8, sha: []const u8) bool {
@@ -30,24 +23,20 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
     const current = env.get("GITHUB_RUN_ID") orelse return error.MissingRun;
     var client: std.http.Client = .{ .allocator = c.a, .io = c.io };
     defer client.deinit();
-    const prefix = try c.a.print("https://api.github.com/repos/{s}/actions", .{repo});
-    // PR metadata names the branch head; GITHUB_SHA and the proof name the
-    // tested merge commit. Search the proof rather than filtering head_sha.
-    var page: usize = 1;
-    while (true) : (page += 1) {
-        const runs = try get(c, &client, token, try c.a.print("{s}/workflows/ci.yml/runs?status=success&per_page=100&page={d}", .{ prefix, page }));
-        const candidates = src.items(src.get(runs, "workflow_runs"));
-        for (candidates) |candidate| {
-            if (!passed(candidate, current)) continue;
-            const artifacts = try get(c, &client, token, try c.a.print("{s}/runs/{d}/artifacts?per_page=100", .{ prefix, src.get(candidate, "id").integer }));
-            for (src.items(src.get(artifacts, "artifacts"))) |artifact| {
-                const name = src.string(src.get(artifact, "name"), "");
-                if (!proves(name, sha)) continue;
-                c.report("{s} passed for {s}: {s}\n", .{ name, sha, src.string(src.get(candidate, "html_url"), "") });
-                return;
-            }
+    // The proof is named for the commit a tier tested, in whichever workflow file
+    // the caller lives: one query per tier, by name.
+    for (proof_tiers) |tier| {
+        const name = try c.a.print("preflight-{s}-{s}", .{ tier, sha });
+        const found = try get(c, &client, token, try c.a.print("https://api.github.com/repos/{s}/actions/artifacts?name={s}&per_page=100", .{ repo, name }));
+        for (src.items(src.get(found, "artifacts"))) |artifact| {
+            if (src.get(artifact, "expired") == .bool and src.get(artifact, "expired").bool) continue;
+            const run_of = src.get(artifact, "workflow_run");
+            const id = src.get(run_of, "id");
+            if (id != .integer or id.integer == (std.fmt.parseInt(i64, current, 10) catch return error.MissingRun)) continue;
+            if (!proves(src.string(src.get(artifact, "name"), ""), sha)) continue;
+            c.report("{s} passed for {s}: run {d}\n", .{ name, sha, id.integer });
+            return;
         }
-        if (candidates.len < 100) break;
     }
     c.report("No successful merge or release tier recorded for exact commit {s}; dispatch the merge tier for this commit.\n", .{sha});
     return error.NoSuccessfulMergeGate;
@@ -66,17 +55,7 @@ fn get(c: src.Context, client: *std.http.Client, token: []const u8, url: []const
     return (try std.json.parseFromSlice(src.Value, c.a, output.written(), .{ .allocate = .alloc_always })).value;
 }
 
-test "main requires a merge or release proof of its exact commit from another successful run" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const value = (try std.json.parseFromSlice(src.Value, arena.allocator(),
-        \\{"id":123,"head_sha":"abc","conclusion":"success"}
-    , .{})).value;
-    try std.testing.expect(passed(value, "456"));
-    try std.testing.expect(!passed(value, "123"));
-    var failed = value;
-    try failed.object.put(arena.allocator(), "conclusion", .{ .string = "failure" });
-    try std.testing.expect(!passed(failed, "456"));
+test "main requires a merge or release proof named for its exact commit" {
     // The PR's branch head differs from the exact tested merge commit.
     try std.testing.expect(proves("preflight-merge-merge", "merge"));
     try std.testing.expect(proves("preflight-release-0f1e", "0f1e"));

@@ -1,0 +1,10 @@
+.{
+    .name = .zero,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.17.0",
+    .fingerprint = 0xabdef192ebc14a5a,
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+    .dependencies = .{
+        .preflight = .{ .path = "../..", .lazy = true },
+    },
+}

@@ -6,7 +6,21 @@ pub const hosts = [_][]const u8{ "ubuntu-latest", "macos-latest", "windows-lates
 const host_names = [_][]const u8{ "linux", "macos", "windows" };
 /// Named cases with weights gave way to per-test shards that the test runner
 /// balances by `ci/durations.json`.
-const obsolete = [_][]const u8{ "windows_shards", "fast_windows_shards", "shard_jobs", "fast_linux_shards", "fast_linux_jobs" };
+const obsolete = [_][]const u8{ "windows_shards", "fast_windows_shards", "shard_jobs", "fast_linux_shards", "fast_linux_jobs", "test_timeout" };
+/// A ThreadSanitizer run of a package's own step is a declared job (`jobs`), and preflight's own is `hardened`.
+const obsolete_sanitizer = [_][]const u8{ "sanitizer", "sanitizer_job_timeout" };
+
+/// What the last refused configuration got wrong, for the command to print beside the error: the
+/// planner is a library, and a test that expects the refusal must not see it logged as a failure.
+pub var problem: []const u8 = "";
+
+/// A job's time limit in minutes: `name` in the configuration, or 20. GitHub ends any job at 360.
+fn minutes(config: src.Value, name: []const u8) !usize {
+    const value = src.get(config, name);
+    if (value == .null) return 20;
+    if (value != .integer or value.integer < 1 or value.integer > 360) return error.InvalidJobTimeout;
+    return @intCast(value.integer);
+}
 
 pub const Job = struct {
     os: []const u8,
@@ -22,6 +36,25 @@ pub const Job = struct {
     operation: enum { execute, objects, link, replay } = .execute,
     /// The cross targets a compile job covers, by name, space-separated.
     targets: []const u8 = "",
+    /// Where a declared job builds, relative to the repository; empty is the package.
+    directory: []const u8 = "",
+    /// The step that sets up a declared job's external tools, when not the package's `setup_step`.
+    prepare: []const u8 = "",
+    /// A job of the package's own (`jobs`), which runs as declared: never split into a link and a replay.
+    declared: bool = false,
+};
+
+/// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
+/// cannot quietly change nothing.
+const workflow_options = [_][]const u8{
+    "land",               "attest",           "nightly",             "jobs",
+    "targets",            "build_args",       "shards",              "fast_shards",
+    "cross_jobs",         "cross_seconds",    "compile_once",        "portable_hosts",
+    "hardened",           "compile_step",     "setup_step",          "before_tests_step",
+    "windows_git_latest", "test_job_timeout", "windows_job_timeout", "source_job_timeout",
+    "cross_job_timeout",
+    // `ci/costs.json`, which the planner reads beside the configuration.
+     "measured",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -72,23 +105,113 @@ pub const Tier = enum {
 
 /// The sole planner also owns opt-in native safety execution jobs, which only the release tier runs.
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
-    const normal = try basePlan(a, config, tier);
+    var jobs: std.ArrayList(Job) = .empty;
+    try jobs.appendSlice(a, try basePlan(a, config, tier));
     const hardened = src.get(config, "hardened");
     if (hardened != .null and hardened != .bool) return error.InvalidHardenedProfile;
-    if (hardened == .null or !hardened.bool or tier != .release) return normal;
-    var jobs: std.ArrayList(Job) = .empty;
-    try jobs.appendSlice(a, normal);
-    for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }) |step| {
-        var job: Job = .{ .os = hosts[0], .name = step, .step = step, .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}), .setup = true };
-        job.cache_key = try key(a, job);
-        try jobs.append(a, job);
+    if (hardened == .bool and hardened.bool and tier == .release) {
+        for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }) |step| {
+            var job: Job = .{ .os = hosts[0], .name = step, .step = step, .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}), .setup = true };
+            job.cache_key = try key(a, job);
+            try jobs.append(a, job);
+        }
     }
+    try declaredJobs(a, config, tier, &jobs);
     return jobs.toOwnedSlice(a);
+}
+
+/// The package's own jobs, `jobs` in `ci/workflow.json`: each a build step run on the
+/// hosts and in the tiers it names (Linux, and the merge and release tiers, unless it
+/// says), with the gate's setup, caches and toolchain, so a landing waits for it like
+/// any other job of the gate.
+///
+///     {"name": "conformance", "step": "test", "directory": "conformance",
+///      "os": ["ubuntu-latest", "macos-latest"], "tiers": ["merge", "release"],
+///      "args": ["-Dsuite=full"], "setup": true, "timeout": 20}
+fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.ArrayList(Job)) !void {
+    const declared = src.get(config, "jobs");
+    if (declared == .null) return;
+    if (declared != .array) return error.InvalidDeclaredJob;
+    var names: std.ArrayList([]const u8) = .empty;
+    for (declared.array.items) |entry| {
+        if (entry != .object) return error.InvalidDeclaredJob;
+        for (entry.object.keys()) |key_name| {
+            for ([_][]const u8{ "name", "step", "os", "tiers", "args", "directory", "setup", "timeout" }) |known| {
+                if (std.mem.eql(u8, key_name, known)) break;
+            } else {
+                problem = key_name;
+                return error.InvalidDeclaredJob;
+            }
+        }
+        const name = try field(entry, "name", null);
+        const step = try field(entry, "step", null);
+        for (names.items) |known| if (std.mem.eql(u8, known, name)) return error.DuplicateDeclaredJob;
+        try names.append(a, name);
+        const directory = try field(entry, "directory", "");
+        if (directory.len != 0) try relativeDirectory(directory);
+        var wanted = false;
+        const tiers = src.get(entry, "tiers");
+        if (tiers == .null) wanted = tier != .fast else {
+            if (tiers != .array or tiers.array.items.len == 0) return error.InvalidDeclaredJob;
+            for (tiers.array.items) |item| {
+                const each = std.meta.stringToEnum(Tier, src.string(item, "")) orelse return error.InvalidDeclaredJob;
+                if (each == tier) wanted = true;
+            }
+        }
+        const setup = src.get(entry, "setup");
+        if (setup != .null and setup != .bool and setup != .string) return error.InvalidDeclaredJob;
+        const hosted = src.get(entry, "os");
+        const systems: []const src.Value = if (hosted == .null) &.{.{ .string = hosts[0] }} else if (hosted == .array and hosted.array.items.len != 0) hosted.array.items else return error.InvalidDeclaredJob;
+        for (systems) |system| {
+            const os = src.string(system, "");
+            for (hosts) |known| {
+                if (std.mem.eql(u8, known, os)) break;
+            } else return error.InvalidDeclaredJob;
+            if (!wanted) continue;
+            var job: Job = .{
+                .os = os,
+                .name = if (systems.len > 1) try a.print("{s} ({s})", .{ name, os }) else name,
+                .step = step,
+                .args = std.mem.trimStart(u8, try buildArgs(a, src.get(entry, "args")), " "),
+                .setup = setup != .bool or setup.bool,
+                .prepare = if (setup == .string) setup.string else "",
+                .job_timeout = try minutes(entry, "timeout"),
+                .directory = directory,
+                .declared = true,
+            };
+            job.cache_key = try key(a, job);
+            try jobs.append(a, job);
+        }
+    }
+}
+
+/// The string `field` of `entry`: `fallback` when absent, or an error when it is
+/// required (null fallback), empty, or holds a space or control byte.
+fn field(entry: src.Value, name: []const u8, fallback: ?[]const u8) ![]const u8 {
+    const value = src.get(entry, name);
+    if (value == .null) return fallback orelse error.InvalidDeclaredJob;
+    if (value != .string or value.string.len == 0) return error.InvalidDeclaredJob;
+    for (value.string) |byte| if (byte < 32 or byte == 127 or (byte == ' ' and !std.mem.eql(u8, name, "name"))) return error.InvalidDeclaredJob;
+    return value.string;
+}
+
+/// A directory below the repository root, written with `/`.
+fn relativeDirectory(path: []const u8) !void {
+    if (std.mem.eql(u8, path, ".")) return;
+    if (std.Io.Dir.path.isAbsolute(path) or std.mem.findScalar(u8, path, '\\') != null) return error.InvalidDeclaredJob;
+    var parts = std.mem.splitScalar(u8, path, '/');
+    while (parts.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..") or std.mem.eql(u8, part, ".git")) return error.InvalidDeclaredJob;
+    }
 }
 
 fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     try validate(a, config);
-    for (obsolete) |name| if (src.get(config, name) != .null) return error.ObsoleteShardConfig;
+    for (obsolete) |name| if (src.get(config, name) != .null and !std.mem.eql(u8, name, "test_timeout")) return error.ObsoleteShardConfig;
+    for (obsolete_sanitizer) |name| if (src.get(config, name) != .null) {
+        problem = name;
+        return error.ObsoleteSanitizer;
+    };
     // The watchdog bounds each test (`Config.test_timeout`).
     if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
     switch (tier) {
@@ -131,7 +254,7 @@ fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), 
             .args = try a.print("-Doptimize={t} -Dci-lint=false -Dci-timings=true{s}", .{ mode, try buildArgs(a, src.get(config, "build_args")) }),
             .shard = shard,
             .setup = true,
-            .job_timeout = src.number(src.get(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"), 20),
+            .job_timeout = try minutes(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"),
         });
     };
 }
@@ -151,7 +274,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         for (src.items(portable_hosts)) |host| if (std.mem.eql(u8, src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (tier == .fast or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
+        if (tier == .fast or job.declared or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
             try native.append(a, job);
             continue;
         }
@@ -202,7 +325,7 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
             .args = try a.print("-Doptimize=debug -Dci-lint=false{s}{s}", .{ if (timing or count > 1) " -Dci-timings=true" else "", try buildArgs(a, src.get(config, "build_args")) }),
             .shard = shard,
             .setup = true,
-            .job_timeout = src.number(src.get(config, "test_job_timeout"), 20),
+            .job_timeout = try minutes(config, "test_job_timeout"),
             .cache_key = try a.print("fast-linux-debug-{d}", .{i}),
         });
     }
@@ -219,7 +342,7 @@ fn lintJob(a: std.mem.Allocator, config: src.Value) !Job {
         .name = "source checks and documented snippets",
         .step = "lint",
         .args = std.mem.trimStart(u8, try buildArgs(a, src.get(config, "build_args")), " "),
-        .job_timeout = src.number(src.get(config, "source_job_timeout"), 20),
+        .job_timeout = try minutes(config, "source_job_timeout"),
         .cache_key = "lint",
     };
 }
@@ -317,7 +440,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
             .name = try a.print("Cross compile{s}{s}", .{ if (count > 1) " " else "", try shardName(a, group, count) }),
             .step = if (bench) "preflight-cross-bench" else "preflight-cross",
             .operation = .objects,
-            .job_timeout = src.number(src.get(config, "cross_job_timeout"), 20),
+            .job_timeout = try minutes(config, "cross_job_timeout"),
             .cache_key = try a.print("cross-{s}-{d}", .{ if (bench) "bench" else "objects", group }),
             .targets = names.items,
         });
@@ -344,19 +467,23 @@ fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
     const compile = src.string(src.get(config, "compile_step"), "check");
     try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=small" });
     try crossJobs(a, config, jobs, src.items(src.get(config, "targets")), true);
-    const sanitizer = src.get(config, "sanitizer");
-    if (sanitizer == .string) try jobs.append(a, .{
-        .os = hosts[0],
-        .name = "ThreadSanitizer (Linux)",
-        .step = sanitizer.string,
-        .args = "-Dthread-sanitizer -Doptimize=debug -Dci-lint=false",
-        .setup = true,
-        .job_timeout = src.number(src.get(config, "sanitizer_job_timeout"), 20),
-    });
 }
 
 fn validate(a: std.mem.Allocator, config: src.Value) !void {
     if (config != .object) return error.InvalidWorkflowConfig;
+    for (config.object.keys()) |name| {
+        for (workflow_options ++ obsolete ++ obsolete_sanitizer) |known| {
+            if (std.mem.eql(u8, name, known)) break;
+        } else {
+            problem = name;
+            return error.UnknownWorkflowOption;
+        }
+    }
+    for ([_][]const u8{ "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout" }) |name| _ = try minutes(config, name);
+    for ([_][]const u8{ "compile_step", "setup_step", "before_tests_step" }) |name| {
+        const value = src.get(config, name);
+        if (value != .null and (value != .string or value.string.len == 0 or std.mem.findAny(u8, value.string, " \t\r\n") != null)) return error.InvalidWorkflowStep;
+    }
     const targets = src.get(config, "targets");
     if (targets != .null and targets != .array) return error.InvalidCrossTargets;
     for (src.items(targets)) |target| _ = try crossOptions(a, config, target);
@@ -568,7 +695,7 @@ test "portable matrix links macOS and Windows binaries on their SDK runners with
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"unit\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
     try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
@@ -586,7 +713,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":3,\"macos\":2},\"sanitizer\":\"test\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":3,\"macos\":2}}", .{})).value;
     const jobs = try plan(a, config, .release);
     var windows: usize = 0;
     var macos: usize = 0;
@@ -630,7 +757,7 @@ test "a workflow-level test timeout is refused; the watchdog bounds each test" {
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_timeout\":\"--test-timeout 120s\"}", .{})).value;
     try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .release));
     try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .fast));
-    for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release)) |job|
+    for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, .release)) |job|
         try std.testing.expect(std.mem.find(u8, job.args, "test-timeout") == null);
 }
 
@@ -676,7 +803,7 @@ test "the merge tier is four jobs: the source checks and the Debug suite on Linu
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\",\"hardened\":true}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"targets\":[\"aarch64-linux-gnu\"],\"hardened\":true}", .{})).value;
     const jobs = try plan(a, config, .merge);
     try std.testing.expectEqual(@as(usize, 4), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
@@ -713,17 +840,17 @@ test "the merge tier links macOS and Windows Debug once on native runners and ru
     for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=debug") != null);
 }
 
-test "the release tier is the full matrix: every mode on every host, ReleaseSmall, cross targets, TSan and the source checks" {
+test "the release tier is the full matrix: every mode on every host, ReleaseSmall, cross targets and the source checks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"],\"sanitizer\":\"test\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const expected = [_][]const u8{
         "test (ubuntu-latest, Debug)",        "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
         "test (macos-latest, Debug)",         "test (macos-latest, ReleaseSafe)",      "test (windows-latest, Debug)",
         "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
-        "Cross compile",                      "ThreadSanitizer (Linux)",
+        "Cross compile",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {
@@ -810,4 +937,75 @@ test "hardened planner schedules native execution with no portable sanitizer rep
         try std.testing.expectEqualStrings("", job.artifact);
     };
     try std.testing.expectEqual(@as(usize, 3), executed);
+}
+
+test "a package's own jobs join the tiers they name, on the hosts they name, with the gate's setup" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"build_args":["-Dsimd=false"],"jobs":[
+        \\ {"name":"conformance","step":"ci","directory":"conformance","os":["ubuntu-latest","macos-latest"]},
+        \\ {"name":"contracts (values)","step":"contracts-values","tiers":["fast","merge"],"args":["-Dgroup=values"],"setup":false,"timeout":40},
+        \\ {"name":"reports","step":"check-reports","setup":"reports-setup","tiers":["release"]}]}
+    , .{})).value;
+    const fast = try plan(a, config, .fast);
+    const merge = try plan(a, config, .merge);
+    const release = try plan(a, config, .release);
+    var names: std.ArrayList([]const u8) = .empty;
+    for (fast) |job| if (job.directory.len != 0 or std.mem.startsWith(u8, job.step, "contracts") or std.mem.startsWith(u8, job.step, "check-reports")) try names.append(a, job.name);
+    try std.testing.expectEqual(@as(usize, 1), names.items.len);
+    try std.testing.expectEqualStrings("contracts (values)", names.items[0]);
+    var conformance: usize = 0;
+    for (merge) |job| {
+        if (std.mem.eql(u8, job.directory, "conformance")) {
+            conformance += 1;
+            try std.testing.expectEqualStrings("ci", job.step);
+            try std.testing.expect(job.setup);
+            // The package's build options are its own builds'; a declared job takes only its own.
+            try std.testing.expectEqualStrings("", job.args);
+        }
+        if (std.mem.eql(u8, job.step, "contracts-values")) {
+            try std.testing.expect(!job.setup);
+            try std.testing.expectEqual(@as(usize, 40), job.job_timeout);
+            try std.testing.expectEqualStrings("-Dgroup=values", job.args);
+        }
+        try std.testing.expect(!std.mem.eql(u8, job.step, "check-reports"));
+    }
+    try std.testing.expectEqual(@as(usize, 2), conformance);
+    for (merge) |job| if (std.mem.eql(u8, job.directory, "conformance") and std.mem.eql(u8, job.os, hosts[1])) try std.testing.expectEqualStrings("conformance (macos-latest)", job.name);
+    var reports = false;
+    for (release) |job| if (std.mem.eql(u8, job.step, "check-reports")) {
+        reports = true;
+        try std.testing.expectEqualStrings("reports-setup", job.prepare);
+    };
+    try std.testing.expect(reports);
+    // Declared jobs run where the gate does: natively, never replayed from a link.
+    var linked = config;
+    try linked.object.put(a, "compile_once", .{ .bool = true });
+    const tiers = try split(a, linked, try plan(a, linked, .merge), .merge);
+    for (tiers.run) |job| try std.testing.expect(!job.declared);
+    for (tiers.compile) |job| try std.testing.expect(!job.declared);
+    for (merge, 0..) |x, i| for (merge[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
+    for ([_][]const u8{
+        "{\"jobs\":{}}",
+        "{\"jobs\":[{\"step\":\"test\"}]}",
+        "{\"jobs\":[{\"name\":\"x\"}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"a b\"}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"os\":[\"plan9\"]}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"tiers\":[\"nightly\"]}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"directory\":\"../up\"}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"timeout\":0}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"needs\":\"gate\"}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\"},{\"name\":\"x\",\"step\":\"u\"}]}",
+    }) |bad| try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .merge)));
+}
+
+test "an option the planner does not know, or a malformed timeout or step, is refused rather than ignored" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{ "{\"lnad\":true}", "{\"package\":\"x\"}", "{\"test_job_timeout\":\"30\"}", "{\"test_job_timeout\":400}", "{\"compile_step\":3}", "{\"setup_step\":\"a b\"}" }) |bad|
+        try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .fast)));
+    try std.testing.expectError(error.ObsoleteSanitizer, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release));
 }

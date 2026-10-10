@@ -16,9 +16,11 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "facts")) {
         try exportFacts(c, args);
     } else if (std.mem.eql(u8, command, "plan")) {
+        errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
+        errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
         try planOptions(args[2..]);
         const config_path = option(args, "--config") orelse "ci/workflow.json";
-        var config = try c.json(config_path);
+        var config = try c.options(config_path);
         // What the last merge or release run measured, kept beside the configuration.
         const costs_path = try std.Io.Dir.path.join(a, &.{ std.Io.Dir.path.dirname(config_path) orelse ".", "costs.json" });
         if (config == .object and c.exists(costs_path)) try config.object.put(a, "measured", try c.json(costs_path));
@@ -27,8 +29,8 @@ pub fn main(init: std.process.Init) !void {
         if (option(args, "--workflow")) |path| {
             const own = hasFlag(args, "--self");
             const pin = if (own) "" else try checks.workflow.pinned(c, option(args, "--manifest") orelse "build.zig.zon");
-            const existing = if (c.exists(path)) try c.read(path) else "";
-            const text = try checks.workflow.renderKeeping(a, config, pin, option(args, "--working-directory") orelse ".", own, existing);
+            const text = try checks.workflow.render(a, config, pin, option(args, "--working-directory") orelse ".", own, path);
+            if (c.exists(path)) try checks.workflow.keepsEveryJob(try c.read(path), text);
             try checks.workflow.write(c, path, text);
             return;
         }
@@ -55,10 +57,8 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "setup")) {
         try setup(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "prepare")) {
-        const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
-        const step = src.get(config, "setup_step");
         // The hosted workflow owns the attempt deadlines and retries.
-        if (step == .string) try checks.command.execute(c, &.{ "zig", "build", step.string });
+        if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, &.{ "zig", "build", step });
     } else if (std.mem.eql(u8, command, "profile")) {
         const durations = option(args, "--durations") orelse "ci/durations.json";
         const previous = if (c.exists(durations)) try c.json(durations) else .null;
@@ -78,13 +78,13 @@ pub fn main(init: std.process.Init) !void {
         const only_docs = std.mem.eql(u8, init.environ_map.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c, environment(init.environ_map, "PREFLIGHT_BASE"));
         if (init.environ_map.get("GITHUB_OUTPUT")) |path| try append(c, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
         if (only_docs) {
-            const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+            const config = try c.options(option(args, "--config") orelse "ci/preflight.json");
             try checks.docs.check(&c, config);
         }
     } else if (std.mem.eql(u8, command, "attest")) {
         try checks.attest.run(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "docs")) {
-        const config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+        const config = try c.options(option(args, "--config") orelse "ci/preflight.json");
         if (option(args, "--zig-exe")) |zig| c.zig = zig;
         const label = try a.print("zig build docs -- {s}", .{checks.docs.region(args[2..])});
         const generator = src.get(src.get(config, "docs"), label);
@@ -113,7 +113,7 @@ pub fn main(init: std.process.Init) !void {
 /// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.
 fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8) !void {
     const a = c.a;
-    var config = try c.json(option(args, "--config") orelse "ci/preflight.json");
+    var config = try c.options(option(args, "--config") orelse "ci/preflight.json");
     if (option(args, "--zig-exe")) |zig| c.zig = zig;
     var build_options: std.ArrayList([]const u8) = .empty;
     for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--build-option")) {
@@ -132,6 +132,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
     try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, try checks.manifest.name(c), src.get(config, "revision_exceptions"));
+    try checks.manifest.nested(c);
 }
 
 fn exportFacts(c: src.Context, args: []const []const u8) !void {
@@ -282,20 +283,28 @@ fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
     }
 }
 
+/// The step that installs a job's external tools: the job's own (`setup` of a declared job,
+/// passed as `PREFLIGHT_SETUP_STEP`), or the package's `setup_step`, or none.
+fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
+    if (env.get("PREFLIGHT_SETUP_STEP")) |step| if (step.len != 0) return step;
+    const config = try c.options("ci/workflow.json");
+    const step = src.get(config, "setup_step");
+    return if (step == .string) step.string else null;
+}
+
 fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
     const step = env.get("STEP") orelse "ci";
     if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
-    const config = if (c.exists("ci/workflow.json")) try c.json("ci/workflow.json") else .null;
+    const config = try c.options("ci/workflow.json");
     const log = try checks.phases.Log.init(c.a, env);
     if (std.mem.startsWith(u8, step, "preflight-cross")) return crossCompile(c, env, config, std.mem.eql(u8, step, "preflight-cross-bench"));
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
-        const setup_step = src.get(config, "setup_step");
-        if (setup_step == .string and !std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
+        if (try setupStep(c, env)) |setup_step| if (!std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
             const timer = checks.phases.Timer.begin(c, "install the external tools");
             defer timer.end(c, log);
-            try checks.command.retry(c, &.{ "zig", "build", setup_step.string });
-        }
+            try checks.command.retry(c, &.{ "zig", "build", setup_step });
+        };
         const before = src.get(config, "before_tests_step");
         if (before == .string) {
             const timer = checks.phases.Timer.begin(c, "before the tests");

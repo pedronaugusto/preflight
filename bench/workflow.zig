@@ -11,7 +11,7 @@ const Context = struct {
     fn generate(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
             // The renderer's many configuration errors all mean this fixed input broke.
-            const caller = checks.workflow.render(c.scratch.allocator(), c.config, "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d", ".", false) catch |err| switch (err) {
+            const caller = checks.workflow.render(c.scratch.allocator(), c.config, "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d", ".", false, "ci.yml") catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.CallerRejected,
             };

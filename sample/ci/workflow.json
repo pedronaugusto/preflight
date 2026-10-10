@@ -1,1 +1,14 @@
-{"land": true, "attest": true, "windows_git_latest": true, "compile_once": true, "cross_jobs": 1, "shards": {"windows": 2}, "targets": ["x86_64-linux-gnu", "aarch64-linux-gnu", "x86_64-linux-musl", "x86_64-windows-gnu", "aarch64-windows-gnu", "x86_64-macos", "aarch64-macos"], "hardened": true}
+{
+  "land": true,
+  "attest": true,
+  "windows_git_latest": true,
+  "compile_once": true,
+  "cross_jobs": 1,
+  "shards": {"windows": 2},
+  "targets": ["x86_64-linux-gnu", "aarch64-linux-gnu", "x86_64-linux-musl", "x86_64-windows-gnu", "aarch64-windows-gnu", "x86_64-macos", "aarch64-macos"],
+  "hardened": true,
+  "jobs": [
+    {"name": "preflight's own suite", "step": "verify", "directory": ".", "args": ["-Dci-bench-smoke=false"], "tiers": ["fast", "merge", "release"], "setup": false},
+    {"name": "a project with no configuration", "step": "ci", "directory": "sample/zero", "os": ["ubuntu-latest", "macos-latest", "windows-latest"]}
+  ]
+}

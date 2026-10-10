@@ -43,7 +43,11 @@ pub fn main(init: std.process.Init) !void {
             config_path = args[index];
         } else return error.UnknownArgument;
     }
-    const text = try std.Io.Dir.cwd().readFileAlloc(init.io, config_path, a, .limited(64 * 1024 * 1024));
+    // Every option has a default: a package needs no file to start.
+    const text = std.Io.Dir.cwd().readFileAlloc(init.io, config_path, a, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => "{}",
+        else => return err,
+    };
     const config = try std.json.parseFromSliceLeaky(source.Value, a, text, .{});
     const d: structure.Declared = .{
         .layers = declared.layers,

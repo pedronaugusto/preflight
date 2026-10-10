@@ -40,6 +40,13 @@ pub const Context = struct {
         return c.directory().readFileAlloc(c.io, path, c.a, .limited(64 * 1024 * 1024));
     }
 
+    /// The configuration at `path`, or an empty one when the file does not exist:
+    /// every option has a default, so a package needs no file to start.
+    pub fn options(c: Context, path: []const u8) !Value {
+        if (!c.exists(path)) return .{ .object = .empty };
+        return c.json(path);
+    }
+
     pub fn json(c: Context, path: []const u8) !Value {
         return (try std.json.parseFromSlice(Value, c.a, try c.read(path), .{ .allocate = .alloc_always })).value;
     }

@@ -138,6 +138,10 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
     const when = try triggers(a, config);
     const lands = std.mem.eql(u8, try boolean(config, "land"), "true");
+    const releases = std.mem.eql(u8, try boolean(config, "release"), "true");
+    // The tag is made by the landing job, after it moves main.
+    if (releases and !lands) return error.ReleaseWithoutLand;
+    const release_inputs = if (releases) try a.print("\n        with:\n          release: true\n          directory: {s}", .{try std.json.Stringify.valueAlloc(a, directory, .{})}) else "";
     // Only the job that lands writes, and only to move main; it waits for the whole gate.
     const land_input =
         \\      land:
@@ -155,9 +159,9 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         \\    permissions:
         \\      contents: write
         \\    steps:
-        \\{s}
+        \\{s}{s}
         \\
-    , .{if (own) "      - uses: actions/checkout@v4\n      - uses: ./.github/actions/land" else try a.print("      - uses: pedronaugusto/preflight/.github/actions/land@{s}", .{pin})});
+    , .{ if (own) "      - uses: actions/checkout@v4\n      - uses: ./.github/actions/land" else try a.print("      - uses: pedronaugusto/preflight/.github/actions/land@{s}", .{pin}), release_inputs });
     const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@PUSH@", "@SCHEDULE@", "@NIGHTLY@", "@LANDINPUT@", "@LAND@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
     const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), when.push, when.schedule, when.nightly_tier, if (lands) land_input else "", if (lands) land_job else "", matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
     var text: std.Io.Writer.Allocating = .init(a);
@@ -368,6 +372,20 @@ test "a project with nothing set gets pull requests, dispatch and a nightly rele
     const off = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"nightly\":false}", .{})).value, pin, ".", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, off, "schedule:") == null);
     for ([_][]const u8{ "{\"nightly\":{\"cron\":\"daily\"}}", "{\"nightly\":{\"tier\":\"all\"}}", "{\"nightly\":{\"when\":1}}", "{\"nightly\":3}", "{\"land\":\"yes\"}" }) |text| {
+        try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml")));
+    }
+}
+
+test "release asks the landing job to tag, and needs a landing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
+    const released = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"release\":true}", .{})).value, pin, "pkg", false, "ci.yml");
+    try std.testing.expect(std.mem.find(u8, released, "actions/land@" ++ pin ++ "\n        with:\n          release: true\n          directory: \"pkg\"\n") != null);
+    const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true}", .{})).value, pin, ".", false, "ci.yml");
+    try std.testing.expect(std.mem.find(u8, plain, "release: true") == null);
+    for ([_][]const u8{ "{\"release\":true}", "{\"land\":true,\"release\":\"yes\"}" }) |text| {
         try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml")));
     }
 }

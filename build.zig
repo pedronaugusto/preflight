@@ -166,7 +166,7 @@ fn addToolchain(b: *std.Build) bool {
 
 /// The steps that run one of the installed command's subcommands in `root`.
 fn addCommands(b: *std.Build, executable: *std.Build.Step.Compile, root: []const u8) void {
-    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip" }) |name| {
+    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "release" }) |name| {
         if (b.top_level_steps.contains(name)) continue;
         const command = b.addRunArtifact(executable);
         command.addArg(name);

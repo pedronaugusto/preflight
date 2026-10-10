@@ -49,6 +49,8 @@ pub fn main(init: std.process.Init) !void {
                 if (tiers.compile.len > 0) "true" else "false",
             }));
         } else try stdout(c, value);
+    } else if (std.mem.eql(u8, command, "release")) {
+        try releaseCommand(&c, args);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
     } else if (std.mem.eql(u8, command, "executable")) {
@@ -77,13 +79,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
-        // A merge or release candidate keeps the whole gate, docs-only or not.
-        const only_docs = std.mem.eql(u8, init.environ_map.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c, environment(init.environ_map, "PREFLIGHT_BASE"));
-        if (init.environ_map.get("GITHUB_OUTPUT")) |path| try append(c, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
-        if (only_docs) {
-            const config = try c.options(option(args, "--config") orelse "ci/preflight.json");
-            try checks.docs.check(&c, config);
-        }
+        try skipCommand(&c, init.environ_map, args);
     } else if (std.mem.eql(u8, command, "attest")) {
         try checks.attest.run(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "docs")) {
@@ -123,6 +119,37 @@ pub fn main(init: std.process.Init) !void {
         try outcome;
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
+}
+
+/// `skip`: whether the change is documentation alone, which a fast run does not test.
+fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: []const []const u8) !void {
+    // A merge or release candidate keeps the whole gate, docs-only or not.
+    const only_docs = std.mem.eql(u8, env.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c.*, environment(env, "PREFLIGHT_BASE"));
+    if (env.get("GITHUB_OUTPUT")) |path| try append(c.*, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
+    if (only_docs) {
+        const config = try c.options(option(args, "--config") orelse "ci/preflight.json");
+        try checks.docs.check(c, config);
+    }
+}
+
+/// `release`: the version the commit about to be tested carries, written to `build.zig.zon` and `CHANGELOG.md`.
+fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
+    var index: usize = 2;
+    while (index < args.len) : (index += 2) {
+        if (!std.mem.eql(u8, args[index], "--date")) return error.UnknownReleaseOption;
+        if (index + 1 == args.len) return error.MissingReleaseOptionValue;
+    }
+    const date = option(args, "--date") orelse try checks.release.today(c.a, c.io);
+    const outcome = checks.release.run(c, date) catch |err| switch (err) {
+        // Each of these named its fix.
+        error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists => return error.CheckFailed,
+        else => return err,
+    };
+    switch (outcome) {
+        .unchanged => |tag| try stdout(c.*, try c.a.print("no release: nothing the package ships changed since {s}\n", .{tag})),
+        .prepared => |version| try stdout(c.*, try c.a.print("{f} is released in build.zig.zon and CHANGELOG.md and waits for its tag\n", .{version})),
+        .released => |made| try stdout(c.*, try c.a.print("released {f} -> {f}{s}\n", .{ made.from, made.to, if (made.breaking) " (breaking)" else "" })),
+    }
 }
 
 /// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.

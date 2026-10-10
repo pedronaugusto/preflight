@@ -47,12 +47,12 @@ pub const Job = struct {
 /// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
 /// cannot quietly change nothing.
 const workflow_options = [_][]const u8{
-    "land",               "attest",           "nightly",             "jobs",
-    "targets",            "build_args",       "shards",              "fast_shards",
-    "cross_jobs",         "cross_seconds",    "compile_once",        "portable_hosts",
-    "hardened",           "compile_step",     "setup_step",          "before_tests_step",
-    "windows_git_latest", "test_job_timeout", "windows_job_timeout", "source_job_timeout",
-    "cross_job_timeout",
+    "land",               "attest",             "nightly",          "jobs",
+    "release",            "targets",            "build_args",       "shards",
+    "fast_shards",        "cross_jobs",         "cross_seconds",    "compile_once",
+    "portable_hosts",     "hardened",           "compile_step",     "setup_step",
+    "before_tests_step",  "windows_git_latest", "test_job_timeout", "windows_job_timeout",
+    "source_job_timeout", "cross_job_timeout",
     // `ci/costs.json`, which the planner reads beside the configuration.
      "measured",
 };
@@ -495,7 +495,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
     for (host_names) |host| _ = try shardCount(src.get(shards, host));
-    for ([_][]const u8{ "compile_once", "windows_git_latest", "land", "attest" }) |name| {
+    for ([_][]const u8{ "compile_once", "windows_git_latest", "land", "attest", "release" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
     }

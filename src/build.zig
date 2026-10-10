@@ -195,6 +195,12 @@ const Steps = struct {
         facts.setCwd(b.path("."));
         facts.has_side_effects = true;
         configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
+        const release = executable.run(b);
+        release.addArg("release");
+        release.addPassthruArgs();
+        release.setCwd(b.path("."));
+        release.has_side_effects = true;
+        configure.claim(b, "release", "Give a changed package its next version in build.zig.zon and CHANGELOG.md, or say it needs none").dependOn(&release.step);
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(b.path("."));

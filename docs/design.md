@@ -77,6 +77,21 @@ A nested manifest (a fixture's, a conformance build's) pins each package the roo
 exactly as the root does; the check names the drift. A fixture generated at build time from the
 root's dependency, as `addConsumerCheck` makes one, cannot drift at all.
 
+## Versions on landing
+
+A package's version is decided by what its changelog says changed, and made on the commit the gate
+tests, so the landed commit, the manifest's version and the tag are one. `preflight release` reads
+the last `v*` tag, asks git whether anything under the manifest's `.paths` differs from it (the
+files a consumer fetches, so a benchmark or a CI file does not release), and reads the headings of
+`## [Unreleased]`: an entry under `### Breaking` bumps the minor below 1.0 and the major from it, any
+other entry the patch. It does not guess a bump from the diff: a change with nothing written is an
+error that names the fix, because a changelog that can be skipped is not the record of what
+changed. The command writes `build.zig.zon` and `CHANGELOG.md` and leaves the commit to the landing
+script, since only the script knows which branch it is on. The tag is made by the caller's `land` job,
+which alone writes, after the fast-forward, when the manifest's version has none; an existing tag is
+left where it is. A release made and waiting for its tag is recognised and not made twice. The
+choice is opt-in (`release` in `ci/workflow.json`) and general: nothing in it knows a family.
+
 ## Generated caller
 
 The caller is generated whole from `ci/workflow.json`: the gate call with every tier's matrices,

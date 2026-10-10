@@ -14,6 +14,7 @@ pub const profile = @import("checks/profile.zig");
 pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 pub const manifest = @import("checks/manifest.zig");
+pub const release = @import("checks/release.zig");
 pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
 
@@ -43,6 +44,7 @@ test {
     _ = profile;
     _ = attest;
     _ = manifest;
+    _ = release;
     _ = command;
     _ = paths;
     _ = phases;

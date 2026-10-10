@@ -39,7 +39,7 @@ project, and preflight's own gate runs it on every host.
 
 `addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
-`check-imports`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
+`check-imports`, `release`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
@@ -357,6 +357,17 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   alone may write, and only to move main; without `land` nothing in the caller asks for more than
   read. The token's push starts no run, so a landing is tested once. Dispatch with
   `-f land=false` to test without landing.
+- `release` (default `false`, needs `land`): versions on landing. `zig build release` (the step
+  `addCi` adds) looks at the commit about to be tested. A package that changed since its last `v*`
+  tag, meaning any file under the manifest's `.paths`, gets its next version: a `### Breaking`
+  entry under `## [Unreleased]` in `CHANGELOG.md` bumps the minor below 1.0 and the major from
+  1.0, anything else the patch. The command writes the version into `build.zig.zon` and turns
+  `[Unreleased]` into `## [X.Y.Z] - date` under a fresh empty one, with the link references
+  following. A package that did not change gets no release and the command says so; one that
+  changed with nothing under `[Unreleased]` fails naming the fix; a version whose tag exists
+  fails, since a tag is never moved. The landing script commits the result before the gate tests
+  it. The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
+  manifest's version has no tag yet, with the same token.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
   merge or release run left for its exact SHA, and fails without one. For repositories that push
   to main by hand.

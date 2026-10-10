@@ -6,23 +6,23 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#104b1c07ebc698ec86cb65ca0befa0a63c266e8a",
-            .hash = "aegis-0.0.0-rsxouifgBgBOnC8-wtmFrZSIUjR9aEYPYmZD1G-hASAz",
+            .url = "git+https://github.com/pedronaugusto/aegis#28e8df5b3fde1fca2d5b61f6ab110c4acac2f688",
+            .hash = "aegis-0.0.0-rsxougITBwB_VYWvOCMfzQ4ra79s9U5QTAiuKH6ZWOl5",
             .lazy = true,
         },
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint#7fc902dd8e19238ce6a9303fdbc2e6fc099769f3",
-            .hash = "glint-0.1.0-3jcpoUFZBgDePb4q5mboiPFXl4HhbuF7lNABYfBKnjg7",
+            .url = "git+https://github.com/pedronaugusto/glint#fb28f6dfcba36fc6edb21ea1591e5d7c1bffaa88",
+            .hash = "glint-0.1.0-3jcpoTNvBgBRF7ZXRxot751NdsILX21h_IJP-4ohOBSN",
             .lazy = true,
         },
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry#9cf62da1f4c7d78d98b7f7571eff6f48bb004ca1",
-            .hash = "gantry-0.1.0-1iNrkZnYCwDmIaja4Gr78ltNzCF4Kt1zcSsqC1RlIMkF",
+            .url = "git+https://github.com/pedronaugusto/gantry#b3fe2c6ceb40bb1b2d787e04d84f99b6136e15ee",
+            .hash = "gantry-0.1.0-1iNrkZnYCwBJpfjm76-vfQu3u1NvKkKDhAjVn8XtRPvO",
             .lazy = true,
         },
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown#0cd282ea47b096faaa138060f76e6bf416335d50",
-            .hash = "shakedown-0.1.0-BR8U46G8FQAobIapWxcT2n2m6_azllq_J6xcvbNXpqnP",
+            .url = "git+https://github.com/pedronaugusto/shakedown#9109af53a261bf10f047bdef7e6e04396d30a1cd",
+            .hash = "shakedown-0.1.0-BR8U4-C_FQAbsCcYY10dTaGMmi0oqCk3vTYx7iSYqYpU",
             .lazy = true,
         },
     },

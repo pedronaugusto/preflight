@@ -29,8 +29,9 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
     return pin;
 }
 
-/// The jobs the generator writes; any other job of a caller is the package's own.
-const generated_jobs = [_][]const u8{ "gate", "checks", "land" };
+/// The jobs the generator writes, and `skip`, which earlier generators wrote and nothing runs now; any other job
+/// of a caller is the package's own.
+const generated_jobs = [_][]const u8{ "gate", "checks", "land", "skip" };
 
 /// The caller `render` writes, then the jobs `existing` (the caller it replaces) holds
 /// beside the generated ones, verbatim: a package's own extra jobs survive regeneration.
@@ -339,6 +340,8 @@ test "a package's own jobs survive regeneration, and the generated ones are not 
         \\    runs-on: ubuntu-latest
         \\
     });
+    // The `skip` job of an earlier generator goes with the rest of what it wrote.
+    try std.testing.expectEqualStrings(base, try renderKeeping(a, config, pin, ".", false, try std.mem.concat(a, u8, &.{ base, "  skip:\n    uses: ./skip.yml\n    with:\n      tier: merge\n" })));
     const regenerated = try renderKeeping(a, config, pin, ".", false, existing);
     try std.testing.expectEqualStrings(existing, regenerated);
     // Again, from the regenerated text: the same bytes.

@@ -4,9 +4,11 @@
 //! - `gh workflow run <file> --ref <branch> ...` starts a run of the branch's commit on
 //!   origin, finished at once with `FAKE_GH_OUTCOME` (`success` or `failure`). A
 //!   successful run does what the caller's land job does: it fast-forwards origin's main
-//!   to the commit and tags it `v<.version>` when that tag does not exist.
+//!   to the commit and tags it `v<.version>` when that tag does not exist. Each dispatch
+//!   adds a line to `<FAKE_GH_STATE>/land-refs`: the `land/` branches origin holds then.
 //! - `gh run list --branch <branch>` and `gh run view <id>` answer from the runs started.
-//! - `tidy` replaces `FAKE_BAY_FROM` with `FAKE_BAY_TO` in `build.zig.zon`, as a re-pin.
+//! - `tidy` replaces each of `FAKE_BAY_FROM` with the one of `FAKE_BAY_TO` in the same place
+//!   (both separated by spaces) in `build.zig.zon`, as re-pins.
 const std = @import("std");
 
 const Job = struct { name: []const u8, conclusion: []const u8 };
@@ -63,9 +65,22 @@ const Fake = struct {
         return true;
     }
 
+    /// Adds the `land/` branches origin holds to `land-refs`, one line per dispatch.
+    fn landRefs(f: Fake) !void {
+        var names: std.ArrayList([]const u8) = .empty;
+        var lines = std.mem.tokenizeScalar(u8, try f.must(&.{ "ls-remote", "--heads", "origin", "refs/heads/land/*" }), '\n');
+        while (lines.next()) |line| try names.append(f.a, line[(std.mem.find(u8, line, "refs/heads/") orelse continue) + "refs/heads/".len ..]);
+        const before = f.state.readFileAlloc(f.io, "land-refs", f.a, .limited(1 << 20)) catch |err| switch (err) {
+            error.FileNotFound => "",
+            else => return err,
+        };
+        try f.state.writeFile(f.io, .{ .sub_path = "land-refs", .data = try f.a.print("{s}{s}\n", .{ before, try std.mem.join(f.a, " ", names.items) }) });
+    }
+
     fn dispatch(f: Fake, branch: []const u8) !void {
         const listed = try f.must(&.{ "ls-remote", "origin", try f.a.print("refs/heads/{s}", .{branch}) });
         const sha = listed[0 .. std.mem.findAny(u8, listed, " \t") orelse return error.NoSuchBranch];
+        try f.landRefs();
         const earlier = try f.runs();
         const id: i64 = @intCast(earlier.len + 1); // a count of runs, far below i64's range
         const green = std.mem.eql(u8, f.env.get("FAKE_GH_OUTCOME") orelse "success", "success") and try f.land(sha);
@@ -76,10 +91,11 @@ const Fake = struct {
     }
 
     fn tidy(f: Fake) !void {
-        const from = f.env.get("FAKE_BAY_FROM") orelse return;
-        const to = f.env.get("FAKE_BAY_TO") orelse return;
-        const text = try std.Io.Dir.cwd().readFileAlloc(f.io, "build.zig.zon", f.a, .limited(1 << 20));
-        try std.Io.Dir.cwd().writeFile(f.io, .{ .sub_path = "build.zig.zon", .data = try std.mem.replaceOwned(u8, f.a, text, from, to) });
+        var froms = std.mem.tokenizeScalar(u8, f.env.get("FAKE_BAY_FROM") orelse return, ' ');
+        var tos = std.mem.tokenizeScalar(u8, f.env.get("FAKE_BAY_TO") orelse return, ' ');
+        var text = try std.Io.Dir.cwd().readFileAlloc(f.io, "build.zig.zon", f.a, .limited(1 << 20));
+        while (froms.next()) |from| text = try std.mem.replaceOwned(u8, f.a, text, from, tos.next() orelse return error.UnpairedPin);
+        try std.Io.Dir.cwd().writeFile(f.io, .{ .sub_path = "build.zig.zon", .data = text });
     }
 };
 

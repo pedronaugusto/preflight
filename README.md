@@ -409,15 +409,17 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   through this gate. It needs `land` and `release`, a clean tree and the GitHub CLI signed in;
   preflight never reads the token. On a detached HEAD it rebases the branch on origin's main (a
   conflict stops it, naming the files), runs `bay tidy` under bay so that pins name released
-  revisions, adds `- Pins gantry 0.1.4.` under `### Changed` when the manifest pins a dependency
+  revisions, generates the caller again as `plan -- --workflow` does when it names another
+  preflight than the manifest pins, adds `- Pins gantry 0.1.4.` under `### Changed` when the manifest pins a dependency
   at another revision than the last `v*` tag did and `[Unreleased]` names none of them, makes the
-  release and commits it as `Release vX.Y.Z`. That commit goes to `land/vX.Y.Z`, or
-  `land/<branch>` when nothing the package ships changed; a branch main already holds lands
-  nothing and says so. `land` dispatches the caller on it with `-f tier=merge -f land=true`,
-  prints the run's URL and waits. Green: main and the tag are on the tested commit, the branch
-  moves there and the land branch is deleted. Red: the failed jobs are named, and the branch is
-  as it was, so landing again makes the same version and replaces the land branch the red run
-  left. It exits 0 when it landed or had nothing to land, 1 otherwise.
+  release and commits it as `Release vX.Y.Z`. That commit goes to a branch of its own,
+  `land/vX.Y.Z-<commit>`, or `land/<branch>-<commit>` when nothing the package ships changed, so
+  no push replaces anything; a branch main already holds lands nothing and says so. `land`
+  dispatches the caller on it with `-f tier=merge -f land=true`, prints the run's URL and waits.
+  Green: main and the tag are on the tested commit, the branch moves there and every attempt's
+  `land/vX.Y.Z-*` branch is deleted. Red: the failed jobs are named, the attempt's branch stays
+  to be looked at, and the branch is as it was, so landing again makes the same version. It exits
+  0 when it landed or had nothing to land, 1 otherwise.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
   merge or release run left for its exact SHA, and fails without one. For repositories that push
   to main by hand.

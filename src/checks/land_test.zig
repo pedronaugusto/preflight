@@ -7,6 +7,10 @@ const workflow = @import("workflow.zig");
 
 const old_hash = "dep-0.1.0-" ++ "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const new_hash = "dep-0.2.0-" ++ "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const old_pin = "0000000000000000000000000000000000000000";
+const new_pin = "1111111111111111111111111111111111111111";
+const old_preflight = "preflight-0.1.0-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+const new_preflight = "preflight-0.1.1-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
 const date = "2026-10-11";
 
 const Scene = struct {
@@ -37,8 +41,9 @@ const Scene = struct {
         // The manifest declares dev dependencies, so the landing tidies with this bay.
         try s.env.put("BAY", fake);
         try s.env.put("FAKE_GH_STATE", s.state);
-        try s.env.put("FAKE_BAY_FROM", old_hash);
-        try s.env.put("FAKE_BAY_TO", new_hash);
+        // tidy re-pins dep, and preflight, which the caller names.
+        try s.env.put("FAKE_BAY_FROM", old_hash ++ " " ++ old_pin ++ " " ++ old_preflight);
+        try s.env.put("FAKE_BAY_TO", new_hash ++ " " ++ new_pin ++ " " ++ new_preflight);
         try s.run(".", &.{ "git", "init", "-q", "--bare", "-b", "main", "origin.git" });
         try s.run(".", &.{ "git", "init", "-q", "-b", "main", "work" });
         for ([_][2][]const u8{ .{ "user.name", "Preflight" }, .{ "user.email", "preflight@example.invalid" }, .{ "commit.gpgsign", "false" }, .{ "tag.gpgsign", "false" } }) |setting|
@@ -56,7 +61,16 @@ const Scene = struct {
             \\",
             \\        },
             \\    },
-            \\    .dev_dependencies = .{},
+            \\    .dev_dependencies = .{
+            \\        .preflight = .{
+            \\            .url = "git+https://github.com/pedronaugusto/preflight#
+        ++ old_pin ++
+            \\",
+            \\            .hash = "
+        ++ old_preflight ++
+            \\",
+            \\        },
+            \\    },
             \\}
             \\
         );
@@ -67,7 +81,7 @@ const Scene = struct {
         const config = "{\"land\":true,\"release\":true}\n";
         try s.write("ci/workflow.json", config);
         const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
-        try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, "0000000000000000000000000000000000000000", ".", false, ".github/workflows/ci.yml"));
+        try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, old_pin, ".", false, ".github/workflows/ci.yml"));
         try s.commit("First");
         try s.git(&.{ "tag", "v0.1.0" });
         try s.git(&.{ "remote", "add", "origin", s.origin });
@@ -130,6 +144,12 @@ const Scene = struct {
         return std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = &.{ program, "land", "--date", date }, .cwd = .{ .dir = work }, .environ_map = &s.env });
     }
 
+    /// The `land/` branches origin holds, one per line.
+    fn landRefs(s: *Scene) ![]const u8 {
+        const result = try std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = &.{ "git", "-C", s.origin, "for-each-ref", "--format=%(refname:short)", "refs/heads/land" }, .environ_map = &s.env });
+        return std.mem.trim(u8, result.stdout, " \r\n");
+    }
+
     /// The stand-in's calls so far, one per line.
     fn calls(s: *Scene) ![]const u8 {
         return s.tmp.dir.readFileAlloc(std.testing.io, "gh/calls", s.arena.allocator(), .limited(1 << 20)) catch |err| switch (err) {
@@ -179,20 +199,33 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try contains(red.stderr, "Linux Debug (failure)");
     try contains(red.stderr, "https://github.invalid/runs/1");
     try std.testing.expect(std.mem.find(u8, red.stderr, "source checks") == null);
-    // The branch, its checkout and main are as they were; the land branch stays for a look.
+    // The branch, its checkout and main are as they were; the attempt's ref stays for a look.
     try std.testing.expectEqualStrings(before, try s.gitOut(&.{ "rev-parse", "HEAD" }));
     try std.testing.expectEqualStrings("work", try s.gitOut(&.{ "symbolic-ref", "--short", "HEAD" }));
     try std.testing.expectEqualStrings("", try s.gitOut(&.{ "status", "--porcelain" }));
     try std.testing.expectEqualStrings(main, try s.remote("refs/heads/main"));
-    try std.testing.expect((try s.remote("refs/heads/land/v0.1.1")).len != 0);
+    const attempt = try s.landRefs();
+    try std.testing.expect(std.mem.startsWith(u8, attempt, "land/v0.1.1-") and std.mem.findScalar(u8, attempt, '\n') == null);
+    const tested = try s.remote(try std.mem.concat(s.arena.allocator(), u8, &.{ "refs/heads/", attempt }));
+    try std.testing.expectEqualStrings(try std.mem.concat(s.arena.allocator(), u8, &.{ "land/v0.1.1-", tested[0..12] }), attempt);
     try std.testing.expectEqualStrings("", try s.remote("refs/tags/v0.1.1"));
     const dispatched = try s.calls();
     try contains(dispatched, "tidy\n");
-    try contains(dispatched, "workflow run ci.yml --ref land/v0.1.1 -f tier=merge -f land=true\n");
+    try contains(dispatched, try std.mem.concat(s.arena.allocator(), u8, &.{ "workflow run ci.yml --ref ", attempt, " -f tier=merge -f land=true\n" }));
+
+    // A fix after the red run is a new attempt with a ref of its own; both are there while it runs.
+    try s.write("src/a.zig", "pub const a = 3;\n");
+    try s.commit("Fix again");
 
     const green = try s.land("success");
     try expectExit(green, 0);
-    try contains(green.stdout, "pushed land/v0.1.1 at ");
+    try contains(green.stdout, "pushed land/v0.1.1-");
+    const seen = try s.tmp.dir.readFileAlloc(std.testing.io, "gh/land-refs", s.arena.allocator(), .limited(1 << 20));
+    var dispatches = std.mem.splitScalar(u8, seen, '\n');
+    try std.testing.expectEqualStrings(attempt, dispatches.next().?);
+    const during = dispatches.next().?;
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, during, "land/v0.1.1-"));
+    try contains(during, attempt);
     try contains(green.stdout, "run https://github.invalid/runs/2\n");
     try contains(green.stdout, "landed v0.1.1: main is at ");
     // Main and the tag are on the release commit, which is the rebased fix with the release on it.
@@ -200,14 +233,20 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try std.testing.expectEqualStrings(landed, try s.remote("refs/tags/v0.1.1^{commit}"));
     try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
     try std.testing.expectEqualStrings("work", try s.gitOut(&.{ "symbolic-ref", "--short", "HEAD" }));
-    try std.testing.expectEqualStrings("Release v0.1.1\nFix\nSay more\nFirst", try s.gitOut(&.{ "log", "--format=%s" }));
-    try std.testing.expectEqualStrings("", try s.remote("refs/heads/land/v0.1.1"));
+    try std.testing.expectEqualStrings("Release v0.1.1\nFix again\nFix\nSay more\nFirst", try s.gitOut(&.{ "log", "--format=%s" }));
+    // Every attempt's ref of the version goes.
+    try std.testing.expectEqualStrings("", try s.landRefs());
     const changelog = try s.gitOut(&.{ "show", "HEAD:CHANGELOG.md" });
-    try contains(changelog, "## [Unreleased]\n\n## [0.1.1] - " ++ date ++ "\n\n### Fixed\n\n- A fix.\n\n### Changed\n\n- Pins dep 0.2.0.\n\n## [0.1.0]");
+    try contains(changelog, "## [Unreleased]\n\n## [0.1.1] - " ++ date ++ "\n\n### Fixed\n\n- A fix.\n\n### Changed\n\n- Pins dep 0.2.0 and preflight 0.1.1.\n\n## [0.1.0]");
     try contains(changelog, "[0.1.1]: https://example.invalid/pkg/compare/v0.1.0...v0.1.1\n");
     const manifest = try s.gitOut(&.{ "show", "HEAD:build.zig.zon" });
     try contains(manifest, ".version = \"0.1.1\"");
     try contains(manifest, new_hash);
+    // The caller names the preflight tidy pinned, generated as plan generates it.
+    const parsed = (try std.json.parseFromSlice(std.json.Value, s.arena.allocator(), "{\"land\":true,\"release\":true}", .{})).value;
+    const regenerated = try workflow.render(s.arena.allocator(), parsed, new_pin, ".", false, ".github/workflows/ci.yml");
+    try std.testing.expectEqualStrings(std.mem.trim(u8, regenerated, " \r\n"), try s.gitOut(&.{ "show", "HEAD:.github/workflows/ci.yml" }));
+    try contains(regenerated, "preflight-ref: " ++ new_pin ++ "\n");
 
     // Main holds everything now: nothing is pushed or dispatched.
     const calls = (try s.calls()).len;

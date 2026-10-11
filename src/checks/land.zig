@@ -2,17 +2,20 @@
 //! merge gate.
 //!
 //! The landing commit is made apart from the branch: HEAD is detached, rebased on
-//! origin's main, its pins tidied under bay, a changelog line written for the
-//! dependencies it re-pins, and the release made and committed. That commit goes to
-//! `land/vX.Y.Z` (`land/<branch>` when nothing the package ships changed), the
-//! caller runs the merge tier on it with `land`, and the branch goes back to where
-//! it was while the run runs. Green: main and the tag are on the commit, the branch
-//! follows it and the land branch goes. Red: the failed jobs are named and nothing
-//! moves, so landing again makes the same version.
+//! origin's main, its pins tidied under bay, the caller generated again when it names
+//! another preflight than the manifest pins, a changelog line written for the
+//! dependencies it re-pins, and the release made and committed. That commit goes to a
+//! ref of its own, `land/vX.Y.Z-<sha>` (`land/<branch>-<sha>` when nothing the package
+//! ships changed), so no push ever replaces one; the caller runs the merge tier on it
+//! with `land`, and the branch goes back to where it was while the run runs. Green: main
+//! and the tag are on the commit, the branch follows it and every attempt's ref of that
+//! version goes. Red: the failed jobs are named and nothing moves, so landing again makes
+//! the same version, and the red attempt's ref stays to be looked at.
 const std = @import("std");
 const src = @import("source.zig");
 const release = @import("release.zig");
 const nested = @import("../nested.zig");
+const workflow = @import("workflow.zig");
 
 pub const Options = struct {
     /// The release's date, `YYYY-MM-DD`.
@@ -166,12 +169,17 @@ fn gh(c: *src.Context, args: []const []const u8) !src.Value {
     }).value;
 }
 
-/// The caller generated from `ci/workflow.json` for this package: the workflow file under the
-/// repository's `.github/workflows` whose gate runs in the package's directory.
-fn caller(c: *src.Context) ![]const u8 {
+/// The caller generated from `ci/workflow.json` for this package: its file under the
+/// repository's `.github/workflows`, the repository's top and the package's directory in it.
+const Caller = struct { name: []const u8, top: []const u8, directory: []const u8 };
+
+/// The workflow file under the repository's `.github/workflows` whose gate runs in the
+/// package's directory.
+fn caller(c: *src.Context) !Caller {
     const top = try must(c, &.{ "rev-parse", "--show-toplevel" });
     const prefix = std.mem.trimEnd(u8, try must(c, &.{ "rev-parse", "--show-prefix" }), "/");
-    const wanted = try c.a.print("      working-directory: {s}\n", .{try std.json.Stringify.valueAlloc(c.a, if (prefix.len == 0) "." else prefix, .{})});
+    const directory = if (prefix.len == 0) "." else prefix;
+    const wanted = try c.a.print("      working-directory: {s}\n", .{try std.json.Stringify.valueAlloc(c.a, directory, .{})});
     const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github", "workflows" });
     var found: std.ArrayList([]const u8) = .empty;
     if (std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true })) |opened| {
@@ -187,7 +195,7 @@ fn caller(c: *src.Context) ![]const u8 {
         error.FileNotFound => {},
         else => return err,
     }
-    if (found.items.len == 1) return found.items[0];
+    if (found.items.len == 1) return .{ .name = found.items[0], .top = top, .directory = directory };
     if (found.items.len == 0) {
         c.fail("land: no workflow in .github/workflows is the caller generated from ci/workflow.json for this package; generate it with plan -- --workflow .github/workflows/ci.yml", .{});
     } else c.fail("land: {s} are each a caller of this package; keep one", .{try std.mem.join(c.a, ", ", found.items)});
@@ -212,7 +220,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         c.fail("land: the tree has changes; commit or stash them first", .{});
         return error.LandFailed;
     }
-    const workflow = try caller(c);
+    const found = try caller(c);
     _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
     const start = try must(c, &.{ "rev-parse", "HEAD" });
     const main = (try git(c, &.{ "rev-parse", "--verify", "-q", "refs/remotes/origin/main" })).out;
@@ -221,28 +229,29 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         return error.LandFailed;
     }
     _ = try must(c, &.{ "checkout", "-q", "--detach" });
-    const prepared = prepare(c, branch, options.date) catch |err| {
+    const prepared = prepare(c, branch, found, options.date) catch |err| {
         back(c, branch);
         return err;
     };
-    const ref = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
+    const stem = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
+    const ref = try c.a.print("{s}-{s}", .{ stem, prepared.sha[0..12] });
     if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) {
         back(c, branch);
         return .{ .nothing = try c.a.print("main holds {s}, and nothing the package ships changed since its last release", .{branch}) };
     }
-    push(c, ref) catch |err| {
+    _ = must(c, &.{ "push", "-q", "origin", try c.a.print("HEAD:refs/heads/{s}", .{ref}) }) catch |err| {
         back(c, branch);
         return err;
     };
     _ = try must(c, &.{ "checkout", "-q", branch });
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
-    try gate(c, workflow, ref, prepared.sha, options);
-    return finish(c, branch, start, ref, prepared);
+    try gate(c, found.name, ref, prepared.sha, options);
+    return finish(c, branch, start, stem, prepared);
 }
 
 /// On a detached HEAD at the branch: rebased on origin's main, tidied, the changelog told of
 /// re-pins, released and committed.
-fn prepare(c: *src.Context, branch: []const u8, date: []const u8) !Prepared {
+fn prepare(c: *src.Context, branch: []const u8, found: Caller, date: []const u8) !Prepared {
     const rebased = try git(c, &.{ "rebase", "-q", "refs/remotes/origin/main" });
     if (!rebased.ok) {
         const conflicts = (try git(c, &.{ "diff", "--name-only", "--diff-filter=U" })).out;
@@ -262,6 +271,7 @@ fn prepare(c: *src.Context, branch: []const u8, date: []const u8) !Prepared {
             return error.LandFailed;
         }
     }
+    try refreshCaller(c, found);
     try noteChangelog(c);
     const outcome = release.run(c, date) catch |err| switch (err) {
         // Each of these named its fix.
@@ -279,6 +289,35 @@ fn prepare(c: *src.Context, branch: []const u8, date: []const u8) !Prepared {
         _ = try must(c, &.{ "commit", "-q", "-m", message });
     }
     return .{ .sha = try must(c, &.{ "rev-parse", "HEAD" }), .version = version };
+}
+
+/// The caller generated again, as `plan -- --workflow <caller>` generates it, when it names
+/// another preflight than the manifest pins, so the landed commit holds the caller its
+/// preflight writes. preflight's own caller runs the commit under test and is left alone.
+fn refreshCaller(c: *src.Context, found: Caller) !void {
+    var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
+    defer top.close(c.io);
+    var at_top = c.*;
+    at_top.dir = top;
+    const path = try c.a.print(".github/workflows/{s}", .{found.name});
+    const existing = try at_top.read(path);
+    if (std.mem.find(u8, existing, "preflight-ref: ${{ github.sha }}\n") != null) return;
+    const pin = workflow.pinned(c.*, "build.zig.zon") catch |err| {
+        c.fail("land: build.zig.zon: {t}; {s} names preflight by the manifest's pin", .{ err, path });
+        return error.LandFailed;
+    };
+    if (std.mem.find(u8, existing, try c.a.print("preflight-ref: {s}\n", .{pin})) != null) return;
+    // The label the caller was generated with, so that only the pin changes.
+    const header = "# Generated by preflight from ci/workflow.json: zig build plan -- --workflow ";
+    const label = if (std.mem.startsWith(u8, existing, header)) existing[header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
+    const config = try workflow.configuration(c.*, "ci/workflow.json");
+    const text = workflow.generate(c.*, config, "build.zig.zon", found.directory, false, label, existing, &.{}) catch |err| {
+        if (err == error.UndeclaredCallerJob) {
+            c.fail("land: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs, then land", .{ path, workflow.undeclared });
+        } else c.fail("land: {s} cannot be generated again: {t}", .{ path, err });
+        return error.LandFailed;
+    };
+    try workflow.write(at_top, path, text);
 }
 
 /// A changelog line for the dependencies pinned at another revision than at the last release,
@@ -303,13 +342,6 @@ fn noteChangelog(c: *src.Context) !void {
     try c.directory().writeFile(c.io, .{ .sub_path = "CHANGELOG.md", .data = noted });
 }
 
-/// Pushes HEAD to `ref` on origin. A land branch an earlier, red landing left is replaced, and
-/// only if it is still what this clone last fetched.
-fn push(c: *src.Context, ref: []const u8) !void {
-    const tracked = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/remotes/origin/{s}", .{ref}) })).out;
-    _ = try must(c, &.{ "push", "-q", try c.a.print("--force-with-lease=refs/heads/{s}:{s}", .{ ref, tracked }), "origin", try c.a.print("HEAD:refs/heads/{s}", .{ref}) });
-}
-
 /// Back on `branch` as it was, after a landing commit that went nowhere.
 fn back(c: *src.Context, branch: []const u8) void {
     const reset = git(c, &.{ "reset", "-q", "--hard" }) catch return;
@@ -318,11 +350,11 @@ fn back(c: *src.Context, branch: []const u8) void {
 }
 
 /// Dispatches the merge tier with `land` on `ref` and waits for the run; red reports the failed jobs.
-fn gate(c: *src.Context, workflow: []const u8, ref: []const u8, sha: []const u8, options: Options) !void {
-    const list: []const []const u8 = &.{ "run", "list", "--workflow", workflow, "--branch", ref, "--event", "workflow_dispatch", "--limit", "50", "--json", "databaseId,headSha,url" };
+fn gate(c: *src.Context, file: []const u8, ref: []const u8, sha: []const u8, options: Options) !void {
+    const list: []const []const u8 = &.{ "run", "list", "--workflow", file, "--branch", ref, "--event", "workflow_dispatch", "--limit", "50", "--json", "databaseId,headSha,url" };
     // A run of an earlier landing of the same commit is not this one.
     const earlier = try gh(c, list);
-    _ = try gh(c, &.{ "workflow", "run", workflow, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
+    _ = try gh(c, &.{ "workflow", "run", file, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
     const id = find: for (0..options.find_attempts) |attempt| {
         if (attempt != 0) try std.Io.sleep(c.io, options.find_every, .awake);
         for (src.items(try gh(c, list))) |found| {
@@ -364,8 +396,8 @@ fn gate(c: *src.Context, workflow: []const u8, ref: []const u8, sha: []const u8,
 }
 
 /// After a green run: main and the tag are on the tested commit, the branch follows it unless
-/// it moved meanwhile, and the land branch goes.
-fn finish(c: *src.Context, branch: []const u8, start: []const u8, ref: []const u8, prepared: Prepared) !Outcome {
+/// it moved meanwhile, and the refs of every attempt at this landing go.
+fn finish(c: *src.Context, branch: []const u8, start: []const u8, stem: []const u8, prepared: Prepared) !Outcome {
     _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
     const main = try must(c, &.{ "rev-parse", "refs/remotes/origin/main" });
     if (!std.mem.eql(u8, main, prepared.sha)) {
@@ -388,8 +420,28 @@ fn finish(c: *src.Context, branch: []const u8, start: []const u8, ref: []const u
         const ahead = (try git(c, &.{ "merge-base", "--is-ancestor", start, prepared.sha })).ok;
         _ = try must(c, if (ahead) &.{ "merge", "-q", "--ff-only", prepared.sha } else &.{ "reset", "-q", "--keep", prepared.sha });
     }
-    _ = try must(c, &.{ "push", "-q", "origin", "--delete", ref });
+    const listed = try must(c, &.{ "ls-remote", "--heads", "origin", try c.a.print("refs/heads/{s}-*", .{stem}) });
+    const refs = try attempts(c.a, listed, stem);
+    if (refs.len != 0) _ = try must(c, try std.mem.concat(c.a, []const u8, &.{ &.{ "push", "-q", "origin", "--delete" }, refs }));
     return .{ .landed = .{ .name = name, .sha = prepared.sha, .followed = followed } };
+}
+
+/// The branches of `git ls-remote --heads` output that are attempts at the landing `stem`:
+/// `<stem>-<sha>`, and not another stem that starts with this one.
+pub fn attempts(a: std.mem.Allocator, listed: []const u8, stem: []const u8) ![]const []const u8 {
+    var found: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.tokenizeScalar(u8, listed, '\n');
+    while (lines.next()) |line| {
+        const at = std.mem.find(u8, line, "refs/heads/") orelse continue;
+        const name = std.mem.trim(u8, line[at + "refs/heads/".len ..], " \t\r");
+        if (!std.mem.startsWith(u8, name, stem) or name.len <= stem.len + 1 or name[stem.len] != '-') continue;
+        const sha = name[stem.len + 1 ..];
+        const hex = for (sha) |byte| {
+            if (!std.ascii.isHex(byte)) break false;
+        } else true;
+        if (hex) try found.append(a, name);
+    }
+    return found.items;
 }
 
 fn say(c: *src.Context, comptime fmt: []const u8, args: anytype) !void {
@@ -415,6 +467,18 @@ test "a landing needs land and release set in ci/workflow.json" {
     try std.testing.expect(std.mem.find(u8, refusal(try parse(a, "{\"land\":true}")).?, "`release`") != null);
     try std.testing.expect(std.mem.find(u8, refusal(try parse(a, "{\"land\":true,\"release\":\"yes\"}")).?, "`release`") != null);
     try std.testing.expect(refusal(try parse(a, "{\"land\":true,\"release\":true}")) == null);
+}
+
+test "a landing's attempts are its stem and a commit, and no other stem's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const listed = "1111\trefs/heads/land/v0.1.1-0123456789ab\n2222\trefs/heads/land/v0.1.1-ba9876543210\n" ++
+        "3333\trefs/heads/land/v0.1.1-rc-0123456789ab\n4444\trefs/heads/land/v0.1.10-0123456789ab\n5555\trefs/heads/land/v0.1.1-\n";
+    const found = try attempts(arena.allocator(), listed, "land/v0.1.1");
+    try std.testing.expectEqual(@as(usize, 2), found.len);
+    try std.testing.expectEqualStrings("land/v0.1.1-0123456789ab", found[0]);
+    try std.testing.expectEqualStrings("land/v0.1.1-ba9876543210", found[1]);
+    try std.testing.expectEqual(@as(usize, 0), (try attempts(arena.allocator(), "", "land/v0.1.1")).len);
 }
 
 const hash_tail = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

@@ -31,6 +31,26 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
     return pin;
 }
 
+/// The configuration at `path`, with what the last merge or release run measured
+/// (`costs.json` beside it) as `measured`.
+pub fn configuration(c: src.Context, path: []const u8) !src.Value {
+    var config = try c.options(path);
+    const costs = try std.Io.Dir.path.join(c.a, &.{ std.Io.Dir.path.dirname(path) orelse ".", "costs.json" });
+    if (config == .object and c.exists(costs)) try config.object.put(c.a, "measured", try c.json(costs));
+    return config;
+}
+
+/// The caller `config` generates for the package whose manifest is `manifest`, gated in
+/// `directory`, pinned to that manifest's preflight (to the commit under test with `own`),
+/// headed with `label`. With `existing`, the caller it replaces, a job of that caller the
+/// configuration does not declare, and `drops` does not name, refuses it.
+pub fn generate(c: src.Context, config: src.Value, manifest: []const u8, directory: []const u8, own: bool, label: []const u8, existing: ?[]const u8, drops: []const []const u8) ![]const u8 {
+    const pin = if (own) "" else try pinned(c, manifest);
+    const text = try render(c.a, config, pin, directory, own, label);
+    if (existing) |old| try keepsEveryJob(old, text, drops);
+    return text;
+}
+
 /// The jobs of an earlier caller that its generator wrote, and so may go.
 const generated_jobs = [_][]const u8{ "gate", "land", "checks", "skip" };
 

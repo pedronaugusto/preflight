@@ -20,21 +20,15 @@ pub fn main(init: std.process.Init) !void {
         errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
         errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
         try planOptions(args[2..]);
-        const config_path = option(args, "--config") orelse "ci/workflow.json";
-        var config = try c.options(config_path);
-        // What the last merge or release run measured, kept beside the configuration.
-        const costs_path = try std.Io.Dir.path.join(a, &.{ std.Io.Dir.path.dirname(config_path) orelse ".", "costs.json" });
-        if (config == .object and c.exists(costs_path)) try config.object.put(a, "measured", try c.json(costs_path));
+        const config = try checks.workflow.configuration(c, option(args, "--config") orelse "ci/workflow.json");
         if (option(args, "--full") != null) return error.FullReplacedByTier;
         const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
         if (option(args, "--workflow")) |path| {
-            const own = hasFlag(args, "--self");
-            const pin = if (own) "" else try checks.workflow.pinned(c, option(args, "--manifest") orelse "build.zig.zon");
-            const text = try checks.workflow.render(a, config, pin, option(args, "--working-directory") orelse ".", own, path);
             // `--drop <job>`, repeated, names each job of the old caller to let go.
             var drops: std.ArrayList([]const u8) = .empty;
             for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--drop") and i + 1 < args.len) try drops.append(a, args[i + 1]);
-            if (c.exists(path)) try checks.workflow.keepsEveryJob(try c.read(path), text, drops.items);
+            const existing = if (c.exists(path)) try c.read(path) else null;
+            const text = try checks.workflow.generate(c, config, option(args, "--manifest") orelse "build.zig.zon", option(args, "--working-directory") orelse ".", hasFlag(args, "--self"), path, existing, drops.items);
             try checks.workflow.write(c, path, text);
             return;
         }

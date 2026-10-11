@@ -374,8 +374,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   following. A package that did not change gets no release and the command says so; one that
   changed with nothing under `[Unreleased]` fails naming the fix; a version whose tag exists
   fails, since a tag is never moved. The landing script commits the result before the gate tests
-  it, and runs the step as CI configures: with an empty `zig-pkg` and a global cache of its own
-  (`ZIG_LOCAL_PKG_DIR`, `ZIG_GLOBAL_CACHE_DIR`), since Zig compiles every lazy package it finds on
+  it, and runs the step as CI configures: with an empty project `zig-pkg` and a global cache of its
+  own (`ZIG_GLOBAL_CACHE_DIR`), since Zig compiles every lazy package it finds on
   disk and a warm cache puts each version ever fetched into the tree. The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
   manifest's version has no tag yet, with the same token.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a

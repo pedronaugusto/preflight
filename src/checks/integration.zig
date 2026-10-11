@@ -872,6 +872,50 @@ test "toolchain measuring builds without executing and injects shakedown for a c
     try std.testing.expect(command.succeeded(smoke));
 }
 
+test "shakedown, which cannot declare itself, measures through its own build" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDir(io, "bench", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "bench/probe.zig", .data =
+        \\const std = @import("std");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
+        \\    if (args.len != 2 or !std.mem.eql(u8, args[1], "--smoke")) return error.FullMeasurementMustNotRunInCi;
+        \\    _ = @import("shakedown").bench.Row(void, error{});
+        \\}
+    });
+    // The fixture plays shakedown: its build gives the `shakedown` module and a
+    // comparison program of its own, and `.own` must take both from it.
+    try tmp.dir.writeFile(io, .{ .sub_path = "own_compare.zig", .data =
+        \\const std = @import("std");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    try std.Io.File.stdout().writeStreamingAll(init.io, "own comparison\n");
+        \\}
+    });
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
+    const provided = try std.mem.replaceOwned(u8, a, build, "    preflight.addCi(b, .{",
+        \\    const real = b.lazyDependency("shakedown", .{ .target = b.graph.host, .optimize = .fast }) orelse return;
+        \\    b.modules.put(b.graph.arena, "shakedown", real.module("shakedown")) catch @panic("OOM");
+        \\    b.installArtifact(b.addExecutable(.{ .name = "shakedown-bench-compare", .root_module = b.createModule(.{ .root_source_file = b.path("own_compare.zig"), .target = b.graph.host }) }));
+        \\    preflight.addCi(b, .{
+    );
+    const changed = try std.mem.replaceOwned(u8, a, provided, ".portable_tests = true", ".portable_tests = true, .shakedown = .own, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize }");
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = changed });
+    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "bench-build" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(built)) std.debug.print("{s}", .{built.stderr});
+    try std.testing.expect(command.succeeded(built));
+    const comparison = try std.process.run(a, io, .{ .argv = &.{"zig-out/bench/shakedown-bench-compare"}, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expectEqualStrings("own comparison\n", comparison.stdout);
+    const smoke = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(smoke)) std.debug.print("{s}", .{smoke.stderr});
+    try std.testing.expect(command.succeeded(smoke));
+}
+
 test "toolchain hardened preserves test allocator ownership and detects write after free" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

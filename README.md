@@ -463,8 +463,9 @@ revision nor a cycle. Programs built in the package's graph from another package
 
 What preflight adds to a package's artifacts follows the same rule. Its test runner, shard
 order and watchdog link std alone; benchmarks and fuzzing measure through the package's own
-`shakedown`, which the package declares, and are refused by name when it does not. Nothing
-of preflight's own pins reaches a package's artifact.
+`shakedown`, which the package declares, and are refused by name when it does not; shakedown
+itself, which cannot declare itself, sets `Config.shakedown = .own`, and its own build stands
+in for the dependency. Nothing of preflight's own pins reaches a package's artifact.
 
 `revision_exceptions` in `ci/preflight.json` maps a package to the reason two of its
 revisions may meet, for a case the package cannot fix, such as a dependency it does not own

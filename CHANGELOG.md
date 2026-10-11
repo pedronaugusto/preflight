@@ -20,6 +20,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Config.shakedown = .own`: shakedown itself, which cannot declare itself, measures and fuzzes through its own build, which gives the `shakedown` module and installs `shakedown-bench-compare` (and `shakedown-fuzz` to fuzz) before calling `addCi`. Every other package leaves the default, `.declared`.
 - A project with no `ci/preflight.json`, `ci/workflow.json` or `ci/layers.zig` gets every default; `.paths` need not name a README or changelog the package does not have. `sample/zero`, such a project, runs in preflight's own gate on every host.
 - `lint` checks that every nested manifest pins each package the root also pins exactly as the root does.
 - A passing test run and a passing lint write nothing under `zig build`, which shows any stderr of a passing step under "failed command:"; a failure prints all of it. A hosted job keeps lint's report in its summary.

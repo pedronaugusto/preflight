@@ -37,6 +37,12 @@ pub const Config = struct {
     /// whose properties the tests are written with. Null adds no `fuzz` step
     /// and fetches nothing for one.
     fuzz_step: ?[]const u8 = null,
+    /// Where the benchmarks and the fuzzer find shakedown: `.declared`, the
+    /// package's `shakedown` dependency, or `.own` for shakedown itself, which
+    /// cannot declare itself: its build adds the `shakedown` module and installs
+    /// the programs they use (`shakedown-bench-compare`, `shakedown-fuzz`) before
+    /// calling `addCi`.
+    shakedown: configure.Shakedown = .declared,
 };
 
 pub const Bench = bench.Bench;
@@ -172,8 +178,8 @@ const Steps = struct {
             break :fail std.Io.Duration.zero;
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
-        const bench_build = bench.add(b, pkg, config.tests, config.bench, steps.smoke);
-        if (config.fuzz_step) |step| fuzz.add(b, config.tests, step);
+        const bench_build = bench.add(b, pkg, config.tests, config.bench, config.shakedown, steps.smoke);
+        if (config.fuzz_step) |step| fuzz.add(b, config.tests, step, config.shakedown);
         hardened.add(b, config.tests, config.hardened, steps.profile_options);
         objects.add(b, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
         if (config.portable_tests) portable.add(b, config.tests, executable);

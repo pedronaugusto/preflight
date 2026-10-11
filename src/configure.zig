@@ -71,6 +71,24 @@ pub fn declared(b: *std.Build, name: []const u8, args: anytype) error{LazyDepend
     return null;
 }
 
+/// Where a package's benchmarks and fuzzing find shakedown: the `shakedown` the
+/// package declares, or, for shakedown itself, which cannot declare itself, its own build.
+pub const Shakedown = enum { declared, own };
+
+/// The package's shakedown, built with `args`, or null when it declares none. `.own`
+/// is the package's own build as a dependency: its modules and the artifacts it
+/// installed before `addCi`, in the target and mode it builds them.
+pub fn shakedown(b: *std.Build, from: Shakedown, args: anytype) error{LazyDependencyNeeded}!?*std.Build.Dependency {
+    switch (from) {
+        .declared => return declared(b, "shakedown", args),
+        .own => {
+            const own = b.allocator.create(std.Build.Dependency) catch @panic("OOM");
+            own.* = .{ .builder = b };
+            return own;
+        },
+    }
+}
+
 /// The names of preflight's steps the package already had, for `refuseTaken`.
 var taken: std.ArrayList([]const u8) = .empty;
 

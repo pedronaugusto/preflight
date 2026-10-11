@@ -5,8 +5,8 @@
 const std = @import("std");
 const configure = @import("configure.zig");
 
-pub fn add(b: *std.Build, tests: *std.Build.Step, step: []const u8) void {
-    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .safe }) catch return) orelse {
+pub fn add(b: *std.Build, tests: *std.Build.Step, step: []const u8, from: configure.Shakedown) void {
+    const dep = (configure.shakedown(b, from, .{ .target = b.graph.host, .optimize = .safe }) catch return) orelse {
         tests.dependOn(&b.addFail("addCi .fuzz_step: the fuzzer is shakedown's, as are the properties it fuzzes; declare shakedown in build.zig.zon (lazy)").step);
         return;
     };

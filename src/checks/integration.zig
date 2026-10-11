@@ -504,18 +504,32 @@ fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.p
     return std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
 }
 
-test "a test runner of its own fails by name while the watchdog is on or the tests are sharded, a single-threaded build while the watchdog is on" {
+/// A fixture whose tests run on std's own runner.
+fn ownRunner(a: std.mem.Allocator, dir: std.Io.Dir) !void {
+    try fixture(a, dir);
+    const tests = "const tests = b.addTest(.{ .root_module = module });\n";
+    try edit(a, dir, "build.zig", tests, tests ++ "    tests.test_runner = .{ .path = b.graph.path(.zig_lib, \"compiler/test_runner.zig\"), .mode = .server };\n");
+}
+
+test "a test runner of its own fails by name while the watchdog is on" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    const tests = "const tests = b.addTest(.{ .root_module = module });\n";
-    try edit(a, tmp.dir, "build.zig", tests, tests ++ "    tests.test_runner = .{ .path = b.graph.path(.zig_lib, \"compiler/test_runner.zig\"), .mode = .server };\n");
+    try ownRunner(a, tmp.dir);
     const own = try gate(a, tmp.dir, &.{});
     try std.testing.expect(!command.succeeded(own));
     try std.testing.expect(std.mem.find(u8, own.stderr, "test: a test runner of its own arms no watchdog") != null);
+}
+
+test "a test runner of its own runs with the watchdog off, and fails by name when the tests are sharded" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try ownRunner(a, tmp.dir);
     try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .off = \"the upstream runner\" }");
     const off = try gate(a, tmp.dir, &.{});
     if (!command.succeeded(off)) std.debug.print("{s}\n", .{off.stderr});
@@ -527,6 +541,14 @@ test "a test runner of its own fails by name while the watchdog is on or the tes
     const sharded = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "ci", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(sharded));
     try std.testing.expect(std.mem.find(u8, sharded.stderr, "test: a test runner of its own runs every shard's tests") != null);
+}
+
+test "a single-threaded build fails by name while the watchdog is on" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try edit(a, tmp.dir, "build.zig", ".optimize = optimize,\n    });", ".optimize = optimize,\n        .single_threaded = true,\n    });");
     const single = try gate(a, tmp.dir, &.{});

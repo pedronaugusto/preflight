@@ -6,10 +6,11 @@ const matrix = @import("matrix.zig");
 
 const template = @embedFile("caller.yml");
 const repository = "git+https://github.com/pedronaugusto/preflight#";
+/// A package pins preflight as a dev dependency with bay, or as a dependency without it.
+const Pinned = struct { preflight: ?struct { url: ?[]const u8 = null } = null };
 const Manifest = struct {
-    dependencies: struct {
-        preflight: struct { url: ?[]const u8 = null },
-    },
+    dependencies: Pinned = .{},
+    dev_dependencies: Pinned = .{},
 };
 
 pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
@@ -21,7 +22,8 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
         .diagnostics = &diagnostics,
         .ignore_unknown_fields = true,
     });
-    const url = manifest.dependencies.preflight.url orelse return error.MissingPublishedPreflightPin;
+    const entry = manifest.dev_dependencies.preflight orelse manifest.dependencies.preflight orelse return error.MissingPublishedPreflightPin;
+    const url = entry.url orelse return error.MissingPublishedPreflightPin;
     if (!std.mem.startsWith(u8, url, repository)) return error.InvalidPreflightRepository;
     const pin = url[repository.len..];
     if (pin.len != 40) return error.InvalidPreflightPin;
@@ -278,6 +280,9 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     }
     try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{ .preflight = .{ .path = \"..\" } } }" });
     try std.testing.expectError(error.MissingPublishedPreflightPin, pinned(c, "build.zig.zon"));
+    // A package developed with bay pins preflight as a dev dependency.
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .url = \"{s}{s}\" }} }} }}", .{ repository, first_pin }) });
+    try std.testing.expectEqualStrings(first_pin, try pinned(c, "build.zig.zon"));
     const malformed = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":\"true\"}", .{})).value;
     try std.testing.expectError(error.InvalidWorkflowBoolean, render(a, malformed, first_pin, ".", false, "ci.yml"));
 }

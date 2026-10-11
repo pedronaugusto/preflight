@@ -67,7 +67,8 @@ fn pin(w: *std.Io.Writer, each: Pin) !void {
     try w.print("        .{f} = .{{\n            .url = \"{f}\",\n            .hash = \"{f}\",\n        }},\n", .{ std.zig.fmtId(each.name), std.zig.fmtString(each.url), std.zig.fmtString(each.hash) });
 }
 
-/// The source and hash `root` (a `build.zig.zon`) pins `name` at.
+/// The source and hash `root` (a `build.zig.zon`) pins `name` at, as a dependency
+/// or a dev dependency.
 pub fn sharedPin(a: std.mem.Allocator, root: []const u8, name: []const u8) !Pin {
     const source = try a.dupeSentinel(u8, root, 0);
     const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
@@ -75,9 +76,12 @@ pub fn sharedPin(a: std.mem.Allocator, root: []const u8, name: []const u8) !Pin 
     if (zoir.hasCompileErrors()) return error.InvalidManifest;
     const top = std.zig.Zoir.Node.Index.root.get(&zoir);
     if (top != .struct_literal) return error.InvalidManifest;
-    const dependencies = field(&zoir, top, "dependencies") orelse return error.NotPinnedByPackage;
-    if (dependencies != .struct_literal) return error.InvalidManifest;
-    const entry = field(&zoir, dependencies, name) orelse return error.NotPinnedByPackage;
+    const entry = for ([_][]const u8{ "dependencies", "dev_dependencies" }) |list| {
+        const dependencies = field(&zoir, top, list) orelse continue;
+        if (dependencies == .empty_literal) continue;
+        if (dependencies != .struct_literal) return error.InvalidManifest;
+        if (field(&zoir, dependencies, name)) |found| break found;
+    } else return error.NotPinnedByPackage;
     if (entry != .struct_literal) return error.InvalidManifest;
     const url = field(&zoir, entry, "url") orelse return error.SharedPackageIsNotPinned;
     const hash = field(&zoir, entry, "hash") orelse return error.SharedPackageIsNotPinned;
@@ -156,4 +160,14 @@ test "a shared package the package does not pin by source is refused" {
     const a = arena.allocator();
     try std.testing.expectError(error.NotPinnedByPackage, sharedPin(a, root_manifest, "missing"));
     try std.testing.expectError(error.SharedPackageIsNotPinned, sharedPin(a, root_manifest, "local"));
+}
+
+test "a shared package pinned as a dev dependency is pinned as the package does" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const developed = ".{ .dependencies = .{}, .dev_dependencies = .{ .shakedown = .{ .url = \"git+https://example.invalid/shakedown#1\", .hash = \"shakedown-1\" } } }";
+    const shared = try sharedPin(a, developed, "shakedown");
+    try std.testing.expectEqualStrings("git+https://example.invalid/shakedown#1", shared.url);
+    try std.testing.expectEqualStrings("shakedown-1", shared.hash);
 }

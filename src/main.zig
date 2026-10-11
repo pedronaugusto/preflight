@@ -10,6 +10,7 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const a = arena.allocator();
     var c: src.Context = .{ .a = a, .io = init.io };
+    c.bay = c.bayFor(init.environ_map);
     const args = try init.minimal.args.toSlice(a);
     if (args.len < 2) return error.MissingCommand;
     const command = args[1];
@@ -65,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
         try setup(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "prepare")) {
         // The hosted workflow owns the attempt deadlines and retries.
-        if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, &.{ "zig", "build", step });
+        if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.stepCommand(), &.{step} }));
     } else if (std.mem.eql(u8, command, "profile")) {
         const durations = option(args, "--durations") orelse "ci/durations.json";
         const previous = if (c.exists(durations)) try c.json(durations) else .null;
@@ -77,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
         const measured = try checks.profile.measure(c, input, if (c.exists(costs)) try c.json(costs) else .null);
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--costs-output") orelse costs, .data = try checks.profile.renderCosts(a, measured) });
     } else if (std.mem.eql(u8, command, "fetch")) {
-        for (try checks.command.fetches(a, init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv);
+        for (try checks.command.fetches(a, c.wholeCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv);
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
@@ -175,7 +176,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8
     try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
     try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
-    try facts.revisions.check(c, &snapshot.config, try checks.manifest.name(c), src.get(config, "revision_exceptions"));
+    try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), src.get(config, "revision_exceptions"));
     try checks.manifest.nested(c);
 }
 
@@ -347,22 +348,24 @@ fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
         if (try setupStep(c, env)) |setup_step| if (!std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
             const timer = checks.phases.Timer.begin(c, "install the external tools");
             defer timer.end(c, log);
-            try checks.command.retry(c, &.{ "zig", "build", setup_step });
+            try checks.command.retry(c, try std.mem.concat(c.a, []const u8, &.{ c.stepCommand(), &.{setup_step} }));
         };
         const before = src.get(config, "before_tests_step");
         if (before == .string) {
             const timer = checks.phases.Timer.begin(c, "before the tests");
             defer timer.end(c, log);
-            try checks.command.execute(c, &.{ "zig", "build", before.string });
+            try checks.command.execute(c, try std.mem.concat(c.a, []const u8, &.{ c.stepCommand(), &.{before.string} }));
         }
     }
     try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
 }
 
-/// Runs `zig build <step> <build_args>` as the hosted gate does, timed.
+/// Runs `zig build <step> <build_args>`, or `bay <step> ...` under bay, as the hosted gate does, timed.
 fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, step: []const u8, build_args: []const u8) !void {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(c.a, &.{ "zig", "build", step });
+    try argv.appendSlice(c.a, c.stepCommand());
+    try argv.append(c.a, step);
+    const first_option = argv.items.len;
     var tokens = std.mem.tokenizeAny(u8, build_args, " \t\r\n");
     while (tokens.next()) |token| {
         // The canonical planner may already specify this hosted control.
@@ -380,7 +383,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     {
         const timer = checks.phases.Timer.begin(c, "configure the build");
         defer timer.end(c, log);
-        const snapshot = try facts.read(c, "zig", argv.items[3..]);
+        const snapshot = try facts.read(c, c.zig, argv.items[first_option..]);
         for (snapshot.config.available_options) |available_option| {
             const name = available_option.name.slice(&snapshot.config);
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
@@ -413,7 +416,7 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
             covered += 1;
             for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
                 if (index == 1 and !bench) break;
-                const argv = try checks.matrix.crossArgs(c.a, config, target, kind.step);
+                const argv = try checks.matrix.crossArgs(c.a, c.stepCommand(), config, target, kind.step);
                 const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
                 defer timer.end(c, log);
                 try checks.command.execute(c, argv);

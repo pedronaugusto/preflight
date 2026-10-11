@@ -15,10 +15,16 @@
             .hash = "gantry-0.1.0-1iNrkefbCwBNMzRhH6EfemwJWoFByc7hi9PtxsBzouXX",
             .lazy = true,
         },
+        .bay = .{
+            .url = "git+https://github.com/pedronaugusto/bay?ref=main#8ef094c975f4d06259f17eff5f2c4565de101f3d",
+            .hash = "bay-0.0.0-uwJ5Z7G7AADUK8KQlXPpFjy4sDg5Pb77yka_VotPB7et",
+            .lazy = true,
+        },
+    },
+    .dev_dependencies = .{
         .shakedown = .{
             .url = "git+https://github.com/pedronaugusto/shakedown#8a544acff51a2cdc5c503d30e9d0b6f2afa2dfef",
             .hash = "shakedown-0.1.0-BR8U4xnCFQBUli1AvIQJV1HetPmNZP7jzafAWM5oEAed",
-            .lazy = true,
         },
     },
 }

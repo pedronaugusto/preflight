@@ -9,7 +9,10 @@ const C = std.Build.Configuration;
 const Io = std.Io;
 const limit = 64 * 1024 * 1024;
 
-pub const Snapshot = struct { config: C, path: []const u8, options: []const []const u8 = &.{}, bytes: []const u8 = &.{} };
+/// A configured build, and the package checked in it: the root package, or,
+/// under bay, the root's dependency at the package's own directory, since the
+/// root is then its development build.
+pub const Snapshot = struct { config: C, path: []const u8, options: []const []const u8 = &.{}, bytes: []const u8 = &.{}, package: C.Package.Index = .root };
 pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snapshot {
     _ = zig_version.require() catch {
         c.report("preflight: the configured-build reader supports {s}; this one was built with Zig {s}\n", .{ zig_version.supported, builtin.zig_version_string });
@@ -19,14 +22,37 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
     try successful(version.term);
     if (!std.mem.eql(u8, std.mem.trim(u8, version.stdout, "\r\n"), builtin.zig_version_string)) return error.UnsupportedCompilerVersion;
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(c.a, &.{ zig, "build", "--listen=-" });
+    // Under bay the configured build is the development build, which holds the package.
+    if (c.bay) |bay| try argv.appendSlice(c.a, &.{ bay, "dev", "--listen=-" }) else try argv.appendSlice(c.a, &.{ zig, "build", "--listen=-" });
     for (options) |option| {
         if (!std.mem.startsWith(u8, option, "-D") or std.mem.findScalar(u8, option, 0) != null) return error.InvalidConfigurationOption;
         try argv.append(c.a, option);
     }
     var snapshot = try capture(c, argv.items);
     snapshot.options = try c.a.dupe([]const u8, options);
+    if (c.bay != null) snapshot.package = try checked(c, &snapshot.config);
     return snapshot;
+}
+
+/// The package at the checked directory, among the owners of the build's steps, their root modules and those modules' files.
+fn checked(c: src.Context, config: *const C) !C.Package.Index {
+    const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
+    var owners: std.array_hash_map.Auto(C.Package.Index, void) = .empty;
+    for (config.steps) |step| {
+        try owners.put(c.a, step.owner, {});
+        const compile = step.extended.cast(config, C.Step.Compile) orelse continue;
+        const module = compile.root_module.get(config);
+        try owners.put(c.a, module.owner, {});
+        // A development build makes its own modules from the package's files: the files name the package.
+        const file = (module.root_source_file.unwrap() orelse continue).get(config);
+        if (file == .source_path) try owners.put(c.a, file.source_path.owner, {});
+    }
+    for (owners.keys()) |owner| {
+        const package = owner.get(config) orelse continue;
+        const path = c.directory().realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch continue;
+        if (std.mem.eql(u8, path, here)) return owner;
+    }
+    return error.PackageNotInDevelopmentBuild;
 }
 
 fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
@@ -296,14 +322,14 @@ pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot) ![]const []const u8 {
     const c = &snapshot.config;
     var roots: std.array_hash_map.String(void) = .empty;
     for (c.steps) |step| {
-        if (step.owner != .root) continue;
+        if (step.owner != .root and step.owner != snapshot.package) continue;
         if (step.extended.cast(c, C.Step.Compile)) |artifact| {
             if (artifact.flags3.kind != .@"test" and artifact.flags3.kind != .test_obj) continue;
             const module = artifact.root_module.get(c);
-            if (module.owner != .root) continue;
+            if (module.owner != .root and module.owner != snapshot.package) continue;
             const source = (module.root_source_file.unwrap() orelse return error.MissingConfiguredTestRoot).get(c);
             switch (source) {
-                .source_path => |p| if (p.owner == .root) try roots.put(a, p.sub_path.slice(c), {}),
+                .source_path => |p| if (p.owner == snapshot.package) try roots.put(a, p.sub_path.slice(c), {}),
                 .generated => |generated| try roots.put(a, try generatedName(a, c, generated), {}),
                 .relative => |p| if (p.flags.base == .cwd) try roots.put(a, p.sub_path.slice(c), {}) else return error.UnsupportedTestRootBase,
             }
@@ -324,7 +350,7 @@ pub fn generatedSources(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.S
     const c = &snapshot.config;
     var out: std.ArrayList(src.Source) = .empty;
     for (c.steps) |step| {
-        if (step.owner != .root) continue;
+        if (step.owner != .root and step.owner != snapshot.package) continue;
         const artifact = step.extended.cast(c, C.Step.Compile) orelse continue;
         if (artifact.flags3.kind != .@"test" and artifact.flags3.kind != .test_obj) continue;
         const module = artifact.root_module.get(c);

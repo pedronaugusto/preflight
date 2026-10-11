@@ -20,13 +20,13 @@ pub fn build(b: *std.Build) void {
     }) });
     const profile_step = b.step("profile-tests", "Run native fuzz and concurrent test consumers");
     profile_step.dependOn(&b.addRunArtifact(profile).step);
-    preflight.addCi(b, .{
+    preflight.addCi(b, b, .{
         .tests = step,
         .portable_tests = true,
         .bench = sampleBench(target, optimize),
         .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 },
     });
-    preflight.addConsumerCheck(b, .{ .package = "preflight_sample", .program = b.path("ci/consumer.zig") });
+    preflight.addConsumerCheck(b, b, .{ .package = "preflight_sample", .program = b.path("ci/consumer.zig") });
 }
 
 fn sampleBench(target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) preflight.Bench {

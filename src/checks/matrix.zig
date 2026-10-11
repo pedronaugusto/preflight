@@ -549,9 +549,10 @@ fn buildArgs(a: std.mem.Allocator, value: src.Value) ![]const u8 {
 
 /// The command that makes the objects of `target` in Debug: the build's `step`,
 /// `ci-check`, or `ci-check-bench` for the ReleaseFast benchmarks.
-pub fn crossArgs(a: std.mem.Allocator, config: src.Value, target: src.Value, step: []const u8) ![]const []const u8 {
+pub fn crossArgs(a: std.mem.Allocator, command: []const []const u8, config: src.Value, target: src.Value, step: []const u8) ![]const []const u8 {
     var args: std.ArrayList([]const u8) = .empty;
-    try args.appendSlice(a, &.{ "zig", "build", step });
+    try args.appendSlice(a, command);
+    try args.append(a, step);
     try args.appendSlice(a, try crossOptions(a, config, target));
     try args.append(a, "-Doptimize=debug");
     return args.toOwnedSlice(a);
@@ -594,14 +595,14 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     };
     try std.testing.expectEqual(@as(usize, 1), bundles);
     const targets = src.items(src.get(config, "targets"));
-    const first = try crossArgs(a, config, targets[0], "ci-check");
-    const second = try crossArgs(a, config, targets[1], "ci-check-bench");
+    const first = try crossArgs(a, &.{ "zig", "build" }, config, targets[0], "ci-check");
+    const second = try crossArgs(a, &.{ "zig", "build" }, config, targets[1], "ci-check-bench");
     try std.testing.expectEqualStrings("ci-check", first[2]);
     try std.testing.expectEqualStrings("-Dtarget=x86_64-windows-gnu", first[4]);
     try std.testing.expectEqualStrings("ci-check-bench", second[2]);
     try std.testing.expectEqualStrings("-Dtarget=aarch64-linux-gnu", second[4]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", second[5]);
-    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, config, .null, "ci-check"));
+    try std.testing.expectError(error.InvalidCrossTarget, crossArgs(a, &.{ "zig", "build" }, config, .null, "ci-check"));
 }
 
 test "the fast tier checks sources, runs Linux Debug and compiles every target without the ReleaseFast benchmarks" {
@@ -622,11 +623,11 @@ test "the fast tier checks sources, runs Linux Debug and compiles every target w
     try std.testing.expectEqualStrings("aarch64-linux-gnu aarch64-macos x86_64-windows-gnu", jobs[2].targets);
     const targets = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 3), targets.len);
-    const args = try crossArgs(a, config, targets[0], "ci-check");
+    const args = try crossArgs(a, &.{ "zig", "build" }, config, targets[0], "ci-check");
     try std.testing.expectEqualStrings("ci-check", args[2]);
     try std.testing.expectEqualStrings("-Dcpu=cortex_a72", args[5]);
     try std.testing.expectEqualStrings("-Doptimize=debug", args[6]);
-    const bench = try crossArgs(a, config, targets[0], "ci-check-bench");
+    const bench = try crossArgs(a, &.{ "zig", "build" }, config, targets[0], "ci-check-bench");
     try std.testing.expectEqualStrings("ci-check-bench", bench[2]);
     const tiers = try split(a, config, jobs, .fast);
     try std.testing.expectEqual(@as(usize, 3), tiers.native.len);
@@ -900,7 +901,7 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     , .{})).value;
     const cross = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 5), cross.len);
-    const argv = try crossArgs(a, config, cross[0], "ci-check");
+    const argv = try crossArgs(a, &.{ "zig", "build" }, config, cross[0], "ci-check");
     try std.testing.expectEqualStrings("ci-check", argv[2]);
     try std.testing.expectEqualStrings("-Dcpu=baseline", argv[5]);
     try std.testing.expectEqualStrings("-Dfeature=true", argv[6]);

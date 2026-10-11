@@ -10,21 +10,22 @@ const std = @import("std");
 /// accepts of its source.
 pub const Steps = struct { objects: *std.Build.Step, bench_objects: *std.Build.Step, links: *std.Build.Step, bench: ?*std.Build.Step };
 
-pub fn add(b: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8, steps: Steps) void {
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8, steps: Steps) void {
     const objects = steps.objects;
     const bench_objects = steps.bench_objects;
     const links = steps.links;
     var projection: Projection = .{ .b = b, .objects = objects, .sdk = sdk };
     projection.collect(tests, links);
-    projection.collect(b.getInstallStep(), links);
-    if (b.top_level_steps.get("check")) |check| projection.collect(&check.step, links);
+    projection.collect(package.getInstallStep(), links);
+    // `check` is the development build's where `addCheck` added it there, else the package's own.
+    if (b.top_level_steps.get("check") orelse package.top_level_steps.get("check")) |check| projection.collect(&check.step, links);
     if (steps.bench) |bench| {
         var debug: Projection = .{ .b = b, .objects = objects, .sdk = null, .debug = true };
         debug.collect(bench, links);
         var release: Projection = .{ .b = b, .objects = bench_objects, .sdk = sdk };
         release.collect(bench, links);
     }
-    for (b.modules.values()) |module| {
+    for (package.modules.values()) |module| {
         const object = b.addObject(.{ .name = "ci-root", .root_module = projection.module(module) });
         _ = object.getEmittedBin();
         objects.dependOn(&object.step);

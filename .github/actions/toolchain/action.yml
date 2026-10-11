@@ -54,7 +54,7 @@ runs:
         done
     - name: Allow the checks to run
       shell: bash
-      run: chmod +x .preflight-bin/*/preflight*
+      run: chmod +x .preflight-bin/*/*
     - name: Keep the toolchain for the next run of this commit
       if: steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4

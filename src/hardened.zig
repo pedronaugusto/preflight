@@ -20,7 +20,7 @@ pub fn declare(b: *std.Build) Options {
     };
 }
 
-pub fn add(b: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Options) void {
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Options) void {
     const given = profile orelse {
         if (options.active or options.tsan) tests.dependOn(&b.addFail("hardened: this package has not opted in via Config.hardened").step);
         return;
@@ -48,27 +48,34 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Op
             tests.dependOn(&b.addFail(b.fmt("hardened: {s} must execute native tests, not compile only", .{name})).step);
         }
     }
-    const normal = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
+    const normal = again(b, &.{ "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, normal);
-    normal.setCwd(b.path("."));
+    normal.setCwd(package.path("."));
     normal.has_side_effects = true;
     configure.claim(b, "hardened", "Execute opt-in safety-on tests using the existing std.testing allocator").dependOn(&normal.step);
-    const fuzz = b.addSystemCommand(&.{ b.graph.zig_exe, "build", given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
+    const fuzz = again(b, &.{ given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
     forward(b, fuzz);
-    fuzz.setCwd(b.path("."));
+    fuzz.setCwd(package.path("."));
     fuzz.has_side_effects = true;
     const fuzz_step = configure.claim(b, "hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
     if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
         fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support").step);
     } else fuzz_step.dependOn(&fuzz.step);
-    const tsan = b.addSystemCommand(&.{ b.graph.zig_exe, "build", given.tsan_step, "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
+    const tsan = again(b, &.{ given.tsan_step, "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, tsan);
-    tsan.setCwd(b.path("."));
+    tsan.setCwd(package.path("."));
     tsan.has_side_effects = true;
     const tsan_step = configure.claim(b, "hardened-tsan", "Execute native x86_64 Linux tests with LLVM ThreadSanitizer");
     if (b.graph.host.result.os.tag != .linux or b.graph.host.result.cpu.arch != .x86_64) {
         tsan_step.dependOn(&b.addFail("hardened-tsan: unsupported target; requires native x86_64 Linux").step);
     } else tsan_step.dependOn(&tsan.step);
+}
+
+/// This same build run again with `args`: the development build under bay, else zig build.
+fn again(b: *std.Build, args: []const []const u8) *std.Build.Step.Run {
+    const run = b.addSystemCommand(configure.rerun(b));
+    run.addArgs(args);
+    return run;
 }
 
 fn apply(b: *std.Build, step: *std.Build.Step, options: Options, seen: *std.AutoHashMapUnmanaged(*std.Build.Step, void), modules: *std.AutoHashMapUnmanaged(*std.Build.Module, void)) void {

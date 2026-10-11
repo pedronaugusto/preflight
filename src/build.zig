@@ -38,12 +38,6 @@ pub const Config = struct {
     /// whose properties the tests are written with. Null adds no `fuzz` step
     /// and fetches nothing for one.
     fuzz_step: ?[]const u8 = null,
-    /// Where the benchmarks and the fuzzer find shakedown: `.declared`, the
-    /// package's `shakedown` dependency, or `.own` for shakedown itself, which
-    /// cannot declare itself: its build adds the `shakedown` module and installs
-    /// the programs they use (`shakedown-bench-compare`, `shakedown-fuzz`) before
-    /// calling `addCi`.
-    shakedown: configure.Shakedown = .declared,
 };
 
 pub const Bench = bench.Bench;
@@ -70,29 +64,30 @@ pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
     });
 }
 
-pub fn addCi(b: *std.Build, config: Config) void {
+/// Adds preflight's gate to `b`, over `package`. `b` is the build the steps and
+/// their `-D` options belong to, and finds `preflight` and `shakedown` among its
+/// dependencies; `package` is the package checked, whose sources, manifest,
+/// installed artifacts and modules the gate reads. In a package developed with
+/// bay, `dev` passes its development build and the package as a dependency of
+/// it; without bay, `build` passes its own builder as both.
+pub fn addCi(b: *std.Build, package: *std.Build, config: Config) void {
     if (b.pkg_hash.len != 0) return;
     const steps: Steps = .create(b, config);
-    defer configure.refuseTaken(b, config.tests);
-    const dep = b.dependencyLazy("preflight", .{}) catch return;
-    steps.install(b, dep.builder, config);
+    defer configure.refuseTaken(b, package, config.tests);
+    // The gate reruns its tests with its own options, which only `b` declares.
+    if (config.tests.owner != b) config.tests.dependOn(&b.addFail("addCi .tests: the tests the gate runs are a step of the build that calls addCi; with bay, define them in dev").step);
+    const tools = b.dependencyLazy("preflight", .{}) catch return;
+    steps.install(b, package, tools.builder, config);
 }
 
-/// preflight's own gate, built from this checkout rather than a dependency.
-pub fn addOwnCi(b: *std.Build, config: Config) void {
-    const steps: Steps = .create(b, config);
-    defer configure.refuseTaken(b, config.tests);
-    steps.install(b, b, config);
-}
-
-/// Builds and runs a repository check program and its tests as one step.
-/// The program runs from the repository root.
-pub fn addCheck(b: *std.Build, name: []const u8, source: []const u8) *std.Build.Step.Compile {
-    const module = b.createModule(.{ .root_source_file = b.path(source), .target = b.graph.host, .optimize = .debug });
+/// Builds and runs a repository check program of `package` and its tests as one
+/// step of `b`. The program runs from the repository root.
+pub fn addCheck(b: *std.Build, package: *std.Build, name: []const u8, source: []const u8) *std.Build.Step.Compile {
+    const module = b.createModule(.{ .root_source_file = package.path(source), .target = b.graph.host, .optimize = .debug });
     const executable = b.addExecutable(.{ .name = name, .root_module = module });
     const tests = b.addTest(.{ .root_module = module });
     const run = b.addRunArtifact(executable);
-    run.setCwd(b.path("."));
+    run.setCwd(package.path("."));
     const step = b.step(name, "Run repository CI checks and their regressions");
     step.dependOn(&b.addRunArtifact(tests).step);
     step.dependOn(&run.step);
@@ -167,8 +162,8 @@ const Steps = struct {
         }) };
     }
 
-    /// `pkg` is the preflight package whose sources and tools the gate runs.
-    fn install(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config) void {
+    /// `package` is the package checked; `pkg` is the preflight whose sources and tools the gate runs.
+    fn install(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
@@ -179,52 +174,52 @@ const Steps = struct {
             break :fail std.Io.Duration.zero;
         };
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
-        const bench_build = bench.add(b, pkg, config.tests, config.bench, config.shakedown, steps.smoke);
-        if (config.fuzz_step) |step| fuzz.add(b, config.tests, step, config.shakedown);
-        hardened.add(b, config.tests, config.hardened, steps.profile_options);
-        objects.add(b, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
-        if (config.portable_tests) portable.add(b, config.tests, executable);
+        const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
+        if (config.fuzz_step) |step| fuzz.add(b, package, config.tests, step);
+        hardened.add(b, package, config.tests, config.hardened, steps.profile_options);
+        objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
+        if (config.portable_tests) portable.add(b, package, config.tests, executable);
         const plan = executable.run(b);
         plan.addArg("plan");
         plan.addPassthruArgs();
-        plan.setCwd(b.path("."));
+        plan.setCwd(package.path("."));
         configure.claim(b, "plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
         const facts = executable.run(b);
         facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
         configurationOptions(b, facts);
         facts.addPassthruArgs();
-        facts.setCwd(b.path("."));
+        facts.setCwd(package.path("."));
         facts.has_side_effects = true;
         configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
         const release = executable.run(b);
         release.addArg("release");
         release.addPassthruArgs();
-        release.setCwd(b.path("."));
+        release.setCwd(package.path("."));
         release.has_side_effects = true;
         configure.claim(b, "release", "Give a changed package its next version in build.zig.zon and CHANGELOG.md, or say it needs none").dependOn(&release.step);
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
-        cache.setCwd(b.path("."));
+        cache.setCwd(package.path("."));
         configure.claim(b, "cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
         const docs = executable.run(b);
         docs.addArgs(&.{ "docs", "--config", config.config, "--zig-exe", b.graph.zig_exe });
         docs.addPassthruArgs();
-        docs.setCwd(b.path("."));
+        docs.setCwd(package.path("."));
         configure.claim(b, "docs", "Render a configured documentation region").dependOn(&docs.step);
         const deprecations = executable.run(b);
         deprecations.addArgs(&.{ "deprecations", "--std" });
         deprecations.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         deprecations.addPassthruArgs();
-        deprecations.setCwd(b.path("."));
+        deprecations.setCwd(package.path("."));
         configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
-        steps.addLint(b, pkg, config, executable, gantry, gantry_zig);
+        steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
+    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
         const host = ciTarget(b);
         // A package that declares no structure is held to none.
         const layers = b.createModule(.{
-            .root_source_file = if (configure.exists(b, config.layers)) b.path(config.layers) else pkg.path("src/layers_default.zig"),
+            .root_source_file = if (configure.exists(package, config.layers)) package.path(config.layers) else pkg.path("src/layers_default.zig"),
             .target = host,
             .imports = &.{.{ .name = "gantry", .module = gantry }},
         });
@@ -240,30 +235,30 @@ const Steps = struct {
         var format_paths: std.ArrayList([]const u8) = .empty;
         var format_excluded: std.ArrayList(std.Build.LazyPath) = .empty;
         for ([_][]const u8{ "build.zig", "build.zig.zon" }) |path| {
-            if (configure.exists(b, path)) format_paths.append(b.allocator, path) catch @panic("OOM");
+            if (configure.exists(package, path)) format_paths.append(b.allocator, path) catch @panic("OOM");
         }
         for ([_][]const u8{ "src", "examples", "ci", "conformance", "bench" }) |path| {
-            if (!configure.exists(b, path)) continue;
+            if (!configure.exists(package, path)) continue;
             format_paths.append(b.allocator, path) catch @panic("OOM");
             // A build of its own in one of these keeps its packages and
             // outputs beside its manifest.
-            format_excluded.appendSlice(b.allocator, configure.buildDirectoriesUnder(b, path)) catch @panic("OOM");
+            format_excluded.appendSlice(b.allocator, configure.buildDirectoriesUnder(package, path)) catch @panic("OOM");
         }
-        const format = b.addFmt(.{ .paths = b.pathList(format_paths.items), .exclude_paths = format_excluded.items, .check = true });
+        const format = b.addFmt(.{ .paths = package.pathList(format_paths.items), .exclude_paths = format_excluded.items, .check = true });
         const structure = b.addRunArtifact(checker);
         structure.addArgs(&.{ "--config", config.config });
-        structure.setCwd(b.path("."));
+        structure.setCwd(package.path("."));
         configure.claim(b, "check-imports", "Check declared source structure").dependOn(&structure.step);
         structure.addPassthruArgs();
         const lint_structure = b.addRunArtifact(checker);
         lint_structure.addArgs(&.{ "--config", config.config });
-        lint_structure.setCwd(b.path("."));
+        lint_structure.setCwd(package.path("."));
         lint_structure.step.dependOn(&format.step);
         const checks = executable.run(b);
         checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         configurationOptions(b, checks);
-        checks.setCwd(b.path("."));
+        checks.setCwd(package.path("."));
         checks.step.dependOn(&lint_structure.step);
         steps.lint.dependOn(&checks.step);
         if (steps.lint_enabled) {

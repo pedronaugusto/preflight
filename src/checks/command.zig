@@ -40,13 +40,15 @@ pub fn retry(c: src.Context, argv: []const []const u8) !void {
 /// dependency declares (`-Dci-lint`) is unknown until it is fetched, and Zig
 /// refuses an unknown option before it fetches anything. The second takes
 /// the job's, for what they ask for besides.
-pub fn fetches(a: std.mem.Allocator, build_args: []const u8) ![]const []const []const u8 {
+pub fn fetches(a: std.mem.Allocator, whole: []const []const u8, build_args: []const u8) ![]const []const []const u8 {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "zig", "build", "--list-steps" });
+    try argv.appendSlice(a, whole);
+    try argv.append(a, "--list-steps");
+    const bare = argv.items.len;
     var tokens = std.mem.tokenizeAny(u8, build_args, " \t\r\n");
     while (tokens.next()) |token| try argv.append(a, token);
-    if (argv.items.len == 3) return a.dupe([]const []const u8, &.{argv.items});
-    return a.dupe([]const []const u8, &.{ argv.items[0..3], argv.items });
+    if (argv.items.len == bare) return a.dupe([]const []const u8, &.{argv.items});
+    return a.dupe([]const []const u8, &.{ argv.items[0..bare], argv.items });
 }
 
 test "a fetch is retried twice, after 5 s and then 10 s, on the context's clock" {
@@ -82,11 +84,11 @@ test "a fetch is retried twice, after 5 s and then 10 s, on the context's clock"
 test "the fetch configures the job's build, first with no options, then with its own" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const passes = try fetches(arena.allocator(), " -Doptimize=debug\t-Dci-lint=false\n");
+    const passes = try fetches(arena.allocator(), &.{ "zig", "build" }, " -Doptimize=debug\t-Dci-lint=false\n");
     try std.testing.expectEqual(@as(usize, 2), passes.len);
     try std.testing.expectEqual(@as(usize, 3), passes[0].len);
     try std.testing.expectEqualStrings("--list-steps", passes[0][2]);
     try std.testing.expectEqual(@as(usize, 5), passes[1].len);
     try std.testing.expectEqualStrings("-Dci-lint=false", passes[1][4]);
-    try std.testing.expectEqual(@as(usize, 1), (try fetches(arena.allocator(), "")).len);
+    try std.testing.expectEqual(@as(usize, 1), (try fetches(arena.allocator(), &.{ "zig", "build" }, "")).len);
 }

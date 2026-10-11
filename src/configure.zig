@@ -71,31 +71,25 @@ pub fn declared(b: *std.Build, name: []const u8, args: anytype) error{LazyDepend
     return null;
 }
 
-/// Where a package's benchmarks and fuzzing find shakedown: the `shakedown` the
-/// package declares, or, for shakedown itself, which cannot declare itself, its own build.
-pub const Shakedown = enum { declared, own };
-
-/// The package's shakedown, built with `args`, or null when it declares none. `.own`
-/// is the package's own build as a dependency: its modules and the artifacts it
-/// installed before `addCi`, in the target and mode it builds them.
-pub fn shakedown(b: *std.Build, from: Shakedown, args: anytype) error{LazyDependencyNeeded}!?*std.Build.Dependency {
-    switch (from) {
-        .declared => return declared(b, "shakedown", args),
-        .own => {
-            const own = b.allocator.create(std.Build.Dependency) catch @panic("OOM");
-            own.* = .{ .builder = b };
-            return own;
-        },
-    }
+/// The command that runs this same build again, for a tool that builds one of
+/// its steps from outside (another checkout, a rerun with other options): `bay
+/// dev`, the development build, when the build runs under bay; else `zig build`.
+pub fn rerun(b: *std.Build) []const []const u8 {
+    if (b.graph.environ_map.get("BAY")) |bay| return b.allocator.dupe([]const u8, &.{ bay, "dev" }) catch @panic("OOM");
+    return b.allocator.dupe([]const u8, &.{ b.graph.zig_exe, "build" }) catch @panic("OOM");
 }
 
-/// The names of preflight's steps the package already had, for `refuseTaken`.
+/// The names of preflight's steps the build already had, for `refuseTaken`.
 var taken: std.ArrayList([]const u8) = .empty;
+/// Every name preflight claimed, which the package's own build must not have
+/// either: bay runs a step of the package's build before one of its development build.
+var claimed: std.ArrayList([]const u8) = .empty;
 
 /// A top-level step of preflight's, `name`, or, when the package already has a step
 /// by that name, one under no name: the package's own step keeps the name, nothing
 /// is overwritten and the build does not crash, and `refuseTaken` says what to do.
 pub fn claim(b: *std.Build, name: []const u8, description: []const u8) *std.Build.Step {
+    claimed.append(b.allocator, name) catch @panic("OOM");
     if (b.top_level_steps.get(name) == null) return b.step(name, description);
     taken.append(b.allocator, name) catch @panic("OOM");
     // A step of the top-level kind that no name reaches; others of preflight's may still depend on it.
@@ -104,10 +98,14 @@ pub fn claim(b: *std.Build, name: []const u8, description: []const u8) *std.Buil
     return &detached.step;
 }
 
-/// Fails `tests` naming each step `claim` found the package already had: the
-/// gate runs preflight's steps by name, so a package step of the same name would
-/// run in their place.
-pub fn refuseTaken(b: *std.Build, tests: *std.Build.Step) void {
+/// Fails `tests` naming each step of preflight's that the build, or the package's
+/// own build, already had: the gate runs preflight's steps by name, so a package
+/// step of the same name would run in their place.
+pub fn refuseTaken(b: *std.Build, package: *std.Build, tests: *std.Build.Step) void {
+    if (package != b) for (claimed.items) |name| {
+        if (package.top_level_steps.contains(name)) taken.append(b.allocator, name) catch @panic("OOM");
+    };
     for (taken.items) |name| tests.dependOn(&b.addFail(b.fmt("preflight: this package declares a step `{s}`, which preflight's gate runs by name as its own; give the package's step another name", .{name})).step);
     taken.clearRetainingCapacity();
+    claimed.clearRetainingCapacity();
 }

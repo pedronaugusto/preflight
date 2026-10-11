@@ -14,15 +14,15 @@ pub const Bench = struct {
 pub const smoke_flag = "--smoke";
 
 /// The step that builds the benchmarks, or null when there are none.
-pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench, from: configure.Shakedown, smoke: bool) ?*std.Build.Step {
+pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench, smoke: bool) ?*std.Build.Step {
     const given = bench orelse {
-        if (configure.exists(b, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench").step);
+        if (configure.exists(package, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench").step);
         return null;
     };
     // The programs measure through shakedown.bench, and the comparison reads what they write: both are the
     // package's own shakedown, never a copy of preflight's.
-    const dep = (configure.shakedown(b, from, .{ .target = b.graph.host, .optimize = .fast }) catch return null) orelse {
-        tests.dependOn(&b.addFail("addCi .bench: benchmarks measure through shakedown.bench; declare shakedown in build.zig.zon (lazy: only the benchmarks fetch it)").step);
+    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return null) orelse {
+        tests.dependOn(&b.addFail("addCi .bench: benchmarks measure through shakedown.bench; declare shakedown: a dev dependency with bay, else a lazy one").step);
         return null;
     };
     const comparison = dep.artifact("shakedown-bench-compare");
@@ -31,9 +31,9 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
     step.dependOn(build);
     build.dependOn(&b.addInstallArtifact(comparison, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
     var previous: ?*std.Build.Step = null;
-    const commit = provenance(b);
+    const commit = provenance(package);
     for (given.programs) |program| {
-        const compile = executable(b, given, from, program, .fast, commit);
+        const compile = executable(b, package, given, program, .fast, commit);
         build.dependOn(&b.addInstallArtifact(compile, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
         if (program.timed) {
             const run = b.addRunArtifact(compile);
@@ -44,7 +44,7 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
             step.dependOn(&run.step);
         }
         if (smoke) {
-            const run = b.addRunArtifact(executable(b, given, from, program, given.optimize, commit));
+            const run = b.addRunArtifact(executable(b, package, given, program, given.optimize, commit));
             run.addArg(smoke_flag);
             run.setCwd(b.tmpPath());
             run.has_side_effects = true;
@@ -60,12 +60,14 @@ pub fn add(b: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench
     }) });
     build.dependOn(&driver.step);
     const ab = b.addRunArtifact(driver);
-    ab.addArgs(&.{ "--zig", b.graph.zig_exe, "--candidate" });
-    ab.addDirectoryArg2(b.path("."), .{});
+    ab.addArgs(&.{ "--zig", b.graph.zig_exe });
+    if (b.graph.environ_map.get("BAY")) |bay| ab.addArgs(&.{ "--bay", bay });
+    ab.addArg("--candidate");
+    ab.addDirectoryArg2(package.path("."), .{});
     ab.addArg("--comparison");
     ab.addArtifactArg2(comparison, .{});
     ab.addPassthruArgs();
-    ab.setCwd(b.path("."));
+    ab.setCwd(package.path("."));
     ab.has_side_effects = true;
     configure.claim(b, "bench-ab", "Build an immutable base, interleave chosen ReleaseFast workloads, compare through shakedown").dependOn(&ab.step);
     return build;
@@ -94,18 +96,18 @@ fn provenance(b: *std.Build) []const u8 {
     return std.mem.trim(u8, result.stdout, "\r\n");
 }
 
-fn executable(b: *std.Build, bench: Bench, from: configure.Shakedown, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
-    const mod = b.createModule(.{ .root_source_file = b.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
+fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
+    const mod = b.createModule(.{ .root_source_file = package.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
     // `imports` may give a shakedown bound to the package's own dependencies; otherwise the declared one.
     if (!mod.import_table.contains("shakedown")) {
-        const found = configure.shakedown(b, from, .{ .target = bench.target, .optimize = optimize });
+        const found = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
         // unreachable: `add` fetched it first, and refused a package that declares none
         const dep = (found catch unreachable).?;
         mod.addImport("shakedown", dep.module("shakedown"));
     }
     const metadata = b.addOptions();
     metadata.addOption([]const u8, "commit", commit);
-    const root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, b.root.toString(b.allocator) catch @panic("OOM"), b.allocator) catch @panic("benchmark root unavailable");
+    const root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, package.root.toString(b.allocator) catch @panic("OOM"), b.allocator) catch @panic("benchmark root unavailable");
     metadata.addOption([]const u8, "root", root);
     metadata.addOption([]const u8, "cpu", b.graph.host.result.cpu.model.name);
     metadata.addOption([]const u8, "os", @tagName(b.graph.host.result.os.tag));

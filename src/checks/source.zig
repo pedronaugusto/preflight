@@ -13,12 +13,55 @@ pub const Context = struct {
     zig: []const u8 = "zig",
     /// The environment a child process gets; null passes this process's own.
     environ_map: ?*const std.process.Environ.Map = null,
+    /// bay, when the package is developed with it (its manifest has `.dev_dependencies`):
+    /// its steps then run as `bay <step>`, and its whole configured build is `bay dev`'s.
+    /// Null runs `zig build`.
+    bay: ?[]const u8 = null,
     /// Where the reports go instead of stderr until the command knows its outcome:
     /// a passing check writes nothing, since Zig 0.17 shows any stderr of a passing
     /// build step under a "failed command:" line.
     held: ?*std.Io.Writer.Allocating = null,
     /// Findings a check reports without failing: a run with any shows what it held.
     notes: usize = 0,
+
+    /// The command that runs one of the package's steps: `bay` under bay, which
+    /// finds the step in the package's build or its development build; else `zig build`.
+    pub fn stepCommand(c: Context) []const []const u8 {
+        if (c.bay) |bay| return c.a.dupe([]const u8, &.{bay}) catch @panic("OOM");
+        return c.a.dupe([]const u8, &.{ c.zig, "build" }) catch @panic("OOM");
+    }
+
+    /// The command that configures the package's whole build: the development
+    /// build under bay (`bay dev`), which holds the package; else `zig build`.
+    pub fn wholeCommand(c: Context) []const []const u8 {
+        if (c.bay) |bay| return c.a.dupe([]const u8, &.{ bay, "dev" }) catch @panic("OOM");
+        return c.a.dupe([]const u8, &.{ c.zig, "build" }) catch @panic("OOM");
+    }
+
+    /// bay, when the manifest here declares `.dev_dependencies`: `BAY`, which bay
+    /// sets for what it runs; else the one beside this program, as the hosted
+    /// toolchain puts it; else the bay on PATH. Null without the field.
+    pub fn bayFor(c: Context, environ: *const std.process.Environ.Map) ?[]const u8 {
+        if (!c.developedWithBay()) return null;
+        if (environ.get("BAY")) |bay| return bay;
+        const self = std.process.executableDirPathAlloc(c.io, c.a) catch return "bay";
+        const beside = std.Io.Dir.path.join(c.a, &.{ self, if (@import("builtin").os.tag == .windows) "bay.exe" else "bay" }) catch @panic("OOM");
+        std.Io.Dir.cwd().access(c.io, beside, .{}) catch return "bay";
+        return beside;
+    }
+
+    /// Whether the manifest here declares `.dev_dependencies`.
+    fn developedWithBay(c: Context) bool {
+        const text = c.read("build.zig.zon") catch return false;
+        const source = c.a.dupeSentinel(u8, text, 0) catch @panic("OOM");
+        const tree = std.zig.Ast.parse(c.a, source, .{ .mode = .zon }) catch @panic("OOM");
+        var buffer: [2]std.zig.Ast.Node.Index = undefined;
+        const fields = (tree.fullStructInit(&buffer, tree.nodeData(.root).node) orelse return false).ast.fields;
+        for (fields) |field| {
+            if (std.mem.eql(u8, tree.tokenSlice(tree.firstToken(field) - 2), "dev_dependencies")) return true;
+        }
+        return false;
+    }
 
     pub fn directory(c: Context) std.Io.Dir {
         return c.dir orelse .cwd();

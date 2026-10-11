@@ -7,5 +7,5 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = module });
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
-    if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, .{ .tests = test_step });
+    if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });
 }

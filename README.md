@@ -9,25 +9,50 @@ It is a build dependency; a consumer's module never imports it.
 
 ## Install
 
-Requires Zig 0.17.0. Add preflight as a build dependency pinned by commit:
-`zig fetch --save git+https://github.com/pedronaugusto/preflight#<commit>`.
+Requires Zig 0.17.0. Add preflight as a development dependency with bay,
+`bay add --dev git+https://github.com/pedronaugusto/preflight#<commit>`, or as a lazy
+dependency without it; [Usage](#usage) shows both.
 
 See [the design](docs/design.md) for ownership and invariants.
 
 ## Usage
 
-Adopting preflight takes three steps and no configuration file:
+preflight is a development tool, so it belongs in a package's development dependencies:
+[bay](https://github.com/pedronaugusto/bay) keeps those out of what the package ships, and a
+project that depends on yours never sees preflight. With bay, adopting it takes three steps
+and no configuration file:
 
-1. Pin it lazily, so a project that depends on yours never fetches it:
-   `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
-   then add `.lazy = true` to the entry in `build.zig.zon`.
-2. In `build.zig`, after creating the test step:
+1. `bay add --dev git+https://github.com/pedronaugusto/preflight#<commit>`.
+2. In `build.zig`, the gate goes in `dev`, over the package as a dependency of the
+   development build:
 
    ```zig
-   if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, .{ .tests = test_step });
+   pub fn dev(b: *std.Build, tools: type) void {
+       const package = b.dependency("example", .{});
+       const test_step = b.step("test", "Run the tests");
+       test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = package.module("example") })).step);
+       tools.preflight.addCi(b, package.builder, .{ .tests = test_step });
+   }
    ```
 
-3. Generate the hosted workflow: `mkdir -p .github/workflows && zig build plan -- --workflow .github/workflows/ci.yml`.
+3. Generate the hosted workflow: `mkdir -p .github/workflows && bay plan -- --workflow .github/workflows/ci.yml`.
+
+`bay ci` runs the gate locally. The hosted gate builds bay beside the checks and runs a
+package that declares `.dev_dependencies` through it, and one that does not through `zig build`.
+
+Without bay, preflight is a lazy dependency, and `build` adds the gate over its own package:
+pin it with `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
+add `.lazy = true` to the entry, then
+`if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });`
+after creating the test step, and `zig build plan -- --workflow .github/workflows/ci.yml`. A
+package preflight is built from (aegis, sweep, glint, gantry, shakedown) uses bay: as a
+dependency it would make a cycle with preflight.
+
+In `addCi(b, package, config)`, `b` is the build the steps and their `-D` options belong to,
+and the one whose dependencies hold `preflight` and `shakedown`; `package` is the package
+checked, whose sources, manifest, installed artifacts and modules the gate reads. With bay
+they are the development build and the package; without it, one builder is both. The tests
+the gate runs are a step of `b`.
 
 Pull requests then run the merge tier (source checks, the Debug suite on Linux, macOS
 and Windows, and the configured cross targets), a dispatch runs the tier it names, and a
@@ -70,7 +95,7 @@ fresh, empty working directory for the fixtures it writes;
 program runs every point once at its smallest size. A repository with a `bench/`
 directory and no `.bench` fails its tests by name.
 
-`preflight.addConsumerCheck(b, .{ .package = "name", .program = b.path("ci/consumer.zig") })`
+`preflight.addConsumerCheck(b, package, .{ .package = "name", .program = package.path("ci/consumer.zig") })`
 adds `check-consumer`: it builds a generated project that depends on the package
 by path with fetching off and a Zig cache of its own, so the build a consumer gets
 cannot reach the package's CI dependencies or anything cached for them. `.modules` names the modules the program imports,
@@ -86,7 +111,7 @@ consumer fixture) that uses a package the root also pins takes the pin from the 
 returns the step that writes `conformance/build.zig.zon`, each `.shared` package's source and hash read
 from the root's `build.zig.zon` (`.pins` names those only the nested build uses), and the step that runs
 the nested build depends on it. The file is the build's output: keep it out of version control, so no
-copy of a pin exists to drift. `lint` still checks any nested manifest it finds, which catches one kept by hand. `preflight.addCheck(b, name, source)` builds a
+copy of a pin exists to drift. `lint` still checks any nested manifest it finds, which catches one kept by hand. `preflight.addCheck(b, package, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
@@ -253,7 +278,8 @@ outside the repository and every failure shrunk to the tape to add to the proper
 `.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. It fuzzes
 `Config.fuzz_step`, which a package sets to opt in: a step whose every test binary has a
 property (the fuzzer refuses a binary with none). The fuzzer and the properties are the
-package's own shakedown, which it declares; a package that sets no `fuzz_step` has no `fuzz`
+package's own shakedown, which the build that calls `addCi` declares (a dev dependency with
+bay); a package that sets no `fuzz_step` has no `fuzz`
 step and fetches nothing for one. The fuzzing,
 the corpora and the shrinking are shakedown's; preflight wires the step.
 
@@ -485,9 +511,9 @@ revision nor a cycle. Programs built in the package's graph from another package
 
 What preflight adds to a package's artifacts follows the same rule. Its test runner, shard
 order and watchdog link std alone; benchmarks and fuzzing measure through the package's own
-`shakedown`, which the package declares, and are refused by name when it does not; shakedown
-itself, which cannot declare itself, sets `Config.shakedown = .own`, and its own build stands
-in for the dependency. Nothing of preflight's own pins reaches a package's artifact.
+`shakedown`, which the build that calls `addCi` declares, and are refused by name when it does
+not. With bay, shakedown itself declares shakedown like any package: its development build
+holds the package as a dependency, as it holds every package's. Nothing of preflight's own pins reaches a package's artifact.
 
 `revision_exceptions` in `ci/preflight.json` maps a package to the reason two of its
 revisions may meet, for a case the package cannot fix, such as a dependency it does not own
@@ -647,9 +673,9 @@ or directories after `--` to read only those.
 |---|---|
 | `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `facts`, `check-imports`, `docs`, `cache` and `deprecations`; optional bench and hardened steps |
 | `Config`, `TestTimeout`, `Bench`, `Hardened` | The gate's paths, shard records, watchdog, test log level and benchmarks |
-| `addConsumerCheck(b, ConsumerOptions)` | Adds `check-consumer` |
+| `addConsumerCheck(b, package, ConsumerOptions)` | Adds `check-consumer` |
 | `addNestedManifest(b, NestedManifest)` | Returns the step that writes a nested build's `build.zig.zon` from the package's own pins |
-| `addCheck(b, name, source)` | Builds, tests and runs a repository check program as step `name` |
+| `addCheck(b, package, name, source)` | Builds, tests and runs a repository check program as step `name` |
 
 A test runner of a package's own can import `preflight_order` and
 `preflight_timings`. `preflight_order.init(io, init, args, tests, durations)` seeds,
@@ -679,7 +705,7 @@ is built from.
 
 ## Testing
 
-Run `zig build test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package.
+Run `bay test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package without bay.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
 Cross object validation retains a compile step's `expect_errors` and diagnostic

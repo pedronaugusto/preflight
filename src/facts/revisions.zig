@@ -132,28 +132,30 @@ fn visit(a: std.mem.Allocator, names: []const []const u8, edges: []const Edge, s
 /// between packages, by name, but for a dependency bound to the package's own module.
 pub const Graph = struct { links: []const Link, edges: []const Edge };
 
-pub fn artifactGraph(a: std.mem.Allocator, config: *const C, root: C.Module.Index, root_name: []const u8) !Graph {
+/// The packages an artifact links: `package` is the one checked, the root or, under
+/// bay, the root's dependency at its directory, and is named `root_name`.
+pub fn artifactGraph(a: std.mem.Allocator, config: *const C, package: C.Package.Index, root: C.Module.Index, root_name: []const u8) !Graph {
     var links: std.ArrayList(Link) = .empty;
     var edges: std.ArrayList(Edge) = .empty;
     var seen: std.AutoHashMapUnmanaged(C.Module.Index, void) = .empty;
     var pending: std.ArrayList(C.Module.Index) = .empty;
     try pending.append(a, root);
-    try links.append(a, try linkOf(a, config, root.get(config).owner, root_name, ""));
+    try links.append(a, try linkOf(a, config, package, root.get(config).owner, root_name, ""));
     while (pending.pop()) |id| {
         if ((try seen.getOrPut(a, id)).found_existing) continue;
         const module = id.get(config);
         const puller = try label(a, config, module.owner);
-        const from = (try linkOf(a, config, module.owner, root_name, "")).name;
+        const from = (try linkOf(a, config, package, module.owner, root_name, "")).name;
         const imports = module.import_table.get(config).imports.mal;
         for (imports.items(.module)) |imported| {
             try pending.append(a, imported);
             const owner = imported.get(config).owner;
             if (owner == module.owner) continue;
-            const link = try linkOf(a, config, owner, root_name, puller);
+            const link = try linkOf(a, config, package, owner, root_name, puller);
             try links.append(a, link);
             // A dependency bound to the package's own module holds no second copy and no pin.
             // A second revision of the same package is the revision check's to report and except.
-            if (owner != .root and !std.mem.eql(u8, from, link.name)) try edges.append(a, .{ .from = from, .to = link.name });
+            if (!checked(owner, package) and !std.mem.eql(u8, from, link.name)) try edges.append(a, .{ .from = from, .to = link.name });
         }
     }
     return .{ .links = links.items, .edges = edges.items };
@@ -164,23 +166,30 @@ fn label(a: std.mem.Allocator, config: *const C, owner: C.Package.Index) ![]cons
     return a.dupe(u8, std.mem.trimEnd(u8, prefix, "."));
 }
 
-fn linkOf(a: std.mem.Allocator, config: *const C, owner: C.Package.Index, root_name: []const u8, puller: []const u8) !Link {
-    const package = owner.get(config) orelse return .{ .name = root_name, .revision = "", .puller = puller };
+/// Whether `owner` is the package checked: the root, which is that package or its
+/// development build, or the package itself.
+fn checked(owner: C.Package.Index, package: C.Package.Index) bool {
+    return owner == .root or owner == package;
+}
+
+fn linkOf(a: std.mem.Allocator, config: *const C, checked_package: C.Package.Index, owner: C.Package.Index, root_name: []const u8, puller: []const u8) !Link {
+    if (checked(owner, checked_package)) return .{ .name = root_name, .revision = "", .puller = puller };
+    const package = owner.get(config).?;
     const hash = try a.dupe(u8, package.hash.slice(config));
     return .{ .name = packageName(hash), .revision = hash, .puller = puller };
 }
 
 /// Whether the module's root file is the package's own, or generated; a file of a dependency is not.
-fn ownSource(config: *const C, module: C.Module.Index) bool {
+fn ownSource(config: *const C, package: C.Package.Index, module: C.Module.Index) bool {
     const file = module.get(config).root_source_file.unwrap() orelse return true;
     return switch (file.get(config)) {
-        .source_path => |source| source.owner == .root,
+        .source_path => |source| checked(source.owner, package),
         else => true,
     };
 }
 
 /// Fails the check for each cycle and each package in two revisions in an artifact of the root package.
-pub fn check(c: *src.Context, config: *const C, root_name: []const u8, allowed: src.Value) !void {
+pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_name: []const u8, allowed: src.Value) !void {
     if (allowed != .null and allowed != .object) {
         c.fail("ci/preflight.json: revision_exceptions maps each package to why two of its revisions may meet", .{});
         return;
@@ -191,11 +200,11 @@ pub fn check(c: *src.Context, config: *const C, root_name: []const u8, allowed: 
     // The same finding in several artifacts is reported once.
     var findings: std.array_hash_map.String(std.ArrayList([]const u8)) = .empty;
     for (config.steps) |step| {
-        if (step.owner != .root) continue;
+        if (!checked(step.owner, package)) continue;
         const compile = step.extended.cast(config, C.Step.Compile) orelse continue;
         // A checker's own tools, built in the package's graph from the checker's sources, are not the package's.
-        if (!ownSource(config, compile.root_module)) continue;
-        const graph = try artifactGraph(c.a, config, compile.root_module, root_name);
+        if (!ownSource(config, package, compile.root_module)) continue;
+        const graph = try artifactGraph(c.a, config, package, compile.root_module, root_name);
         var texts: std.ArrayList([]const u8) = .empty;
         var cyclic: []const []const u8 = &.{};
         if (try cycle(c.a, graph.edges)) |names| {

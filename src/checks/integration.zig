@@ -32,14 +32,14 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
 
 const Pin = struct { url: []const u8, hash: []const u8 };
 
-/// The shakedown preflight's own manifest pins.
+/// The shakedown preflight's own manifest pins as a dev dependency.
 fn shakedownPin(a: std.mem.Allocator) !Pin {
     const path = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
     const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1024 * 1024));
-    const Manifest = struct { dependencies: struct { shakedown: Pin } };
+    const Manifest = struct { dev_dependencies: struct { shakedown: Pin } };
     var diagnostics: std.zon.parse.Diagnostics = undefined;
     const manifest = try std.zon.parse.fromSlice(Manifest, .{ .gpa = a, .arena = a, .source = try a.dupeSentinel(u8, text, 0), .diagnostics = &diagnostics, .ignore_unknown_fields = true });
-    return manifest.dependencies.shakedown;
+    return manifest.dev_dependencies.shakedown;
 }
 
 fn run(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
@@ -656,7 +656,7 @@ const bench_build =
     \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
     \\    const step = b.step("test", "Run the sample tests");
     \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
-    \\    preflight.addCi(b, .{ .tests = step, .portable_tests = true, .bench = BENCH });
+    \\    preflight.addCi(b, b, .{ .tests = step, .portable_tests = true, .bench = BENCH });
     \\}
     \\
     \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
@@ -739,7 +739,7 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         \\    test_step.dependOn(&b.addRunArtifact(tests).step);
         \\    test_step.dependOn(&b.addRunArtifact(helper).step);
         \\    b.step("check", "root").dependOn(&tests.step);
-        \\    preflight.addCi(b, .{ .tests = test_step, .bench = .{ .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }}, .imports = imports, .target = target, .optimize = optimize } });
+        \\    preflight.addCi(b, b, .{ .tests = test_step, .bench = .{ .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }}, .imports = imports, .target = target, .optimize = optimize } });
         \\}
         \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
         \\    _ = target;
@@ -872,7 +872,7 @@ test "toolchain measuring builds without executing and injects shakedown for a c
     try std.testing.expect(command.succeeded(smoke));
 }
 
-test "shakedown, which cannot declare itself, measures through its own build" {
+test "a package developed with bay runs the gate from dev, and its consumers fetch none of it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -881,39 +881,50 @@ test "shakedown, which cannot declare itself, measures through its own build" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try tmp.dir.createDir(io, "bench", .default_dir);
-    try tmp.dir.writeFile(io, .{ .sub_path = "bench/probe.zig", .data =
+    const sum = try std.Io.Dir.cwd().readFileAlloc(io, try std.Io.Dir.path.join(a, &.{ root, "sample", "bench", "sum.zig" }), a, .limited(1024 * 1024));
+    try tmp.dir.writeFile(io, .{ .sub_path = "bench/sum.zig", .data = sum });
+    // What it ships is `build`'s, with nothing but std; preflight and shakedown are
+    // dev dependencies, which `dev` wires and Zig never shows a consumer.
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
         \\const std = @import("std");
-        \\pub fn main(init: std.process.Init) !void {
-        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
-        \\    if (args.len != 2 or !std.mem.eql(u8, args[1], "--smoke")) return error.FullMeasurementMustNotRunInCi;
-        \\    _ = @import("shakedown").bench.Row(void, error{});
+        \\
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    _ = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
         \\}
-    });
-    // The fixture plays shakedown: its build gives the `shakedown` module and a
-    // comparison program of its own, and `.own` must take both from it.
-    try tmp.dir.writeFile(io, .{ .sub_path = "own_compare.zig", .data =
-        \\const std = @import("std");
-        \\pub fn main(init: std.process.Init) !void {
-        \\    try std.Io.File.stdout().writeStreamingAll(init.io, "own comparison\n");
+        \\
+        \\pub fn dev(b: *std.Build, tools: type) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
+        \\    const step = b.step("test", "Run the sample tests");
+        \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = package.module("preflight_sample") })).step);
+        \\    tools.preflight.addCi(b, package.builder, .{ .tests = step, .bench = .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = benchImports, .target = target, .optimize = optimize } });
+        \\    tools.preflight.addConsumerCheck(b, package.builder, .{ .package = "preflight_sample", .program = package.path("ci/consumer.zig") });
         \\}
+        \\
+        \\fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+        \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
+        \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = package.module("preflight_sample") }}) catch @panic("OOM");
+        \\}
+        \\
     });
-    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
-    const provided = try std.mem.replaceOwned(u8, a, build, "    preflight.addCi(b, .{",
-        \\    const real = b.lazyDependency("shakedown", .{ .target = b.graph.host, .optimize = .fast }) orelse return;
-        \\    b.modules.put(b.graph.arena, "shakedown", real.module("shakedown")) catch @panic("OOM");
-        \\    b.installArtifact(b.addExecutable(.{ .name = "shakedown-bench-compare", .root_module = b.createModule(.{ .root_source_file = b.path("own_compare.zig"), .target = b.graph.host }) }));
-        \\    preflight.addCi(b, .{
-    );
-    const changed = try std.mem.replaceOwned(u8, a, provided, ".portable_tests = true", ".portable_tests = true, .shakedown = .own, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize }");
-    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = changed });
-    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "bench-build" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(built)) std.debug.print("{s}", .{built.stderr});
-    try std.testing.expect(command.succeeded(built));
-    const comparison = try std.process.run(a, io, .{ .argv = &.{"zig-out/bench/shakedown-bench-compare"}, .cwd = .{ .dir = tmp.dir } });
-    try std.testing.expectEqualStrings("own comparison\n", comparison.stdout);
-    const smoke = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(smoke)) std.debug.print("{s}", .{smoke.stderr});
-    try std.testing.expect(command.succeeded(smoke));
+    const fixture_root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const package_root = try std.Io.Dir.cwd().realPathFileAlloc(io, root, a);
+    const relative = try std.Io.Dir.path.relativeAlloc(a, package_root, null, fixture_root, package_root);
+    const shakedown = try shakedownPin(a);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\" }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) }) });
+    const bay = @import("test_options").bay;
+    for ([_][]const []const u8{ &.{ bay, "ci", "-Dci-lint=false" }, &.{ bay, "bench-build" }, &.{ bay, "check-consumer" } }) |argv| {
+        const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir } });
+        if (!command.succeeded(result)) std.debug.print("{s} {s}:\n{s}", .{ argv[1], if (argv.len > 2) argv[2] else "", result.stderr });
+        try std.testing.expect(command.succeeded(result));
+    }
+    // The package's own build knows nothing of the gate.
+    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "-l" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(command.succeeded(listed));
+    try std.testing.expect(std.mem.find(u8, listed.stdout, "\n  ci ") == null);
 }
 
 test "toolchain hardened preserves test allocator ownership and detects write after free" {
@@ -1045,9 +1056,9 @@ test "toolchain hardened selects LLVM for the native fuzz rebuild" {
     const replacement =
         \\const backend = b.step("backend-proof", "Require LLVM instrumentation for the native fuzz rebuild");
         \\if (tests.use_llvm != true) backend.dependOn(&b.addFail("hardened tests must select LLVM before fuzz instrumentation").step);
-        \\preflight.addConsumerCheck(b,
+        \\preflight.addConsumerCheck(b, b,
     ;
-    const modified = try std.mem.replaceOwned(u8, a, build, "preflight.addConsumerCheck(b,", replacement);
+    const modified = try std.mem.replaceOwned(u8, a, build, "preflight.addConsumerCheck(b, b,", replacement);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "backend-proof", "-Dci-hardened=true" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
@@ -1113,7 +1124,7 @@ test "toolchain caller-owned timing option retains its config override" {
     const io = std.testing.io;
     try fixture(a, tmp.dir);
     const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
-    const declared = try std.mem.replaceOwned(u8, a, build, "preflight.addCi(b, .{", "const timing = b.option(bool, \"ci-timings\", \"Caller-owned recording\") orelse false;\n    preflight.addCi(b, .{ .timings_enabled = timing,");
+    const declared = try std.mem.replaceOwned(u8, a, build, "preflight.addCi(b, b, .{", "const timing = b.option(bool, \"ci-timings\", \"Caller-owned recording\") orelse false;\n    preflight.addCi(b, b, .{ .timings_enabled = timing,");
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = declared });
     for ([_][]const u8{ "false", "true" }) |enabled| {
         const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--list-steps", try a.print("-Dci-timings={s}", .{enabled}) }, .cwd = .{ .dir = tmp.dir } });
@@ -1153,7 +1164,7 @@ test "owner cross objects preserve expected compile failure diagnostics without 
         \\        // A semantic failure produces no file for the object/link graph.
         \\        step.dependOn(&rejected.step);
         \\    }
-        \\    preflight.addCi(b, .{ .tests = step });
+        \\    preflight.addCi(b, b, .{ .tests = step });
         \\    const projected = b.top_level_steps.get("ci-check").?;
         \\    for (projected.step.dependencies.items) |dependency| {
         \\        const artifact = dependency.cast(std.Build.Step.Compile) orelse continue;

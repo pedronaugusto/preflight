@@ -31,9 +31,9 @@ const Shape = struct {
     options: []const Option = &.{},
 };
 
-/// Adds `check-consumer`. The project is generated under the cache, so the
-/// package keeps no consumer files of its own.
-pub fn add(b: *std.Build, options: Options) void {
+/// Adds `check-consumer` to `b`, over `package` (as `addCi` takes them). The project
+/// is generated under the cache, so the package keeps no consumer files of its own.
+pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     if (b.pkg_hash.len != 0) return;
     const pkg = (b.dependencyLazy("preflight", .{}) catch return).builder;
     const consumer = b.addExecutable(.{ .name = "preflight-consumer", .root_module = b.createModule(.{
@@ -48,7 +48,7 @@ pub fn add(b: *std.Build, options: Options) void {
     build.addArg(b.graph.zig_exe);
     build.addDirectoryArg2(b.graph.path(.local_cache, "preflight-consumer"), .{});
     build.addDirectoryArg2(packages.getDirectory(), .{});
-    build.addDirectoryArg2(b.path("."), .{});
+    build.addDirectoryArg2(package.path("."), .{});
     build.addFileArg(options.program);
     build.addArg(options.package);
     for (options.options) |option| build.addArg(switch (option.value) {

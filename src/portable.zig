@@ -16,16 +16,16 @@ const manifest_path = "zig-out/preflight/tests.json";
 
 /// `checker` is preflight's command program, which restores the executables'
 /// permission to run that an artifact upload drops.
-pub fn add(b: *std.Build, tests: *std.Build.Step, checker: Tool) void {
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: Tool) void {
     const compile = configure.claim(b, "ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
-    collect(b, tests, compile, &commands, &seen);
+    collect(b, package, tests, compile, &commands, &seen);
     const json = std.json.Stringify.valueAlloc(b.allocator, commands.items, .{}) catch @panic("OOM");
     const manifest = b.addWriteFiles().add("tests.json", json);
     compile.dependOn(&b.addInstallFile(manifest, "preflight/tests.json").step);
     const execute = configure.claim(b, "ci-run", "Run the previously compiled test executables");
-    const bytes = configure.read(b, manifest_path, .limited(1024 * 1024)) orelse {
+    const bytes = configure.read(package, manifest_path, .limited(1024 * 1024)) orelse {
         execute.dependOn(&b.addFail("portable test manifest missing; run ci-build or download its artifact first").step);
         return;
     };
@@ -33,13 +33,13 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, checker: Tool) void {
     if (stored.value.len == 0) @panic("portable test manifest contains no tests");
     const executable = checker.run(b);
     executable.addArg("executable");
-    executable.setCwd(b.path("."));
+    executable.setCwd(package.path("."));
     executable.has_side_effects = true;
     for (stored.value) |command| {
         executable.addArg(command.argv[0]);
-        const run = b.addRunFile(b.path(command.argv[0]));
+        const run = b.addRunFile(package.path(command.argv[0]));
         run.addArgs(command.argv[1..]);
-        run.setCwd(if (command.scratch) b.tmpPath() else b.path(command.cwd orelse "."));
+        run.setCwd(if (command.scratch) b.tmpPath() else package.path(command.cwd orelse "."));
         run.has_side_effects = true;
         // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; the recorded command needs .zig_test
         if (command.test_runner) run.enableTestRunnerMode();
@@ -54,7 +54,7 @@ fn temporary(step: *std.Build.Step) bool {
     return write.mode == .tmp;
 }
 
-fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, commands: *std.ArrayList(Command), seen: *std.AutoHashMap(*std.Build.Step, void)) void {
+fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, commands: *std.ArrayList(Command), seen: *std.AutoHashMap(*std.Build.Step, void)) void {
     const entry = seen.getOrPut(step) catch @panic("OOM");
     if (entry.found_existing) return;
     if (step.cast(std.Build.Step.Run)) |run| {
@@ -82,7 +82,7 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
         };
         var scratch = false;
         const cwd = if (run.cwd) |path| switch (path) {
-            .src_path => |source| if (source.owner == b) source.sub_path else @panic("portable tests must use a repository-relative directory"),
+            .src_path => |source| if (source.owner == package) source.sub_path else @panic("portable tests must use a repository-relative directory"),
             .generated => |generated| blk: {
                 if (!temporary(b.graph.generated_files.items[@backingInt(generated.index)])) @panic("portable tests must use a repository-relative or a fresh temporary directory");
                 scratch = true;
@@ -100,5 +100,5 @@ fn collect(b: *std.Build, step: *std.Build.Step, compile: *std.Build.Step, comma
         compile.dependOn(step);
         return;
     }
-    for (step.dependencies.items) |dependency| collect(b, dependency, compile, commands, seen);
+    for (step.dependencies.items) |dependency| collect(b, package, dependency, compile, commands, seen);
 }

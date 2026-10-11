@@ -36,8 +36,10 @@ pub fn main(init: std.process.Init) !void {
     _ = try command(a, init.io, candidate, &.{ "git", "clone", "--shared", "--no-checkout", "--", candidate, checkout });
     _ = try command(a, init.io, checkout, &.{ "git", "checkout", "--detach", sha });
     // Each revision configures itself. No guessed executable or graph reconstruction.
-    _ = try command(a, init.io, checkout, &.{ zig, "build", "bench-build" });
-    _ = try command(a, init.io, candidate, &.{ zig, "build", "bench-build" });
+    // Under bay, `bay bench-build` finds the step in whichever build each revision has it.
+    const build: []const []const u8 = if (optional(args, "--bay")) |bay| &.{ bay, "bench-build" } else &.{ zig, "build", "bench-build" };
+    _ = try command(a, init.io, checkout, build);
+    _ = try command(a, init.io, candidate, build);
     const suffix = if (builtin.os.tag == .windows) ".exe" else "";
     const executable = try a.print("{s}{s}", .{ program, suffix });
     const base_bin = try Io.Dir.path.join(a, &.{ checkout, "zig-out", "bench", executable });
@@ -119,7 +121,7 @@ fn arguments(args: []const []const u8) !void {
     while (i < args.len) : (i += 2) {
         const flag = args[i];
         var known = false;
-        for ([_][]const u8{ "--zig", "--candidate", "--comparison", "--base", "--program", "--pairs", "--row", "--output" }) |name| if (std.mem.eql(u8, flag, name)) {
+        for ([_][]const u8{ "--zig", "--bay", "--candidate", "--comparison", "--base", "--program", "--pairs", "--row", "--output" }) |name| if (std.mem.eql(u8, flag, name)) {
             known = true;
         };
         if (!known) return error.UnknownBenchmarkOption;

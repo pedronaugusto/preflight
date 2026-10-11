@@ -49,6 +49,8 @@ pub fn main(init: std.process.Init) !void {
                 if (tiers.compile.len > 0) "true" else "false",
             }));
         } else try stdout(c, value);
+    } else if (std.mem.eql(u8, command, "version")) {
+        try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)}));
     } else if (std.mem.eql(u8, command, "release")) {
         try releaseCommand(&c, args);
     } else if (std.mem.eql(u8, command, "cache")) {

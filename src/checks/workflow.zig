@@ -141,7 +141,7 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     const releases = std.mem.eql(u8, try boolean(config, "release"), "true");
     // The tag is made by the landing job, after it moves main.
     if (releases and !lands) return error.ReleaseWithoutLand;
-    const release_inputs = if (releases) try a.print("\n        with:\n          release: true\n          directory: {s}", .{try std.json.Stringify.valueAlloc(a, directory, .{})}) else "";
+    const release_inputs = if (releases) "\n        with:\n          version: ${{ needs.gate.outputs.version }}" else "";
     // Only the job that lands writes, and only to move main; it waits for the whole gate.
     const land_input =
         \\      land:
@@ -382,9 +382,9 @@ test "release asks the landing job to tag, and needs a landing" {
     const a = arena.allocator();
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const released = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"release\":true}", .{})).value, pin, "pkg", false, "ci.yml");
-    try std.testing.expect(std.mem.find(u8, released, "actions/land@" ++ pin ++ "\n        with:\n          release: true\n          directory: \"pkg\"\n") != null);
+    try std.testing.expect(std.mem.find(u8, released, "actions/land@" ++ pin ++ "\n        with:\n          version: ${{ needs.gate.outputs.version }}\n") != null);
     const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true}", .{})).value, pin, ".", false, "ci.yml");
-    try std.testing.expect(std.mem.find(u8, plain, "release: true") == null);
+    try std.testing.expect(std.mem.find(u8, plain, "version:") == null);
     for ([_][]const u8{ "{\"release\":true}", "{\"land\":true,\"release\":\"yes\"}" }) |text| {
         try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml")));
     }

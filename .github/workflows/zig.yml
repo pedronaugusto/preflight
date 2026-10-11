@@ -46,6 +46,10 @@ on:
         description: Upgrade Git for Windows before setting up test tools
         type: boolean
         default: false
+    outputs:
+      version:
+        description: The version build.zig.zon declares, which a landing with release tags
+        value: ${{ jobs.toolchain.outputs.version }}
 permissions:
   contents: read
   actions: read
@@ -65,6 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,6 +91,11 @@ jobs:
           include-hidden-files: true
           retention-days: ${{ github.repository == 'pedronaugusto/preflight' && 90 || 1 }}
           overwrite: true
+      # The version is read by the checks, so no workflow parses the manifest.
+      - name: Read the package's version
+        id: version
+        working-directory: ${{ inputs.working-directory }}
+        run: echo "version=$($GITHUB_WORKSPACE/.preflight-bin/linux/preflight version)" >> "$GITHUB_OUTPUT"
       # A documentation generator may run zig.
       - uses: mlugg/setup-zig@v2
         if: inputs.tier == 'fast'

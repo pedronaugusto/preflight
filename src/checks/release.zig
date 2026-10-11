@@ -170,6 +170,15 @@ fn parseManifest(c: *src.Context, text: []const u8) !Manifest {
     };
 }
 
+/// The package's version as `build.zig.zon` declares it: what the landing tags.
+pub fn declared(c: *src.Context) !Version {
+    const manifest = try parseManifest(c, try c.read("build.zig.zon"));
+    return Version.parse(manifest.version) catch {
+        c.fail("build.zig.zon: .version \"{s}\" is not major.minor.patch", .{manifest.version});
+        return error.InvalidVersion;
+    };
+}
+
 /// Whether `path` is one of the manifest's `.paths` or under one.
 pub fn shipped(listed: []const []const u8, path: []const u8) bool {
     for (listed) |entry| {
@@ -407,6 +416,16 @@ const Fixture = struct {
         try f.write("CHANGELOG.md", text);
     }
 };
+
+test "the declared version is read from the manifest" {
+    const f = try Fixture.init("2.0.7");
+    defer f.deinit();
+    var c = f.context();
+    try std.testing.expectEqual(Version{ .major = 2, .minor = 0, .patch = 7 }, try declared(&c));
+    try f.write("build.zig.zon", ".{ .name = .pkg, .version = \"2.0\", .paths = .{\"\"} }\n");
+    try std.testing.expectError(error.InvalidVersion, declared(&c));
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
+}
 
 test "a package that did not change since its tag is not released" {
     const f = try Fixture.init("0.1.0");

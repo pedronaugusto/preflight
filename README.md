@@ -377,7 +377,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   it, and runs the step as CI configures: with an empty project `zig-pkg` and a global cache of its
   own (`ZIG_GLOBAL_CACHE_DIR`), since Zig compiles every lazy package it finds on
   disk and a warm cache puts each version ever fetched into the tree. The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
-  manifest's version has no tag yet, with the same token.
+  manifest's version has no tag yet, with the same token. The version comes from the gate
+  (`preflight version`, an output of `zig.yml`), so no workflow parses the manifest.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
   merge or release run left for its exact SHA, and fails without one. For repositories that push
   to main by hand.

@@ -91,7 +91,7 @@ other entry the patch. It does not guess a bump from the diff: a change with not
 error that names the fix, because a changelog that can be skipped is not the record of what
 changed. The command writes `build.zig.zon` and `CHANGELOG.md` and leaves the commit to the landing
 script, since only the script knows which branch it is on. The tag is made by the caller's `land` job,
-which alone writes, after the fast-forward, when the manifest's version has none; an existing tag is
+which alone writes, after the fast-forward, when the manifest's version has none. The gate's first job reads that version with `preflight version` and exposes it as an output, so the manifest is parsed in Zig only and the land action just creates the tag from the value it is given; an existing tag is
 left where it is. A release made and waiting for its tag is recognised and not made twice. The
 choice is opt-in (`release` in `ci/workflow.json`) and general: nothing in it knows a family.
 

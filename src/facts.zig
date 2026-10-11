@@ -30,13 +30,17 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
     }
     var snapshot = try capture(c, argv.items);
     snapshot.options = try c.a.dupe([]const u8, options);
-    if (c.bay != null) snapshot.package = try checkedPackage(c, &snapshot.config);
+    if (c.bay) |bay| snapshot.package = try checkedPackage(c, bay, &snapshot.config);
     return snapshot;
 }
 
 /// The package at the checked directory, among the owners of the build's steps, their root modules and those modules' files.
-fn checkedPackage(c: src.Context, config: *const C) !C.Package.Index {
+fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) !C.Package.Index {
     const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
+    // Zig reports a package's root from the directory it runs in, the build's root:
+    // under bay the development root, which bay names.
+    var build_root = try Io.Dir.cwd().openDir(c.io, try developmentRoot(c, bay), .{});
+    defer build_root.close(c.io);
     var owners: std.array_hash_map.Auto(C.Package.Index, void) = .empty;
     for (config.steps) |step| {
         try owners.put(c.a, step.owner, {});
@@ -49,10 +53,17 @@ fn checkedPackage(c: src.Context, config: *const C) !C.Package.Index {
     }
     for (owners.keys()) |owner| {
         const package = owner.get(config) orelse continue;
-        const path = c.directory().realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch continue;
+        const path = build_root.realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch continue;
         if (std.mem.eql(u8, path, here)) return owner;
     }
     return error.PackageNotInDevelopmentBuild;
+}
+
+/// The development build's root, as `bay locate --dev` names it.
+fn developmentRoot(c: src.Context, bay: []const u8) ![]const u8 {
+    const located = try std.process.run(c.a, c.io, .{ .argv = &.{ bay, "locate", "--dev" }, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout_limit = .limited(1 << 16), .stderr_limit = .limited(1 << 16) });
+    try successful(located.term);
+    return std.mem.trim(u8, located.stdout, "\r\n");
 }
 
 fn capture(c: src.Context, argv: []const []const u8) !Snapshot {

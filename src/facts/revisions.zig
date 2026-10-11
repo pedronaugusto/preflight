@@ -155,7 +155,7 @@ pub fn artifactGraph(a: std.mem.Allocator, config: *const C, package: C.Package.
             try links.append(a, link);
             // A dependency bound to the package's own module holds no second copy and no pin.
             // A second revision of the same package is the revision check's to report and except.
-            if (!checked(owner, package) and !std.mem.eql(u8, from, link.name)) try edges.append(a, .{ .from = from, .to = link.name });
+            if (!checked(config, owner, package) and !std.mem.eql(u8, from, link.name)) try edges.append(a, .{ .from = from, .to = link.name });
         }
     }
     return .{ .links = links.items, .edges = edges.items };
@@ -168,12 +168,17 @@ fn label(a: std.mem.Allocator, config: *const C, owner: C.Package.Index) ![]cons
 
 /// Whether `owner` is the package checked: the root, which is that package or its
 /// development build, or the package itself.
-fn checked(owner: C.Package.Index, package: C.Package.Index) bool {
-    return owner == .root or owner == package;
+/// Whether `owner` is the checked package: the root, or any instance of the package
+/// (a build makes one per set of options it is asked with), all at one root.
+fn checked(config: *const C, owner: C.Package.Index, package: C.Package.Index) bool {
+    if (owner == .root or owner == package) return true;
+    const mine = package.get(config) orelse return false;
+    const theirs = owner.get(config) orelse return false;
+    return std.mem.eql(u8, mine.root_path.slice(config), theirs.root_path.slice(config));
 }
 
 fn linkOf(a: std.mem.Allocator, config: *const C, checked_package: C.Package.Index, owner: C.Package.Index, root_name: []const u8, puller: []const u8) !Link {
-    if (checked(owner, checked_package)) return .{ .name = root_name, .revision = "", .puller = puller };
+    if (checked(config, owner, checked_package)) return .{ .name = root_name, .revision = "", .puller = puller };
     const package = owner.get(config).?;
     const hash = try a.dupe(u8, package.hash.slice(config));
     return .{ .name = packageName(hash), .revision = hash, .puller = puller };
@@ -183,7 +188,7 @@ fn linkOf(a: std.mem.Allocator, config: *const C, checked_package: C.Package.Ind
 fn ownSource(config: *const C, package: C.Package.Index, module: C.Module.Index) bool {
     const file = module.get(config).root_source_file.unwrap() orelse return true;
     return switch (file.get(config)) {
-        .source_path => |source| checked(source.owner, package),
+        .source_path => |source| checked(config, source.owner, package),
         else => true,
     };
 }
@@ -200,7 +205,7 @@ pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_n
     // The same finding in several artifacts is reported once.
     var findings: std.array_hash_map.String(std.ArrayList([]const u8)) = .empty;
     for (config.steps) |step| {
-        if (!checked(step.owner, package)) continue;
+        if (!checked(config, step.owner, package)) continue;
         const compile = step.extended.cast(config, C.Step.Compile) orelse continue;
         // A checker's own tools, built in the package's graph from the checker's sources, are not the package's.
         if (!ownSource(config, package, compile.root_module)) continue;

@@ -472,6 +472,36 @@ test "the watchdog fails a stalled test by name and phase" {
     try std.testing.expect(command.succeeded(quick));
 }
 
+test "the watchdog names the Io teardown of a test that leaves a task running" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a teardown test\" } }");
+    // The task outlives the test body and ignores cancelation, so the backend's
+    // teardown, which waits for it, is what stalls.
+    const leaving =
+        \\const std = @import("std");
+        \\var group: std.Io.Group = .init;
+        \\fn linger() void {
+        \\    while (true) std.Io.sleep(std.testing.io, .fromSeconds(1), .awake) catch |err| switch (err) {
+        \\        error.Canceled => {},
+        \\    };
+        \\}
+        \\test "lingers" {
+        \\    try group.concurrent(std.testing.io, linger, .{});
+        \\}
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = leaving });
+    const stuck = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!command.succeeded(stuck));
+    try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers exceeded 300 ms; phase io_teardown") != null);
+}
+
 test "the consumer check builds the package as a dependency with nothing fetched" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

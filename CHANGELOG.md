@@ -23,6 +23,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A test of preflight's own holds the watchdog's `io_teardown` phase: a test that leaves a task running through its Io teardown fails by name and that phase. A package no longer needs a probe of its own for it.
 - `addNestedManifest` writes the `build.zig.zon` of a build nested in the package (a conformance build, a consumer fixture) at build time, taking the packages the root also pins from the root's own manifest, so a nested manifest does not have to be committed or kept in step.
 - Versions on landing, opt-in (`release` in `ci/workflow.json`, with `land`): the step `release` gives a package that changed since its last `v*` tag (any file under `.paths`) its next version from the `[Unreleased]` headings, a `### Breaking` entry bumping the minor below 1.0 and the major from 1.0 and anything else the patch, writes it to `build.zig.zon` and cuts the changelog with its link references; an unchanged package gets no release, an empty `[Unreleased]` or an existing tag fails naming the fix. The caller's `land` job tags the landed commit `vX.Y.Z` when the manifest's version has no tag, never moving one.
 - A project with no `ci/preflight.json`, `ci/workflow.json` or `ci/layers.zig` gets every default; `.paths` need not name a README or changelog the package does not have. `sample/zero`, such a project, runs in preflight's own gate on every host.

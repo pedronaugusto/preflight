@@ -67,6 +67,12 @@ pub fn dev(b: *std.Build, tools: type) void {
     // The integration tests run fixture packages the way their authors do: through bay.
     const bay = package.dependencyLazy("bay", .{ .optimize = .safe }) catch return pending(b);
     options.addOptionPath("bay", bay.artifact("bay").getEmittedBin());
+    // The landing's tests run the preflight program as its user does, with a stand-in for
+    // the GitHub CLI and for bay's tidy on PATH.
+    const executable = program(b, package, target) orelse return;
+    options.addOptionPath("preflight", executable.getEmittedBin());
+    const fake = b.addExecutable(.{ .name = "gh", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/gh.zig"), .target = target, .optimize = .debug }) });
+    options.addOptionPath("gh", fake.getEmittedBin());
     tests.root_module.addOptions("test_options", options);
     // The gate below gives the suite preflight's runner, as it does a
     // consumer's tests; the order module and the watchdog the runner
@@ -99,7 +105,6 @@ pub fn dev(b: *std.Build, tools: type) void {
         .target = target,
         .optimize = .debug,
     } });
-    const executable = program(b, package, target) orelse return;
     const check = b.step("check", "Compile the shared checks and runner without running tests");
     check.dependOn(&tests.step);
     check.dependOn(&order.step);
@@ -180,7 +185,7 @@ fn addToolchain(b: *std.Build) bool {
 
 /// The steps that run one of the installed command's subcommands in `root`.
 fn addCommands(b: *std.Build, executable: *std.Build.Step.Compile, root: []const u8) void {
-    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "release" }) |name| {
+    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "release", "land" }) |name| {
         if (b.top_level_steps.contains(name)) continue;
         const command = b.addRunArtifact(executable);
         command.addArg(name);

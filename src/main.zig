@@ -54,6 +54,8 @@ pub fn main(init: std.process.Init) !void {
         try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)}));
     } else if (std.mem.eql(u8, command, "release")) {
         try releaseCommand(&c, args);
+    } else if (std.mem.eql(u8, command, "land")) {
+        try landCommand(&c, args);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
     } else if (std.mem.eql(u8, command, "executable")) {
@@ -152,6 +154,25 @@ fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
         .unchanged => |tag| try stdout(c.*, try c.a.print("no release: nothing the package ships changed since {s}\n", .{tag})),
         .prepared => |version| try stdout(c.*, try c.a.print("{f} is released in build.zig.zon and CHANGELOG.md and waits for its tag\n", .{version})),
         .released => |made| try stdout(c.*, try c.a.print("released {f} -> {f}{s}\n", .{ made.from, made.to, if (made.breaking) " (breaking)" else "" })),
+    }
+}
+
+/// `land`: the branch checked out, released, through the merge tier and onto main.
+fn landCommand(c: *src.Context, args: []const []const u8) !void {
+    var index: usize = 2;
+    while (index < args.len) : (index += 2) {
+        if (!std.mem.eql(u8, args[index], "--date")) return error.UnknownLandOption;
+        if (index + 1 == args.len) return error.MissingLandOptionValue;
+    }
+    const date = option(args, "--date") orelse try checks.release.today(c.a, c.io);
+    const outcome = checks.land.run(c, .{ .date = date }) catch |err| switch (err) {
+        // Reported where it failed.
+        error.LandFailed => return error.CheckFailed,
+        else => return err,
+    };
+    switch (outcome) {
+        .nothing => |why| try stdout(c.*, try c.a.print("nothing to land: {s}\n", .{why})),
+        .landed => |landed| try stdout(c.*, try c.a.print("landed {s}: main is at {s}{s}\n", .{ landed.name, landed.sha[0..12], if (landed.followed) "" else ", and the branch, which moved while the run ran, stays where it is" })),
     }
 }
 

@@ -197,6 +197,12 @@ const Steps = struct {
         release.setCwd(package.path("."));
         release.has_side_effects = true;
         configure.claim(b, "release", "Give a changed package its next version in build.zig.zon and CHANGELOG.md, or say it needs none").dependOn(&release.step);
+        const land = executable.run(b);
+        land.addArg("land");
+        land.addPassthruArgs();
+        land.setCwd(package.path("."));
+        land.has_side_effects = true;
+        configure.claim(b, "land", "Release the branch on a land branch, run the merge tier with land, and on green follow main").dependOn(&land.step);
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(package.path("."));

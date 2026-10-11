@@ -65,7 +65,7 @@ project, and preflight's own gate runs it on every host.
 
 `addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
-`check-imports`, `release`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
+`check-imports`, `release`, `land`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
@@ -400,12 +400,24 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   `[Unreleased]` into `## [X.Y.Z] - date` under a fresh empty one, with the link references
   following. A package that did not change gets no release and the command says so; one that
   changed with nothing under `[Unreleased]` fails naming the fix; a version whose tag exists
-  fails, since a tag is never moved. The landing script commits the result before the gate tests
-  it, and runs the step as CI configures: with an empty project `zig-pkg` and a global cache of its
-  own (`ZIG_GLOBAL_CACHE_DIR`), since Zig compiles every lazy package it finds on
-  disk and a warm cache puts each version ever fetched into the tree. The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
+  fails, since a tag is never moved. `land` below commits the result before the gate tests it.
+  The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
   manifest's version has no tag yet, with the same token. The version comes from the gate
   (`preflight version`, an output of `zig.yml`), so no workflow parses the manifest.
+
+  `zig build land` (`bay land` under bay), the step `addCi` adds, lands the branch checked out
+  through this gate. It needs `land` and `release`, a clean tree and the GitHub CLI signed in;
+  preflight never reads the token. On a detached HEAD it rebases the branch on origin's main (a
+  conflict stops it, naming the files), runs `bay tidy` under bay so that pins name released
+  revisions, adds `- Pins gantry 0.1.4.` under `### Changed` when the manifest pins a dependency
+  at another revision than the last `v*` tag did and `[Unreleased]` names none of them, makes the
+  release and commits it as `Release vX.Y.Z`. That commit goes to `land/vX.Y.Z`, or
+  `land/<branch>` when nothing the package ships changed; a branch main already holds lands
+  nothing and says so. `land` dispatches the caller on it with `-f tier=merge -f land=true`,
+  prints the run's URL and waits. Green: main and the tag are on the tested commit, the branch
+  moves there and the land branch is deleted. Red: the failed jobs are named, and the branch is
+  as it was, so landing again makes the same version and replaces the land branch the red run
+  left. It exits 0 when it landed or had nothing to land, 1 otherwise.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
   merge or release run left for its exact SHA, and fails without one. For repositories that push
   to main by hand.

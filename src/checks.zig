@@ -15,6 +15,7 @@ pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 pub const manifest = @import("checks/manifest.zig");
 pub const release = @import("checks/release.zig");
+pub const land = @import("checks/land.zig");
 pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
 
@@ -46,6 +47,8 @@ test {
     _ = attest;
     _ = manifest;
     _ = release;
+    _ = land;
+    _ = @import("checks/land_test.zig");
     _ = command;
     _ = paths;
     _ = phases;

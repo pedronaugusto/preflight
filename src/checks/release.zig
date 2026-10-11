@@ -62,19 +62,25 @@ fn isLinkReference(line: []const u8) bool {
     return close + 1 < line.len and line[close + 1] == ':';
 }
 
-/// The lines after the `[Unreleased]` heading up to the next release or the link references.
-fn unreleasedBody(changelog: []const u8) ?[]const u8 {
+/// Where the lines after the `[Unreleased]` heading start and end: up to the next release or the link references.
+pub fn unreleasedRange(changelog: []const u8) ?struct { start: usize, end: usize } {
     var offset: usize = 0;
     var start: ?usize = null;
     while (offset < changelog.len) {
         const end = std.mem.findScalarPos(u8, changelog, offset, '\n') orelse changelog.len;
         const line = std.mem.trimEnd(u8, changelog[offset..end], " \t\r");
         if (start) |from| {
-            if (std.mem.startsWith(u8, line, "## ") or isLinkReference(line)) return changelog[from..offset];
+            if (std.mem.startsWith(u8, line, "## ") or isLinkReference(line)) return .{ .start = from, .end = offset };
         } else if (std.mem.eql(u8, line, heading)) start = @min(end + 1, changelog.len);
         offset = end + 1;
     }
-    return if (start) |from| changelog[from..] else null;
+    return if (start) |from| .{ .start = from, .end = changelog.len } else null;
+}
+
+/// The lines after the `[Unreleased]` heading up to the next release or the link references.
+fn unreleasedBody(changelog: []const u8) ?[]const u8 {
+    const range = unreleasedRange(changelog) orelse return null;
+    return changelog[range.start..range.end];
 }
 
 pub fn unreleased(changelog: []const u8) !Unreleased {
@@ -199,7 +205,7 @@ fn succeeded(result: std.process.RunResult) bool {
 }
 
 /// The newest `v*` tag reachable from the commit, or null before the first release.
-fn lastTag(c: src.Context) !?[]const u8 {
+pub fn lastTag(c: src.Context) !?[]const u8 {
     const result = try git(c, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*" });
     if (!succeeded(result)) return null;
     return std.mem.trim(u8, result.stdout, " \r\n");

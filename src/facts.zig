@@ -298,16 +298,18 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
         for (table.items(.name), table.items(.module), bindings) |name, imported, *binding| {
             binding.* = .{ .name = name.slice(c), .module = indices.getIndex(imported).? };
         }
-        module.* = .{ .root = try rootPath(a, c, configured.root_source_file), .imports = bindings };
+        module.* = .{ .root = try rootPath(a, c, snapshot.package, configured.root_source_file), .imports = bindings };
     }
     return out;
 }
 
-/// Where a module's root file is, relative to the repository's root.
-fn rootPath(a: std.mem.Allocator, c: *const C, index: C.LazyPath.OptionalIndex) !?[]const u8 {
+/// Where a module's root file is, relative to the repository's root: the checked
+/// package's files are the repository's, wherever the configured build sits.
+fn rootPath(a: std.mem.Allocator, c: *const C, checked: C.Package.Index, index: C.LazyPath.OptionalIndex) !?[]const u8 {
     const path = (index.unwrap() orelse return null).get(c);
     switch (path) {
         .source_path => |source| {
+            if (source.owner == checked) return try a.dupe(u8, source.sub_path.slice(c));
             const package = source.owner.get(c) orelse return try a.dupe(u8, source.sub_path.slice(c));
             return try Io.Dir.path.join(a, &.{ package.root_path.slice(c), source.sub_path.slice(c) });
         },

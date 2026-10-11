@@ -14,7 +14,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, step: []c
     run.addArg("--package");
     run.addDirectoryArg2(package.path("."), .{});
     // The runner builds the step itself, as this same build: `bay dev` under bay, else zig build.
-    if (b.graph.environ_map.get("BAY")) |bay| run.addArgs(&.{ "--bay", bay }) else run.addArgs(&.{ "--zig", b.graph.zig_exe });
+    if (configure.bay(b, package)) |bay| run.addArgs(&.{ "--bay", bay }) else run.addArgs(&.{ "--zig", b.graph.zig_exe });
     run.addArgs(&.{ "--step", step });
     run.addPassthruArgs();
     run.has_side_effects = true;

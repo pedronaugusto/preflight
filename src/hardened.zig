@@ -48,12 +48,12 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
             tests.dependOn(&b.addFail(b.fmt("hardened: {s} must execute native tests, not compile only", .{name})).step);
         }
     }
-    const normal = again(b, &.{ "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
+    const normal = again(b, package, &.{ "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, normal);
     normal.setCwd(package.path("."));
     normal.has_side_effects = true;
     configure.claim(b, "hardened", "Execute opt-in safety-on tests using the existing std.testing allocator").dependOn(&normal.step);
-    const fuzz = again(b, &.{ given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
+    const fuzz = again(b, package, &.{ given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
     forward(b, fuzz);
     fuzz.setCwd(package.path("."));
     fuzz.has_side_effects = true;
@@ -61,7 +61,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
         fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support").step);
     } else fuzz_step.dependOn(&fuzz.step);
-    const tsan = again(b, &.{ given.tsan_step, "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
+    const tsan = again(b, package, &.{ given.tsan_step, "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, tsan);
     tsan.setCwd(package.path("."));
     tsan.has_side_effects = true;
@@ -72,8 +72,8 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
 }
 
 /// This same build run again with `args`: the development build under bay, else zig build.
-fn again(b: *std.Build, args: []const []const u8) *std.Build.Step.Run {
-    const run = b.addSystemCommand(configure.rerun(b));
+fn again(b: *std.Build, package: *std.Build, args: []const []const u8) *std.Build.Step.Run {
+    const run = b.addSystemCommand(configure.rerun(b, package));
     run.addArgs(args);
     return run;
 }

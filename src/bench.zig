@@ -61,7 +61,7 @@ pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Buil
     build.dependOn(&driver.step);
     const ab = b.addRunArtifact(driver);
     ab.addArgs(&.{ "--zig", b.graph.zig_exe });
-    if (b.graph.environ_map.get("BAY")) |bay| ab.addArgs(&.{ "--bay", bay });
+    if (configure.bay(b, package)) |bay| ab.addArgs(&.{ "--bay", bay });
     ab.addArg("--candidate");
     ab.addDirectoryArg2(package.path("."), .{});
     ab.addArg("--comparison");

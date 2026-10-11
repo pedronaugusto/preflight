@@ -71,11 +71,18 @@ pub fn declared(b: *std.Build, name: []const u8, args: anytype) error{LazyDepend
     return null;
 }
 
+/// bay, when `b` is a development build: the one that runs it (`BAY`), else the
+/// one on PATH. Null when `b` is the package's own build, which `zig build` runs.
+pub fn bay(b: *std.Build, package: *std.Build) ?[]const u8 {
+    if (package == b) return null;
+    return b.graph.environ_map.get("BAY") orelse "bay";
+}
+
 /// The command that runs this same build again, for a tool that builds one of
-/// its steps from outside (another checkout, a rerun with other options): `bay
-/// dev`, the development build, when the build runs under bay; else `zig build`.
-pub fn rerun(b: *std.Build) []const []const u8 {
-    if (b.graph.environ_map.get("BAY")) |bay| return b.allocator.dupe([]const u8, &.{ bay, "dev" }) catch @panic("OOM");
+/// its steps from outside (a rerun with other options, a fuzzing session): `bay
+/// dev` for a development build; else `zig build`.
+pub fn rerun(b: *std.Build, package: *std.Build) []const []const u8 {
+    if (bay(b, package)) |path| return b.allocator.dupe([]const u8, &.{ path, "dev" }) catch @panic("OOM");
     return b.allocator.dupe([]const u8, &.{ b.graph.zig_exe, "build" }) catch @panic("OOM");
 }
 

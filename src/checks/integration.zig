@@ -915,7 +915,8 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
     const relative = try std.Io.Dir.path.relativeAlloc(a, package_root, null, fixture_root, package_root);
     const shakedown = try shakedownPin(a);
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\" }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) }) });
-    const bay = @import("test_options").bay;
+    // The fixture runs from its own directory, so bay is named by its absolute path.
+    const bay = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("test_options").bay, a);
     for ([_][]const []const u8{ &.{ bay, "ci", "-Dci-lint=false" }, &.{ bay, "bench-build" }, &.{ bay, "check-consumer" } }) |argv| {
         const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir } });
         if (!command.succeeded(result)) std.debug.print("{s} {s}:\n{s}", .{ argv[1], if (argv.len > 2) argv[2] else "", result.stderr });

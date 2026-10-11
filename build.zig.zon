@@ -10,11 +10,13 @@
             .hash = "glint-0.1.0-3jcpoS1xBgCF6r6TbU9gwVgs6lipJnOPvuYCPnwWq978",
             .lazy = true,
         },
+
         .gantry = .{
             .url = "git+https://github.com/pedronaugusto/gantry#e7c4ed3ed2ed758978fabef4a3c16a1f773bf9f1",
             .hash = "gantry-0.1.0-1iNrkefbCwBNMzRhH6EfemwJWoFByc7hi9PtxsBzouXX",
             .lazy = true,
         },
+
         .bay = .{
             .url = "git+https://github.com/pedronaugusto/bay?ref=main#8ef094c975f4d06259f17eff5f2c4565de101f3d",
             .hash = "bay-0.0.0-uwJ5Z7G7AADUK8KQlXPpFjy4sDg5Pb77yka_VotPB7et",

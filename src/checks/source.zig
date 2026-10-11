@@ -24,16 +24,11 @@ pub const Context = struct {
     /// Findings a check reports without failing: a run with any shows what it held.
     notes: usize = 0,
 
-    /// The command that runs one of the package's steps: `bay` under bay, which
-    /// finds the step in the package's build or its development build; else `zig build`.
-    pub fn stepCommand(c: Context) []const []const u8 {
-        if (c.bay) |bay| return c.a.dupe([]const u8, &.{bay}) catch @panic("OOM");
-        return c.a.dupe([]const u8, &.{ c.zig, "build" }) catch @panic("OOM");
-    }
-
-    /// The command that configures the package's whole build: the development
-    /// build under bay (`bay dev`), which holds the package; else `zig build`.
-    pub fn wholeCommand(c: Context) []const []const u8 {
+    /// The command that runs the package's steps: under bay, `bay dev`, the
+    /// development build that holds the package and the gate. Never bare `bay
+    /// <step>`, where bay's own commands (`install`, `build`, ...) win over a step
+    /// of the same name. Without bay, `zig build`.
+    pub fn buildCommand(c: Context) []const []const u8 {
         if (c.bay) |bay| return c.a.dupe([]const u8, &.{ bay, "dev" }) catch @panic("OOM");
         return c.a.dupe([]const u8, &.{ c.zig, "build" }) catch @panic("OOM");
     }

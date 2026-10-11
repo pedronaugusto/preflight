@@ -37,8 +37,9 @@ and no configuration file:
 
 3. Generate the hosted workflow: `mkdir -p .github/workflows && bay plan -- --workflow .github/workflows/ci.yml`.
 
-`bay ci` runs the gate locally. The hosted gate builds bay beside the checks and runs a
-package that declares `.dev_dependencies` through it, and one that does not through `zig build`.
+`bay ci` runs the gate locally. The hosted gate builds bay beside the checks and runs
+every step of a package that declares `.dev_dependencies` as `bay dev <step>`, so a
+step named like one of bay's commands is still the step; one without runs `zig build`.
 
 Without bay, preflight is a lazy dependency, and `build` adds the gate over its own package:
 pin it with `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,

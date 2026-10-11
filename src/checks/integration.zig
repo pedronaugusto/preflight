@@ -865,6 +865,44 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
     try std.testing.expect(std.mem.find(u8, unlinked.stderr, "nativeValue") != null);
 }
 
+test "a helper program a test names by path is compiled to an object, not linked, for a foreign target" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The helper links a framework, which a foreign host has no SDK to find:
+    // linking it would fail, and compiling it to an object cannot.
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const helper = b.addExecutable(.{ .name = "helper", .root_module = b.createModule(.{ .root_source_file = b.path("src/helper.zig"), .target = target, .optimize = optimize }) });
+        \\    if (target.result.os.tag == .macos) helper.root_module.linkFramework("Security", .{});
+        \\    const options = b.addOptions();
+        \\    options.addOptionPath("helper_path", helper.getEmittedBin());
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    module.addOptions("options", options);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
+        \\    preflight.addCi(b, b, .{ .tests = test_step });
+        \\}
+        \\
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/helper.zig", .data = "pub fn main() void {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const options = @import(\"options\");\ntest \"names its helper\" { _ = options.helper_path; }\n" });
+    for ([_][]const u8{ "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu" }) |target| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+        if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    }
+}
+
 test "owner caller regeneration replaces stale pin without a consumer planner" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1088,6 +1126,32 @@ test "toolchain hosted runner forwards its benchmark control exactly once" {
     try env.put("STEP", "hardened");
     try env.put("BUILD_ARGS", "-Dci-lint=false -Dci-bench-smoke=false");
     try env.put("PREFLIGHT_SETUP", "false");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
+test "toolchain hosted runner passes the SDK only to a build that declares it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A build that never calls addCi, as a declared job's nested build does:
+    // Zig refuses an option such a build does not know.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void {\n    _ = b.step(\"test\", \"nothing to run\");\n}\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = "{}" });
+    const fixture_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const owner = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, root, a);
+    const build = try std.Io.Dir.path.join(a, &.{ owner, "build.zig" });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("STEP", "test");
+    try env.put("BUILD_ARGS", "");
+    try env.put("PREFLIGHT_SETUP", "false");
+    // The runner's SDK, as `setup` writes it on a macOS host.
+    try env.put("SDKROOT", fixture_root);
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));

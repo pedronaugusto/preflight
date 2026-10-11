@@ -373,13 +373,8 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         if (std.mem.eql(u8, token, "-Dci-bench-smoke=false")) continue;
         try argv.append(c.a, token);
     }
-    // SDK identity is an explicit build option, so Zig configuration caches
-    // cannot retain a different runner's SDKROOT environment.
-    if (builtin.os.tag == .macos) {
-        if (env.get("SDKROOT")) |sdk| try argv.append(c.a, try c.a.print("-Dci-sdk={s}", .{sdk}));
-    }
     // Custom legacy steps may not use addCi. Ask the configured compiler
-    // graph whether it declares this control instead of guessing from source.
+    // graph whether it declares these controls instead of guessing from source.
     {
         const timer = checks.phases.Timer.begin(c, "configure the build");
         defer timer.end(c, log);
@@ -389,6 +384,13 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
             // This program is the checks the build would compile, built from the same commit.
             if (std.mem.eql(u8, name, "ci-checks")) try argv.append(c.a, try c.a.print("-Dci-checks={s}", .{try std.process.executablePathAlloc(c.io, c.a)}));
+            // SDK identity is an explicit build option, so Zig configuration caches
+            // cannot retain a different runner's SDKROOT environment. A build that
+            // does not declare it (a nested package, a custom step) is not asked: Zig
+            // refuses an option a build does not know.
+            if (std.mem.eql(u8, name, "ci-sdk") and builtin.os.tag == .macos) {
+                if (env.get("SDKROOT")) |sdk| try argv.append(c.a, try c.a.print("-Dci-sdk={s}", .{sdk}));
+            }
         }
     }
     // PREFLIGHT_SHARD reaches the test runners through the environment.

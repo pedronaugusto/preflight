@@ -65,11 +65,11 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     var protocol: Io.Writer.Allocating = .init(c.a);
     var frame_count: usize = 0;
     while (true) {
-        try available(&multi, 8);
+        try available(c, &multi, 8);
         const header = try multi.reader(0).takeStruct(std.zig.Server.Message.Header, .little);
         frame_count += 1;
         if (frame_count > 64 or header.bytes_len > 8 * 1024 * 1024) return error.ProtocolFrameTooLong;
-        try available(&multi, header.bytes_len);
+        try available(c, &multi, header.bytes_len);
         const body = try multi.reader(0).take(header.bytes_len);
         if (protocol.written().len > limit - 8 - body.len) return error.ProtocolOutputTooLong;
         try protocol.writer.writeStruct(header, .little);
@@ -100,10 +100,16 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     }
 }
 const protocol_timeout: Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } };
-fn available(multi: *Io.File.MultiReader, count: usize) !void {
+/// Reads until `count` bytes of the protocol are there. A build that ends
+/// before it has said what it configured has failed, and what it wrote to
+/// stderr is why: that is what `c` reports.
+fn available(c: src.Context, multi: *Io.File.MultiReader, count: usize) !void {
     while (multi.reader(0).bufferedLen() < count) {
         multi.fill(4096, protocol_timeout) catch |err| switch (err) {
-            error.EndOfStream => return error.TruncatedProtocolFrame,
+            error.EndOfStream => {
+                c.report("preflight: the build ended before it sent its configuration:\n{s}\n", .{multi.reader(1).buffered()});
+                return error.TruncatedProtocolFrame;
+            },
             else => return err,
         };
         if (multi.reader(0).bufferedLen() > limit or multi.reader(1).bufferedLen() > limit) return error.ProtocolOutputTooLong;

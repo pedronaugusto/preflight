@@ -42,6 +42,7 @@ const Projection = struct {
     modules: std.AutoHashMapUnmanaged(*std.Build.Module, *std.Build.Module) = .empty,
     sdks: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty,
     artifacts: std.AutoHashMapUnmanaged(*std.Build.Step.Compile, *std.Build.Step.Compile) = .empty,
+    options: std.AutoHashMapUnmanaged(*std.Build.Step.Options, *std.Build.Step.Options) = .empty,
 
     fn collect(p: *Projection, step: *std.Build.Step, links: *std.Build.Step) void {
         const entry = p.steps.getOrPut(p.b.allocator, step) catch @panic("OOM");
@@ -90,6 +91,61 @@ const Projection = struct {
         return object;
     }
 
+    /// The options a module's source is generated from, with every program
+    /// they name by path replaced by its object. A test names its helper
+    /// programs this way, and the original step would link each of them for
+    /// the target, which is what this projection never does.
+    fn source(p: *Projection, original: ?std.Build.LazyPath) ?std.Build.LazyPath {
+        const lazy = original orelse return null;
+        const generated = switch (lazy) {
+            .generated => |g| g,
+            else => return lazy,
+        };
+        const options = p.b.graph.generated_files.items[@backingInt(generated.index)].cast(std.Build.Step.Options) orelse return lazy;
+        return .{ .generated = .{ .index = p.projectedOptions(options).generated_file, .up = generated.up, .sub_path = generated.sub_path } };
+    }
+
+    fn projectedOptions(p: *Projection, original: *std.Build.Step.Options) *std.Build.Step.Options {
+        if (p.options.get(original)) |copy| return copy;
+        var changed = false;
+        for ([_][]const std.Build.Step.Options.NamedPath{ original.files.items, original.directories.items, original.untracked_paths.items }) |named| {
+            for (named) |entry| {
+                const mapped = p.projectedPath(entry.path);
+                if (!std.meta.eql(mapped, entry.path)) changed = true;
+            }
+        }
+        if (!changed) {
+            p.options.put(p.b.allocator, original, original) catch @panic("OOM");
+            return original;
+        }
+        const owner = original.step.owner;
+        const copy = std.Build.Step.Options.create(owner);
+        copy.contents = original.contents.clone(owner.allocator) catch @panic("OOM");
+        const arena = owner.graph.arena;
+        inline for (.{ "files", "directories", "untracked_paths" }) |field| {
+            for (@field(original, field).items) |entry| {
+                const mapped = p.projectedPath(entry.path);
+                @field(copy, field).append(arena, .{ .name = entry.name, .path = mapped }) catch @panic("OOM");
+                mapped.addStepDependencies(&copy.step);
+            }
+        }
+        p.options.put(p.b.allocator, original, copy) catch @panic("OOM");
+        return copy;
+    }
+
+    /// `lazy`, or where it is a program's output, that program's object.
+    fn projectedPath(p: *Projection, lazy: std.Build.LazyPath) std.Build.LazyPath {
+        const generated = switch (lazy) {
+            .generated => |g| g,
+            else => return lazy,
+        };
+        const compiled = p.b.graph.generated_files.items[@backingInt(generated.index)].cast(std.Build.Step.Compile) orelse return lazy;
+        const emitted = compiled.getEmittedBin().generated;
+        if (emitted.index != generated.index) return lazy;
+        const projected = p.artifact(compiled).getEmittedBin().generated;
+        return .{ .generated = .{ .index = projected.index, .up = generated.up, .sub_path = generated.sub_path } };
+    }
+
     fn module(p: *Projection, original: *std.Build.Module) *std.Build.Module {
         if (p.modules.get(original)) |copy| return copy;
         // Copy compiler options, source inputs and include paths. Project
@@ -98,6 +154,7 @@ const Projection = struct {
         const copy = p.b.allocator.create(std.Build.Module) catch @panic("OOM");
         copy.* = original.*;
         if (p.debug) copy.optimize = .Debug;
+        copy.root_source_file = p.source(original.root_source_file);
         copy.cached_graph = .{ .modules = &.{}, .names = &.{} };
         copy.import_table = .empty;
         copy.link_objects = .empty;

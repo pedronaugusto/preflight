@@ -917,13 +917,18 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\" }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) }) });
     // The fixture runs from its own directory, so bay is named by its absolute path.
     const bay = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("test_options").bay, a);
-    for ([_][]const []const u8{ &.{ bay, "ci", "-Dci-lint=false" }, &.{ bay, "bench-build" }, &.{ bay, "check-consumer" } }) |argv| {
-        const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir } });
-        if (!command.succeeded(result)) std.debug.print("{s} {s}:\n{s}", .{ argv[1], if (argv.len > 2) argv[2] else "", result.stderr });
-        try std.testing.expect(command.succeeded(result));
-    }
-    // The package's own build knows nothing of the gate.
-    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "-l" }, .cwd = .{ .dir = tmp.dir } });
+    // One development build runs the gate and the benchmarks, as a runner would.
+    const developed = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "ci", "bench-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(developed)) std.debug.print("bay dev:\n{s}", .{developed.stderr});
+    try std.testing.expect(command.succeeded(developed));
+    // The consumer check is wired from dev too; building one is its own test's work.
+    const steps = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "-l" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(command.succeeded(steps));
+    try std.testing.expect(std.mem.find(u8, steps.stdout, "\n  check-consumer ") != null);
+    // The package's own build knows nothing of the gate, and builds with nothing fetched.
+    try tmp.dir.createDir(io, "none", .default_dir);
+    const none = try tmp.dir.realPathFileAlloc(io, "none", a);
+    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "-l", "--system", none }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(command.succeeded(listed));
     try std.testing.expect(std.mem.find(u8, listed.stdout, "\n  ci ") == null);
 }

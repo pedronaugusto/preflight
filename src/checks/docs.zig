@@ -60,7 +60,7 @@ fn dedent(a: std.mem.Allocator, text: []const u8) ![]const u8 {
 pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     const command = src.get(generator, "command");
     if (command == .null) return snippet(c, generator);
-    const argv = try zigCommand(c.a, c.zig, command);
+    const argv = try zigCommand(c.a, c.stepCommand(), command);
     const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
     if (result.term != .exited or result.term.exited != 0) {
         c.report("docs: generator failed: {s}\n", .{result.stderr});
@@ -71,12 +71,14 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
     return c.a.print("{s}\n", .{std.mem.trimEnd(u8, normalized, "\n")});
 }
 
-pub fn zigCommand(a: std.mem.Allocator, zig: []const u8, command: src.Value) ![]const []const u8 {
+/// A configured `zig build ...` command, run as the package builds: `build` is
+/// `zig build` with the Zig running the checks, or `bay` under bay.
+pub fn zigCommand(a: std.mem.Allocator, build: []const []const u8, command: src.Value) ![]const []const u8 {
     const values = src.items(command);
     if (values.len < 2 or !std.mem.eql(u8, src.string(values[0], ""), "zig") or !std.mem.eql(u8, src.string(values[1], ""), "build")) return error.CheckMustUseZigBuild;
-    const argv = try a.alloc([]const u8, values.len);
-    for (values, argv) |value, *arg| arg.* = src.string(value, "");
-    argv[0] = zig;
+    const argv = try a.alloc([]const u8, build.len + values.len - 2);
+    (argv[0..build.len], build);
+    for (values[2..], argv[build.len..]) |value, *arg| arg.* = src.string(value, "");
     return argv;
 }
 
@@ -129,7 +131,7 @@ test "configured generators cannot call other runtimes" {
     const a = std.testing.allocator;
     const value = try std.json.parseFromSlice(src.Value, a, "[\"python3\",\"ci/docs.py\"]", .{});
     defer value.deinit();
-    try std.testing.expectError(error.CheckMustUseZigBuild, zigCommand(a, "zig", value.value));
+    try std.testing.expectError(error.CheckMustUseZigBuild, zigCommand(a, &.{ "zig", "build" }, value.value));
 }
 
 test "documentation matches examples and refuses drift and missing markers" {

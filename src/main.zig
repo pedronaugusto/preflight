@@ -273,7 +273,7 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     timer.end(c.*, log);
     if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| {
-        const argv = try checks.docs.zigCommand(c.a, c.zig, command);
+        const argv = try checks.docs.zigCommand(c.a, c.stepCommand(), command);
         timer = stage(c, try std.mem.join(c.a, " ", argv));
         try checks.command.execute(c.*, argv);
         timer.end(c.*, log);

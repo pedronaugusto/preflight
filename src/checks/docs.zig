@@ -77,7 +77,7 @@ pub fn zigCommand(a: std.mem.Allocator, build: []const []const u8, command: src.
     const values = src.items(command);
     if (values.len < 2 or !std.mem.eql(u8, src.string(values[0], ""), "zig") or !std.mem.eql(u8, src.string(values[1], ""), "build")) return error.CheckMustUseZigBuild;
     const argv = try a.alloc([]const u8, build.len + values.len - 2);
-    (argv[0..build.len], build);
+    @memcpy(argv[0..build.len], build);
     for (values[2..], argv[build.len..]) |value, *arg| arg.* = src.string(value, "");
     return argv;
 }

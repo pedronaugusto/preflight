@@ -54,7 +54,7 @@ pub fn generate(a: std.mem.Allocator, root: []const u8, options: Options) ![]con
         \\    .minimum_zig_version = "{f}",
         \\    .paths = .{{
     , .{ std.zig.fmtId(options.name), std.zig.fmtString(options.version), options.fingerprint, std.zig.fmtString(options.minimum_zig_version) });
-    for (options.paths) |path| try w.print(" \"{f}\",", .{std.zig.fmtString(path)});
+    for (options.paths, 0..) |path, i| try w.print("{s} \"{f}\"", .{ if (i == 0) "" else ",", std.zig.fmtString(path) });
     try w.writeAll(" },\n    .dependencies = .{\n");
     for (options.path_dependencies) |dependency| try w.print("        .{f} = .{{ .path = \"{f}\" }},\n", .{ std.zig.fmtId(dependency.name), std.zig.fmtString(dependency.path) });
     for (options.shared) |name| try pin(w, try sharedPin(a, root, name));
@@ -128,7 +128,7 @@ test "a nested manifest pins a shared package as the package does, and the rest 
         \\    .version = "0.0.0",
         \\    .fingerprint = 0xabc,
         \\    .minimum_zig_version = "0.17.0",
-        \\    .paths = .{ "build.zig", "build.zig.zon", "main.zig", },
+        \\    .paths = .{ "build.zig", "build.zig.zon", "main.zig" },
         \\    .dependencies = .{
         \\        .pkg = .{ .path = ".." },
         \\        .shakedown = .{

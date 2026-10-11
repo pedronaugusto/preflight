@@ -40,7 +40,6 @@ pub fn build(b: *std.Build) void {
 /// preflight's development: the regression suites, which take shakedown's test
 /// doubles, and preflight's gate over its own sources with the checks it ships.
 pub fn dev(b: *std.Build, tools: type) void {
-    _ = tools;
     const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
     const package = b.dependency("preflight", .{}).builder;
     const target = ci.ciTarget(b);
@@ -51,7 +50,10 @@ pub fn dev(b: *std.Build, tools: type) void {
     // sets no optimize mode takes its importer's, so the tests, which build
     // aegis in Debug for themselves, take glint in Debug and share it.
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("glint");
-    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .debug }).module("shakedown");
+    // shakedown takes the aegis the checks link through glint, so a test links one aegis.
+    const shakedown_dep = b.dependency("shakedown", .{ .target = target, .optimize = .debug, .aegis = .consumer });
+    tools.shakedown.useAegis(shakedown_dep, glint.import_table.get("aegis") orelse @panic("glint imports aegis"));
+    const shakedown = shakedown_dep.module("shakedown");
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/checks.zig"),
@@ -196,8 +198,12 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const gantry = gantry_dep.module("gantry");
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: dev returns before addCi if glint is not available
     const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint } };
+    // The binding `useAegis` makes in `dev`, which a benchmark's imports have no tools for.
+    const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer }).module("shakedown");
+    shakedown.addImport("aegis", glint.import_table.get("aegis") orelse @panic("glint imports aegis"));
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = package.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },
+        .{ .name = "shakedown", .module = shakedown },
     }) catch @panic("OOM");
 }

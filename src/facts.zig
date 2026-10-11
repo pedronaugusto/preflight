@@ -30,12 +30,12 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
     }
     var snapshot = try capture(c, argv.items);
     snapshot.options = try c.a.dupe([]const u8, options);
-    if (c.bay != null) snapshot.package = try checked(c, &snapshot.config);
+    if (c.bay != null) snapshot.package = try checkedPackage(c, &snapshot.config);
     return snapshot;
 }
 
 /// The package at the checked directory, among the owners of the build's steps, their root modules and those modules' files.
-fn checked(c: src.Context, config: *const C) !C.Package.Index {
+fn checkedPackage(c: src.Context, config: *const C) !C.Package.Index {
     const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
     var owners: std.array_hash_map.Auto(C.Package.Index, void) = .empty;
     for (config.steps) |step| {

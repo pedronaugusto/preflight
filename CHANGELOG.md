@@ -147,6 +147,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The package ships its CHANGELOG, beside the README and LICENSE.
 - The README reads in the packages' order: install, usage, design, API, scope, built with, testing, licence.
 - The generated matrices pass Zig 0.17's `-Doptimize=debug`, `safe`, `fast` and `small`; regenerate a caller's with `zig build plan`.
+- Pins glint 0.2.0, gantry 0.2.0, bay 0.1.0 and shakedown 0.2.0.
 
 ### Fixed
 

@@ -6,27 +6,27 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint#10114ae7cc1448cbe8a6cfb30d2d4be55a635612",
-            .hash = "glint-0.1.0-3jcpoS1xBgCF6r6TbU9gwVgs6lipJnOPvuYCPnwWq978",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.2.0#5a12b5b2ca0d0e0914aa7e7cb4722b517370980e",
+            .hash = "glint-0.2.0-3jcpoaxtBgDiZlnljl3X-P4tNTRphqeqktIeCNe0PGM8",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry#e7c4ed3ed2ed758978fabef4a3c16a1f773bf9f1",
-            .hash = "gantry-0.1.0-1iNrkefbCwBNMzRhH6EfemwJWoFByc7hi9PtxsBzouXX",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.0#77bb4526f426ddf1ad67be406fb1da75b53a4daf",
+            .hash = "gantry-0.2.0-1iNrkdO3DAD6zn8xNv5iY2VOCv9mvy9CIwGDqxeZk4kg",
             .lazy = true,
         },
 
         .bay = .{
-            .url = "git+https://github.com/pedronaugusto/bay?ref=main#8ef094c975f4d06259f17eff5f2c4565de101f3d",
-            .hash = "bay-0.0.0-uwJ5Z7G7AADUK8KQlXPpFjy4sDg5Pb77yka_VotPB7et",
+            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.0#eb40cbc94db3a031cd84b421c7f61f91dcd6d4ad",
+            .hash = "bay-0.1.0-uwJ5Z_AVBAAcZMbV9p4sJ_u7TrXOLTabY7xORLeCP7g_",
             .lazy = true,
         },
     },
     .dev_dependencies = .{
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown#ceae2ca774b5ce9fef080cb0283341c8bbb83731",
-            .hash = "shakedown-0.1.0-BR8U40rLFQBHUACfuCT-JBKc_u7isvLkPEETOyurjBK6",
+            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.2.0#a5c268211e8643b61e218194e81e204cc7dc6648",
+            .hash = "shakedown-0.2.0-BR8U45DLFQApbteZnJuS2mYJWOPJczptulfESpBLDhNf",
         },
     },
 }

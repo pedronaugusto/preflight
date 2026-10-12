@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-12
+
 ### Changed
 
 - Pins bay 0.1.2, which names forks to Zig by absolute path, so a cold development build of a package its own tools pin configures.

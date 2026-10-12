@@ -166,7 +166,7 @@ fn landCommand(c: *src.Context, args: []const []const u8) !void {
     };
     switch (outcome) {
         .nothing => |why| try stdout(c.*, try c.a.print("nothing to land: {s}\n", .{why})),
-        .landed => |landed| try stdout(c.*, try c.a.print("landed {s}: {s} is at {s}{s}\n", .{ landed.name, landed.onto, landed.sha[0..12], if (landed.followed) "" else ", and the branch, which moved while the run ran, stays where it is" })),
+        .landed => |landed| try stdout(c.*, try c.a.print("landed {s} on {s} at {s}{s}\n", .{ landed.name, landed.onto, landed.sha[0..12], if (landed.followed) "" else ", and the branch, which moved while the run ran, stays where it is" })),
     }
 }
 

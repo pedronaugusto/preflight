@@ -258,7 +258,7 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, during, "land/v0.1.1-"));
     try contains(during, attempt);
     try contains(green.stdout, "run https://github.invalid/runs/2\n");
-    try contains(green.stdout, "landed v0.1.1: main is at ");
+    try contains(green.stdout, "landed v0.1.1 on main at ");
     // Main and the tag are on the release commit, which is the rebased fix with the release on it.
     const landed = try s.remote("refs/heads/main");
     try std.testing.expectEqualStrings(landed, try s.remote("refs/tags/v0.1.1^{commit}"));
@@ -356,7 +356,7 @@ test "a branch that changes nothing the package ships lands on land/<branch>- an
     const result = try s.land("success");
     try expectExit(result, 0);
     try contains(result.stdout, "pushed land/docs-");
-    try contains(result.stdout, "landed docs: main is at ");
+    try contains(result.stdout, "landed docs on main at ");
     try contains(try s.calls(), "workflow run ci.yml --ref land/docs-");
     const landed = try s.remote("refs/heads/main");
     try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
@@ -388,7 +388,7 @@ test "a landing goes onto origin's default branch, whatever its name, and says s
     try s.run(".", &.{ "git", "-C", "origin.git", "symbolic-ref", "HEAD", "refs/heads/trunk" });
     const green = try s.land("success");
     try expectExit(green, 0);
-    try contains(green.stdout, "landed v0.1.1: trunk is at ");
+    try contains(green.stdout, "landed v0.1.1 on trunk at ");
     const landed = try s.remote("refs/heads/trunk");
     try std.testing.expectEqualStrings(landed, try s.remote("refs/tags/v0.1.1^{commit}"));
     try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
@@ -412,4 +412,19 @@ test "a landing rewrites no branch, whatever rebase.updateRefs says" {
     try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.gitOut(&.{ "rev-parse", "work" }));
     try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", "keep" }));
     try s.alone();
+}
+
+test "a landing that another lands on top of while it finishes still landed" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    try s.env.put("FAKE_GH_AFTER_LAND", "advance");
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    const tagged = try s.remote("refs/tags/v0.1.1^{commit}");
+    try contains(green.stdout, try std.mem.concat(s.arena.allocator(), u8, &.{ "landed v0.1.1 on main at ", tagged[0..12], "\n" }));
+    // main went on past the landing, which the branch follows.
+    try std.testing.expectEqualStrings(tagged, try s.remote("refs/heads/main^"));
+    try std.testing.expectEqualStrings(tagged, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+    try std.testing.expectEqualStrings("", try s.landRefs());
 }

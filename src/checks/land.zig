@@ -501,13 +501,13 @@ fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sh
     }
 }
 
-/// After a green run: main and the tag are on the tested commit, the branch follows it unless
+/// After a green run: main holds the tested commit and the tag is on it, the branch follows it unless
 /// it moved meanwhile, and the refs of every attempt at this landing go.
 fn finish(c: *src.Context, base: Base, branch: []const u8, start: []const u8, stem: []const u8, prepared: Prepared) !Outcome {
     _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
-    const main = try must(c, &.{ "rev-parse", base.ref });
-    if (!std.mem.eql(u8, main, prepared.sha)) {
-        c.fail("land: the run passed, but origin/{s} is at {s}, not at the tested {s}", .{ base.name, main, prepared.sha });
+    // Another landing may have gone on top since: the default branch holds the commit.
+    if (!(try git(c, &.{ "merge-base", "--is-ancestor", prepared.sha, base.ref })).ok) {
+        c.fail("land: the run passed, but origin/{s}, at {s}, does not hold the tested {s}", .{ base.name, try must(c, &.{ "rev-parse", base.ref }), prepared.sha });
         return error.LandFailed;
     }
     const name = if (prepared.version) |version| try c.a.print("v{f}", .{version}) else branch;

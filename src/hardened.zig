@@ -3,6 +3,7 @@ const std = @import("std");
 const configure = @import("configure.zig");
 const builtin = @import("builtin");
 const zig_version = @import("zig_version.zig");
+const Tool = @import("tool.zig").Tool;
 
 pub const Profile = struct {
     /// A step containing real std.testing.fuzz targets.
@@ -20,7 +21,8 @@ pub fn declare(b: *std.Build) Options {
     };
 }
 
-pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Options) void {
+/// `tool` is preflight's program, which judges the fuzz campaign.
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Options, tool: Tool) void {
     const given = profile orelse {
         if (options.active or options.tsan) tests.dependOn(&b.addFail("hardened: this package has not opted in via Config.hardened").step);
         return;
@@ -53,9 +55,17 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     normal.setCwd(package.path("."));
     normal.has_side_effects = true;
     configure.claim(b, "hardened", "Execute opt-in safety-on tests using the existing std.testing allocator").dependOn(&normal.step);
-    const fuzz = again(b, package, &.{ given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
+    // Zig exits 0 from a campaign whose fuzzer crashed or never started; preflight
+    // judges it on what the fuzzer leaves in the cache the campaign runs on.
+    const fuzz = tool.run(b);
+    fuzz.addArgs(&.{ "fuzz-campaign", "--cache" });
+    fuzz.addDirectoryArg2(std.Build.LazyPath.cache_root, .{});
+    fuzz.addArg("--cwd");
+    fuzz.addDirectoryArg2(package.path("."), .{});
+    fuzz.addArg("--");
+    fuzz.addArgs(configure.rerun(b, package));
+    fuzz.addArgs(&.{ given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
     forward(b, fuzz);
-    fuzz.setCwd(package.path("."));
     fuzz.has_side_effects = true;
     const fuzz_step = configure.claim(b, "hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
     if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
@@ -91,7 +101,13 @@ fn apply(b: *std.Build, step: *std.Build.Step, options: Options, seen: *std.Auto
             if (applied.found_existing) continue;
             // Safety is Zig's Debug/ReleaseSafe default. Explicit measured source
             // loops can still use @setRuntimeSafety(false); glint checks reasons.
-            if (module.optimize != .debug) module.optimize = .safe;
+            // A module with no mode of its own takes its artifact's and keeps
+            // doing so: the test runner's modules among them, and Zig gives
+            // each mode its own `builtin`, so a runner module raised apart from
+            // the root sees no tests to run.
+            if (module.optimize) |mode| if (mode != .debug) {
+                module.optimize = .safe;
+            };
             if (options.tsan) {
                 const target = module.resolved_target orelse artifact.root_module.resolved_target.?;
                 if (target.result.os.tag != .linux or target.result.cpu.arch != .x86_64) {

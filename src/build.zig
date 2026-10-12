@@ -176,7 +176,7 @@ const Steps = struct {
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         if (config.fuzz_step) |step| fuzz.add(b, package, config.tests, step);
-        hardened.add(b, package, config.tests, config.hardened, steps.profile_options);
+        hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
         if (config.portable_tests) portable.add(b, package, config.tests, executable);
         const plan = executable.run(b);

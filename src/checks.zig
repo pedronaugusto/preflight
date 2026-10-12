@@ -9,6 +9,7 @@ pub const cache = @import("checks/cache.zig");
 pub const glint = @import("checks/glint.zig");
 pub const quality = @import("checks/quality.zig");
 pub const fuzz = @import("checks/fuzz.zig");
+pub const campaign = @import("checks/campaign.zig");
 pub const integration = @import("checks/integration.zig");
 pub const profile = @import("checks/profile.zig");
 pub const paths = @import("checks/paths.zig");
@@ -33,6 +34,7 @@ test {
     _ = @import("profile_test.zig");
     _ = @import("bench_driver.zig");
     _ = source;
+    _ = campaign;
     _ = policy;
     _ = imports;
     _ = docs;

@@ -75,6 +75,8 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--costs-output") orelse costs, .data = try checks.profile.renderCosts(a, measured) });
     } else if (std.mem.eql(u8, command, "fetch")) {
         for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv);
+    } else if (std.mem.eql(u8, command, "fuzz-campaign")) {
+        try campaignCommand(&c, init.environ_map, args);
     } else if (std.mem.eql(u8, command, "run")) {
         try runGate(c, init.environ_map);
     } else if (std.mem.eql(u8, command, "skip")) {
@@ -118,6 +120,16 @@ pub fn main(init: std.process.Init) !void {
         try outcome;
     } else return error.UnknownCommand;
     if (c.errors != 0) return error.CheckFailed;
+}
+
+/// `fuzz-campaign --cache <dir> --cwd <dir> -- <build> <step> --fuzz=<limit>...`: the
+/// campaign run and judged on what the fuzzer leaves in the cache.
+fn campaignCommand(c: *src.Context, env: *std.process.Environ.Map, args: []const []const u8) !void {
+    const separator = for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--")) break i;
+    } else return error.MissingCampaignBuild;
+    c.environ_map = env;
+    try checks.campaign.run(c, option(args, "--cache") orelse return error.MissingCampaignCache, option(args, "--cwd") orelse ".", args[separator + 1 ..]);
 }
 
 /// `skip`: whether the change is documentation alone, which a fast run does not test.

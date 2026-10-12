@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `hardened-fuzz` fails a campaign whose fuzzer crashed or ran no input. Under `--fuzz=<limit>` Zig prints a failure the fuzzer finds and still exits 0, so every campaign passed; `preflight fuzz-campaign` now runs it and judges it on what the fuzzer leaves in the cache: an input saved to `f/crash` during the run, and the runs the coverage files count.
+- The hardened profile leaves a module that takes its artifact's mode taking it, and raises only a mode set apart from Debug to ReleaseSafe. It raised the test runner's own modules too, and Zig gives each mode its own `builtin`, so the runner of a Debug test found no tests: the fuzz campaign started none.
+
 ## [0.3.1] - 2026-10-12
 
 ### Changed

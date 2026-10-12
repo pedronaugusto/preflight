@@ -1187,6 +1187,31 @@ test "toolchain hardened selects LLVM for the native fuzz rebuild" {
     try std.testing.expect(command.succeeded(result));
 }
 
+test "toolchain hardened leaves a module that takes its artifact's mode taking it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
+    // Zig's test runner reads the tests from the `builtin` of its own mode: a
+    // runner module raised to ReleaseSafe under a Debug root finds none.
+    const imported = try std.mem.replaceOwned(u8, a, build, "    preflight.addCi(b, b, .{",
+        \\    tests.root_module.addImport("inherits", b.createModule(.{ .root_source_file = b.path("src/sample.zig") }));
+        \\    preflight.addCi(b, b, .{
+    );
+    const modified = try std.mem.replaceOwned(u8, a, imported, "preflight.addConsumerCheck(b, b,",
+        \\const modes = b.step("modes-proof", "Require a module without a mode to keep taking its artifact's");
+        \\if (tests.root_module.import_table.get("inherits").?.optimize != null) modes.dependOn(&b.addFail("hardened gave a module without a mode one of its own").step);
+        \\preflight.addConsumerCheck(b, b,
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "modes-proof", "-Dci-hardened=true" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 /// `text` with the quoted string that starts with `prefix` replaced by `with`.
 fn replaceQuoted(a: std.mem.Allocator, text: []const u8, prefix: []const u8, with: []const u8) ![]const u8 {
     const start = std.mem.find(u8, text, prefix) orelse return error.PinNotFound;

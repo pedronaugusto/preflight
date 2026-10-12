@@ -59,10 +59,14 @@ fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) !C.Package.
     return error.PackageNotInDevelopmentBuild;
 }
 
-/// The development build's root, as `bay locate --dev` names it.
-fn developmentRoot(c: src.Context, bay: []const u8) ![]const u8 {
+/// The development build's root, as `bay locate --dev` names it. A bay that cannot say,
+/// one from before `locate` among them, fails the read with what it wrote.
+pub fn developmentRoot(c: src.Context, bay: []const u8) ![]const u8 {
     const located = try std.process.run(c.a, c.io, .{ .argv = &.{ bay, "locate", "--dev" }, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout_limit = .limited(1 << 16), .stderr_limit = .limited(1 << 16) });
-    try successful(located.term);
+    if (located.term != .exited or located.term.exited != 0) {
+        c.report("preflight: `{s} locate --dev` failed, and the checked package's root is read from the development build's root it names; a bay with `locate` names it:\n{s}\n", .{ bay, std.mem.trim(u8, located.stderr, "\r\n") });
+        return error.BayLocateFailed;
+    }
     return std.mem.trim(u8, located.stdout, "\r\n");
 }
 

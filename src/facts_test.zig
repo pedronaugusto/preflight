@@ -4,6 +4,8 @@ const C = std.Build.Configuration;
 const shakedown = @import("shakedown");
 const configuration = @import("facts/configuration.zig");
 const facts = @import("facts.zig");
+const src = @import("checks/source.zig");
+const test_options = @import("test_options");
 
 pub fn seed(a: std.mem.Allocator) ![]const u8 {
     var wip: C.Wip = .init(a);
@@ -57,4 +59,24 @@ test "the exported facts name the Zig that produced them" {
     const parsed = try std.json.parseFromSliceLeaky(struct { protocol: u32, zig: []const u8 }, a, out.written(), .{ .ignore_unknown_fields = true });
     try std.testing.expectEqual(@as(u32, 1), parsed.protocol);
     try std.testing.expectEqualStrings(builtin.zig_version_string, parsed.zig);
+}
+
+test "a bay that cannot locate the development build fails the read by name, with what it said" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    var env: std.process.Environ.Map = .init(a);
+    try env.put("FAKE_GH_STATE", state);
+    var held: std.Io.Writer.Allocating = .init(a);
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .environ_map = &env, .held = &held };
+    const bay = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.gh, a);
+    try std.testing.expectError(error.BayLocateFailed, facts.developmentRoot(c, bay));
+    try std.testing.expect(std.mem.find(u8, held.written(), "bay: no command or step named locate") != null);
+    try std.testing.expect(std.mem.find(u8, held.written(), "a bay with `locate`") != null);
+    // A bay that has it names the root.
+    try env.put("FAKE_BAY_ROOT", "/root/of/the/development/build");
+    try std.testing.expectEqualStrings("/root/of/the/development/build", try facts.developmentRoot(c, bay));
 }

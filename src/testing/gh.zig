@@ -7,6 +7,8 @@
 //!   to the commit and tags it `v<.version>` when that tag does not exist. Each dispatch
 //!   adds a line to `<FAKE_GH_STATE>/land-refs`: the `land/` branches origin holds then.
 //! - `gh run list --branch <branch>` and `gh run view <id>` answer from the runs started.
+//! - `locate --dev` names `FAKE_BAY_ROOT`, or, without it, fails as a bay from before
+//!   `locate` does.
 //! - `tidy` replaces each of `FAKE_BAY_FROM` with the one of `FAKE_BAY_TO` in the same place
 //!   (both separated by spaces) in `build.zig.zon`, as re-pins.
 const std = @import("std");
@@ -90,6 +92,21 @@ const Fake = struct {
         try f.state.writeFile(f.io, .{ .sub_path = "runs.json", .data = try std.json.Stringify.valueAlloc(f.a, all, .{}) });
     }
 
+    /// `FAKE_BAY_ROOT`, the development build's root; without it, a bay from before `locate`.
+    fn locate(f: Fake) !void {
+        const root = f.env.get("FAKE_BAY_ROOT") orelse {
+            var buffer: [256]u8 = undefined;
+            var err = std.Io.File.stderr().writerStreaming(f.io, &buffer);
+            try err.interface.writeAll("bay: no command or step named locate\n");
+            try err.interface.flush();
+            std.process.exit(1);
+        };
+        var buffer: [1024]u8 = undefined;
+        var out = std.Io.File.stdout().writerStreaming(f.io, &buffer);
+        try out.interface.print("{s}\n", .{root});
+        try out.interface.flush();
+    }
+
     fn tidy(f: Fake) !void {
         var froms = std.mem.tokenizeScalar(u8, f.env.get("FAKE_BAY_FROM") orelse return, ' ');
         var tos = std.mem.tokenizeScalar(u8, f.env.get("FAKE_BAY_TO") orelse return, ' ');
@@ -117,6 +134,7 @@ pub fn main(init: std.process.Init) !void {
     try state.writeFile(init.io, .{ .sub_path = "calls", .data = try a.print("{s}{s}\n", .{ calls, try std.mem.join(a, " ", args) }) });
     if (args.len == 0) return error.NoCommand;
     if (std.mem.eql(u8, args[0], "tidy")) return f.tidy();
+    if (std.mem.eql(u8, args[0], "locate")) return f.locate();
     if (args.len < 2) return error.NoCommand;
     if (std.mem.eql(u8, args[0], "workflow") and std.mem.eql(u8, args[1], "run")) return f.dispatch(option(args, "--ref") orelse return error.NoRef);
     if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "list")) {

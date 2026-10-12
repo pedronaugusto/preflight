@@ -84,7 +84,7 @@ const Fake = struct {
         const sha = listed[0 .. std.mem.findAny(u8, listed, " \t") orelse return error.NoSuchBranch];
         try f.landRefs();
         const earlier = try f.runs();
-        const id: i64 = @intCast(earlier.len + 1); // a count of runs, far below i64's range
+        const id: i64 = @intCast(earlier.len + 1); // safe: one more than the runs one test starts, far below i64's range
         const green = std.mem.eql(u8, f.env.get("FAKE_GH_OUTCOME") orelse "success", "success") and try f.land(sha);
         const jobs: []const Job = if (green) &.{ .{ .name = "Linux Debug", .conclusion = "success" }, .{ .name = "land", .conclusion = "success" } } else &.{ .{ .name = "source checks", .conclusion = "success" }, .{ .name = "Linux Debug", .conclusion = "failure" }, .{ .name = "land", .conclusion = "skipped" } };
         const run: Run = .{ .databaseId = id, .headBranch = branch, .headSha = sha, .url = try f.a.print("https://github.invalid/runs/{d}", .{id}), .conclusion = if (green) "success" else "failure", .jobs = jobs };

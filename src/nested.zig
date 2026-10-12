@@ -104,7 +104,7 @@ pub fn pins(a: std.mem.Allocator, root: []const u8) ![]const Pin {
         if (dependencies == .empty_literal) continue;
         if (dependencies != .struct_literal) return error.InvalidManifest;
         for (dependencies.struct_literal.names, 0..) |name, i| {
-            const entry = dependencies.struct_literal.vals.at(@intCast(i)).get(&zoir);
+            const entry = dependencies.struct_literal.vals.at(@intCast(i)).get(&zoir); // safe: i < names.len, which is vals.len, a u32
             if (entry != .struct_literal) return error.InvalidManifest;
             const url = field(&zoir, entry, "url") orelse continue;
             const hash = field(&zoir, entry, "hash") orelse continue;

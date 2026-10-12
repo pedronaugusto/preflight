@@ -166,8 +166,6 @@ fn label(a: std.mem.Allocator, config: *const C, owner: C.Package.Index) ![]cons
     return a.dupe(u8, std.mem.trimEnd(u8, prefix, "."));
 }
 
-/// Whether `owner` is the package checked: the root, which is that package or its
-/// development build, or the package itself.
 /// Whether `owner` is the checked package: the root, or any instance of the package
 /// (a build makes one per set of options it is asked with), all at one root.
 fn checked(config: *const C, owner: C.Package.Index, package: C.Package.Index) bool {

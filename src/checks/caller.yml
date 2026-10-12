@@ -28,7 +28,7 @@ jobs:
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || github.event_name == 'schedule' && '@NIGHTLY@' || 'merge' }}
       working-directory: @DIRECTORY@
-      preflight-ref: @PIN@
+@PACKAGE@      preflight-ref: @PIN@
       attest: ${{ github.event_name == 'push' || inputs.status-only == true }}
 @MATRICES@      windows-git-latest: @WINDOWS_GIT@
       compile-once: @COMPILE_ONCE@

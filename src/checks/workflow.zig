@@ -170,6 +170,8 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     // The tag is made by the landing job, after it moves main.
     if (releases and !lands) return error.ReleaseWithoutLand;
     const release_inputs = if (releases) "\n        with:\n          version: ${{ needs.gate.outputs.version }}" else "";
+    // preflight's own gate runs its sample; the package it releases is the repository's root.
+    const package = if (own and releases) "      package-directory: .\n" else "";
     // Only the job that lands writes, and only to move main; it waits for the whole gate.
     const land_input =
         \\      land:
@@ -190,8 +192,8 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         \\{s}{s}
         \\
     , .{ if (own) "      - uses: actions/checkout@v4\n      - uses: ./.github/actions/land" else try a.print("      - uses: pedronaugusto/preflight/.github/actions/land@{s}", .{pin}), release_inputs });
-    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@PUSH@", "@SCHEDULE@", "@NIGHTLY@", "@LANDINPUT@", "@LAND@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
-    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), when.push, when.schedule, when.nightly_tier, if (lands) land_input else "", if (lands) land_job else "", matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
+    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@PUSH@", "@SCHEDULE@", "@NIGHTLY@", "@LANDINPUT@", "@LAND@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@", "@PACKAGE@" };
+    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), when.push, when.schedule, when.nightly_tier, if (lands) land_input else "", if (lands) land_job else "", matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once"), package };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -414,8 +416,14 @@ test "release asks the landing job to tag, and needs a landing" {
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const released = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"release\":true}", .{})).value, pin, "pkg", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, released, "actions/land@" ++ pin ++ "\n        with:\n          version: ${{ needs.gate.outputs.version }}\n") != null);
+    try std.testing.expect(std.mem.find(u8, released, "package-directory") == null);
+    // preflight's own caller releases the repository's root, not the sample its gate runs.
+    const own = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"release\":true}", .{})).value, pin, "sample", true, "ci.yml");
+    try std.testing.expect(std.mem.find(u8, own, "working-directory: \"sample\"\n      package-directory: .\n") != null);
+    try std.testing.expect(std.mem.find(u8, own, "uses: ./.github/actions/land\n        with:\n          version: ${{ needs.gate.outputs.version }}\n") != null);
     const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true}", .{})).value, pin, ".", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, plain, "version:") == null);
+    try std.testing.expect(std.mem.find(u8, plain, "package-directory") == null);
     for ([_][]const u8{ "{\"release\":true}", "{\"land\":true,\"release\":\"yes\"}" }) |text| {
         try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml")));
     }

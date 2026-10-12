@@ -36,6 +36,7 @@ jobs:
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || github.event_name == 'schedule' && 'release' || 'merge' }}
       working-directory: "sample"
+      package-directory: .
       preflight-ref: ${{ github.sha }}
       attest: ${{ github.event_name == 'push' || inputs.status-only == true }}
       fast-matrix: >-
@@ -64,3 +65,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/land
+        with:
+          version: ${{ needs.gate.outputs.version }}

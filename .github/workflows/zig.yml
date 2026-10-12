@@ -9,6 +9,10 @@ on:
       working-directory:
         type: string
         default: .
+      package-directory:
+        description: The package a landing releases, when the gate runs in another directory (preflight's own gate runs its sample)
+        type: string
+        default: ''
       preflight-ref:
         type: string
         required: true
@@ -94,7 +98,7 @@ jobs:
       # The version is read by the checks, so no workflow parses the manifest.
       - name: Read the package's version
         id: version
-        working-directory: ${{ inputs.working-directory }}
+        working-directory: ${{ inputs.package-directory || inputs.working-directory }}
         run: echo "version=$($GITHUB_WORKSPACE/.preflight-bin/linux/preflight version)" >> "$GITHUB_OUTPUT"
       # A documentation generator may run zig.
       - uses: mlugg/setup-zig@v2

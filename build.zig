@@ -16,10 +16,11 @@ pub const addCheck = ci.addCheck;
 pub const addConsumerCheck = ci.consumer.add;
 /// What `addConsumerCheck` builds.
 pub const ConsumerOptions = ci.consumer.Options;
-/// Writes the manifest of a build nested in the package from the package's own pins.
-pub const addNestedManifest = ci.nested.add;
-/// What `addNestedManifest` writes.
-pub const NestedManifest = ci.nested.Options;
+/// Assembles a build nested in the package under the cache, its manifest written from the
+/// package's own pins, and runs it.
+pub const addNestedBuild = ci.nested.add;
+/// What `addNestedBuild` assembles and runs.
+pub const NestedBuild = ci.nested.Options;
 
 /// What a package that depends on preflight, and the hosted runner, build: the
 /// preflight program, built from gantry and glint, and the commands the runner

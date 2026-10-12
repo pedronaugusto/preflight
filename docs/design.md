@@ -76,8 +76,8 @@ declared by the package. Nothing of preflight's pins reaches a package's artifac
 A nested manifest (a fixture's, a conformance build's) pins each package the root also pins
 exactly as the root does; the check names the drift. A fixture generated at build time from the
 root's dependency cannot drift at all: `addConsumerCheck` writes its project under the cache, and
-`addNestedManifest` writes the `build.zig.zon` of a build that lives in the tree (its `build.zig` is
-source, its manifest is output) from the root's own pins, which it reads when the build is configured.
+`addNestedBuild` assembles a build whose sources live in the tree under the cache, its manifest written
+from the root's own pins when the build is configured, and runs it there: the tree holds no output.
 The lint check stays as the backstop for a manifest kept by hand.
 
 ## Versions on landing

@@ -107,12 +107,15 @@ The consumer builds
 for the host in Debug.
 
 A build nested in the package (a conformance build against an emulator that is not yours, a
-consumer fixture) that uses a package the root also pins takes the pin from the root:
-`preflight.addNestedManifest(b, .{ .directory = "conformance", .name = "pkg_conformance", .fingerprint = 0x..., .path_dependencies = &.{.{ .name = "pkg", .path = ".." }}, .shared = &.{"shakedown"} })`
-returns the step that writes `conformance/build.zig.zon`, each `.shared` package's source and hash read
-from the root's `build.zig.zon` (`.pins` names those only the nested build uses), and the step that runs
-the nested build depends on it. The file is the build's output: keep it out of version control, so no
-copy of a pin exists to drift. `lint` still checks any nested manifest it finds, which catches one kept by hand. `preflight.addCheck(b, package, name, source)` builds a
+fixture) that uses a package the root also pins takes the pin from the root:
+`preflight.addNestedBuild(b, package, .{ .directory = "conformance", .name = "pkg_conformance", .fingerprint = 0x..., .path_dependencies = &.{.{ .name = "pkg", .path = ".." }}, .shared = &.{"shakedown"}, .pins = &.{.{ .name = "emulator", .url = "...", .hash = "..." }}, .args = &.{"test"} })`
+returns the step that assembles the nested build under the cache and runs `zig build` there with `.args`:
+its files (`.paths`) are copied from `conformance/`, and its manifest is written from the root's
+`build.zig.zon`, each `.shared` package's source and hash as the root pins it, `.pins` for those only
+the nested build uses, and each path dependency made relative to where the build is assembled. The
+package's tree keeps only the nested build's sources, so no copy of a pin exists to drift, and it
+works the same from the package's own build and from its development build. `lint` still checks any
+nested manifest it finds, which catches one kept by hand. `preflight.addCheck(b, package, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
@@ -731,7 +734,7 @@ or directories after `--` to read only those.
 | `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `facts`, `check-imports`, `docs`, `cache` and `deprecations`; optional bench and hardened steps |
 | `Config`, `TestTimeout`, `Bench`, `Hardened` | The gate's paths, shard records, watchdog, test log level and benchmarks |
 | `addConsumerCheck(b, package, ConsumerOptions)` | Adds `check-consumer` |
-| `addNestedManifest(b, NestedManifest)` | Returns the step that writes a nested build's `build.zig.zon` from the package's own pins |
+| `addNestedBuild(b, package, NestedBuild)` | Returns the step that assembles a nested build under the cache, its manifest from the package's own pins, and runs it |
 | `addCheck(b, package, name, source)` | Builds, tests and runs a repository check program as step `name` |
 
 A test runner of a package's own can import `preflight_order` and

@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `addNestedManifest` is `addNestedBuild(b, package, NestedBuild)`: the nested build is assembled under the cache (its files copied from its directory, its manifest written from the package's own pins, each path dependency made relative to where it is assembled) and run there with `.args`. The step it returns runs the build. It wrote the manifest into the package's tree, which Zig refuses from any package but the root, so it could not work in a development build, where the package is a dependency; nothing is written into the tree now, and no generated file needs ignoring.
+
 ## [0.2.2] - 2026-10-12
 
 ### Changed

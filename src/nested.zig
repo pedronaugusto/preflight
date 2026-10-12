@@ -1,6 +1,9 @@
-//! The manifest of a build nested in the package (a conformance build, a consumer fixture), written
-//! at build time from the package's own manifest, so that a package it shares with the root is
-//! pinned once and cannot drift.
+//! A build nested in the package (a conformance build against an emulator that is not the package's,
+//! a fixture), assembled under the cache and run there: its files copied from the package's
+//! `directory`, its manifest written from the package's own, so a package it shares with the package
+//! is pinned once and cannot drift. Nothing is written into the package's tree, which keeps only the
+//! nested build's sources, and the package may be the root or a dependency, as in a development
+//! build. The build runs this file as a program to assemble and run the nested build.
 const std = @import("std");
 const configure = @import("configure.zig");
 
@@ -27,18 +30,102 @@ pub const Options = struct {
     shared: []const []const u8 = &.{},
     /// Packages only the nested build pins.
     pins: []const Pin = &.{},
+    /// What follows `zig build` in the nested build: its step and options.
+    args: []const []const u8 = &.{"test"},
 };
 
-/// Adds the step that writes `<directory>/build.zig.zon`. Make the step that runs the nested build depend on
-/// it, and keep the file out of version control: it is the build's output, not its source.
-pub fn add(b: *std.Build, options: Options) *std.Build.Step {
-    const root = configure.read(b, "build.zig.zon", .limited(1024 * 1024)) orelse std.debug.panic("addNestedManifest: {s} has no build.zig.zon to share pins from", .{options.directory});
-    const text = generate(b.allocator, root, options) catch |err| std.debug.panic("addNestedManifest: {s}: {t}", .{ options.directory, err });
-    const files = b.addWriteFiles();
-    const manifest = files.add("build.zig.zon", text);
-    const update = b.addUpdateSourceFiles();
-    update.addCopyFileToSource(manifest, b.pathJoin(&.{ options.directory, "build.zig.zon" }));
-    return &update.step;
+/// Adds the step that assembles the build nested in `package` under `b`'s cache and runs
+/// `zig build` there with `options.args`. `b` is the build that owns the step: the package's
+/// own, or its development build, where the package is a dependency.
+pub fn add(b: *std.Build, package: *std.Build, options: Options) *std.Build.Step {
+    const root = configure.read(package, "build.zig.zon", .limited(1024 * 1024)) orelse std.debug.panic("addNestedBuild: {s} has no build.zig.zon to share pins from", .{options.directory});
+    const text = generate(b.allocator, root, options) catch |err| std.debug.panic("addNestedBuild: {s}: {t}", .{ options.directory, err });
+    const manifest = b.addWriteFiles().add("build.zig.zon", text);
+    // Fetched lazily: until it is, this configure pass ends and the step is never run.
+    const pkg = b.dependencyLazy("preflight", .{}) catch return &b.addWriteFiles().step;
+    const program = b.addExecutable(.{ .name = "preflight-nested", .root_module = b.createModule(.{
+        .root_source_file = pkg.builder.path("src/nested.zig"),
+        .target = b.graph.host,
+        .optimize = .debug,
+    }) });
+    const run = b.addRunArtifact(program);
+    run.addArg(b.graph.zig_exe);
+    _ = run.addOutputDirectoryArg2(options.name, .{});
+    run.addDirectoryArg2(package.path(options.directory), .{});
+    run.addFileArg(manifest);
+    for (options.paths) |path| if (!std.mem.eql(u8, path, "build.zig.zon")) run.addArg(path);
+    run.addArg("--");
+    run.addArgs(options.args);
+    run.has_side_effects = true;
+    return &run.step;
+}
+
+/// `<zig> <out> <nested> <manifest> <path>... -- <zig build arguments>`: copies each path
+/// of the nested build from `nested` into `out`, writes `manifest` there with every path
+/// dependency, written relative to `nested`, made relative to `out`, and runs `zig build`
+/// in `out`, exiting as it exits.
+pub fn main(init: std.process.Init) !void {
+    const a = init.arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(a);
+    if (args.len < 6) return error.MissingNestedArguments;
+    const cwd = std.Io.Dir.cwd();
+    const out = try cwd.realPathFileAlloc(io, args[2], a);
+    const nested = try cwd.realPathFileAlloc(io, args[3], a);
+    var source = try cwd.openDir(io, nested, .{ .iterate = true });
+    defer source.close(io);
+    var target = try cwd.openDir(io, out, .{});
+    defer target.close(io);
+    var next: usize = 5;
+    while (next < args.len and !std.mem.eql(u8, args[next], "--")) : (next += 1) try copy(io, a, source, target, args[next]);
+    if (next == args.len) return error.MissingNestedArguments;
+    const text = try cwd.readFileAlloc(io, args[4], a, .limited(1024 * 1024));
+    try target.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try relocate(a, text, nested, out) });
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ args[1], "build" });
+    try argv.appendSlice(a, args[next + 1 ..]);
+    var child = try std.process.spawn(io, .{ .argv = argv.items, .cwd = .{ .path = out } });
+    const term = try child.wait(io);
+    std.process.exit(if (term == .exited) term.exited else 1);
+}
+
+/// Copies `path`, a file or a directory, from `from` to `to`.
+fn copy(io: std.Io, a: std.mem.Allocator, from: std.Io.Dir, to: std.Io.Dir, path: []const u8) !void {
+    const stat = try from.statFile(io, path, .{});
+    if (stat.kind != .directory) {
+        if (std.Io.Dir.path.dirname(path)) |parent| try to.createDirPath(io, parent);
+        return from.copyFile(path, to, path, io, .{});
+    }
+    var dir = try from.openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
+    var walker = try dir.walk(a);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        const inner = try std.Io.Dir.path.join(a, &.{ path, entry.path });
+        switch (entry.kind) {
+            .directory => try to.createDirPath(io, inner),
+            .file => try copy(io, a, from, to, inner),
+            else => {},
+        }
+    }
+}
+
+/// `manifest` with each `.path = "<p>"`, relative to `from`, made relative to `to`, with `/`.
+pub fn relocate(a: std.mem.Allocator, manifest: []const u8, from: []const u8, to: []const u8) ![]const u8 {
+    const key = ".path = \"";
+    var out: std.Io.Writer.Allocating = .init(a);
+    var rest = manifest;
+    while (std.mem.find(u8, rest, key)) |at| {
+        const start = at + key.len;
+        const end = std.mem.findScalarPos(u8, rest, start, '"') orelse return error.InvalidManifest;
+        const absolute = try std.Io.Dir.path.resolveAlloc(a, &.{ from, rest[start..end] });
+        const relative = try std.Io.Dir.path.relativeAlloc(a, to, null, to, absolute);
+        std.mem.replaceScalar(u8, relative, '\\', '/');
+        try out.writer.print("{s}{f}", .{ rest[0..start], std.zig.fmtString(relative) });
+        rest = rest[end..];
+    }
+    try out.writer.writeAll(rest);
+    return out.written();
 }
 
 /// The nested manifest for `options`, its shared pins taken from the package's manifest `root`.
@@ -210,4 +297,13 @@ test "a shared package pinned as a dev dependency is pinned as the package does"
     const shared = try sharedPin(a, developed, "shakedown");
     try std.testing.expectEqualStrings("git+https://example.invalid/shakedown#1", shared.url);
     try std.testing.expectEqualStrings("shakedown-1", shared.hash);
+}
+
+test "a nested manifest's path dependencies are made relative to where the build is assembled" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const manifest = ".{ .dependencies = .{ .pkg = .{ .path = \"..\" }, .tool = .{ .path = \"../tools/one\" }, .x = .{ .url = \"u\", .hash = \"h\" } } }";
+    const moved = try relocate(a, manifest, "/repo/conformance", "/repo/.zig-cache/o/abc/conformance");
+    try std.testing.expectEqualStrings(".{ .dependencies = .{ .pkg = .{ .path = \"../../../..\" }, .tool = .{ .path = \"../../../../tools/one\" }, .x = .{ .url = \"u\", .hash = \"h\" } } }", moved);
 }

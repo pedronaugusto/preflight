@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-12
+
 ### Added
 
 - `land` takes `--config` and `--working-directory`, as `plan` does, for a gate configured and run in another directory than the package's: preflight lands itself through its own train.

@@ -387,8 +387,9 @@ The options of `ci/workflow.json`, all off or defaulted in a new project. Any ot
 refused, so a misspelt option fails the plan instead of quietly changing nothing.
 
 - `land` (default `false`): the caller gains a `land` job and a `land` dispatch input. A
-  merge-tier dispatch whose gate is green fast-forwards main to the commit it tested, with the
-  run's own token and never forced; a main that moved since fails the job and says so. That job
+  merge-tier dispatch whose gate is green fast-forwards the repository's default branch (main
+  here) to the commit it tested, with the run's own token and never forced; a main that moved
+  since fails the job and says so. That job
   alone may write, and only to move main; without `land` nothing in the caller asks for more than
   read. The token's push starts no run, so a landing is tested once. Dispatch with
   `-f land=false` to test without landing.
@@ -405,21 +406,7 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   manifest's version has no tag yet, with the same token. The version comes from the gate
   (`preflight version`, an output of `zig.yml`), so no workflow parses the manifest.
 
-  `zig build land` (`bay land` under bay), the step `addCi` adds, lands the branch checked out
-  through this gate. It needs `land` and `release`, a clean tree and the GitHub CLI signed in;
-  preflight never reads the token. On a detached HEAD it rebases the branch on origin's main (a
-  conflict stops it, naming the files), runs `bay tidy` under bay so that pins name released
-  revisions, generates the caller again as `plan -- --workflow` does when it names another
-  preflight than the manifest pins, adds `- Pins gantry 0.1.4.` under `### Changed` when the manifest pins a dependency
-  at another revision than the last `v*` tag did and `[Unreleased]` names none of them, makes the
-  release and commits it as `Release vX.Y.Z`. That commit goes to a branch of its own,
-  `land/vX.Y.Z-<commit>`, or `land/<branch>-<commit>` when nothing the package ships changed, so
-  no push replaces anything; a branch main already holds lands nothing and says so. `land`
-  dispatches the caller on it with `-f tier=merge -f land=true`, prints the run's URL and waits.
-  Green: main and the tag are on the tested commit, the branch moves there and every attempt's
-  `land/vX.Y.Z-*` branch is deleted. Red: the failed jobs are named, the attempt's branch stays
-  to be looked at, and the branch is as it was, so landing again makes the same version. It exits
-  0 when it landed or had nothing to land, 1 otherwise.
+  `zig build land` (`bay land` under bay) lands a branch through this gate; see Landing below.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
   merge or release run left for its exact SHA, and fails without one. For repositories that push
   to main by hand.
@@ -481,6 +468,61 @@ for inspecting a plan; it appends hosted-output records and is separate from
 single-file workflow replacement. `--workflow` renders every tier and cannot
 be combined with `--output`. Consumer repositories keep only declarative inputs
 and their generated caller, never copied planner code or consumer plan dumps.
+
+### Landing
+
+`zig build land` (`bay land` under bay), a step `addCi` adds, takes the branch checked out
+through the merge tier and onto origin's default branch, main below. It needs `land` and
+`release` in `ci/workflow.json`, a clean tree with the branch checked out, and the GitHub CLI
+signed in; preflight never reads the token. Every `gh` call names the repository origin's
+configured URL names (`https://github.com/owner/name.git`, `git@github.com:owner/name.git`, or
+the same on another GitHub host), so no other remote or gh default decides it. The default
+branch is the one `refs/remotes/origin/HEAD` names; a clone that has not recorded it asks
+origin (`git remote set-head origin --auto`), and one origin cannot answer for is refused
+with the command that sets it.
+
+A landing never touches the branch, its checkout or its tree. It fetches origin's branches
+and tags (pruning nothing) and makes the landing commit in a worktree of its own, detached at
+the branch, under the repository's git directory, which it removes however the landing ends.
+There it:
+
+1. rebases the branch on origin's main, moving no other branch whatever
+   `rebase.updateRefs` says; a conflict stops the landing and names the files;
+2. runs `bay tidy` under bay, so that pins name released revisions;
+3. generates the caller again, as `plan -- --workflow` does, when it names another
+   preflight than the manifest now pins;
+4. adds `- Pins gantry 0.1.4.` under `### Changed` when the manifest pins a dependency at
+   another revision than the last `v*` tag did and `[Unreleased]` names none of them. When
+   `[Unreleased]` lists nothing, the line is written only if the manifest is the one shipped
+   file that changed: a change to anything else with nothing said about it is refused, as
+   `release` refuses it;
+5. makes the release (see `release` above) and commits it as `Release vX.Y.Z`.
+
+The commit goes to a branch of its own, `land/vX.Y.Z-<commit>`, or `land/<branch>-<commit>`
+when nothing the package ships changed, so no push replaces anything. A branch main already
+holds, with nothing to release, lands nothing and says so. `land` dispatches the caller on
+its branch with `-f tier=merge -f land=true`, prints the run's URL as soon as GitHub lists
+it, and waits. A `gh` call that fails while it looks for the run or at it is made again;
+ten failures in a row end the wait, saying the run goes on and may still land.
+
+- Green: the caller's `land` job moved main and tagged the commit. `land` checks that main
+  holds the commit (another landing may have gone on top meanwhile) and that the tag is on
+  it, moves the branch to the commit when it is still checked out where the landing began
+  (fast-forward, or `reset --keep` for the rebased commits), and deletes the attempts at the
+  version that no landing needs: one whose commit main holds, or whose runs have all ended.
+  Another landing's attempt with a run going, or none yet, stays. The run landed whatever
+  happens next: a branch that moved meanwhile, a tree whose edits git will not carry, an
+  origin that cannot be fetched or a branch that cannot be deleted is reported, and the
+  landing still succeeds.
+- Red: the failed jobs are named, the attempt's branch stays to be looked at, and nothing
+  else moves, so landing again makes the same version.
+- A landing whose end this clone did not see (an origin it could not fetch, a wait it gave
+  up on) is finished by landing again: there is nothing left to land, the version's
+  attempts no landing needs go, and the branch moves to main.
+
+`--poll <seconds>` sets the time between two looks at GitHub (5 while finding the run, 20
+while it runs), and `--date YYYY-MM-DD` the release's date (today in UTC). It exits 0 when
+it landed or had nothing to land, 1 otherwise.
 
 ### The linked graph
 

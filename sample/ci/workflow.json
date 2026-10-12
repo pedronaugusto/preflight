@@ -10,6 +10,7 @@
   "hardened": true,
   "jobs": [
     {"name": "preflight's own suite", "step": "verify", "directory": ".", "args": ["-Dci-bench-smoke=false"], "tiers": ["fast", "merge", "release"], "setup": false},
-    {"name": "a project with no configuration", "step": "ci", "directory": "sample/zero", "os": ["ubuntu-latest", "macos-latest", "windows-latest"]}
+    {"name": "a project with no configuration", "step": "ci", "directory": "sample/zero", "os": ["ubuntu-latest", "macos-latest", "windows-latest"]},
+    {"name": "a project developed with bay", "step": "ci", "directory": "sample/bay", "os": ["ubuntu-latest", "macos-latest", "windows-latest"]}
   ]
 }

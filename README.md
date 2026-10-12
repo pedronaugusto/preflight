@@ -40,6 +40,9 @@ and no configuration file:
 `bay ci` runs the gate locally. The hosted gate builds bay beside the checks and runs
 every step of a package that declares `.dev_dependencies` as `bay dev <step>`, so a
 step named like one of bay's commands is still the step; one without runs `zig build`.
+[sample/bay](sample/bay) is such a package: it ships with aegis and tests on shakedown,
+passing aegis's types between them, so it compiles only when its build links one aegis,
+which bay makes whatever revisions the two pin.
 
 Without bay, preflight is a lazy dependency, and `build` adds the gate over its own package:
 pin it with `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
@@ -771,7 +774,7 @@ is built from.
 
 ## Testing
 
-Run `bay test` for the check regression suite, and `cd sample && zig build ci` to exercise the helper on a tiny package without bay.
+Run `bay test` for the check regression suite, `cd sample && zig build ci` to exercise the helper on a tiny package without bay, and `cd sample/bay && bay ci` on one developed with it.
 preflight gates itself: `ci/layers.zig` and `ci/preflight.json` hold its own
 structure, and `zig build verify` runs its lint, tests and format check.
 Cross object validation retains a compile step's `expect_errors` and diagnostic

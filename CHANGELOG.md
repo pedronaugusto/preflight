@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `sample/bay`, a project developed with bay that ships with aegis and tests on shakedown, passing aegis's types between them, so its build links one aegis or does not compile, whatever revisions the two pin; preflight's gate runs it on Linux, macOS and Windows.
+
 ## [0.4.0] - 2026-10-13
 
 ### Breaking

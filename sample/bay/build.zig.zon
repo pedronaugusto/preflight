@@ -1,0 +1,22 @@
+.{
+    .name = .bay_sample,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.17.0",
+    .fingerprint = 0x5bcbed59286b741b,
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+    .dependencies = .{
+        .aegis = .{
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.1.2#f2fef4ec6595b6357d683ac258debc4c5184884c",
+            .hash = "aegis-0.1.2-rsxougohBwASqdDTGy3Y46Jb6IDW5sOSrgEO5ggjbgpV",
+        },
+    },
+    .dev_dependencies = .{
+        .preflight = .{
+            .path = "../..",
+        },
+        .shakedown = .{
+            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.3.0#978965e6499970b5b0ac5e658316ac7917d32f87",
+            .hash = "shakedown-0.3.0-BR8U4wEjFgDarRGeXUKdstYvJneZDgavWzGPh9sT9rVX",
+        },
+    },
+}

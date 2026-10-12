@@ -103,6 +103,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `preflight_order.init` takes the test functions rather than their count, and returns only this shard's indices. The module file is `src/order.zig`.
 - The shared runner's `fuzz` is upstream's; it reports a fuzz test only in a build with fuzzing, as upstream's runner does.
 - Timing records carry a `key` (`windows-Debug`), and shard timing files end `-2of5.ndjson` rather than with a case name.
+- `package-directory` on the reusable workflow: the package a landing releases when the gate runs in another directory. preflight's own caller names the repository's root, since its gate runs its sample, so preflight is released by its own landing like any package.
 
 ### Added
 

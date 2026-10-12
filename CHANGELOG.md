@@ -147,6 +147,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A build with benchmarks configures in a linked git worktree. The benchmarks record the commit, and read the branch's ref from the worktree's own git directory, where git does not keep it, so Zig failed the configuration with `FileSystemFailure`.
 - The cross compile validates a helper program that a test names by path (an option of `addOptionPath`) as an object, like every other artifact. It linked the program for the target, which fails where the program links a framework and the host has no SDK for it.
 - The hosted gate passes `-Dci-sdk` on a macOS runner only to a build that declares it. A declared job's nested build does not, and Zig refused the option. A build that ends before it has said what it configured reports what it wrote to stderr; the gate named only `TruncatedProtocolFrame`.
 - A test of preflight's own holds the watchdog's `io_teardown` phase: a test that leaves a task running through its Io teardown fails by name and that phase, so a package needs no probe of its own for it.

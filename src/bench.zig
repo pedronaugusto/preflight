@@ -75,21 +75,25 @@ pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Buil
 
 fn provenance(b: *std.Build) []const u8 {
     const cwd = b.root.toString(b.allocator) catch @panic("OOM");
-    const git = std.process.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "--absolute-git-dir" }, .cwd = .{ .path = cwd }, .stdout_limit = .limited(32768), .stderr_limit = .limited(32768) }) catch return "source-archive";
+    // A linked worktree keeps its HEAD in its own git directory and the branches in the
+    // repository's common one.
+    const git = std.process.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir" }, .cwd = .{ .path = cwd }, .stdout_limit = .limited(32768), .stderr_limit = .limited(32768) }) catch return "source-archive";
     if (git.term != .exited or git.term.exited != 0) return "source-archive";
-    const directory = std.mem.trim(u8, git.stdout, "\r\n");
+    var lines = std.mem.tokenizeAny(u8, git.stdout, "\r\n");
+    const directory = lines.next() orelse return "source-archive";
+    const common = lines.next() orelse return "source-archive";
     const head_path = b.fmt("{s}/HEAD", .{directory});
     b.dependOnFileContents(.{ .cwd_relative = head_path });
     const head = std.Io.Dir.cwd().readFileAlloc(b.graph.io, head_path, b.allocator, .limited(32768)) catch return "source-archive";
     // A nested package still records its repository's real commit. Both loose
     // and packed refs are configuration inputs, rather than cached git guesses.
     if (std.mem.startsWith(u8, head, "ref: ")) {
-        const ref = b.fmt("{s}/{s}", .{ directory, std.mem.trim(u8, head[5..], "\r\n") });
+        const ref = b.fmt("{s}/{s}", .{ common, std.mem.trim(u8, head[5..], "\r\n") });
         b.dependOnDirectoryMetadata(.{ .cwd_relative = std.Io.Dir.path.dirname(ref).? });
         if (std.Io.Dir.cwd().access(b.graph.io, ref, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = ref }) else |_| {}
     }
     b.dependOnDirectoryMetadata(.{ .cwd_relative = directory });
-    const packed_path = b.fmt("{s}/packed-refs", .{directory});
+    const packed_path = b.fmt("{s}/packed-refs", .{common});
     if (std.Io.Dir.cwd().access(b.graph.io, packed_path, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = packed_path }) else |_| {}
     const result = std.process.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "HEAD" }, .cwd = .{ .path = cwd }, .stdout_limit = .limited(1024), .stderr_limit = .limited(32768) }) catch return "source-archive";
     if (result.term != .exited or result.term.exited != 0) return "source-archive";

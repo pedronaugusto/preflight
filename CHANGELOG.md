@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `bay land` (`zig build land`) dispatches the merge tier without reading what gh answers. gh 2.100 answers a dispatch with the run's URL, which the landing took for a failure once it had pushed its ref; the run is found by listing, as before.
+
 ## [0.3.3] - 2026-10-12
 
 ### Fixed

@@ -8,8 +8,8 @@
         .preflight = .{ .path = ".." },
         // The benchmarks measure through shakedown; nothing else fetches it.
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.2.0#a5c268211e8643b61e218194e81e204cc7dc6648",
-            .hash = "shakedown-0.2.0-BR8U45DLFQApbteZnJuS2mYJWOPJczptulfESpBLDhNf",
+            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.2.5#ca67fa3c62c3a9246cd5d3db8851fb03a3fbeb11",
+            .hash = "shakedown-0.2.5-BR8U4zoqFgCH2wFglVuAbn9V6isnsbuApDuroqY5NR0Z",
             .lazy = true,
         },
     },

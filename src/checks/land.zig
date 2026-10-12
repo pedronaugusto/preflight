@@ -492,7 +492,14 @@ fn gate(c: *src.Context, landing: Landing, ref: []const u8, sha: []const u8, opt
     const list: []const []const u8 = &.{ "run", "list", "--workflow", landing.file, "--branch", ref, "--event", "workflow_dispatch", "--limit", "50", "--json", "databaseId,headSha,url" };
     // A run of an earlier landing of the same commit is not this one.
     const earlier = try gh(c, landing.repo, list);
-    _ = try gh(c, landing.repo, &.{ "workflow", "run", landing.file, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
+    // The run is found by listing, as an earlier landing's would be: what gh says when it
+    // dispatches (nothing before 2.100, the run's URL since) is not read.
+    const dispatch: []const []const u8 = &.{ "gh", "workflow", "run", landing.file, "--ref", ref, "-f", "tier=merge", "-f", "land=true", "--repo", landing.repo };
+    const dispatched = try exec(c, dispatch);
+    if (!dispatched.ok) {
+        c.fail("land: gh workflow run: {s}", .{dispatched.err});
+        return error.LandFailed;
+    }
     var looks: Looks = .{ .repo = landing.repo, .limit = options.gh_failures };
     const started = try find(c, &looks, list, earlier, ref, sha, options);
     try say(c, "run {s}\n", .{started.url});

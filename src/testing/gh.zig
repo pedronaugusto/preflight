@@ -6,7 +6,7 @@
 //! directory whose remote it does not know.
 //!
 //! - `gh workflow run <file> --ref <branch> ...` starts a run of `<file>` on the branch's commit
-//!   on origin, a `workflow_dispatch`, which ends in `FAKE_GH_OUTCOME` (`success` or `failure`)
+//!   on origin, a `workflow_dispatch`, and prints its URL as gh 2.100 does, which ends in `FAKE_GH_OUTCOME` (`success` or `failure`)
 //!   after `FAKE_GH_POLLS` looks at it (none by default). A run that ends green does what the
 //!   caller's land job does: it fast-forwards origin's default branch to the commit and tags it
 //!   `v<.version>` when that tag does not exist. Each dispatch adds a line to
@@ -152,6 +152,11 @@ const Fake = struct {
         var run: Run = .{ .databaseId = id, .workflowName = file, .event = "workflow_dispatch", .headBranch = branch, .headSha = sha, .url = try f.a.print("https://github.invalid/runs/{d}", .{id}), .status = "queued", .conclusion = "", .jobs = &.{}, .polls = polls, .outcome = f.env.get("FAKE_GH_OUTCOME") orelse "success" };
         if (polls == 0) try f.end(&run);
         try f.save(try std.mem.concat(f.a, Run, &.{ earlier, &.{run} }));
+        // gh 2.100 answers a dispatch with the run's URL, no JSON.
+        var buffer: [256]u8 = undefined;
+        var out = std.Io.File.stdout().writerStreaming(f.io, &buffer);
+        try out.interface.print("{s}\n", .{run.url});
+        try out.interface.flush();
     }
 
     /// The run's jobs end: green lands, as the caller's land job does.

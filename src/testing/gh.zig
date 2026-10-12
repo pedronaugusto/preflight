@@ -13,10 +13,12 @@
 //!   `<FAKE_GH_STATE>/land-refs`: the `land/` branches origin holds then.
 //! - `gh run list` answers from the runs started, those of `--branch`, `--workflow` and
 //!   `--event` when given; `gh run view <id>` with one of them.
-//! - `<FAKE_GH_STATE>/flaky` holds how many of the next looks at a dispatched run (`run view`, or
-//!   `run list` of a branch with a run) fail as a dropped connection does.
+//! - `<FAKE_GH_STATE>/flaky-view` holds how many of the next `run view` calls fail as a dropped
+//!   connection does, and `flaky-list` how many of the next `run list` calls of a branch with a
+//!   run.
 //! - `FAKE_GH_MEANWHILE`, on the first look at a run in progress: `commit` commits on the branch
-//!   checked out where gh runs, `edit` changes README.md there without committing it.
+//!   checked out where gh runs, `edit` changes CHANGELOG.md, which a release changes, there
+//!   without committing it.
 //! - `FAKE_GH_AFTER_LAND`, once the land job moved the default branch: `advance` lands another
 //!   commit on it, `unreachable` moves origin away to `<FAKE_GH_ORIGIN>.away`.
 //! - `locate --dev` names `FAKE_BAY_ROOT`, or, without it, fails as a bay from before
@@ -86,11 +88,11 @@ const Fake = struct {
         try out.interface.flush();
     }
 
-    /// Fails as gh does when it cannot reach GitHub, while `flaky` says so.
-    fn flaky(f: Fake) !void {
-        const left = std.fmt.parseInt(u64, std.mem.trim(u8, try f.read("flaky") orelse return, " \r\n"), 10) catch return;
+    /// Fails as gh does when it cannot reach GitHub, while the count in `file` says so.
+    fn flaky(f: Fake, file: []const u8) !void {
+        const left = std.fmt.parseInt(u64, std.mem.trim(u8, try f.read(file) orelse return, " \r\n"), 10) catch return;
         if (left == 0) return;
-        try f.state.writeFile(f.io, .{ .sub_path = "flaky", .data = try f.a.print("{d}\n", .{left - 1}) });
+        try f.state.writeFile(f.io, .{ .sub_path = file, .data = try f.a.print("{d}\n", .{left - 1}) });
         fail(f.io, "error connecting to api.github.com");
     }
 
@@ -127,8 +129,8 @@ const Fake = struct {
         if (std.mem.eql(u8, what, "commit")) {
             _ = try f.must(&.{ "commit", "-q", "--allow-empty", "-m", "Meanwhile" });
         } else if (std.mem.eql(u8, what, "edit")) {
-            const readme = try std.Io.Dir.cwd().readFileAlloc(f.io, "README.md", f.a, .limited(1 << 20));
-            try std.Io.Dir.cwd().writeFile(f.io, .{ .sub_path = "README.md", .data = try f.a.print("{s}\nAn edit.\n", .{readme}) });
+            const changelog = try std.Io.Dir.cwd().readFileAlloc(f.io, "CHANGELOG.md", f.a, .limited(1 << 20));
+            try std.Io.Dir.cwd().writeFile(f.io, .{ .sub_path = "CHANGELOG.md", .data = try f.a.print("{s}\nAn edit.\n", .{changelog}) });
         } else return error.UnknownMeanwhile;
     }
 
@@ -161,7 +163,7 @@ const Fake = struct {
     }
 
     fn view(f: Fake, id: i64) !void {
-        try f.flaky();
+        try f.flaky("flaky-view");
         const all = try f.runs();
         for (all) |*run| {
             if (run.databaseId != id) continue;
@@ -184,7 +186,7 @@ const Fake = struct {
             if (!matches(args, "--branch", run.headBranch) or !matches(args, "--workflow", run.workflowName) or !matches(args, "--event", run.event)) continue;
             try matching.append(f.a, run);
         }
-        if (option(args, "--branch") != null and matching.items.len != 0) try f.flaky();
+        if (option(args, "--branch") != null and matching.items.len != 0) try f.flaky("flaky-list");
         return f.print(matching.items);
     }
 

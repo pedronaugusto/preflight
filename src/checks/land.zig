@@ -27,6 +27,9 @@ pub const Options = struct {
     find_attempts: usize = 60,
     /// Between two looks at the run while it runs.
     wait_every: std.Io.Duration = .fromSeconds(20),
+    /// Failed looks in a row, at the run or for it, that end the landing: GitHub or the
+    /// connection to it failing for a moment says nothing of the run.
+    gh_failures: usize = 10,
 };
 
 pub const Outcome = union(enum) {
@@ -277,7 +280,7 @@ fn caller(c: *src.Context) !Caller {
 
 /// What the landing commit is: its commit and, with a release, its version; the stem of its
 /// ref on origin and the ref, null when the default branch already holds the commit.
-const Prepared = struct { sha: []const u8, version: ?release.Version, stem: []const u8 = "", ref: ?[]const u8 = null };
+const Prepared = struct { sha: []const u8, version: ?release.Version, declared: release.Version, stem: []const u8 = "", ref: ?[]const u8 = null };
 
 /// Lands the branch checked out; every failure is reported, and `error.LandFailed` says so.
 pub fn run(c: *src.Context, options: Options) !Outcome {
@@ -305,11 +308,23 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         c.fail("land: origin has no {s}, its default branch, to land on", .{base.name});
         return error.LandFailed;
     }
+    const landing: Landing = .{ .repo = repo, .file = found.name, .base = base, .branch = branch, .start = start };
     const prepared = try assemble(c, branch, base, found, start, main, options.date);
-    const ref = prepared.ref orelse return .{ .nothing = try c.a.print("{s} holds {s}, and nothing the package ships changed since its last release", .{ base.name, branch }) };
+    const ref = prepared.ref orelse return nothing(c, landing, prepared);
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
-    try gate(c, repo, found.name, ref, prepared.sha, options);
-    return finish(c, .{ .repo = repo, .file = found.name, .base = base, .branch = branch, .start = start }, prepared);
+    try gate(c, landing, ref, prepared.sha, options);
+    return finish(c, landing, prepared);
+}
+
+/// The default branch holds the branch's work already, and nothing needs a release: an earlier
+/// landing whose end this clone did not see, it may be. When the tag of the declared version is
+/// on the default branch, that version's attempts that no landing needs go; the branch follows.
+fn nothing(c: *src.Context, landing: Landing, prepared: Prepared) !Outcome {
+    const tag = try c.a.print("v{f}", .{prepared.declared});
+    const tagged = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/tags/{s}^{{commit}}", .{tag}) })).out;
+    if (tagged.len != 0 and (try git(c, &.{ "merge-base", "--is-ancestor", tagged, landing.base.ref })).ok) try clearAttempts(c, landing, try c.a.print("land/{s}", .{tag}));
+    const moved = !std.mem.eql(u8, landing.start, prepared.sha) and try follow(c, landing, prepared.sha);
+    return .{ .nothing = try c.a.print("{s} holds {s}{s}, and nothing the package ships changed since its last release", .{ landing.base.name, landing.branch, if (moved) ", which follows it now" else "" }) };
 }
 
 /// A worktree of its own, detached at the branch's commit, where the landing commit is made, so
@@ -400,12 +415,17 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
         .prepared => |version| version,
         .released => |made| made.to,
     };
+    const declared = release.declared(c) catch |err| switch (err) {
+        // It named its fix.
+        error.InvalidVersion, error.InvalidManifest => return error.LandFailed,
+        else => return err,
+    };
     if ((try must(c, &.{ "status", "--porcelain", "--untracked-files=no" })).len != 0) {
         _ = try must(c, &.{ "add", "-u" });
         const message = if (version) |v| try c.a.print("Release v{f}", .{v}) else "Pin each dependency at its release";
         _ = try must(c, &.{ "commit", "-q", "-m", message });
     }
-    return .{ .sha = try must(c, &.{ "rev-parse", "HEAD" }), .version = version };
+    return .{ .sha = try must(c, &.{ "rev-parse", "HEAD" }), .version = version, .declared = declared };
 }
 
 /// The caller generated again, as `plan -- --workflow <caller>` generates it, when it names
@@ -459,15 +479,54 @@ fn noteChangelog(c: *src.Context) !void {
     try c.directory().writeFile(c.io, .{ .sub_path = "CHANGELOG.md", .data = noted });
 }
 
-/// Dispatches the merge tier with `land` on `ref` and waits for the run; red reports the failed jobs.
-fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sha: []const u8, options: Options) !void {
-    const list: []const []const u8 = &.{ "run", "list", "--workflow", file, "--branch", ref, "--event", "workflow_dispatch", "--limit", "50", "--json", "databaseId,headSha,url" };
+/// Dispatches the merge tier with `land` on `ref`, says which run it started as soon as GitHub
+/// lists it, and waits for it; red reports the failed jobs.
+fn gate(c: *src.Context, landing: Landing, ref: []const u8, sha: []const u8, options: Options) !void {
+    const list: []const []const u8 = &.{ "run", "list", "--workflow", landing.file, "--branch", ref, "--event", "workflow_dispatch", "--limit", "50", "--json", "databaseId,headSha,url" };
     // A run of an earlier landing of the same commit is not this one.
-    const earlier = try gh(c, repo, list);
-    _ = try gh(c, repo, &.{ "workflow", "run", file, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
-    const id = find: for (0..options.find_attempts) |attempt| {
+    const earlier = try gh(c, landing.repo, list);
+    _ = try gh(c, landing.repo, &.{ "workflow", "run", landing.file, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
+    var looks: Looks = .{ .repo = landing.repo, .limit = options.gh_failures };
+    const started = try find(c, &looks, list, earlier, ref, sha, options);
+    try say(c, "run {s}\n", .{started.url});
+    try wait(c, &looks, ref, started, options);
+}
+
+/// gh's answers in a loop that looks again: a failed look is reported and made again, and only
+/// `limit` failures in a row end the landing.
+const Looks = struct {
+    repo: []const u8,
+    limit: usize,
+    failures: usize = 0,
+
+    /// gh's JSON, or null after a failure that leaves room for another look.
+    fn take(l: *Looks, c: *src.Context, args: []const []const u8) !?src.Value {
+        const ran = try exec(c, try std.mem.concat(c.a, []const u8, &.{ &.{"gh"}, args, &.{ "--repo", l.repo } }));
+        if (ran.ok) if (std.json.parseFromSlice(src.Value, c.a, ran.out, .{})) |parsed| {
+            l.failures = 0;
+            return parsed.value;
+        } else |_| {};
+        l.failures += 1;
+        const name = try std.mem.join(c.a, " ", args[0..@min(2, args.len)]);
+        const why = if (ran.ok) "it answered with something other than JSON" else ran.err;
+        if (l.failures >= l.limit) {
+            c.fail("land: gh {s} failed {d} times in a row, last: {s}", .{ name, l.failures, why });
+            return error.LandFailed;
+        }
+        c.report("land: gh {s} failed, looking again: {s}\n", .{ name, why });
+        return null;
+    }
+};
+
+/// The run a dispatch started: its id, and where to see it.
+const Started = struct { id: []const u8, url: []const u8 };
+
+/// The run of `sha` on `ref` that `earlier` did not list.
+fn find(c: *src.Context, looks: *Looks, list: []const []const u8, earlier: src.Value, ref: []const u8, sha: []const u8, options: Options) !Started {
+    for (0..options.find_attempts) |attempt| {
         if (attempt != 0) try std.Io.sleep(c.io, options.find_every, .awake);
-        for (src.items(try gh(c, repo, list))) |found| {
+        const listed = try looks.take(c, list) orelse continue;
+        for (src.items(listed)) |found| {
             if (!std.mem.eql(u8, src.string(src.get(found, "headSha"), ""), sha)) continue;
             const number = src.get(found, "databaseId");
             if (number != .integer) continue;
@@ -475,26 +534,32 @@ fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sh
                 const known = src.get(old, "databaseId");
                 if (known == .integer and known.integer == number.integer) break true;
             } else false;
-            if (!seen) break :find number.integer;
+            if (seen) continue;
+            const id = try c.a.print("{d}", .{number.integer});
+            return .{ .id = id, .url = src.string(src.get(found, "url"), id) };
         }
-    } else {
-        c.fail("land: the dispatch on {s} started no run that GitHub lists; look at the caller's runs", .{ref});
-        return error.LandFailed;
-    };
-    const id_text = try c.a.print("{d}", .{id});
-    var announced = false;
+    }
+    c.fail("land: the dispatch on {s} started no run that GitHub lists; look at the caller's runs", .{ref});
+    return error.LandFailed;
+}
+
+/// Waits for the run to end; green returns, red names the failed jobs.
+fn wait(c: *src.Context, looks: *Looks, ref: []const u8, started: Started, options: Options) !void {
     while (true) {
-        const view = try gh(c, repo, &.{ "run", "view", id_text, "--json", "status,conclusion,url,jobs" });
-        const url = src.string(src.get(view, "url"), id_text);
-        if (!announced) try say(c, "run {s}\n", .{url});
-        announced = true;
+        const view = (looks.take(c, &.{ "run", "view", started.id, "--json", "status,conclusion,url,jobs" }) catch |err| {
+            if (err == error.LandFailed) c.report("the run goes on without this landing, and may still land; look at {s}, then land again: a landed version lands nothing\n", .{started.url});
+            return err;
+        }) orelse {
+            try std.Io.sleep(c.io, options.wait_every, .awake);
+            continue;
+        };
         if (!std.mem.eql(u8, src.string(src.get(view, "status"), ""), "completed")) {
             try std.Io.sleep(c.io, options.wait_every, .awake);
             continue;
         }
         const conclusion = src.string(src.get(view, "conclusion"), "");
         if (std.mem.eql(u8, conclusion, "success")) return;
-        c.fail("land: {s} is red ({s}): {s}", .{ ref, if (conclusion.len == 0) "no conclusion" else conclusion, url });
+        c.fail("land: {s} is red ({s}): {s}", .{ ref, if (conclusion.len == 0) "no conclusion" else conclusion, started.url });
         for (src.items(src.get(view, "jobs"))) |job| {
             const ended = src.string(src.get(job, "conclusion"), "");
             if (ended.len == 0 or std.mem.eql(u8, ended, "success") or std.mem.eql(u8, ended, "skipped") or std.mem.eql(u8, ended, "neutral")) continue;
@@ -505,36 +570,50 @@ fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sh
     }
 }
 
-/// After a green run: main holds the tested commit and the tag is on it, the branch follows it unless
-/// it moved meanwhile, and the refs of the attempts at this landing that no landing needs go.
+/// After a green run: the default branch holds the tested commit and the tag is on it, the
+/// branch follows, and the attempts at this version that no landing needs go. The run landed:
+/// what this clone cannot see or do of it afterwards is reported, and the landing stands.
 fn finish(c: *src.Context, landing: Landing, prepared: Prepared) !Outcome {
     const base = landing.base;
-    const branch = landing.branch;
-    const start = landing.start;
-    _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
+    const name = if (prepared.version) |version| try c.a.print("v{f}", .{version}) else landing.branch;
+    var outcome: Outcome = .{ .landed = .{ .name = name, .onto = base.name, .sha = prepared.sha, .followed = false } };
+    const fetched = try git(c, &.{ "fetch", "-q", "--tags", "origin" });
+    if (!fetched.ok) {
+        c.report("land: the run landed {s}, but origin could not be fetched to see it, so {s} stays where it is: {s}\n", .{ name, landing.branch, fetched.err });
+        try clearAttempts(c, landing, prepared.stem);
+        return outcome;
+    }
     // Another landing may have gone on top since: the default branch holds the commit.
     if (!(try git(c, &.{ "merge-base", "--is-ancestor", prepared.sha, base.ref })).ok) {
         c.fail("land: the run passed, but origin/{s}, at {s}, does not hold the tested {s}", .{ base.name, try must(c, &.{ "rev-parse", base.ref }), prepared.sha });
         return error.LandFailed;
     }
-    const name = if (prepared.version) |version| try c.a.print("v{f}", .{version}) else branch;
     if (prepared.version != null) {
         const tagged = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/tags/{s}^{{commit}}", .{name}) })).out;
         if (!std.mem.eql(u8, tagged, prepared.sha)) {
-            c.fail("land: {s} moved to {s}, but the tag {s} is not on it", .{ base.name, prepared.sha, name });
+            c.fail("land: {s} holds {s}, but the tag {s} is not on it", .{ base.name, prepared.sha, name });
             return error.LandFailed;
         }
     }
-    // The branch follows unless it moved while the run ran.
-    const here = (try git(c, &.{ "symbolic-ref", "--short", "-q", "HEAD" })).out;
-    const followed = std.mem.eql(u8, here, branch) and std.mem.eql(u8, try must(c, &.{ "rev-parse", "HEAD" }), start);
-    if (followed) {
-        // Rebased commits are not a fast-forward of the branch; they are the branch.
-        const ahead = (try git(c, &.{ "merge-base", "--is-ancestor", start, prepared.sha })).ok;
-        _ = try must(c, if (ahead) &.{ "merge", "-q", "--ff-only", prepared.sha } else &.{ "reset", "-q", "--keep", prepared.sha });
-    }
+    outcome.landed.followed = try follow(c, landing, prepared.sha);
     try clearAttempts(c, landing, prepared.stem);
-    return .{ .landed = .{ .name = name, .onto = base.name, .sha = prepared.sha, .followed = followed } };
+    return outcome;
+}
+
+/// Moves the branch to `sha`, which holds its work, when it is checked out here at the commit the
+/// landing began from. One that moved since, or a tree whose edits git will not carry to `sha`,
+/// stays where it is, and says why.
+fn follow(c: *src.Context, landing: Landing, sha: []const u8) !bool {
+    const here = (try git(c, &.{ "symbolic-ref", "--short", "-q", "HEAD" })).out;
+    if (!std.mem.eql(u8, here, landing.branch) or !std.mem.eql(u8, try must(c, &.{ "rev-parse", "HEAD" }), landing.start)) {
+        c.report("land: {s} is no longer checked out at the commit it landed from, so it stays where it is\n", .{landing.branch});
+        return false;
+    }
+    // Rebased commits are not a fast-forward of the branch; they are the branch.
+    const ahead = (try git(c, &.{ "merge-base", "--is-ancestor", landing.start, sha })).ok;
+    const moved = try git(c, if (ahead) &.{ "merge", "-q", "--ff-only", sha } else &.{ "reset", "-q", "--keep", sha });
+    if (!moved.ok) c.report("land: {s} stays where it is, since git would not carry the tree's edits to {s}: {s}\n", .{ landing.branch, sha[0..12], moved.err });
+    return moved.ok;
 }
 
 /// Deletes the attempts at `stem` on origin that no landing needs any more: one whose commit

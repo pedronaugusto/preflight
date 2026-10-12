@@ -161,7 +161,23 @@ const Scene = struct {
         var work = try s.tmp.dir.openDir(std.testing.io, "work", .{});
         defer work.close(std.testing.io);
         const program = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.preflight, s.arena.allocator());
-        return std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = &.{ program, "land", "--date", date }, .cwd = .{ .dir = work }, .environ_map = &s.env });
+        return std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = &.{ program, "land", "--date", date, "--poll", "0" }, .cwd = .{ .dir = work }, .environ_map = &s.env });
+    }
+
+    /// A commit that sets `a` in src/a.zig and says so under `[Unreleased]`.
+    fn change(s: *Scene, value: u8) !void {
+        const a = s.arena.allocator();
+        try s.write("src/a.zig", try a.print("pub const a = {d};\n", .{value}));
+        const changelog = try s.tmp.dir.readFileAlloc(std.testing.io, "work/CHANGELOG.md", a, .limited(1 << 20));
+        try s.write("CHANGELOG.md", try std.mem.replaceOwned(u8, a, changelog, "## [Unreleased]\n", try a.print("## [Unreleased]\n\n### Fixed\n\n- a is {d}.\n", .{value})));
+        try s.commit(try a.print("Set a to {d}", .{value}));
+    }
+
+    /// The stand-in's next `count` calls of `command` (`list` or `view`) fail.
+    fn flaky(s: *Scene, command: []const u8, count: usize) !void {
+        const a = s.arena.allocator();
+        try s.tmp.dir.createDirPath(std.testing.io, "gh");
+        try s.tmp.dir.writeFile(std.testing.io, .{ .sub_path = try a.print("gh/flaky-{s}", .{command}), .data = try a.print("{d}\n", .{count}) });
     }
 
     /// The `land/` branches origin holds, one per line.
@@ -455,4 +471,83 @@ test "a landing deletes the attempts no landing needs, and leaves another's in f
     // The red attempt went; the others stay.
     try std.testing.expectEqualStrings("land/v0.1.1-aaaaaaaaaaaa\nland/v0.1.1-bbbbbbbbbbbb", try s.landRefs());
     try std.testing.expect((try s.gitOut(&.{ "rev-parse", "-q", "--verify", "refs/remotes/origin/gone" })).len != 0);
+}
+
+test "a gh that fails for a while is asked again, and the run is named as soon as it is found" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    try s.env.put("FAKE_GH_POLLS", "2");
+    try s.flaky("list", 3);
+    try s.flaky("view", 3);
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    try contains(green.stderr, "land: gh run list failed, looking again: error connecting to api.github.com");
+    try contains(green.stderr, "land: gh run view failed, looking again");
+    try contains(green.stdout, "landed v0.1.1 on main at ");
+
+    // A run GitHub stops answering for is named, and said to go on without the landing.
+    try s.change(5);
+    try s.flaky("view", 1000);
+    const lost = try s.land("success");
+    try expectExit(lost, 1);
+    try contains(lost.stdout, "run https://github.invalid/runs/2\n");
+    try contains(lost.stderr, "gh run view failed 10 times in a row");
+    try contains(lost.stderr, "may still land");
+}
+
+test "a branch that moves while the run runs stays, and so does one whose tree git would not carry" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    try s.env.put("FAKE_GH_POLLS", "1");
+    try s.env.put("FAKE_GH_MEANWHILE", "commit");
+    const moved = try s.land("success");
+    try expectExit(moved, 0);
+    try contains(moved.stdout, "landed v0.1.1 on main at ");
+    try contains(moved.stdout, "and the branch stays where it was");
+    try contains(moved.stderr, "work is no longer checked out at the commit it landed from");
+    try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", "HEAD^" }));
+    try std.testing.expectEqualStrings("Meanwhile", try s.gitOut(&.{ "log", "-1", "--format=%s" }));
+
+    // An edit of a file the landing changed, made while the run runs, stays in the tree.
+    try s.git(&.{ "reset", "-q", "--hard", "origin/main" });
+    try s.change(6);
+    const six = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    try s.env.put("FAKE_GH_MEANWHILE", "edit");
+    const edited = try s.land("success");
+    try expectExit(edited, 0);
+    try contains(edited.stdout, "landed v0.1.2 on main at ");
+    try contains(edited.stderr, "work stays where it is, since git would not carry the tree's edits");
+    try std.testing.expectEqualStrings(six, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+    try contains(try s.gitOut(&.{ "status", "--porcelain" }), "CHANGELOG.md");
+    try s.alone();
+}
+
+test "a landing whose end the clone did not see stands, and landing again finishes it" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    try s.env.put("FAKE_GH_AFTER_LAND", "unreachable");
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    try contains(green.stdout, "landed v0.1.1 on main at ");
+    try contains(green.stderr, "origin could not be fetched to see it, so work stays where it is");
+    try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+
+    // Origin is back: there is nothing left to land, its attempt goes and the branch follows.
+    const a = s.arena.allocator();
+    try std.Io.Dir.renameAbsolute(try a.print("{s}.away", .{s.origin}), s.origin, std.testing.io);
+    _ = s.env.swapRemove("FAKE_GH_AFTER_LAND");
+    try std.testing.expect(std.mem.startsWith(u8, try s.landRefs(), "land/v0.1.1-"));
+    const again = try s.land("success");
+    try expectExit(again, 0);
+    try contains(again.stdout, "nothing to land: main holds work, which follows it now");
+    try std.testing.expectEqualStrings("", try s.landRefs());
+    const landed = try s.remote("refs/heads/main");
+    try std.testing.expectEqualStrings(landed, try s.remote("refs/tags/v0.1.1^{commit}"));
+    try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+    try s.alone();
 }

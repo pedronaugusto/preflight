@@ -155,18 +155,24 @@ fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
 fn landCommand(c: *src.Context, args: []const []const u8) !void {
     var index: usize = 2;
     while (index < args.len) : (index += 2) {
-        if (!std.mem.eql(u8, args[index], "--date")) return error.UnknownLandOption;
+        if (!std.mem.eql(u8, args[index], "--date") and !std.mem.eql(u8, args[index], "--poll")) return error.UnknownLandOption;
         if (index + 1 == args.len) return error.MissingLandOptionValue;
     }
-    const date = option(args, "--date") orelse try checks.release.today(c.a, c.io);
-    const outcome = checks.land.run(c, .{ .date = date }) catch |err| switch (err) {
+    var options: checks.land.Options = .{ .date = option(args, "--date") orelse try checks.release.today(c.a, c.io) };
+    // `--poll <seconds>`: between two looks at GitHub, for the run and at it.
+    if (option(args, "--poll")) |text| {
+        const every: std.Io.Duration = .fromSeconds(std.fmt.parseInt(u32, text, 10) catch return error.InvalidLandPoll);
+        options.find_every = every;
+        options.wait_every = every;
+    }
+    const outcome = checks.land.run(c, options) catch |err| switch (err) {
         // Reported where it failed.
         error.LandFailed => return error.CheckFailed,
         else => return err,
     };
     switch (outcome) {
         .nothing => |why| try stdout(c.*, try c.a.print("nothing to land: {s}\n", .{why})),
-        .landed => |landed| try stdout(c.*, try c.a.print("landed {s} on {s} at {s}{s}\n", .{ landed.name, landed.onto, landed.sha[0..12], if (landed.followed) "" else ", and the branch, which moved while the run ran, stays where it is" })),
+        .landed => |landed| try stdout(c.*, try c.a.print("landed {s} on {s} at {s}{s}\n", .{ landed.name, landed.onto, landed.sha[0..12], if (landed.followed) "" else ", and the branch stays where it was" })),
     }
 }
 

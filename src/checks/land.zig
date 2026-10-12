@@ -1,8 +1,9 @@
 //! `preflight land`: the branch checked out reaches origin's default branch, main below,
 //! through the package's own merge gate.
 //!
-//! The landing commit is made apart from the branch: HEAD is detached, rebased on
-//! origin's main, its pins tidied under bay, the caller generated again when it names
+//! The landing commit is made apart from the branch, in a worktree of its own detached at
+//! it, so the branch, its checkout and its tree are never touched: rebased on origin's main,
+//! its pins tidied under bay, the caller generated again when it names
 //! another preflight than the manifest pins, a changelog line written for the
 //! dependencies it re-pins, and the release made and committed. That commit goes to a
 //! ref of its own, `land/vX.Y.Z-<sha>` (`land/<branch>-<sha>` when nothing the package
@@ -270,8 +271,9 @@ fn caller(c: *src.Context) !Caller {
     return error.LandFailed;
 }
 
-/// What the landing commit is: its ref on origin and, with a release, its version.
-const Prepared = struct { sha: []const u8, version: ?release.Version };
+/// What the landing commit is: its commit and, with a release, its version; the stem of its
+/// ref on origin and the ref, null when the default branch already holds the commit.
+const Prepared = struct { sha: []const u8, version: ?release.Version, stem: []const u8 = "", ref: ?[]const u8 = null };
 
 /// Lands the branch checked out; every failure is reported, and `error.LandFailed` says so.
 pub fn run(c: *src.Context, options: Options) !Outcome {
@@ -299,31 +301,71 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         c.fail("land: origin has no {s}, its default branch, to land on", .{base.name});
         return error.LandFailed;
     }
-    _ = try must(c, &.{ "checkout", "-q", "--detach" });
-    const prepared = prepare(c, branch, base, found, options.date) catch |err| {
-        back(c, branch);
-        return err;
-    };
-    const stem = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
-    const ref = try c.a.print("{s}-{s}", .{ stem, prepared.sha[0..12] });
-    if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) {
-        back(c, branch);
-        return .{ .nothing = try c.a.print("{s} holds {s}, and nothing the package ships changed since its last release", .{ base.name, branch }) };
-    }
-    _ = must(c, &.{ "push", "-q", "origin", try c.a.print("HEAD:refs/heads/{s}", .{ref}) }) catch |err| {
-        back(c, branch);
-        return err;
-    };
-    _ = try must(c, &.{ "checkout", "-q", branch });
+    const prepared = try assemble(c, branch, base, found, start, main, options.date);
+    const ref = prepared.ref orelse return .{ .nothing = try c.a.print("{s} holds {s}, and nothing the package ships changed since its last release", .{ base.name, branch }) };
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
     try gate(c, repo, found.name, ref, prepared.sha, options);
-    return finish(c, base, branch, start, stem, prepared);
+    return finish(c, base, branch, start, prepared.stem, prepared);
 }
 
-/// On a detached HEAD at the branch: rebased on origin's default branch, tidied, the changelog
-/// told of re-pins, released and committed.
+/// A worktree of its own, detached at the branch's commit, where the landing commit is made, so
+/// that the branch, its checkout and the tree it has are never touched. It lives in the git
+/// directory, which no checkout's status lists.
+const Scratch = struct {
+    top: []const u8,
+    /// The package's directory in it.
+    dir: std.Io.Dir,
+
+    fn add(c: *src.Context, start: []const u8, directory: []const u8) !Scratch {
+        const common = try must(c, &.{ "rev-parse", "--path-format=absolute", "--git-common-dir" });
+        const now = std.Io.Clock.real.now(c.io).toNanoseconds();
+        const top = try std.Io.Dir.path.join(c.a, &.{ common, "preflight", try c.a.print("land-{s}-{d}", .{ start[0..12], now }) });
+        _ = try must(c, &.{ "worktree", "add", "-q", "--detach", top, start });
+        const package = if (std.mem.eql(u8, directory, ".")) top else try std.Io.Dir.path.join(c.a, &.{ top, directory });
+        const dir = std.Io.Dir.cwd().openDir(c.io, package, .{}) catch |err| {
+            removeWorktree(c, top);
+            return err;
+        };
+        return .{ .top = top, .dir = dir };
+    }
+
+    fn remove(s: Scratch, c: *src.Context) void {
+        s.dir.close(c.io);
+        removeWorktree(c, s.top);
+    }
+};
+
+fn removeWorktree(c: *src.Context, top: []const u8) void {
+    const removed = git(c, &.{ "worktree", "remove", "--force", top }) catch |err| {
+        c.report("land: the landing's worktree at {s} is left ({t}); remove it with git worktree remove --force\n", .{ top, err });
+        return;
+    };
+    if (!removed.ok) c.report("land: the landing's worktree at {s} is left: {s}\n", .{ top, removed.err });
+}
+
+/// The landing commit, made in a scratch worktree, and pushed to a ref of its own unless the
+/// default branch, at `main`, already holds it. The worktree goes on every way out.
+fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, start: []const u8, main: []const u8, date: []const u8) !Prepared {
+    const scratch = try Scratch.add(c, start, found.directory);
+    defer scratch.remove(c);
+    var w = c.*;
+    w.dir = scratch.dir;
+    w.errors = 0;
+    defer c.errors += w.errors;
+    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory }, date);
+    prepared.stem = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
+    if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) return prepared;
+    const ref = try c.a.print("{s}-{s}", .{ prepared.stem, prepared.sha[0..12] });
+    _ = try must(&w, &.{ "push", "-q", "origin", try c.a.print("HEAD:refs/heads/{s}", .{ref}) });
+    prepared.ref = ref;
+    return prepared;
+}
+
+/// In the scratch worktree, detached at the branch: rebased on origin's default branch, tidied,
+/// the changelog told of re-pins, released and committed. The rebase moves no branch, whatever
+/// `rebase.updateRefs` says.
 fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date: []const u8) !Prepared {
-    const rebased = try git(c, &.{ "rebase", "-q", base.ref });
+    const rebased = try git(c, &.{ "rebase", "-q", "--no-update-refs", base.ref });
     if (!rebased.ok) {
         const conflicts = (try git(c, &.{ "diff", "--name-only", "--diff-filter=U" })).out;
         _ = try git(c, &.{ "rebase", "--abort" });
@@ -411,13 +453,6 @@ fn noteChangelog(c: *src.Context) !void {
         else => return err,
     } orelse return;
     try c.directory().writeFile(c.io, .{ .sub_path = "CHANGELOG.md", .data = noted });
-}
-
-/// Back on `branch` as it was, after a landing commit that went nowhere.
-fn back(c: *src.Context, branch: []const u8) void {
-    const reset = git(c, &.{ "reset", "-q", "--hard" }) catch return;
-    const checkout = git(c, &.{ "checkout", "-q", branch }) catch return;
-    if (!reset.ok or !checkout.ok) c.fail("land: could not check {s} out again: {s}", .{ branch, if (checkout.ok) reset.err else checkout.err });
 }
 
 /// Dispatches the merge tier with `land` on `ref` and waits for the run; red reports the failed jobs.

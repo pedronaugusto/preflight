@@ -394,3 +394,22 @@ test "a landing goes onto origin's default branch, whatever its name, and says s
     try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
     try std.testing.expectEqualStrings("", try s.remote("refs/heads/main"));
 }
+
+test "a landing rewrites no branch, whatever rebase.updateRefs says" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    try s.git(&.{ "config", "rebase.updateRefs", "true" });
+    try s.git(&.{ "branch", "keep" });
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    const red = try s.land("failure");
+    try expectExit(red, 1);
+    try s.untouched("work", head);
+    try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", "keep" }));
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    // The branch landing follows main; another branch at its commit stays.
+    try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.gitOut(&.{ "rev-parse", "work" }));
+    try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", "keep" }));
+    try s.alone();
+}

@@ -72,9 +72,19 @@ const Watchdog = struct {
     fn watch(watchdog: *Watchdog) void {
         // The global single-threaded Io never cancels a wait.
         if (!bound.expired(io, &watchdog.done, test_timeout)) return;
-        report("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{
-            watchdog.name, options.test_timeout_ns / std.time.ns_per_ms, watchdog.phase.load(.acquire), testing.random_seed,
-        });
+        // Not through the stderr lock: a test stalled in a crash handler
+        // that hangs holds it, and the watchdog must still say what ran
+        // out and end the process.
+        var line: [512]u8 = undefined;
+        var text: std.Io.Writer = .fixed(&line);
+        const name = watchdog.name;
+        const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
+        const phase = watchdog.phase.load(.acquire);
+        // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
+        text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch {};
+        var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
+        // glint-ignore: Z026 -- the process ends next either way; a lost line cannot be reported anywhere else
+        stderr.interface.writeAll(text.buffered()) catch {};
         std.process.exit(1);
     }
 };

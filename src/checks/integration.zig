@@ -472,6 +472,29 @@ test "the watchdog fails a stalled test by name and phase" {
     try std.testing.expect(command.succeeded(quick));
 }
 
+test "the watchdog names a stalled test that holds the stderr lock, as a hung crash handler does" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a stall test\" } }");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\test "stalls holding stderr" {
+        \\    var buffer: [64]u8 = undefined;
+        \\    _ = std.debug.lockStderr(&buffer);
+        \\    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);
+        \\}
+        \\
+    });
+    const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(stalled));
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300 ms; phase body") != null);
+}
+
 test "the watchdog names the Io teardown of a test that leaves a task running" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

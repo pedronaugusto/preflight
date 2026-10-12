@@ -458,7 +458,8 @@ fn refreshCaller(c: *src.Context, found: Caller) !void {
 }
 
 /// A changelog line for the dependencies pinned at another revision than at the last release,
-/// unless `[Unreleased]` names one of them already.
+/// unless `[Unreleased]` names one of them already, or lists nothing while files other than the
+/// manifest changed: the release refuses that `[Unreleased]`, and the line must not hide it.
 fn noteChangelog(c: *src.Context) !void {
     const tag = try release.lastTag(c.*) orelse return;
     const released = try git(c, &.{ "show", try c.a.print("{s}:./build.zig.zon", .{tag}) });
@@ -471,6 +472,14 @@ fn noteChangelog(c: *src.Context) !void {
     const repins = try repinned(c.a, before, after);
     if (repins.len == 0 or !c.exists("CHANGELOG.md")) return;
     const changelog = try c.read("CHANGELOG.md");
+    // The release names the fix for a changelog with no [Unreleased].
+    const written = release.unreleased(changelog) catch return;
+    const others = release.changedBesides(c, tag, "build.zig.zon") catch |err| switch (err) {
+        // It named its fix.
+        error.InvalidManifest => return error.LandFailed,
+        else => return err,
+    };
+    if (!written.entries and others) return;
     const noted = noteRepins(c.a, changelog, repins) catch |err| switch (err) {
         // The release names this fix.
         error.NoUnreleasedSection => return,

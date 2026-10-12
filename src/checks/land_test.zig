@@ -551,3 +551,22 @@ test "a landing whose end the clone did not see stands, and landing again finish
     try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
     try s.alone();
 }
+
+test "an empty [Unreleased] beside other changes is refused, though tidy re-pins; re-pins alone are the entry" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.git(&.{ "checkout", "-q", "-b", "work" });
+    try s.write("src/a.zig", "pub const a = 2;\n");
+    try s.commit("Two, unsaid");
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    const refused = try s.land("success");
+    try expectExit(refused, 1);
+    try contains(refused.stderr, "[Unreleased] lists nothing");
+    try s.untouched("work", head);
+    try std.testing.expectEqualStrings("", try s.landRefs());
+
+    try s.git(&.{ "reset", "-q", "--hard", "main" });
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    try contains(try s.gitOut(&.{ "show", "HEAD:CHANGELOG.md" }), "## [0.1.1] - " ++ date ++ "\n\n### Changed\n\n- Pins dep 0.2.0 and preflight 0.1.1.\n");
+}

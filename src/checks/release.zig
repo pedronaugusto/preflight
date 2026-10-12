@@ -216,13 +216,22 @@ fn tagExists(c: src.Context, name: []const u8) !bool {
     return succeeded(try git(c, &.{ "git", "rev-parse", "-q", "--verify", ref }));
 }
 
-/// Whether anything the manifest ships differs between `tag` and the working tree.
-fn changedSince(c: src.Context, tag: []const u8, listed: []const []const u8) !bool {
+/// Whether anything the manifest ships, `except` aside, differs between `tag` and the working tree.
+fn changedSince(c: src.Context, tag: []const u8, listed: []const []const u8, except: ?[]const u8) !bool {
     const result = try git(c, &.{ "git", "diff", "--name-only", "--no-renames", "-z", tag, "--" });
     if (!succeeded(result)) return error.GitFailed;
     var names = std.mem.tokenizeScalar(u8, result.stdout, 0);
-    while (names.next()) |name| if (shipped(listed, name)) return true;
+    while (names.next()) |name| {
+        if (except) |path| if (std.mem.eql(u8, name, path)) continue;
+        if (shipped(listed, name)) return true;
+    }
     return false;
+}
+
+/// Whether a file the manifest ships other than `except` differs between `tag` and the working tree.
+pub fn changedBesides(c: *src.Context, tag: []const u8, except: []const u8) !bool {
+    const manifest = try parseManifest(c, try c.read("build.zig.zon"));
+    return changedSince(c.*, tag, manifest.paths, except);
 }
 
 pub const Outcome = union(enum) {
@@ -242,7 +251,7 @@ pub fn run(c: *src.Context, date: []const u8) !Outcome {
         return error.InvalidVersion;
     };
     const tag = try lastTag(c.*);
-    if (tag) |name| if (!try changedSince(c.*, name, manifest.paths)) return .{ .unchanged = name };
+    if (tag) |name| if (!try changedSince(c.*, name, manifest.paths, null)) return .{ .unchanged = name };
     const changelog = c.read("CHANGELOG.md") catch {
         c.fail("CHANGELOG.md: a release is written from it; add one with an [Unreleased] section", .{});
         return error.NoChangelog;

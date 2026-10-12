@@ -24,6 +24,9 @@ const Scene = struct {
     origin: []const u8,
     /// Where the stand-in records its calls and runs.
     state: []const u8,
+    /// The stand-in, which a test runs by its path: a child's PATH is not where this process
+    /// looks for the program it starts.
+    fake: []const u8,
 
     fn init() !*Scene {
         const s = try std.testing.allocator.create(Scene);
@@ -39,6 +42,7 @@ const Scene = struct {
         try s.env.put("GIT_CONFIG_NOSYSTEM", "1");
         try s.env.put("GIT_CONFIG_GLOBAL", "/dev/null");
         const fake = try std.Io.Dir.cwd().realPathFileAlloc(io, test_options.gh, a);
+        s.fake = fake;
         const path = s.env.get("PATH") orelse "";
         try s.env.put("PATH", try a.print("{s}{c}{s}", .{ std.Io.Dir.path.dirname(fake).?, std.Io.Dir.path.delimiter, path }));
         try s.env.put("FAKE_GH_REPO", "owner/pkg");
@@ -427,4 +431,28 @@ test "a landing that another lands on top of while it finishes still landed" {
     try std.testing.expectEqualStrings(tagged, try s.remote("refs/heads/main^"));
     try std.testing.expectEqualStrings(tagged, try s.gitOut(&.{ "rev-parse", "HEAD" }));
     try std.testing.expectEqualStrings("", try s.landRefs());
+}
+
+test "a landing deletes the attempts no landing needs, and leaves another's in flight and the clone's refs" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    // Another clone's landing of the same version runs, and a third has just pushed its branch.
+    try s.git(&.{ "push", "-q", "origin", "HEAD:refs/heads/land/v0.1.1-aaaaaaaaaaaa", "HEAD:refs/heads/land/v0.1.1-bbbbbbbbbbbb" });
+    try s.env.put("FAKE_GH_POLLS", "100");
+    try s.run("work", &.{ s.fake, "workflow", "run", "ci.yml", "--ref", "land/v0.1.1-aaaaaaaaaaaa", "--repo", "owner/pkg" });
+    try s.env.put("FAKE_GH_POLLS", "0");
+    // A branch origin no longer has, which the clone still tracks.
+    try s.git(&.{ "push", "-q", "origin", "HEAD:refs/heads/gone" });
+    try s.git(&.{ "fetch", "-q", "origin" });
+    try s.run(".", &.{ "git", "-C", "origin.git", "branch", "-q", "-D", "gone" });
+    const red = try s.land("failure");
+    try expectExit(red, 1);
+    try s.write("src/a.zig", "pub const a = 3;\n");
+    try s.commit("Fix again");
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    // The red attempt went; the others stay.
+    try std.testing.expectEqualStrings("land/v0.1.1-aaaaaaaaaaaa\nland/v0.1.1-bbbbbbbbbbbb", try s.landRefs());
+    try std.testing.expect((try s.gitOut(&.{ "rev-parse", "-q", "--verify", "refs/remotes/origin/gone" })).len != 0);
 }

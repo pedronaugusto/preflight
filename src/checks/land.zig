@@ -238,6 +238,10 @@ fn recordedHead(c: *src.Context) !?[]const u8 {
 /// The branch a landing goes onto: its name on origin, and the remote-tracking ref of it here.
 const Base = struct { name: []const u8, ref: []const u8 };
 
+/// Where a landing goes and what it lands: the repository gh names, the caller's workflow file
+/// in it, the default branch, and the branch landing with the commit it was at.
+const Landing = struct { repo: []const u8, file: []const u8, base: Base, branch: []const u8, start: []const u8 };
+
 /// The caller generated from `ci/workflow.json` for this package: its file under the
 /// repository's `.github/workflows`, the repository's top and the package's directory in it.
 const Caller = struct { name: []const u8, top: []const u8, directory: []const u8 };
@@ -292,7 +296,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     }
     const found = try caller(c);
     const repo = try githubRepository(c);
-    _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
+    _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
     const start = try must(c, &.{ "rev-parse", "HEAD" });
     const default = try defaultBranch(c);
     const base: Base = .{ .name = default, .ref = try c.a.print("refs/remotes/origin/{s}", .{default}) };
@@ -305,7 +309,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     const ref = prepared.ref orelse return .{ .nothing = try c.a.print("{s} holds {s}, and nothing the package ships changed since its last release", .{ base.name, branch }) };
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
     try gate(c, repo, found.name, ref, prepared.sha, options);
-    return finish(c, base, branch, start, prepared.stem, prepared);
+    return finish(c, .{ .repo = repo, .file = found.name, .base = base, .branch = branch, .start = start }, prepared);
 }
 
 /// A worktree of its own, detached at the branch's commit, where the landing commit is made, so
@@ -502,9 +506,12 @@ fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sh
 }
 
 /// After a green run: main holds the tested commit and the tag is on it, the branch follows it unless
-/// it moved meanwhile, and the refs of every attempt at this landing go.
-fn finish(c: *src.Context, base: Base, branch: []const u8, start: []const u8, stem: []const u8, prepared: Prepared) !Outcome {
-    _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
+/// it moved meanwhile, and the refs of the attempts at this landing that no landing needs go.
+fn finish(c: *src.Context, landing: Landing, prepared: Prepared) !Outcome {
+    const base = landing.base;
+    const branch = landing.branch;
+    const start = landing.start;
+    _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
     // Another landing may have gone on top since: the default branch holds the commit.
     if (!(try git(c, &.{ "merge-base", "--is-ancestor", prepared.sha, base.ref })).ok) {
         c.fail("land: the run passed, but origin/{s}, at {s}, does not hold the tested {s}", .{ base.name, try must(c, &.{ "rev-parse", base.ref }), prepared.sha });
@@ -526,26 +533,59 @@ fn finish(c: *src.Context, base: Base, branch: []const u8, start: []const u8, st
         const ahead = (try git(c, &.{ "merge-base", "--is-ancestor", start, prepared.sha })).ok;
         _ = try must(c, if (ahead) &.{ "merge", "-q", "--ff-only", prepared.sha } else &.{ "reset", "-q", "--keep", prepared.sha });
     }
-    const listed = try must(c, &.{ "ls-remote", "--heads", "origin", try c.a.print("refs/heads/{s}-*", .{stem}) });
-    const refs = try attempts(c.a, listed, stem);
-    if (refs.len != 0) _ = try must(c, try std.mem.concat(c.a, []const u8, &.{ &.{ "push", "-q", "origin", "--delete" }, refs }));
+    try clearAttempts(c, landing, prepared.stem);
     return .{ .landed = .{ .name = name, .onto = base.name, .sha = prepared.sha, .followed = followed } };
 }
 
+/// Deletes the attempts at `stem` on origin that no landing needs any more: one whose commit
+/// the default branch holds, and one whose runs of the caller have all ended. One with a run
+/// still going, or with none yet (another landing that has just pushed it), stays, as does each
+/// that origin or GitHub cannot answer for. What is left is reported; the landing stands.
+fn clearAttempts(c: *src.Context, landing: Landing, stem: []const u8) !void {
+    const listed = try git(c, &.{ "ls-remote", "--heads", "origin", try c.a.print("refs/heads/{s}-*", .{stem}) });
+    if (!listed.ok) {
+        c.report("land: the branches {s}-* stay on origin, which could not list them: {s}\n", .{ stem, listed.err });
+        return;
+    }
+    var done: std.ArrayList([]const u8) = .empty;
+    for (try attempts(c.a, listed.out, stem)) |attempt| {
+        if (try needed(c, landing, attempt)) continue;
+        try done.append(c.a, attempt.name);
+    }
+    if (done.items.len == 0) return;
+    const deleted = try git(c, try std.mem.concat(c.a, []const u8, &.{ &.{ "push", "-q", "origin", "--delete" }, done.items }));
+    if (!deleted.ok) c.report("land: {s} stay on origin: {s}\n", .{ try std.mem.join(c.a, ", ", done.items), deleted.err });
+}
+
+/// Whether a landing may still need `attempt`: its commit is not on the default branch, and
+/// a run of the caller on it is going, or none has started, or GitHub cannot say.
+fn needed(c: *src.Context, landing: Landing, attempt: Attempt) !bool {
+    if ((try git(c, &.{ "merge-base", "--is-ancestor", attempt.sha, landing.base.ref })).ok) return false;
+    const ran = try exec(c, &.{ "gh", "run", "list", "--workflow", landing.file, "--branch", attempt.name, "--event", "workflow_dispatch", "--limit", "20", "--json", "status", "--repo", landing.repo });
+    if (!ran.ok) return true;
+    const runs = std.json.parseFromSlice(src.Value, c.a, ran.out, .{}) catch return true;
+    if (src.items(runs.value).len == 0) return true;
+    for (src.items(runs.value)) |one| if (!std.mem.eql(u8, src.string(src.get(one, "status"), ""), "completed")) return true;
+    return false;
+}
+
+/// A branch on origin that is an attempt at a landing, and the commit it holds.
+pub const Attempt = struct { name: []const u8, sha: []const u8 };
+
 /// The branches of `git ls-remote --heads` output that are attempts at the landing `stem`:
 /// `<stem>-<sha>`, and not another stem that starts with this one.
-pub fn attempts(a: std.mem.Allocator, listed: []const u8, stem: []const u8) ![]const []const u8 {
-    var found: std.ArrayList([]const u8) = .empty;
+pub fn attempts(a: std.mem.Allocator, listed: []const u8, stem: []const u8) ![]const Attempt {
+    var found: std.ArrayList(Attempt) = .empty;
     var lines = std.mem.tokenizeScalar(u8, listed, '\n');
     while (lines.next()) |line| {
         const at = std.mem.find(u8, line, "refs/heads/") orelse continue;
         const name = std.mem.trim(u8, line[at + "refs/heads/".len ..], " \t\r");
         if (!std.mem.startsWith(u8, name, stem) or name.len <= stem.len + 1 or name[stem.len] != '-') continue;
-        const sha = name[stem.len + 1 ..];
-        const hex = for (sha) |byte| {
+        const short = name[stem.len + 1 ..];
+        const hex = for (short) |byte| {
             if (!std.ascii.isHex(byte)) break false;
         } else true;
-        if (hex) try found.append(a, name);
+        if (hex) try found.append(a, .{ .name = name, .sha = std.mem.trim(u8, line[0..at], " \t") });
     }
     return found.items;
 }
@@ -582,8 +622,10 @@ test "a landing's attempts are its stem and a commit, and no other stem's" {
         "3333\trefs/heads/land/v0.1.1-rc-0123456789ab\n4444\trefs/heads/land/v0.1.10-0123456789ab\n5555\trefs/heads/land/v0.1.1-\n";
     const found = try attempts(arena.allocator(), listed, "land/v0.1.1");
     try std.testing.expectEqual(@as(usize, 2), found.len);
-    try std.testing.expectEqualStrings("land/v0.1.1-0123456789ab", found[0]);
-    try std.testing.expectEqualStrings("land/v0.1.1-ba9876543210", found[1]);
+    try std.testing.expectEqualStrings("land/v0.1.1-0123456789ab", found[0].name);
+    try std.testing.expectEqualStrings("1111", found[0].sha);
+    try std.testing.expectEqualStrings("land/v0.1.1-ba9876543210", found[1].name);
+    try std.testing.expectEqualStrings("2222", found[1].sha);
     try std.testing.expectEqual(@as(usize, 0), (try attempts(arena.allocator(), "", "land/v0.1.1")).len);
 }
 

@@ -577,9 +577,10 @@ order and watchdog link std alone; benchmarks and fuzzing measure through the pa
 not. With bay, shakedown itself declares shakedown like any package: its development build
 holds the package as a dependency, as it holds every package's. Nothing of preflight's own pins reaches a package's artifact.
 
-`revision_exceptions` in `ci/preflight.json` maps a package to the reason two of its
-revisions may meet, for a case the package cannot fix, such as a dependency it does not own
-that pins another revision.
+A package two revisions of which may meet in one artifact is named in the manifest's
+`.coexist = .{ .name }`, the field bay reads for the same choice and Zig ignores: under bay
+the graph then holds both lines, and without bay it names a dependency the package does not
+own that pins another revision.
 
 Every other manifest in the repository, a fixture's or a conformance build's, must pin each
 package the root manifest also pins exactly as the root does: a fixture with its own pin goes

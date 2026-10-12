@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `revision_exceptions` in `ci/preflight.json` is gone: a package two revisions of which may meet in an artifact is named in the manifest's `.coexist`, the field bay reads for the same choice, so one declaration serves both. The one-revision message says to build with bay or pin one revision, where it said to bind a dependency by hand.
+
+### Changed
+
+- The tests take shakedown as bay gives it, with no `.aegis = .consumer` or `useAegis` binding: bay gives a graph one aegis, so shakedown's is this package's.
+
 ## [0.3.4] - 2026-10-12
 
 ### Added

@@ -14,22 +14,58 @@ const Manifest = struct { paths: []const []const u8 };
 
 /// The package's name, as its manifest declares it.
 pub fn name(c: *src.Context) ![]const u8 {
+    const manifest = try parsed(c);
+    const value = field(manifest, "name") orelse return error.InvalidManifest;
+    if (value != .enum_literal) return error.InvalidManifest;
+    return try c.a.dupe(u8, value.enum_literal.get(manifest.zoir));
+}
+
+/// The packages the manifest's `.coexist` names, bay's field (which Zig
+/// ignores): packages of which an artifact may link two revisions.
+pub fn coexist(c: *src.Context) ![]const []const u8 {
+    const manifest = try parsed(c);
+    const value = field(manifest, "coexist") orelse return &.{};
+    const items = switch (value) {
+        .empty_literal => return &.{},
+        .array_literal => |items| items,
+        else => {
+            c.fail("build.zig.zon: .coexist names packages, as .{{ .name }}", .{});
+            return error.InvalidManifest;
+        },
+    };
+    const names = try c.a.alloc([]const u8, items.len);
+    for (names, 0..) |*slot, i| {
+        const item = items.at(@intCast(i)).get(manifest.zoir);
+        if (item != .enum_literal) {
+            c.fail("build.zig.zon: .coexist names packages, as .{{ .name }}", .{});
+            return error.InvalidManifest;
+        }
+        slot.* = try c.a.dupe(u8, item.enum_literal.get(manifest.zoir));
+    }
+    return names;
+}
+
+const Parsed = struct { zoir: *const std.zig.Zoir, root: std.zig.Zoir.Node };
+
+fn parsed(c: *src.Context) !Parsed {
     const source = try c.a.dupeSentinel(u8, try c.read("build.zig.zon"), 0);
     const ast = try std.zig.Ast.parse(c.a, source, .{ .mode = .zon });
-    const zoir = try std.zig.ZonGen.generate(c.a, ast, .{});
+    const zoir = try c.a.create(std.zig.Zoir);
+    zoir.* = try std.zig.ZonGen.generate(c.a, ast, .{});
     if (zoir.hasCompileErrors()) {
         c.fail("build.zig.zon: not valid ZON", .{});
         return error.InvalidManifest;
     }
-    const root = std.zig.Zoir.Node.Index.root.get(&zoir);
+    const root = std.zig.Zoir.Node.Index.root.get(zoir);
     if (root != .struct_literal) return error.InvalidManifest;
-    for (root.struct_literal.names, 0..) |field, i| {
-        if (!std.mem.eql(u8, field.get(&zoir), "name")) continue;
-        const value = root.struct_literal.vals.at(@intCast(i)).get(&zoir);
-        if (value != .enum_literal) return error.InvalidManifest;
-        return try c.a.dupe(u8, value.enum_literal.get(&zoir));
+    return .{ .zoir = zoir, .root = root };
+}
+
+fn field(manifest: Parsed, wanted: []const u8) ?std.zig.Zoir.Node {
+    for (manifest.root.struct_literal.names, 0..) |each, i| {
+        if (std.mem.eql(u8, each.get(manifest.zoir), wanted)) return manifest.root.struct_literal.vals.at(@intCast(i)).get(manifest.zoir);
     }
-    return error.InvalidManifest;
+    return null;
 }
 
 pub fn paths(c: *src.Context, config: src.Value) !void {
@@ -116,6 +152,25 @@ test "a path .paths names must exist" {
     c.errors = 0;
     try check(&c, &.{ "build.zig", "build.zig.zon", "README.md", "CHANGELOG.md", "src" }, &.{"src"}, .null);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
+}
+
+test "the manifest's .coexist names the packages that may meet in two revisions, and nothing else names none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = tmp.dir };
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .app, .version = \"0.1.0\", .coexist = .{ .strand, .warp } }" });
+    const named = try coexist(&c);
+    try std.testing.expectEqual(@as(usize, 2), named.len);
+    try std.testing.expectEqualStrings("warp", named[1]);
+    try std.testing.expectEqualStrings("app", try name(&c));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .app, .version = \"0.1.0\" }" });
+    try std.testing.expectEqual(@as(usize, 0), (try coexist(&c)).len);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .app, .coexist = .{ \"strand\" } }" });
+    try std.testing.expectError(error.InvalidManifest, coexist(&c));
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 
 /// Every other manifest in the repository (a fixture's, a conformance build's)

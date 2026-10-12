@@ -8,9 +8,12 @@
 //!
 //! The package under test is held to the first as much as any other: a package
 //! cannot pin its own commit, so a second revision of it in its own artifact is
-//! always a cycle through a dependency's pin. A dependency that must link the
-//! package (test support built on its types) takes the package's own module,
-//! bound by the build script; that edge is one copy and no pin, so it is no cycle.
+//! always a cycle through a dependency's pin. A dependency that links the package
+//! (test support built on its types) and is given the package's own module, as
+//! bay gives it, holds one copy and no pin, so that edge is no cycle.
+//!
+//! A package that may be linked in two revisions is named in the manifest's
+//! `.coexist`, the field bay reads for the same choice.
 //!
 //! The check reads the configured build, not the manifests: a revision that an
 //! injected module or a dependency's own pin brings is as much in the artifact
@@ -38,12 +41,12 @@ pub const Conflict = struct {
     pub const Revision = struct { revision: []const u8, pullers: []const []const u8 };
 };
 
-/// The packages `links` holds in more than one revision, except those `allowed` names.
+/// The packages `links` holds in more than one revision, except those `coexist` names.
 /// `root_name` names the package under test, whose revision is empty.
-pub fn conflicts(a: std.mem.Allocator, links: []const Link, root_name: []const u8, allowed: src.Value) ![]const Conflict {
+pub fn conflicts(a: std.mem.Allocator, links: []const Link, root_name: []const u8, coexist: []const []const u8) ![]const Conflict {
     var names: std.ArrayList([]const u8) = .empty;
     for (links) |link| {
-        if (src.get(allowed, link.name) != .null) continue;
+        if (has(coexist, link.name)) continue;
         if (!has(names.items, link.name)) try names.append(a, link.name);
     }
     var found: std.ArrayList(Conflict) = .empty;
@@ -192,14 +195,7 @@ fn ownSource(config: *const C, package: C.Package.Index, module: C.Module.Index)
 }
 
 /// Fails the check for each cycle and each package in two revisions in an artifact of the root package.
-pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_name: []const u8, allowed: src.Value) !void {
-    if (allowed != .null and allowed != .object) {
-        c.fail("ci/preflight.json: revision_exceptions maps each package to why two of its revisions may meet", .{});
-        return;
-    }
-    if (allowed == .object) for (allowed.object.keys(), allowed.object.values()) |name, reason| {
-        if (src.string(reason, "").len == 0) c.fail("ci/preflight.json: revision_exceptions: {s}: say why two revisions may meet", .{name});
-    };
+pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_name: []const u8, coexist: []const []const u8) !void {
     // The same finding in several artifacts is reported once.
     var findings: std.array_hash_map.String(std.ArrayList([]const u8)) = .empty;
     for (config.steps) |step| {
@@ -215,10 +211,10 @@ pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_n
             var text: std.Io.Writer.Allocating = .init(c.a);
             try text.writer.writeAll("the linked packages form a cycle: ");
             for (names, 0..) |name, i| try text.writer.print("{s}{s}", .{ if (i == 0) "" else " -> ", name });
-            try text.writer.writeAll("\n  a package linked by another must not link it back: a dependency that needs this package's types takes its module, bound by the build script; one only CI or tests use is lazy and stays out of the artifact");
+            try text.writer.writeAll("\n  a package linked by another must not link it back: a dependency that needs this package's types is given its module, as bay gives it; one only CI or tests use is a dev dependency, or lazy, and stays out of the artifact");
             try texts.append(c.a, text.written());
         }
-        for (try conflicts(c.a, graph.links, root_name, allowed)) |conflict| {
+        for (try conflicts(c.a, graph.links, root_name, coexist)) |conflict| {
             // A cycle through a pin shows as two revisions of a package on it; the cycle says why.
             if (has(cyclic, conflict.name)) continue;
             var text: std.Io.Writer.Allocating = .init(c.a);
@@ -227,7 +223,7 @@ pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_n
                 try text.writer.print("\n  {s} pulled by ", .{if (revision.revision.len == 0) "this package" else revision.revision});
                 for (revision.pullers, 0..) |puller, i| try text.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", puller });
             }
-            try text.writer.writeAll("\n  one revision of each package in an artifact: pin the same one everywhere, bind a dependency to this package's own module, or say in ci/preflight.json revision_exceptions why they may meet");
+            try text.writer.writeAll("\n  one revision of each package in an artifact: build with bay, which selects one version of each package for the graph, or pin the same revision everywhere; a package two revisions of which may meet is named in build.zig.zon's .coexist");
             try texts.append(c.a, text.written());
         }
         for (texts.items) |text| {
@@ -257,7 +253,7 @@ test "a package linked in two revisions names both and who pulls each" {
         .{ .name = "aegis", .revision = "aegis-0.0.0-one", .puller = "reactor" },
         .{ .name = "aegis", .revision = "aegis-0.0.0-one", .puller = "reactor" },
     };
-    const found = try conflicts(a, &links, "conduit", .null);
+    const found = try conflicts(a, &links, "conduit", &.{});
     try std.testing.expectEqual(@as(usize, 1), found.len);
     try std.testing.expectEqualStrings("aegis", found[0].name);
     try std.testing.expectEqual(@as(usize, 2), found[0].revisions.len);
@@ -277,10 +273,10 @@ test "one revision, however many packages pull it, is no conflict" {
         .{ .name = "aegis", .revision = "aegis-0.0.0-one", .puller = "shakedown" },
         .{ .name = "aegis", .revision = "aegis-0.0.0-one", .puller = "reactor" },
     };
-    try std.testing.expectEqual(@as(usize, 0), (try conflicts(arena.allocator(), &links, "conduit", .null)).len);
+    try std.testing.expectEqual(@as(usize, 0), (try conflicts(arena.allocator(), &links, "conduit", &.{})).len);
 }
 
-test "the package under test is held to one revision of itself, and a named exception may meet two" {
+test "the package under test is held to one revision of itself, and a package named in .coexist may meet two" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -290,13 +286,13 @@ test "the package under test is held to one revision of itself, and a named exce
         .{ .name = "glint", .revision = "glint-0.1.0-a", .puller = "" },
         .{ .name = "glint", .revision = "glint-0.1.0-b", .puller = "gantry" },
     };
-    const found = try conflicts(a, &links, "aegis", .null);
+    const found = try conflicts(a, &links, "aegis", &.{});
     try std.testing.expectEqual(@as(usize, 2), found.len);
     try std.testing.expectEqualStrings("aegis", found[0].name);
     try std.testing.expectEqualStrings("aegis", found[0].revisions[0].pullers[0]);
     try std.testing.expectEqualStrings("glint", found[1].name);
-    const allowed = (try std.json.parseFromSlice(src.Value, a, "{\"glint\":\"gantry waits for its glint pin\"}", .{})).value;
-    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, &links, "aegis", allowed)).len);
+    // A package the manifest names in .coexist may meet in two revisions.
+    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, &links, "aegis", &.{"glint"})).len);
 }
 
 test "imports between packages that loop back are a cycle, named along it" {

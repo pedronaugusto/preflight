@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-12
+
 ### Fixed
 
 - The test watchdog writes its line without the stderr lock. A test stalled in a crash handler that hangs holds that lock, and the watchdog waited on it too: the run said nothing until the job's own limit ended it.

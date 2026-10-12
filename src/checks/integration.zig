@@ -1207,7 +1207,7 @@ test "toolchain cold root declares CI controls before lazy discovery returns" {
         const text = try owner.readFileAlloc(io, name, a, .limited(1024 * 1024));
         // Whatever gantry pin the manifest holds: a source nothing serves and a hash no cache has.
         const uncached = if (std.mem.eql(u8, name, "build.zig.zon"))
-            try replaceQuoted(a, try replaceQuoted(a, text, "git+https://github.com/pedronaugusto/gantry#", "file:///preflight-deliberately-missing-lazy-package"), "gantry-0.1.0-", "gantry-0.1.0-1iNrkTxCDAAGb-z9PfKY87xoFPNpMfdvguhnsUlqngxF")
+            try replaceQuoted(a, try replaceQuoted(a, text, "git+https://github.com/pedronaugusto/gantry", "file:///preflight-deliberately-missing-lazy-package"), "gantry-", "gantry-0.1.0-1iNrkTxCDAAGb-z9PfKY87xoFPNpMfdvguhnsUlqngxF")
         else
             text;
         try tmp.dir.writeFile(io, .{ .sub_path = name, .data = uncached });

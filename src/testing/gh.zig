@@ -212,7 +212,9 @@ const Fake = struct {
 fn fail(io: std.Io, message: []const u8) noreturn {
     var buffer: [256]u8 = undefined;
     var err = std.Io.File.stderr().writerStreaming(io, &buffer);
+    // glint-ignore: Z026 -- the fake exits 1 next whatever happens; its exit status is the failure the test reads
     err.interface.print("{s}\n", .{message}) catch {};
+    // glint-ignore: Z026 -- as above: a message that cannot be written still ends in exit 1
     err.interface.flush() catch {};
     std.process.exit(1);
 }

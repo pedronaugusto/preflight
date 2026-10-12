@@ -1,6 +1,7 @@
 //! `preflight land` end to end: a package in a clone of a bare repository standing in for
 //! GitHub, the preflight program run as its user runs it, and a stand-in for the GitHub CLI
-//! and for bay's tidy on PATH (src/testing/gh.zig), with no git configuration of the user's.
+//! and for bay's tidy on PATH (src/testing/gh.zig). The programs get PATH and what the test
+//! sets, nothing else: no git, gh or ssh configuration or variable of the user's.
 const std = @import("std");
 const test_options = @import("test_options");
 const workflow = @import("workflow.zig");
@@ -12,6 +13,8 @@ const new_pin = "1111111111111111111111111111111111111111";
 const old_preflight = "preflight-0.1.0-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
 const new_preflight = "preflight-0.1.1-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
 const date = "2026-10-11";
+/// The repository origin's URL names, which `url.<origin>.insteadOf` sends to the bare one.
+const url = "https://github.com/owner/pkg.git";
 
 const Scene = struct {
     tmp: std.testing.TmpDir,
@@ -31,13 +34,15 @@ const Scene = struct {
         const root = try s.tmp.dir.realPathFileAlloc(io, ".", a);
         s.origin = try std.Io.Dir.path.join(a, &.{ root, "origin.git" });
         s.state = try std.Io.Dir.path.join(a, &.{ root, "gh" });
-        s.env = try std.testing.environ.createMap(a);
+        s.env = try environment(a);
         try s.env.put("HOME", root);
         try s.env.put("GIT_CONFIG_NOSYSTEM", "1");
         try s.env.put("GIT_CONFIG_GLOBAL", "/dev/null");
         const fake = try std.Io.Dir.cwd().realPathFileAlloc(io, test_options.gh, a);
         const path = s.env.get("PATH") orelse "";
         try s.env.put("PATH", try a.print("{s}{c}{s}", .{ std.Io.Dir.path.dirname(fake).?, std.Io.Dir.path.delimiter, path }));
+        try s.env.put("FAKE_GH_REPO", "owner/pkg");
+        try s.env.put("FAKE_GH_ORIGIN", s.origin);
         // The manifest declares dev dependencies, so the landing tidies with this bay.
         try s.env.put("BAY", fake);
         try s.env.put("FAKE_GH_STATE", s.state);
@@ -84,9 +89,20 @@ const Scene = struct {
         try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, old_pin, ".", false, ".github/workflows/ci.yml"));
         try s.commit("First");
         try s.git(&.{ "tag", "v0.1.0" });
-        try s.git(&.{ "remote", "add", "origin", s.origin });
+        try s.git(&.{ "remote", "add", "origin", url });
+        try s.git(&.{ "config", try a.print("url.{s}.insteadOf", .{s.origin}), url });
         try s.git(&.{ "push", "-q", "--tags", "origin", "main" });
         return s;
+    }
+
+    /// PATH, and SystemRoot where Windows needs it to start a program; nothing else of this
+    /// process's environment.
+    fn environment(a: std.mem.Allocator) !std.process.Environ.Map {
+        const inherited = try std.testing.environ.createMap(a);
+        var env: std.process.Environ.Map = .init(a);
+        const kept: []const []const u8 = if (@import("builtin").os.tag == .windows) &.{ "PATH", "SystemRoot" } else &.{"PATH"};
+        for (kept) |name| if (inherited.get(name)) |value| try env.put(name, value);
+        return env;
     }
 
     fn deinit(s: *Scene) void {
@@ -158,6 +174,21 @@ const Scene = struct {
         };
     }
 
+    /// The branch, its checkout and the user's tree are as they were before a landing, and
+    /// the landing left no worktree of its own behind.
+    fn untouched(s: *Scene, name: []const u8, head: []const u8) !void {
+        try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+        try std.testing.expectEqualStrings(head, try s.gitOut(&.{ "rev-parse", name }));
+        try std.testing.expectEqualStrings(name, try s.gitOut(&.{ "symbolic-ref", "--short", "HEAD" }));
+        try std.testing.expectEqualStrings("", try s.gitOut(&.{ "status", "--porcelain" }));
+        try s.alone();
+    }
+
+    /// The checkout is the repository's one worktree.
+    fn alone(s: *Scene) !void {
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, try s.gitOut(&.{ "worktree", "list", "--porcelain" }), "worktree "));
+    }
+
     /// A work branch with a fix, while main moved on with a change of its own.
     fn branch(s: *Scene) !void {
         try s.git(&.{ "checkout", "-q", "-b", "work" });
@@ -211,7 +242,7 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try std.testing.expectEqualStrings("", try s.remote("refs/tags/v0.1.1"));
     const dispatched = try s.calls();
     try contains(dispatched, "tidy\n");
-    try contains(dispatched, try std.mem.concat(s.arena.allocator(), u8, &.{ "workflow run ci.yml --ref ", attempt, " -f tier=merge -f land=true\n" }));
+    try contains(dispatched, try std.mem.concat(s.arena.allocator(), u8, &.{ "workflow run ci.yml --ref ", attempt, " -f tier=merge -f land=true --repo owner/pkg\n" }));
 
     // A fix after the red run is a new attempt with a ref of its own; both are there while it runs.
     try s.write("src/a.zig", "pub const a = 3;\n");
@@ -294,4 +325,43 @@ test "a landing is refused without land and release, or with changes in the tree
     try expectExit(dirty, 1);
     try contains(dirty.stderr, "the tree has changes");
     try std.testing.expectEqualStrings("", try s.calls());
+}
+
+test "a version whose tag exists is not landed, and nothing moves" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    // Someone made v0.1.1 by hand, on main.
+    try s.git(&.{ "tag", "v0.1.1", "main" });
+    try s.git(&.{ "push", "-q", "origin", "v0.1.1" });
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    const main = try s.remote("refs/heads/main");
+    const result = try s.land("success");
+    try expectExit(result, 1);
+    try contains(result.stderr, "tag v0.1.1 exists");
+    try s.untouched("work", head);
+    try std.testing.expectEqualStrings(main, try s.remote("refs/heads/main"));
+    try std.testing.expectEqualStrings("", try s.landRefs());
+    try std.testing.expect(std.mem.find(u8, try s.calls(), "workflow run") == null);
+}
+
+test "a branch that changes nothing the package ships lands on land/<branch>- and tags nothing" {
+    const s = try Scene.init();
+    defer s.deinit();
+    // No re-pins: README.md is not among the manifest's paths.
+    _ = s.env.swapRemove("FAKE_BAY_FROM");
+    try s.git(&.{ "checkout", "-q", "-b", "docs" });
+    try s.write("README.md", "# pkg\n\nA word.\n");
+    try s.commit("A word");
+    const result = try s.land("success");
+    try expectExit(result, 0);
+    try contains(result.stdout, "pushed land/docs-");
+    try contains(result.stdout, "landed docs: main is at ");
+    try contains(try s.calls(), "workflow run ci.yml --ref land/docs-");
+    const landed = try s.remote("refs/heads/main");
+    try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+    try std.testing.expectEqualStrings("A word\nFirst", try s.gitOut(&.{ "log", "--format=%s" }));
+    try std.testing.expectEqualStrings("", try s.remote("refs/tags/v0.1.1"));
+    try std.testing.expectEqualStrings("", try s.landRefs());
+    try s.alone();
 }

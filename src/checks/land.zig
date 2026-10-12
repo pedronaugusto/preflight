@@ -156,8 +156,9 @@ fn must(c: *src.Context, args: []const []const u8) ![]const u8 {
     return error.LandFailed;
 }
 
-fn gh(c: *src.Context, args: []const []const u8) !src.Value {
-    const ran = try exec(c, try std.mem.concat(c.a, []const u8, &.{ &.{"gh"}, args }));
+/// `gh <args> --repo <repo>`'s JSON, which must come; a failure is reported with what gh said.
+fn gh(c: *src.Context, repo: []const u8, args: []const []const u8) !src.Value {
+    const ran = try exec(c, try std.mem.concat(c.a, []const u8, &.{ &.{"gh"}, args, &.{ "--repo", repo } }));
     if (!ran.ok) {
         c.fail("land: gh {s}: {s}", .{ try std.mem.join(c.a, " ", args[0..@min(2, args.len)]), ran.err });
         return error.LandFailed;
@@ -167,6 +168,53 @@ fn gh(c: *src.Context, args: []const []const u8) !src.Value {
         c.fail("land: gh {s} answered with something other than JSON", .{try std.mem.join(c.a, " ", args[0..@min(2, args.len)])});
         return error.LandFailed;
     }).value;
+}
+
+/// The GitHub repository a remote's URL names, as gh's `--repo` takes it: `OWNER/NAME` on
+/// github.com, `HOST/OWNER/NAME` on another host. Null for a URL that names none, a local path
+/// among them. Both forms of each: `https://host/owner/name.git`, `ssh://git@host/owner/name`,
+/// `git@host:owner/name.git`.
+pub fn repository(a: std.mem.Allocator, url: []const u8) !?[]const u8 {
+    var authority: []const u8 = undefined;
+    var path: []const u8 = undefined;
+    if (std.mem.find(u8, url, "://")) |at| {
+        const rest = url[at + 3 ..];
+        const slash = std.mem.findScalar(u8, rest, '/') orelse return null;
+        authority = rest[0..slash];
+        path = rest[slash + 1 ..];
+    } else {
+        // scp-like `[user@]host:path`; a path with a slash before the colon is a local one.
+        const colon = std.mem.findScalar(u8, url, ':') orelse return null;
+        authority = url[0..colon];
+        if (std.mem.findAny(u8, authority, "/\\") != null) return null;
+        path = url[colon + 1 ..];
+    }
+    if (std.mem.findScalarLast(u8, authority, '@')) |at| authority = authority[at + 1 ..];
+    // A port follows the host in a URL; in the scp-like form there is none.
+    if (std.mem.findScalar(u8, authority, ':')) |at| authority = authority[0..at];
+    if (authority.len < 2) return null;
+    path = std.mem.trimEnd(u8, path, "/");
+    if (std.mem.endsWith(u8, path, ".git")) path = path[0 .. path.len - ".git".len];
+    const slash = std.mem.findScalar(u8, path, '/') orelse return null;
+    const owner = path[0..slash];
+    const name = path[slash + 1 ..];
+    if (owner.len == 0 or name.len == 0 or std.mem.findScalar(u8, name, '/') != null) return null;
+    if (std.ascii.eqlIgnoreCase(authority, "github.com")) return try a.print("{s}/{s}", .{ owner, name });
+    return try a.print("{s}/{s}/{s}", .{ authority, owner, name });
+}
+
+/// The repository gh dispatches on: the one origin's configured URL names. The URL as
+/// configured, not as `url.<base>.insteadOf` rewrites it for git's own transport.
+fn githubRepository(c: *src.Context) ![]const u8 {
+    const url = (try git(c, &.{ "config", "--get", "remote.origin.url" })).out;
+    if (url.len == 0) {
+        c.fail("land: there is no remote origin to land on", .{});
+        return error.LandFailed;
+    }
+    return try repository(c.a, url) orelse {
+        c.fail("land: origin ({s}) names no GitHub repository, which gh would dispatch the merge tier on", .{url});
+        return error.LandFailed;
+    };
 }
 
 /// The caller generated from `ci/workflow.json` for this package: its file under the
@@ -221,6 +269,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         return error.LandFailed;
     }
     const found = try caller(c);
+    const repo = try githubRepository(c);
     _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
     const start = try must(c, &.{ "rev-parse", "HEAD" });
     const main = (try git(c, &.{ "rev-parse", "--verify", "-q", "refs/remotes/origin/main" })).out;
@@ -245,7 +294,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     };
     _ = try must(c, &.{ "checkout", "-q", branch });
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
-    try gate(c, found.name, ref, prepared.sha, options);
+    try gate(c, repo, found.name, ref, prepared.sha, options);
     return finish(c, branch, start, stem, prepared);
 }
 
@@ -350,14 +399,14 @@ fn back(c: *src.Context, branch: []const u8) void {
 }
 
 /// Dispatches the merge tier with `land` on `ref` and waits for the run; red reports the failed jobs.
-fn gate(c: *src.Context, file: []const u8, ref: []const u8, sha: []const u8, options: Options) !void {
+fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sha: []const u8, options: Options) !void {
     const list: []const []const u8 = &.{ "run", "list", "--workflow", file, "--branch", ref, "--event", "workflow_dispatch", "--limit", "50", "--json", "databaseId,headSha,url" };
     // A run of an earlier landing of the same commit is not this one.
-    const earlier = try gh(c, list);
-    _ = try gh(c, &.{ "workflow", "run", file, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
+    const earlier = try gh(c, repo, list);
+    _ = try gh(c, repo, &.{ "workflow", "run", file, "--ref", ref, "-f", "tier=merge", "-f", "land=true" });
     const id = find: for (0..options.find_attempts) |attempt| {
         if (attempt != 0) try std.Io.sleep(c.io, options.find_every, .awake);
-        for (src.items(try gh(c, list))) |found| {
+        for (src.items(try gh(c, repo, list))) |found| {
             if (!std.mem.eql(u8, src.string(src.get(found, "headSha"), ""), sha)) continue;
             const number = src.get(found, "databaseId");
             if (number != .integer) continue;
@@ -374,7 +423,7 @@ fn gate(c: *src.Context, file: []const u8, ref: []const u8, sha: []const u8, opt
     const id_text = try c.a.print("{d}", .{id});
     var announced = false;
     while (true) {
-        const view = try gh(c, &.{ "run", "view", id_text, "--json", "status,conclusion,url,jobs" });
+        const view = try gh(c, repo, &.{ "run", "view", id_text, "--json", "status,conclusion,url,jobs" });
         const url = src.string(src.get(view, "url"), id_text);
         if (!announced) try say(c, "run {s}\n", .{url});
         announced = true;
@@ -479,6 +528,18 @@ test "a landing's attempts are its stem and a commit, and no other stem's" {
     try std.testing.expectEqualStrings("land/v0.1.1-0123456789ab", found[0]);
     try std.testing.expectEqualStrings("land/v0.1.1-ba9876543210", found[1]);
     try std.testing.expectEqual(@as(usize, 0), (try attempts(arena.allocator(), "", "land/v0.1.1")).len);
+}
+
+test "the repository gh takes is the one origin's URL names, in either form" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{ "https://github.com/owner/pkg.git", "https://github.com/owner/pkg", "https://user@github.com/owner/pkg/", "git@github.com:owner/pkg.git", "ssh://git@github.com/owner/pkg.git", "ssh://git@GitHub.com:22/owner/pkg" }) |url|
+        try std.testing.expectEqualStrings("owner/pkg", (try repository(a, url)).?);
+    try std.testing.expectEqualStrings("ghe.example.com/owner/pkg", (try repository(a, "git@ghe.example.com:owner/pkg.git")).?);
+    try std.testing.expectEqualStrings("ghe.example.com/owner/pkg", (try repository(a, "https://ghe.example.com/owner/pkg.git")).?);
+    for ([_][]const u8{ "/srv/git/pkg.git", "../pkg.git", "file:///srv/git/owner/pkg.git", "C:\\git\\pkg.git", "https://github.com/owner", "https://github.com/owner/pkg/more", "git@github.com:pkg.git" }) |url|
+        try std.testing.expect(try repository(a, url) == null);
 }
 
 const hash_tail = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

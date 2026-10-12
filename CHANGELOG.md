@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins bay 0.1.1, whose development build runs in the package's directory.
+
 ## [0.2.1] - 2026-10-12
 
 ### Fixed

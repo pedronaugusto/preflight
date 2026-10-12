@@ -475,7 +475,9 @@ and their generated caller, never copied planner code or consumer plan dumps.
 ### Landing
 
 `zig build land` (`bay land` under bay), a step `addCi` adds, takes the branch checked out
-through the merge tier and onto origin's default branch, main below. It needs `land` and
+through the merge tier and onto origin's default branch, main below. A gate configured and run
+in another directory than the package's lands with the options its caller was planned with:
+`-- --config sample/ci/workflow.json --working-directory sample`, as preflight's own does. It needs `land` and
 `release` in `ci/workflow.json`, a clean tree with the branch checked out, and the GitHub CLI
 signed in; preflight never reads the token. Every `gh` call names the repository origin's
 configured URL names (`https://github.com/owner/name.git`, `git@github.com:owner/name.git`, or

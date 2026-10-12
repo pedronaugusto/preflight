@@ -167,10 +167,18 @@ fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
 fn landCommand(c: *src.Context, args: []const []const u8) !void {
     var index: usize = 2;
     while (index < args.len) : (index += 2) {
-        if (!std.mem.eql(u8, args[index], "--date") and !std.mem.eql(u8, args[index], "--poll")) return error.UnknownLandOption;
+        const known = for ([_][]const u8{ "--date", "--poll", "--config", "--working-directory" }) |name| {
+            if (std.mem.eql(u8, args[index], name)) break true;
+        } else false;
+        if (!known) return error.UnknownLandOption;
         if (index + 1 == args.len) return error.MissingLandOptionValue;
     }
-    var options: checks.land.Options = .{ .date = option(args, "--date") orelse try checks.release.today(c.a, c.io) };
+    // `--config` and `--working-directory` as `plan` takes them: preflight's own gate is configured in its sample.
+    var options: checks.land.Options = .{
+        .date = option(args, "--date") orelse try checks.release.today(c.a, c.io),
+        .config = option(args, "--config") orelse "ci/workflow.json",
+        .working_directory = option(args, "--working-directory"),
+    };
     // `--poll <seconds>`: between two looks at GitHub, for the run and at it.
     if (option(args, "--poll")) |text| {
         const every: std.Io.Duration = .fromSeconds(std.fmt.parseInt(u32, text, 10) catch return error.InvalidLandPoll);

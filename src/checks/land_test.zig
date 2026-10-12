@@ -157,11 +157,17 @@ const Scene = struct {
 
     /// `preflight land` in the clone, the run the stand-in starts ending in `outcome`.
     fn land(s: *Scene, outcome: []const u8) !std.process.RunResult {
+        return s.landWith(outcome, &.{});
+    }
+
+    /// `land` with `extra` options after its own.
+    fn landWith(s: *Scene, outcome: []const u8, extra: []const []const u8) !std.process.RunResult {
         try s.env.put("FAKE_GH_OUTCOME", outcome);
         var work = try s.tmp.dir.openDir(std.testing.io, "work", .{});
         defer work.close(std.testing.io);
         const program = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.preflight, s.arena.allocator());
-        return std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = &.{ program, "land", "--date", date, "--poll", "0" }, .cwd = .{ .dir = work }, .environ_map = &s.env });
+        const argv = try std.mem.concat(s.arena.allocator(), []const u8, &.{ &.{ program, "land", "--date", date, "--poll", "0" }, extra });
+        return std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = argv, .cwd = .{ .dir = work }, .environ_map = &s.env });
     }
 
     /// A commit that sets `a` in src/a.zig and says so under `[Unreleased]`.
@@ -306,6 +312,25 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try contains(again.stdout, "nothing to land");
     try std.testing.expect(std.mem.find(u8, (try s.calls())[calls..], "workflow run") == null);
     try std.testing.expectEqualStrings(landed, try s.remote("refs/heads/main"));
+}
+
+test "a package whose gate is configured and run in another directory lands with --config and --working-directory" {
+    const s = try Scene.init();
+    defer s.deinit();
+    const a = s.arena.allocator();
+    // As preflight's own: the configuration in its sample, which the gate runs in.
+    const config = "{\"land\":true,\"release\":true}\n";
+    try s.git(&.{ "rm", "-q", "ci/workflow.json" });
+    try s.write("sample/ci/workflow.json", config);
+    const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
+    try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, "${{ github.sha }}", "sample", true, ".github/workflows/ci.yml"));
+    try s.commit("The gate in the sample");
+    try s.git(&.{ "push", "-q", "origin", "main" });
+    try s.branch();
+    try expectExit(try s.land("success"), 1);
+    const green = try s.landWith("success", &.{ "--config", "sample/ci/workflow.json", "--working-directory", "sample" });
+    try expectExit(green, 0);
+    try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.remote("refs/tags/v0.1.1"));
 }
 
 test "a branch that conflicts with main is not landed, and names the files" {

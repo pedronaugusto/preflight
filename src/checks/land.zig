@@ -20,6 +20,11 @@ const workflow = @import("workflow.zig");
 pub const Options = struct {
     /// The release's date, `YYYY-MM-DD`.
     date: []const u8,
+    /// The gate's configuration, as `plan` takes it with `--config`.
+    config: []const u8 = "ci/workflow.json",
+    /// The directory the caller's gate runs in, from the repository's top, as `plan` writes
+    /// it with `--working-directory`; the package's own by default.
+    working_directory: ?[]const u8 = null,
     /// Between two looks for the run the dispatch started.
     find_every: std.Io.Duration = .fromSeconds(5),
     /// Looks for that run before the dispatch counts as lost.
@@ -250,11 +255,13 @@ const Caller = struct { name: []const u8, top: []const u8, directory: []const u8
 
 /// The workflow file under the repository's `.github/workflows` whose gate runs in the
 /// package's directory.
-fn caller(c: *src.Context) !Caller {
+fn caller(c: *src.Context, working_directory: ?[]const u8) !Caller {
     const top = try must(c, &.{ "rev-parse", "--show-toplevel" });
     const prefix = std.mem.trimEnd(u8, try must(c, &.{ "rev-parse", "--show-prefix" }), "/");
     const directory = if (prefix.len == 0) "." else prefix;
-    const wanted = try c.a.print("      working-directory: {s}\n", .{try std.json.Stringify.valueAlloc(c.a, directory, .{})});
+    // The gate runs in the package's directory unless the caller was generated to run it in another.
+    const gate_directory = working_directory orelse directory;
+    const wanted = try c.a.print("      working-directory: {s}\n", .{try std.json.Stringify.valueAlloc(c.a, gate_directory, .{})});
     const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github", "workflows" });
     var found: std.ArrayList([]const u8) = .empty;
     if (std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true })) |opened| {
@@ -283,7 +290,7 @@ const Prepared = struct { sha: []const u8, version: ?release.Version, declared: 
 
 /// Lands the branch checked out; every failure is reported, and `error.LandFailed` says so.
 pub fn run(c: *src.Context, options: Options) !Outcome {
-    if (refusal(try c.options("ci/workflow.json"))) |why| {
+    if (refusal(try c.options(options.config))) |why| {
         c.fail("land: {s}", .{why});
         return error.LandFailed;
     }
@@ -296,7 +303,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         c.fail("land: the tree has changes; commit or stash them first", .{});
         return error.LandFailed;
     }
-    const found = try caller(c);
+    const found = try caller(c, options.working_directory);
     const repo = try githubRepository(c);
     _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
     const start = try must(c, &.{ "rev-parse", "HEAD" });

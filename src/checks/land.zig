@@ -1,5 +1,5 @@
-//! `preflight land`: the branch checked out reaches main through the package's own
-//! merge gate.
+//! `preflight land`: the branch checked out reaches origin's default branch, main below,
+//! through the package's own merge gate.
 //!
 //! The landing commit is made apart from the branch: HEAD is detached, rebased on
 //! origin's main, its pins tidied under bay, the caller generated again when it names
@@ -29,10 +29,10 @@ pub const Options = struct {
 };
 
 pub const Outcome = union(enum) {
-    /// Main already holds the branch, and the package needs no release.
+    /// The default branch already holds the branch, and the package needs no release.
     nothing: []const u8,
-    /// Main and, with a release, its tag are on `sha`.
-    landed: struct { name: []const u8, sha: []const u8, followed: bool },
+    /// The default branch, `onto`, holds `sha`, and with a release its tag is on it.
+    landed: struct { name: []const u8, onto: []const u8, sha: []const u8, followed: bool },
 };
 
 /// Why `config` (`ci/workflow.json`) cannot land, or null when it lands and releases.
@@ -217,6 +217,26 @@ fn githubRepository(c: *src.Context) ![]const u8 {
     };
 }
 
+/// origin's default branch, which a landing moves: the one `refs/remotes/origin/HEAD` names,
+/// asked of origin when the clone has not recorded it.
+fn defaultBranch(c: *src.Context) ![]const u8 {
+    if (try recordedHead(c)) |name| return name;
+    const asked = try git(c, &.{ "remote", "set-head", "origin", "--auto" });
+    if (try recordedHead(c)) |name| return name;
+    c.fail("land: origin's default branch is not known: refs/remotes/origin/HEAD is not set, and origin did not name one ({s}); set it with git remote set-head origin <branch>", .{if (asked.ok) "it has no HEAD" else asked.err});
+    return error.LandFailed;
+}
+
+fn recordedHead(c: *src.Context) !?[]const u8 {
+    const prefix = "refs/remotes/origin/";
+    const head = (try git(c, &.{ "symbolic-ref", "-q", "refs/remotes/origin/HEAD" })).out;
+    if (!std.mem.startsWith(u8, head, prefix) or head.len == prefix.len) return null;
+    return head[prefix.len..];
+}
+
+/// The branch a landing goes onto: its name on origin, and the remote-tracking ref of it here.
+const Base = struct { name: []const u8, ref: []const u8 };
+
 /// The caller generated from `ci/workflow.json` for this package: its file under the
 /// repository's `.github/workflows`, the repository's top and the package's directory in it.
 const Caller = struct { name: []const u8, top: []const u8, directory: []const u8 };
@@ -272,13 +292,15 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     const repo = try githubRepository(c);
     _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
     const start = try must(c, &.{ "rev-parse", "HEAD" });
-    const main = (try git(c, &.{ "rev-parse", "--verify", "-q", "refs/remotes/origin/main" })).out;
+    const default = try defaultBranch(c);
+    const base: Base = .{ .name = default, .ref = try c.a.print("refs/remotes/origin/{s}", .{default}) };
+    const main = (try git(c, &.{ "rev-parse", "--verify", "-q", base.ref })).out;
     if (main.len == 0) {
-        c.fail("land: origin has no main to land on", .{});
+        c.fail("land: origin has no {s}, its default branch, to land on", .{base.name});
         return error.LandFailed;
     }
     _ = try must(c, &.{ "checkout", "-q", "--detach" });
-    const prepared = prepare(c, branch, found, options.date) catch |err| {
+    const prepared = prepare(c, branch, base, found, options.date) catch |err| {
         back(c, branch);
         return err;
     };
@@ -286,7 +308,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     const ref = try c.a.print("{s}-{s}", .{ stem, prepared.sha[0..12] });
     if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) {
         back(c, branch);
-        return .{ .nothing = try c.a.print("main holds {s}, and nothing the package ships changed since its last release", .{branch}) };
+        return .{ .nothing = try c.a.print("{s} holds {s}, and nothing the package ships changed since its last release", .{ base.name, branch }) };
     }
     _ = must(c, &.{ "push", "-q", "origin", try c.a.print("HEAD:refs/heads/{s}", .{ref}) }) catch |err| {
         back(c, branch);
@@ -295,13 +317,13 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     _ = try must(c, &.{ "checkout", "-q", branch });
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
     try gate(c, repo, found.name, ref, prepared.sha, options);
-    return finish(c, branch, start, stem, prepared);
+    return finish(c, base, branch, start, stem, prepared);
 }
 
-/// On a detached HEAD at the branch: rebased on origin's main, tidied, the changelog told of
-/// re-pins, released and committed.
-fn prepare(c: *src.Context, branch: []const u8, found: Caller, date: []const u8) !Prepared {
-    const rebased = try git(c, &.{ "rebase", "-q", "refs/remotes/origin/main" });
+/// On a detached HEAD at the branch: rebased on origin's default branch, tidied, the changelog
+/// told of re-pins, released and committed.
+fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date: []const u8) !Prepared {
+    const rebased = try git(c, &.{ "rebase", "-q", base.ref });
     if (!rebased.ok) {
         const conflicts = (try git(c, &.{ "diff", "--name-only", "--diff-filter=U" })).out;
         _ = try git(c, &.{ "rebase", "--abort" });
@@ -309,8 +331,8 @@ fn prepare(c: *src.Context, branch: []const u8, found: Caller, date: []const u8)
         var listed: std.ArrayList([]const u8) = .empty;
         while (files.next()) |file| try listed.append(c.a, file);
         if (listed.items.len == 0) {
-            c.fail("land: {s} does not rebase on origin/main: {s}", .{ branch, rebased.err });
-        } else c.fail("land: {s} conflicts with origin/main in {s}; rebase it by hand, then land", .{ branch, try std.mem.join(c.a, ", ", listed.items) });
+            c.fail("land: {s} does not rebase on origin/{s}: {s}", .{ branch, base.name, rebased.err });
+        } else c.fail("land: {s} conflicts with origin/{s} in {s}; rebase it by hand, then land", .{ branch, base.name, try std.mem.join(c.a, ", ", listed.items) });
         return error.LandFailed;
     }
     if (c.bay) |bay| {
@@ -446,18 +468,18 @@ fn gate(c: *src.Context, repo: []const u8, file: []const u8, ref: []const u8, sh
 
 /// After a green run: main and the tag are on the tested commit, the branch follows it unless
 /// it moved meanwhile, and the refs of every attempt at this landing go.
-fn finish(c: *src.Context, branch: []const u8, start: []const u8, stem: []const u8, prepared: Prepared) !Outcome {
+fn finish(c: *src.Context, base: Base, branch: []const u8, start: []const u8, stem: []const u8, prepared: Prepared) !Outcome {
     _ = try must(c, &.{ "fetch", "-q", "--prune", "--tags", "origin" });
-    const main = try must(c, &.{ "rev-parse", "refs/remotes/origin/main" });
+    const main = try must(c, &.{ "rev-parse", base.ref });
     if (!std.mem.eql(u8, main, prepared.sha)) {
-        c.fail("land: the run passed, but origin/main is at {s}, not at the tested {s}", .{ main, prepared.sha });
+        c.fail("land: the run passed, but origin/{s} is at {s}, not at the tested {s}", .{ base.name, main, prepared.sha });
         return error.LandFailed;
     }
     const name = if (prepared.version) |version| try c.a.print("v{f}", .{version}) else branch;
     if (prepared.version != null) {
         const tagged = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/tags/{s}^{{commit}}", .{name}) })).out;
         if (!std.mem.eql(u8, tagged, prepared.sha)) {
-            c.fail("land: main moved to {s}, but the tag {s} is not on it", .{ prepared.sha, name });
+            c.fail("land: {s} moved to {s}, but the tag {s} is not on it", .{ base.name, prepared.sha, name });
             return error.LandFailed;
         }
     }
@@ -472,7 +494,7 @@ fn finish(c: *src.Context, branch: []const u8, start: []const u8, stem: []const 
     const listed = try must(c, &.{ "ls-remote", "--heads", "origin", try c.a.print("refs/heads/{s}-*", .{stem}) });
     const refs = try attempts(c.a, listed, stem);
     if (refs.len != 0) _ = try must(c, try std.mem.concat(c.a, []const u8, &.{ &.{ "push", "-q", "origin", "--delete" }, refs }));
-    return .{ .landed = .{ .name = name, .sha = prepared.sha, .followed = followed } };
+    return .{ .landed = .{ .name = name, .onto = base.name, .sha = prepared.sha, .followed = followed } };
 }
 
 /// The branches of `git ls-remote --heads` output that are attempts at the landing `stem`:

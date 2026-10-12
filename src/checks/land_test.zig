@@ -365,3 +365,32 @@ test "a branch that changes nothing the package ships lands on land/<branch>- an
     try std.testing.expectEqualStrings("", try s.landRefs());
     try s.alone();
 }
+
+test "a landing goes onto origin's default branch, whatever its name, and says so when there is none" {
+    const s = try Scene.init();
+    defer s.deinit();
+    // origin's HEAD names a branch it does not have.
+    try s.run(".", &.{ "git", "-C", "origin.git", "symbolic-ref", "HEAD", "refs/heads/nothing" });
+    try s.git(&.{ "checkout", "-q", "-b", "work" });
+    try s.write("src/a.zig", "pub const a = 2;\n");
+    const changelog = try s.tmp.dir.readFileAlloc(std.testing.io, "work/CHANGELOG.md", s.arena.allocator(), .limited(1 << 20));
+    try s.write("CHANGELOG.md", try std.mem.replaceOwned(u8, s.arena.allocator(), changelog, "## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- A fix.\n"));
+    try s.commit("Fix");
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    const lost = try s.land("success");
+    try expectExit(lost, 1);
+    try contains(lost.stderr, "origin's default branch is not known");
+    try s.untouched("work", head);
+    try std.testing.expectEqualStrings("", try s.calls());
+
+    // The default branch is trunk, and origin has no main.
+    try s.run(".", &.{ "git", "-C", "origin.git", "branch", "-m", "main", "trunk" });
+    try s.run(".", &.{ "git", "-C", "origin.git", "symbolic-ref", "HEAD", "refs/heads/trunk" });
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    try contains(green.stdout, "landed v0.1.1: trunk is at ");
+    const landed = try s.remote("refs/heads/trunk");
+    try std.testing.expectEqualStrings(landed, try s.remote("refs/tags/v0.1.1^{commit}"));
+    try std.testing.expectEqualStrings(landed, try s.gitOut(&.{ "rev-parse", "HEAD" }));
+    try std.testing.expectEqualStrings("", try s.remote("refs/heads/main"));
+}

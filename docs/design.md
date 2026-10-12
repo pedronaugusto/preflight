@@ -58,16 +58,16 @@ so it may be built with any revision of anything, the package itself included: a
 itself with the revision of itself it pins, and a library it uses moves without waiting for it.
 The pins of the tooling graph may therefore form cycles; the linked graph may not.
 
-`lint` holds every artifact the package's build configures to one revision of each package,
-the package under test included, and to no cycle between packages. A package cannot pin its own
-commit, so a cycle back to it always shows as a second revision of it; a dependency bound to
-the package's own module (test support built on its types) is one copy and no pin, and is
-neither. Programs built from another package's sources are that package's tools and not
-counted. The check reads Zig's configuration of the build, by package hash and module import
-table, not manifests, so a revision that an injected module or a dependency's pin brings is
-seen where it is linked. A family of packages whose tools check each other stays a DAG to every
-consumer this way, and its moves are a release train: re-pin in dependency order, each landing
-on its own green run.
+`lint` holds every artifact the package's build configures to one revision of each package, the
+package under test included, and to no cycle between packages. A package cannot pin its own
+commit, so a cycle back to it always shows as a second revision of it; a dependency given the
+package's own module (test support built on its types, which bay gives the package under
+development) is one copy, and is neither. Programs built from another package's sources are that
+package's tools and not counted. The check reads Zig's configuration of the build, by package
+hash and module import table, not manifests, so a revision that an injected module or a
+dependency's pin brings is seen where it is linked. A family of packages whose tools check each
+other stays a DAG to every consumer this way, and its moves are a release train: re-pin in
+dependency order, each landing on its own green run.
 
 What preflight adds to an artifact obeys the same rule. The test runner, its shard order and its
 watchdog link std alone; benchmarks and fuzzing measure through the package's own shakedown,

@@ -35,8 +35,10 @@ pub const Options = struct {
 };
 
 /// Adds the step that assembles the build nested in `package` under `b`'s cache and runs
-/// `zig build` there with `options.args`. `b` is the build that owns the step: the package's
-/// own, or its development build, where the package is a dependency.
+/// it there with `options.args`. `b` is the build that owns the step: the package's own,
+/// where `zig build` runs it, or its development build, where `bay build` does, so the
+/// nested graph is resolved as the package's is: one version of each package, a shared
+/// package's own pins included.
 pub fn add(b: *std.Build, package: *std.Build, options: Options) *std.Build.Step {
     const root = configure.read(package, "build.zig.zon", .limited(1024 * 1024)) orelse std.debug.panic("addNestedBuild: {s} has no build.zig.zon to share pins from", .{options.directory});
     const text = generate(b.allocator, root, options) catch |err| std.debug.panic("addNestedBuild: {s}: {t}", .{ options.directory, err });
@@ -49,7 +51,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) *std.Build.Step
         .optimize = .debug,
     }) });
     const run = b.addRunArtifact(program);
-    run.addArg(b.graph.zig_exe);
+    run.addArg(configure.bay(b, package) orelse b.graph.zig_exe);
     _ = run.addOutputDirectoryArg2(options.name, .{});
     run.addDirectoryArg2(package.path(options.directory), .{});
     run.addFileArg(manifest);
@@ -60,10 +62,10 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) *std.Build.Step
     return &run.step;
 }
 
-/// `<zig> <out> <nested> <manifest> <path>... -- <zig build arguments>`: copies each path
+/// `<zig or bay> <out> <nested> <manifest> <path>... -- <build arguments>`: copies each path
 /// of the nested build from `nested` into `out`, writes `manifest` there with every path
-/// dependency, written relative to `nested`, made relative to `out`, and runs `zig build`
-/// in `out`, exiting as it exits.
+/// dependency, written relative to `nested`, made relative to `out`, and runs `<zig or bay>
+/// build` in `out`, exiting as it exits.
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const io = init.io;

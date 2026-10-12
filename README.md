@@ -109,12 +109,14 @@ for the host in Debug.
 A build nested in the package (a conformance build against an emulator that is not yours, a
 fixture) that uses a package the root also pins takes the pin from the root:
 `preflight.addNestedBuild(b, package, .{ .directory = "conformance", .name = "pkg_conformance", .fingerprint = 0x..., .path_dependencies = &.{.{ .name = "pkg", .path = ".." }}, .shared = &.{"shakedown"}, .pins = &.{.{ .name = "emulator", .url = "...", .hash = "..." }}, .args = &.{"test"} })`
-returns the step that assembles the nested build under the cache and runs `zig build` there with `.args`:
+returns the step that assembles the nested build under the cache and runs it there with `.args`, by
+`zig build` from the package's own build and by `bay build` from its development build, so the
+nested graph has one version of each package as the package's does:
 its files (`.paths`) are copied from `conformance/`, and its manifest is written from the root's
 `build.zig.zon`, each `.shared` package's source and hash as the root pins it, `.pins` for those only
 the nested build uses, and each path dependency made relative to where the build is assembled. The
 package's tree keeps only the nested build's sources, so no copy of a pin exists to drift, and it
-works the same from the package's own build and from its development build. `lint` still checks any
+works from the package's own build and from its development build. `lint` still checks any
 nested manifest it finds, which catches one kept by hand. `preflight.addCheck(b, package, name, source)` builds a
 repository check program, runs its tests, then runs it from the repository root
 as step `name`.
@@ -261,7 +263,7 @@ Layout exceptions likewise name their exact member set and a reason.
 
 ### Measuring and comparison
 
-`Config.bench` injects `shakedown` and `preflight_bench_options` (`commit`, physical build-host `cpu`, `os`). Its imports callback is optional. Benchmark programs call published `shakedown.bench.run` with named `Row(Context, WorkloadError)` callbacks and an explicit workload error set, workload units and observable results. Shakedown owns warmup, clock resolution, batching, samples, statistics, JSONL and comparison noise; preflight owns builds and child processes. [The sample](sample/bench/sum.zig) is a complete consumer.
+`Config.bench` injects `shakedown`, the one the package declares, and `preflight_bench_options` (`commit`, physical build-host `cpu`, `os`). Its imports callback is optional and gives the package's own modules; one that gives `shakedown` too is refused. Benchmark programs call published `shakedown.bench.run` with named `Row(Context, WorkloadError)` callbacks and an explicit workload error set, workload units and observable results. Shakedown owns warmup, clock resolution, batching, samples, statistics, JSONL and comparison noise; preflight owns builds and child processes. [The sample](sample/bench/sum.zig) is a complete consumer.
 
 `zig build bench-build` compiles ReleaseFast programs and the published `shakedown-bench-compare` tool, executing nothing. `zig build bench` manually measures them. Local `zig build test` invokes each program once with `--smoke`; each row does its one smoke invocation. Hosted orchestration passes `-Dci-bench-smoke=false` and compiles benches without timing gates. Smoke rows cannot be compared as measurements.
 
@@ -564,11 +566,11 @@ for any project:
   ```
 
 A test dependency that is built on the package's own types (test doubles taking the package's
-ids, say) is the usual way in. It must take the package's own module, bound by the build script,
-instead of its own pin of the package: the dependency offers an option to leave its pin unfetched
-and a way to give it the module, and the package's test modules and benchmarks import that one
-copy. An import into the package's own module is one copy and no pin, so it is neither a second
-revision nor a cycle. Programs built in the package's graph from another package's sources
+ids, say) is the usual way in. Under bay the package under development wins over every release
+of itself, so the dependency's import of the package is the package's own module: one copy,
+neither a second revision nor a cycle. Without bay, the dependency's pin of the package is a
+second revision of it in the package's own tests, and lint says so: a package that a test
+dependency is built on develops with bay. Programs built in the package's graph from another package's sources
 (a checker's own tools) are not the package's artifacts and are not counted.
 
 What preflight adds to a package's artifacts follows the same rule. Its test runner, shard
@@ -577,10 +579,10 @@ order and watchdog link std alone; benchmarks and fuzzing measure through the pa
 not. With bay, shakedown itself declares shakedown like any package: its development build
 holds the package as a dependency, as it holds every package's. Nothing of preflight's own pins reaches a package's artifact.
 
-A package two revisions of which may meet in one artifact is named in the manifest's
-`.coexist = .{ .name }`, the field bay reads for the same choice and Zig ignores: under bay
-the graph then holds both lines, and without bay it names a dependency the package does not
-own that pins another revision.
+A package two lines of which may meet in one artifact (a new major, or below 1.0 a new minor,
+beside the old) is named in the manifest's `.coexist = .{ .name }`, the field bay reads to select
+both lines and Zig ignores. It allows one revision per line: two revisions on one line are still
+reported, as bay never selects them.
 
 Every other manifest in the repository, a fixture's or a conformance build's, must pin each
 package the root manifest also pins exactly as the root does: a fixture with its own pin goes

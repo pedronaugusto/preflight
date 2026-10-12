@@ -102,13 +102,13 @@ fn provenance(b: *std.Build) []const u8 {
 
 fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
     const mod = b.createModule(.{ .root_source_file = package.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
-    // `imports` may give a shakedown bound to the package's own dependencies; otherwise the declared one.
-    if (!mod.import_table.contains("shakedown")) {
-        const found = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
-        // unreachable: `add` fetched it first, and refused a package that declares none
-        const dep = (found catch unreachable).?;
-        mod.addImport("shakedown", dep.module("shakedown"));
-    }
+    // A benchmark measures through the shakedown the package declares, the one its tests
+    // link; `imports` gives the package's own modules, and one way is the only way.
+    if (mod.import_table.contains("shakedown")) std.debug.panic("bench.imports gives `shakedown`: preflight adds the one the package declares; leave it out of the list", .{});
+    const found = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
+    // unreachable: `add` fetched it first, and refused a package that declares none
+    const dep = (found catch unreachable).?;
+    mod.addImport("shakedown", dep.module("shakedown"));
     const metadata = b.addOptions();
     metadata.addOption([]const u8, "commit", commit);
     const root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, package.root.toString(b.allocator) catch @panic("OOM"), b.allocator) catch @panic("benchmark root unavailable");

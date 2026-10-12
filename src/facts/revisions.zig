@@ -41,20 +41,24 @@ pub const Conflict = struct {
     pub const Revision = struct { revision: []const u8, pullers: []const []const u8 };
 };
 
-/// The packages `links` holds in more than one revision, except those `coexist` names.
+/// The packages `links` holds in more than one revision. A package `coexist` names
+/// may hold one revision per line (a major version, or below 1.0 a minor one), as
+/// bay selects it: two revisions on one line are still a conflict.
 /// `root_name` names the package under test, whose revision is empty.
 pub fn conflicts(a: std.mem.Allocator, links: []const Link, root_name: []const u8, coexist: []const []const u8) ![]const Conflict {
-    var names: std.ArrayList([]const u8) = .empty;
+    // One group per package, or per package and line for a package that may coexist.
+    var groups: std.ArrayList([]const u8) = .empty;
     for (links) |link| {
-        if (has(coexist, link.name)) continue;
-        if (!has(names.items, link.name)) try names.append(a, link.name);
+        const group = try groupOf(a, link, coexist);
+        if (!has(groups.items, group)) try groups.append(a, group);
     }
     var found: std.ArrayList(Conflict) = .empty;
-    for (names.items) |name| {
+    for (groups.items) |group| {
+        const name = group[0 .. std.mem.findScalar(u8, group, '@') orelse group.len];
         var revisions: std.ArrayList(Conflict.Revision) = .empty;
         var pullers: std.ArrayList(std.ArrayList([]const u8)) = .empty;
         for (links) |link| {
-            if (!std.mem.eql(u8, link.name, name)) continue;
+            if (!std.mem.eql(u8, try groupOf(a, link, coexist), group)) continue;
             const index = for (revisions.items, 0..) |known, i| {
                 if (std.mem.eql(u8, known.revision, link.revision)) break i;
             } else add: {
@@ -69,6 +73,22 @@ pub fn conflicts(a: std.mem.Allocator, links: []const Link, root_name: []const u
         if (revisions.items.len > 1) try found.append(a, .{ .name = name, .revisions = revisions.items });
     }
     return found.items;
+}
+
+/// The group a link is counted in: its package, and for a package `coexist` names
+/// its line too, as `name@line`.
+fn groupOf(a: std.mem.Allocator, link: Link, coexist: []const []const u8) ![]const u8 {
+    if (!has(coexist, link.name)) return link.name;
+    return a.print("{s}@{s}", .{ link.name, try line(a, link.revision) });
+}
+
+/// The line of a package hash, `name-version-<44 characters>`: the major version, or
+/// below 1.0 `0.minor`. A hash with no version Zig gave (a path's) is a line of its own.
+pub fn line(a: std.mem.Allocator, hash: []const u8) ![]const u8 {
+    const name = packageName(hash);
+    if (hash.len < name.len + 1 + 1 + 1 + 44) return hash;
+    const version = std.SemanticVersion.parse(hash[name.len + 1 .. hash.len - 45]) catch return hash;
+    return if (version.major == 0) a.print("0.{d}", .{version.minor}) else a.print("{d}", .{version.major});
 }
 
 fn has(list: []const []const u8, item: []const u8) bool {
@@ -132,7 +152,7 @@ fn visit(a: std.mem.Allocator, names: []const []const u8, edges: []const Edge, s
 
 /// What an artifact links: its root module's package, and each package one of its
 /// modules imports a module of, with the package that imports it; and the imports
-/// between packages, by name, but for a dependency bound to the package's own module.
+/// between packages, by name, but for a dependency given the package's own module.
 pub const Graph = struct { links: []const Link, edges: []const Edge };
 
 /// The packages an artifact links: `package` is the one checked, the root or, under
@@ -156,7 +176,7 @@ pub fn artifactGraph(a: std.mem.Allocator, config: *const C, package: C.Package.
             if (owner == module.owner) continue;
             const link = try linkOf(a, config, package, owner, root_name, puller);
             try links.append(a, link);
-            // A dependency bound to the package's own module holds no second copy and no pin.
+            // A dependency given the package's own module (as bay gives it) holds no second copy.
             // A second revision of the same package is the revision check's to report and except.
             if (!checked(config, owner, package) and !std.mem.eql(u8, from, link.name)) try edges.append(a, .{ .from = from, .to = link.name });
         }
@@ -196,6 +216,7 @@ fn ownSource(config: *const C, package: C.Package.Index, module: C.Module.Index)
 
 /// Fails the check for each cycle and each package in two revisions in an artifact of the root package.
 pub fn check(c: *src.Context, config: *const C, package: C.Package.Index, root_name: []const u8, coexist: []const []const u8) !void {
+    if (has(coexist, root_name)) c.fail("build.zig.zon: .coexist names {s} itself; a package builds one line of itself", .{root_name});
     // The same finding in several artifacts is reported once.
     var findings: std.array_hash_map.String(std.ArrayList([]const u8)) = .empty;
     for (config.steps) |step| {
@@ -276,7 +297,7 @@ test "one revision, however many packages pull it, is no conflict" {
     try std.testing.expectEqual(@as(usize, 0), (try conflicts(arena.allocator(), &links, "conduit", &.{})).len);
 }
 
-test "the package under test is held to one revision of itself, and a package named in .coexist may meet two" {
+test "the package under test is held to one revision of itself" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -291,8 +312,26 @@ test "the package under test is held to one revision of itself, and a package na
     try std.testing.expectEqualStrings("aegis", found[0].name);
     try std.testing.expectEqualStrings("aegis", found[0].revisions[0].pullers[0]);
     try std.testing.expectEqualStrings("glint", found[1].name);
-    // A package the manifest names in .coexist may meet in two revisions.
-    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, &links, "aegis", &.{"glint"})).len);
+}
+
+test "a package named in .coexist holds one revision per line, and two on one line still conflict" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tail = "-" ++ @as([44]u8, @splat('A'));
+    const lines = [_]Link{
+        .{ .name = "glint", .revision = "glint-0.1.0" ++ tail, .puller = "" },
+        .{ .name = "glint", .revision = "glint-0.2.0" ++ tail, .puller = "gantry" },
+    };
+    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, &lines, "app", &.{})).len);
+    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, &lines, "app", &.{"glint"})).len);
+    const same_line = lines ++ [_]Link{.{ .name = "glint", .revision = "glint-0.2.1" ++ tail, .puller = "sweep" }};
+    const found = try conflicts(a, &same_line, "app", &.{"glint"});
+    try std.testing.expectEqual(@as(usize, 1), found.len);
+    try std.testing.expectEqualStrings("glint", found[0].name);
+    try std.testing.expectEqual(@as(usize, 2), found[0].revisions.len);
+    try std.testing.expectEqualStrings("1", try line(a, "aegis-1.4.2" ++ tail));
+    try std.testing.expectEqualStrings("0.3", try line(a, "aegis-0.3.9" ++ tail));
 }
 
 test "imports between packages that loop back are a cycle, named along it" {

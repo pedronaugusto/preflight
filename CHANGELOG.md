@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The caller generator and `land` read a preflight pinned by release, `?ref=v0.2.0#<commit>` as `zig fetch` and bay write it; they refused every pin but a bare commit.
+
 ## [0.2.0] - 2026-10-12
 
 ### Breaking

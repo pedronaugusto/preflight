@@ -169,7 +169,10 @@ fn lintFixture(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
-    return std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "lint" }, .cwd = .{ .dir = dir }, .environ_map = &env });
+    // One cache for every fixture's lint: each fixture is a fresh directory, and a cache of its
+    // own would build preflight's checks from cold every time. Zig's cache is safe to share.
+    const cache = try std.Io.Dir.path.join(a, &.{ root, ".zig-cache", "fixture-lint" });
+    return std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "lint", "--cache-dir", cache }, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
 
 fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
@@ -254,39 +257,48 @@ fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !
     if (result.term != .exited or result.term.exited != 0) return error.FixtureGitFailed;
 }
 
-test "sample rejects each code rule the default policy gates and passes clean code" {
+/// The sample fixture linted with `text` as its source, or as the fixture writes it when null:
+/// each case one lint of its own, so no test holds several and comes near the watchdog's bound.
+fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    const examples = [_]struct { rule: []const u8, text: []const u8 }{
-        .{ .rule = "P004", .text = "fn foo() !void {}\npub fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n" },
-        .{ .rule = "P005", .text = "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n" },
-        .{ .rule = "P002", .text = "pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n" },
-        .{ .rule = "Z011", .text = "const std = @import(\"std\");\npub fn old() ?usize { return std.mem.indexOfScalar(u8, \"x\", 'x'); }\ntest {}\n" },
-    };
-    for (examples) |example| {
-        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = example.text });
-        const result = try lintFixture(a, tmp.dir);
-        if (std.mem.find(u8, result.stderr, example.rule) == null) std.debug.print("{s}\n", .{result.stderr});
-        try std.testing.expect(result.term == .exited and result.term.exited != 0);
-        try std.testing.expect(std.mem.find(u8, result.stderr, example.rule) != null);
-    }
-    // A style rule is reported with its site and does not fail the gate.
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "pub const BadName = 1;\ntest {}\n" });
-    const style = try lintFixture(a, tmp.dir);
-    try std.testing.expect(style.term == .exited and style.term.exited == 0);
-    try std.testing.expect(std.mem.find(u8, style.stderr, "Z006") != null);
-    // So is a house style the package has not gated: a cast without its written reason.
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\ntest {}\n" });
-    const house = try lintFixture(a, tmp.dir);
-    try std.testing.expect(house.term == .exited and house.term.exited == 0);
-    try std.testing.expect(std.mem.find(u8, house.stderr, "P001") != null);
-    try fixture(a, tmp.dir);
-    const clean = try lintFixture(a, tmp.dir);
-    try std.testing.expect(clean.term == .exited and clean.term.exited == 0);
+    if (text) |source| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = source });
+    const result = try lintFixture(a, tmp.dir);
+    if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the lint output it did not find the rule in
+    try std.testing.expect(result.term == .exited and (result.term.exited != 0) == fails);
+    if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
+}
+
+test "the default policy gates P004: an error made unreachable" {
+    try lintSample("fn foo() !void {}\npub fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n", "P004", true);
+}
+
+test "the default policy gates P005: a debug print left in" {
+    try lintSample("const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n", "P005", true);
+}
+
+test "the default policy gates P002: runtime safety switched off" {
+    try lintSample("pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n", "P002", true);
+}
+
+test "the default policy gates Z011: a deprecated std function" {
+    try lintSample("const std = @import(\"std\");\npub fn old() ?usize { return std.mem.indexOfScalar(u8, \"x\", 'x'); }\ntest {}\n", "Z011", true);
+}
+
+test "a style rule is reported with its site and does not fail the gate" {
+    try lintSample("pub const BadName = 1;\ntest {}\n", "Z006", false);
+}
+
+test "a house style the package has not gated is reported and does not fail: a cast without its reason" {
+    try lintSample("pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\ntest {}\n", "P001", false);
+}
+
+test "the sample's clean code passes the gate" {
+    try lintSample(null, null, false);
 }
 
 test "a repository still naming a retired lint setting fails by name" {

@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- preflight's own suite: the default-policy test is one test per rule, every fixture's lint shares one build cache (each built preflight's checks from cold in a fresh directory), and its tests are bounded at 300 s with the reason stated, as a cold first build of the checks can pass 120 s on a hosted runner.
 - A package's first release is the version its manifest names: with no v* tag before it, `release` bumped it, so a new package could not be released as 0.1.0 without a Breaking entry that was not true.
 
 ### Changed

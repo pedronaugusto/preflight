@@ -11,7 +11,8 @@ pub const Options = struct {
     program: std.Build.LazyPath,
     /// Modules the program imports. Empty means the package name alone.
     modules: []const []const u8 = &.{},
-    /// Packages the consumer's build may read: what the package needs to build.
+    /// Packages the consumer's build may read: the package's own dependencies. Each
+    /// brings the packages it depends on in turn, as a fetch would.
     packages: []const *std.Build.Dependency = &.{},
     /// Options the consumer gives the package, as `b.dependency(name, .{ ... })` does: `.http = false`
     /// proves a build without a feature the package makes optional.
@@ -43,7 +44,12 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     }) });
     const packages = b.addWriteFiles();
     _ = packages.add("README", "No packages.\n");
-    for (options.packages) |dependency| _ = packages.addCopyDirectory(dependency.path(""), dependency.builder.pkg_hash, .{});
+    var closure: std.array_hash_map.String(void) = .empty;
+    for (options.packages) |dependency| gather(b, &closure, dependency.builder.pkg_hash);
+    for (closure.keys()) |hash| {
+        const entry = std.Build.package_map.get(hash) orelse unreachable; // gather puts only hashes it found
+        _ = packages.addCopyDirectory(.{ .cwd_relative = entry.build_root }, hash, .{});
+    }
     const build = b.addRunArtifact(consumer);
     build.addArg(b.graph.zig_exe);
     build.addDirectoryArg2(b.graph.path(.local_cache, "preflight-consumer"), .{});
@@ -59,6 +65,17 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     build.addArgs(if (options.modules.len > 0) options.modules else &.{options.package});
     build.has_side_effects = true;
     configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
+}
+
+/// Puts `hash` and every package it depends on, transitively, into `closure`: with
+/// fetching off, a consumer's build needs each of them on disk. A lazy package the
+/// build never fetched is left out; nothing in this configuration asked for it.
+fn gather(b: *std.Build, closure: *std.array_hash_map.String(void), hash: []const u8) void {
+    const entry = std.Build.package_map.get(hash) orelse return;
+    if (!entry.available) return;
+    const found = closure.getOrPut(b.graph.arena, hash) catch @panic("OOM");
+    if (found.found_existing) return;
+    for (entry.deps) |dependency| gather(b, closure, dependency[1]);
 }
 
 /// Writes the project and builds it: `<zig> <project> <packages> <package

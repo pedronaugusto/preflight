@@ -43,8 +43,8 @@ pub const Options = struct {
     sdk: ?Sdk = null,
 };
 
-/// Adds `sdk_targets` to a gate configuration.
-pub const Sdk = *const fn (*src.Context, *src.Value) anyerror!void;
+/// Adds `sdk_targets` to a gate configuration, read from the build in the gate's directory.
+pub const Sdk = *const fn (*src.Context, *src.Value, []const u8) anyerror!void;
 
 pub const Outcome = union(enum) {
     /// The default branch already holds the branch, and the package needs no release.
@@ -529,7 +529,7 @@ fn refreshCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     // The label the caller was generated with, so that only the pin changes.
     const label = if (std.mem.startsWith(u8, existing, workflow.header)) existing[workflow.header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
     var config = try workflow.configuration(c.*, found.config);
-    if (sdk) |add| try add(c, &config);
+    if (sdk) |add| try add(&at_top, &config, found.gate);
     const text = workflow.generate(c.*, config, "build.zig.zon", found.gate, false, label, existing, &.{}) catch |err| {
         if (err == error.UndeclaredCallerJob) {
             c.fail("land: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs, then land", .{ path, workflow.undeclared });

@@ -46,7 +46,7 @@ pub const Context = struct {
     }
 
     /// Whether the manifest here declares `.dev_dependencies`.
-    fn developedWithBay(c: Context) bool {
+    pub fn developedWithBay(c: Context) bool {
         const text = c.read("build.zig.zon") catch return false;
         const source = c.a.dupeSentinel(u8, text, 0) catch @panic("OOM");
         const tree = std.zig.Ast.parse(c.a, source, .{ .mode = .zon }) catch @panic("OOM");

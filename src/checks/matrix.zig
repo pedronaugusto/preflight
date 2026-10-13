@@ -4,6 +4,12 @@ const src = @import("source.zig");
 pub const hosts = [_][]const u8{ "ubuntu-latest", "macos-latest", "windows-latest" };
 /// The `shards` keys of `ci/workflow.json`, in `hosts` order.
 const host_names = [_][]const u8{ "linux", "macos", "windows" };
+/// The runners on ARM the release tier adds, Linux and Windows on aarch64 (the macOS runner is
+/// one already), and their `shards` keys.
+pub const arm_hosts = [_][]const u8{ "ubuntu-24.04-arm", "windows-11-arm" };
+const arm_host_names = [_][]const u8{ "linux_arm", "windows_arm" };
+/// Every runner a job may name.
+const every_host = hosts ++ arm_hosts;
 /// Named cases with weights gave way to per-test shards that the test runner
 /// balances by `ci/durations.json`.
 const obsolete = [_][]const u8{ "windows_shards", "fast_windows_shards", "shard_jobs", "fast_linux_shards", "fast_linux_jobs", "test_timeout" };
@@ -42,6 +48,8 @@ pub const Job = struct {
     prepare: []const u8 = "",
     /// A job of the package's own (`jobs`), which runs as declared: never split into a link and a replay.
     declared: bool = false,
+    /// The job runs a foreign Linux target's tests under QEMU's user mode, which the runner installs.
+    qemu: bool = false,
 };
 
 /// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
@@ -55,7 +63,7 @@ const workflow_options = [_][]const u8{
     "source_job_timeout", "cross_job_timeout",
     // `ci/costs.json`, which the planner reads beside the configuration, and the macOS
     // targets whose build links a framework, which `plan` and `land` read from the build.
-    "measured", "sdk_targets",
+     "measured",         "sdk_targets",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -165,7 +173,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
         const systems: []const src.Value = if (hosted == .null) &.{.{ .string = hosts[0] }} else if (hosted == .array and hosted.array.items.len != 0) hosted.array.items else return error.InvalidDeclaredJob;
         for (systems) |system| {
             const os = src.string(system, "");
-            for (hosts) |known| {
+            for (every_host) |known| {
                 if (std.mem.eql(u8, known, os)) break;
             } else return error.InvalidDeclaredJob;
             if (!wanted) continue;
@@ -225,6 +233,8 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
         const modes: []const Mode = if (std.mem.eql(u8, host, hosts[0])) &.{ .debug, .safe, .fast } else &.{ .debug, .safe };
         try hostJobs(a, config, &jobs, host, host_name, modes);
     }
+    for (arm_hosts, arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe });
+    try jobs.append(a, try emulatedJob(a, config));
     try jobs.append(a, try lintJob(a, config));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
@@ -259,8 +269,30 @@ fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), 
             .args = try a.print("-Doptimize={t} -Dci-lint=false -Dci-timings=true{s}", .{ mode, try buildArgs(a, src.get(config, "build_args")) }),
             .shard = shard,
             .setup = true,
-            .job_timeout = try minutes(config, if (std.mem.eql(u8, host, hosts[2])) "windows_job_timeout" else "test_job_timeout"),
+            .job_timeout = try minutes(config, if (windowsHost(host)) "windows_job_timeout" else "test_job_timeout"),
         });
+    };
+}
+
+fn windowsHost(host: []const u8) bool {
+    return std.mem.eql(u8, host, hosts[2]) or std.mem.eql(u8, host, arm_hosts[1]);
+}
+
+fn linuxHost(host: []const u8) bool {
+    return std.mem.eql(u8, host, hosts[0]) or std.mem.eql(u8, host, arm_hosts[0]);
+}
+
+/// The Debug suite on riscv64 Linux, which no hosted runner is: built for it on the Linux
+/// runner and run under QEMU's user mode (`zig build -fqemu`), static with musl so that no
+/// riscv64 system root is needed. Its durations are QEMU's, so it records none.
+fn emulatedJob(a: std.mem.Allocator, config: src.Value) !Job {
+    return .{
+        .os = hosts[0],
+        .name = "test (riscv64-linux under QEMU, Debug)",
+        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dtarget=riscv64-linux-musl -fqemu{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+        .setup = true,
+        .qemu = true,
+        .job_timeout = try minutes(config, "test_job_timeout"),
     };
 }
 
@@ -279,7 +311,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         for (src.items(portable_hosts)) |host| if (std.mem.eql(u8, src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (tier == .fast or job.declared or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or std.mem.eql(u8, job.os, hosts[0])) {
+        if (tier == .fast or job.declared or job.qemu or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
             try native.append(a, job);
             continue;
         }
@@ -293,7 +325,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
             built = true;
         };
         if (!built) {
-            const target = if (std.mem.eql(u8, job.os, hosts[1])) "aarch64-macos" else "x86_64-windows-gnu";
+            const target = if (std.mem.eql(u8, job.os, hosts[1])) "aarch64-macos" else if (std.mem.eql(u8, job.os, arm_hosts[1])) "aarch64-windows-gnu" else "x86_64-windows-gnu";
             var builder = whole;
             builder.os = job.os;
             builder.step = "ci-build";
@@ -495,7 +527,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
-    for (host_names) |host| _ = try shardCount(src.get(shards, host));
+    for (host_names ++ arm_host_names) |host| _ = try shardCount(src.get(shards, host));
     for ([_][]const u8{ "compile_once", "windows_git_latest", "land", "attest", "release" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
@@ -505,7 +537,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         if (portable_hosts != .array) return error.InvalidPortableHosts;
         for (try src.strings(a, portable_hosts)) |host| {
             var found = false;
-            for (hosts) |known| if (std.mem.eql(u8, host, known)) {
+            for (every_host) |known| if (std.mem.eql(u8, host, known)) {
                 found = true;
             };
             if (!found) return error.InvalidPortableHosts;
@@ -716,8 +748,8 @@ test "portable matrix links macOS and Windows binaries on their SDK runners with
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
-    try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
-    try std.testing.expectEqual(@as(usize, 4), tiers.run.len);
+    try std.testing.expectEqual(@as(usize, 6), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 6), tiers.run.len);
     try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);
     for (tiers.compile, tiers.run) |builder, executor| {
         try std.testing.expectEqualStrings(executor.os, builder.os);
@@ -738,6 +770,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     var linux: usize = 0;
     for (jobs) |job| {
         if (!std.mem.eql(u8, job.step, "ci")) continue;
+        if (job.qemu) continue;
         if (std.mem.eql(u8, job.os, hosts[2])) windows += 1;
         if (std.mem.eql(u8, job.os, hosts[1])) macos += 1;
         if (std.mem.eql(u8, job.os, hosts[0])) {
@@ -802,8 +835,8 @@ test "portable shards share one compilation per host and mode" {
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":3}}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
-    try std.testing.expectEqual(@as(usize, 4), tiers.compile.len);
-    try std.testing.expectEqual(@as(usize, 2 + 6), tiers.run.len);
+    try std.testing.expectEqual(@as(usize, 6), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 2 + 6 + 2), tiers.run.len);
     for (tiers.compile) |builder| {
         try std.testing.expectEqualStrings("", builder.shard);
         try std.testing.expect(std.mem.find(u8, builder.name, "shard") == null);
@@ -870,7 +903,8 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         "test (ubuntu-latest, Debug)",        "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
         "test (macos-latest, Debug)",         "test (macos-latest, ReleaseSafe)",      "test (windows-latest, Debug)",
         "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
-        "Cross compile",
+        "Cross compile",                      "test (ubuntu-24.04-arm, Debug)",        "test (ubuntu-24.04-arm, ReleaseSafe)",
+        "test (windows-11-arm, Debug)",       "test (windows-11-arm, ReleaseSafe)",    "test (riscv64-linux under QEMU, Debug)",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {
@@ -880,13 +914,18 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         };
         try std.testing.expectEqual(@as(usize, 1), found);
     }
-    // Every host the tier executes records its durations; none of it is the fast job.
+    // Every host the tier executes records its durations; none of it is the fast job. QEMU's
+    // durations are not the target's, so the emulated job records none.
     for (jobs) |job| {
+        if (job.qemu) {
+            try std.testing.expect(std.mem.find(u8, job.args, "-Dtarget=riscv64-linux-musl -fqemu") != null);
+            continue;
+        }
         if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
     }
 }
 
-test "only the merge and release tiers execute macOS and Windows" {
+test "only the merge and release tiers execute macOS and Windows, and only the release tier ARM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -900,7 +939,7 @@ test "only the merge and release tiers execute macOS and Windows" {
         try std.testing.expectEqual(@as(usize, switch (tier) {
             .fast => 0,
             .merge => 2 + 1,
-            .release => 2 * 2 + 2,
+            .release => 2 * 2 + 2 + 2 * 2,
         }), executed);
     }
 }

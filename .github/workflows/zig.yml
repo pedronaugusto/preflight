@@ -195,6 +195,11 @@ jobs:
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
           toolchain: toolchain-${{ inputs.preflight-ref }}
+      # A foreign Linux target runs under QEMU's user mode, which `zig build -fqemu` starts.
+      - name: Install QEMU's user mode
+        if: matrix.qemu
+        timeout-minutes: 5
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-user
       - name: Set up test tools (attempt 1/3)
         id: tools1
         if: matrix.setup

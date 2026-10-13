@@ -89,7 +89,14 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         if (protocol.written().len > limit - 8 - body.len) return error.ProtocolOutputTooLong;
         try protocol.writer.writeStruct(header, .little);
         try protocol.writer.writeAll(body);
-        if (header.tag == .bsp_configuration_failed) return error.BuildConfigurationFailed;
+        if (header.tag == .bsp_configuration_failed) {
+            // What the build wrote to stderr says why; it ends after saying so.
+            while (multi.fill(4096, protocol_timeout)) |_| {
+                if (multi.reader(1).bufferedLen() > limit) break;
+            } else |_| {}
+            c.report("preflight: the build failed to configure ({s}):\n{s}\n", .{ try std.mem.join(c.a, " ", argv), multi.reader(1).buffered() });
+            return error.BuildConfigurationFailed;
+        }
         if (header.tag != .bsp_handshake and header.tag != .bsp_configuration) return error.UnexpectedBuildProtocolMessage;
         if (header.tag != .bsp_configuration) continue;
         var reader = Io.Reader.fixed(protocol.written());

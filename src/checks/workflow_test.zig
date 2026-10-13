@@ -91,7 +91,9 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     try contains(caller, "uses: ./.github/workflows/zig.yml");
     try contains(caller, "preflight-ref: ${{ github.sha }}");
     try contains(caller, "working-directory: \"sample\"");
-    const config = (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/workflow.json"), .{})).value;
+    var config = (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/workflow.json"), .{})).value;
+    // `plan` reads the macOS targets that link a framework from the sample's build: none does.
+    try config.object.put(a, "sdk_targets", .{ .array = .init(a) });
     for ([_]matrix.Tier{ .fast, .merge, .release }) |tier| {
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         const groups = [_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run };

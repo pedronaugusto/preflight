@@ -145,15 +145,17 @@ fn pendingNull(b: *std.Build) ?*std.Build.Step.Compile {
 /// The hosted runners the checks are built for.
 const runners = [_]struct { name: []const u8, query: std.Target.Query }{
     .{ .name = "linux", .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .cpu_model = .baseline } },
+    .{ .name = "linux-arm", .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu, .cpu_model = .baseline } },
     .{ .name = "macos", .query = .{ .cpu_arch = .aarch64, .os_tag = .macos, .cpu_model = .baseline } },
     .{ .name = "windows", .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .cpu_model = .baseline } },
+    .{ .name = "windows-arm", .query = .{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu, .cpu_model = .baseline } },
 };
 
 /// Adds `toolchain`, which builds the checks for every hosted runner under
 /// `<prefix>/toolchain/<runner>/`, so that one job compiles them and the
 /// others take the result. False while a lazy dependency is still to be fetched.
 fn addToolchain(b: *std.Build) bool {
-    const step = b.step("toolchain", "Build the checks and bay for the Linux, macOS and Windows runners under <prefix>/toolchain");
+    const step = b.step("toolchain", "Build the checks and bay for the Linux, macOS and Windows runners, ARM ones included, under <prefix>/toolchain");
     for (runners) |runner| {
         const target = b.resolveTargetQuery(runner.query);
         const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch {

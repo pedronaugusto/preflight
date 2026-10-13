@@ -44,6 +44,8 @@ runs:
       shell: bash
       run: |
         case "$RUNNER_OS" in Linux) dir=linux ;; macOS) dir=macos ;; Windows) dir=windows ;; esac
+        # The ARM runners of Linux and Windows have checks of their own; the macOS runner is one.
+        if [ "$RUNNER_ARCH" = ARM64 ] && [ "$RUNNER_OS" != macOS ]; then dir=$dir-arm; fi
         chmod +x .preflight-bin/$dir/* 2> /dev/null || true
         echo "$GITHUB_WORKSPACE/.preflight-bin/$dir" >> "$GITHUB_PATH"
     - uses: mlugg/setup-zig@v2

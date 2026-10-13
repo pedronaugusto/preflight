@@ -6,12 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The release tier runs the Debug and ReleaseSafe suites on GitHub's ARM runners, `ubuntu-24.04-arm` and `windows-11-arm` (Windows on ARM links once and replays, as Windows does), and the Debug suite on riscv64 Linux under QEMU's user mode (`-Dtarget=riscv64-linux-musl -fqemu` on the Linux runner, which installs it). The toolchain carries the checks and bay for both ARM runners; `shards` takes `linux_arm` and `windows_arm`.
+
 ### Changed
 
 - The release tier links a macOS target on Linux, as `link (<target>)`, unless the build for it links a framework: Zig links a macOS program with the libSystem it ships, and only a framework needs Apple's SDK on a Mac. `plan` and `land` read that from the build configured for each macOS target, so a package that links none uses no Mac runner for its links.
 
 ### Fixed
 
+- A build that fails to configure when preflight reads its facts says why: what it wrote to stderr is reported with the command, where only `BuildConfigurationFailed` was.
 - Every hosted job gives bay the Zig the job installed (`ZIG`), so bay no longer downloads a second copy of it in each job.
 - `land` tidies, with bay, each build in the repository that takes the package by `.path` (a sample), as it tidies the package: such a build has the package in its graph, and a pin left behind what the package now asks for (`sample/bay`'s aegis 0.1.3 under glint 0.2.4) failed the landing's run, as bay refuses it.
 - `land` on a repository whose default branch does not hold the caller (a new one, its main made first) pushes the branch's caller there alone, in a commit of its own, then lands: GitHub dispatches only a workflow the default branch holds, and the dispatch failed with "HTTP 404: workflow not found on the default branch".

@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
         try planOptions(args[2..]);
         if (option(args, "--zig-exe")) |zig| c.zig = zig;
         var config = try checks.workflow.configuration(c, option(args, "--config") orelse "ci/workflow.json");
-        try sdkTargets(&c, &config);
+        try sdkTargets(&c, &config, option(args, "--working-directory") orelse ".");
         if (option(args, "--full") != null) return error.FullReplacedByTier;
         const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
         if (option(args, "--workflow")) |path| {
@@ -168,16 +168,22 @@ fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
 
 /// The macOS targets of `config` whose build links a framework, as `sdk_targets`: only their
 /// links need a Mac, with Apple's SDK; Zig links any other macOS target on Linux. Each is read
-/// from the build configured for that target, so a framework linked for macOS alone counts.
-fn sdkTargets(c: *src.Context, config: *src.Value) anyerror!void {
+/// from the build in `directory`, where the gate runs, configured for that target, so a
+/// framework linked for macOS alone counts.
+fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerror!void {
     if (config.* != .object) return;
+    var gate = c.*;
+    gate.dir = try c.directory().openDir(c.io, directory, .{});
+    defer gate.dir.?.close(c.io);
+    // The gate's build is developed with bay or not on its own account (preflight's sample is not).
+    gate.bay = if (gate.developedWithBay()) c.bay orelse "bay" else null;
     var linking: std.json.Array = .init(c.a);
     for (src.items(src.get(config.*, "targets"))) |target| {
         const options = try checks.matrix.crossOptions(c.a, config.*, target);
         const name = checks.matrix.targetName(target);
         const query = std.Target.Query.parse(.{ .arch_os_abi = name }) catch return error.InvalidCrossTarget;
         if (query.os_tag != .macos) continue;
-        const snapshot = try facts.read(c.*, c.zig, options);
+        const snapshot = try facts.read(gate, c.zig, options);
         if (try facts.linksFramework(c.a, snapshot)) try linking.append(.{ .string = name });
     }
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
@@ -442,7 +448,10 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     {
         const timer = checks.phases.Timer.begin(c, "configure the build");
         defer timer.end(c, log);
-        const snapshot = try facts.read(c, c.zig, argv.items[first_option..]);
+        // A flag of the build runner's own (`-fqemu`) changes no configuration.
+        var options: std.ArrayList([]const u8) = .empty;
+        for (argv.items[first_option..]) |option_text| if (std.mem.startsWith(u8, option_text, "-D")) try options.append(c.a, option_text);
+        const snapshot = try facts.read(c, c.zig, options.items);
         for (snapshot.config.available_options) |available_option| {
             const name = available_option.name.slice(&snapshot.config);
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");

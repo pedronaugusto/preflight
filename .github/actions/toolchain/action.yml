@@ -48,7 +48,7 @@ runs:
       run: |
         zig build --build-file .preflight/build.zig -Drepo-root="$GITHUB_WORKSPACE" toolchain -p "$RUNNER_TEMP/toolchain"
         mkdir -p .preflight-bin
-        for runner in linux macos windows; do
+        for runner in linux linux-arm macos windows windows-arm; do
           mkdir -p ".preflight-bin/$runner"
           find "$RUNNER_TEMP/toolchain/toolchain/$runner" -type f ! -name '*.pdb' -exec cp {} ".preflight-bin/$runner/" \;
         done

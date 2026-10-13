@@ -337,11 +337,13 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     const start = try must(c, &.{ "rev-parse", "HEAD" });
     const default = try defaultBranch(c);
     const base: Base = .{ .name = default, .ref = try c.a.print("refs/remotes/origin/{s}", .{default}) };
-    const main = (try git(c, &.{ "rev-parse", "--verify", "-q", base.ref })).out;
+    var main = (try git(c, &.{ "rev-parse", "--verify", "-q", base.ref })).out;
     if (main.len == 0) {
         c.fail("land: origin has no {s}, its default branch, to land on", .{base.name});
         return error.LandFailed;
     }
+    const path = try c.a.print(".github/workflows/{s}", .{found.name});
+    if (!(try git(c, &.{ "cat-file", "-e", try c.a.print("{s}:{s}", .{ base.ref, path }) })).ok) main = try bootstrap(c, base, start, main, path);
     const landing: Landing = .{ .repo = repo, .file = found.name, .base = base, .branch = branch, .start = start };
     const prepared = try assemble(c, branch, base, found, start, main, options.date);
     const ref = prepared.ref orelse return nothing(c, landing, prepared);
@@ -387,6 +389,33 @@ const Scratch = struct {
         removeWorktree(c, s.top);
     }
 };
+
+/// GitHub dispatches only a workflow the default branch holds, so a repository whose default
+/// branch was made before its caller has nothing to dispatch the merge tier with. The landing
+/// puts the branch's caller there first, alone in a commit of its own, pushed as a fast-forward
+/// and never forced, and says so. It moves the default branch outside the gate by one file that
+/// is the gate itself, not the package. Returns the default branch's new commit.
+fn bootstrap(c: *src.Context, base: Base, start: []const u8, main: []const u8, path: []const u8) ![]const u8 {
+    if (!(try git(c, &.{ "cat-file", "-e", try c.a.print("{s}:{s}", .{ start, path }) })).ok) {
+        c.fail("land: {s} is not committed on the branch; commit the caller plan generates, then land", .{path});
+        return error.LandFailed;
+    }
+    const scratch = try Scratch.add(c, main, ".");
+    defer scratch.remove(c);
+    var w = c.*;
+    w.dir = scratch.dir;
+    _ = try must(&w, &.{ "checkout", start, "--", path });
+    _ = try must(&w, &.{ "commit", "-q", "-m", "Add the CI caller, so landings can dispatch it" });
+    const sha = try must(&w, &.{ "rev-parse", "HEAD" });
+    const pushed = try git(&w, &.{ "push", "-q", "origin", try c.a.print("HEAD:refs/heads/{s}", .{base.name}) });
+    if (!pushed.ok) {
+        c.fail("land: origin's {s} has no {s}, and GitHub dispatches only a workflow its default branch holds; pushing the caller there alone failed: {s}", .{ base.name, path, pushed.err });
+        return error.LandFailed;
+    }
+    _ = try must(c, &.{ "fetch", "-q", "origin" });
+    try say(c, "origin's {s} had no {s}, and GitHub dispatches only a workflow its default branch holds: pushed the caller there alone, at {s}\n", .{ base.name, path, sha[0..12] });
+    return sha;
+}
 
 fn removeWorktree(c: *src.Context, top: []const u8) void {
     const removed = git(c, &.{ "worktree", "remove", "--force", top }) catch |err| {

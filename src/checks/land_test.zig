@@ -455,6 +455,29 @@ test "a landing goes onto origin's default branch, whatever its name, and says s
     try std.testing.expectEqualStrings("", try s.remote("refs/heads/main"));
 }
 
+test "a first landing on a default branch without the caller puts the caller there alone, then lands" {
+    const s = try Scene.init();
+    defer s.deinit();
+    // main was made before its caller, as a new repository's is.
+    try s.git(&.{ "rm", "-q", ".github/workflows/ci.yml" });
+    try s.commit("Before the caller");
+    try s.git(&.{ "push", "-q", "origin", "main" });
+    const before = try s.remote("refs/heads/main");
+    try s.git(&.{ "checkout", "-q", "-b", "work" });
+    try s.git(&.{ "checkout", "HEAD~1", "--", ".github/workflows/ci.yml" });
+    try s.commit("Add the caller");
+    try s.change(2);
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    try contains(green.stdout, "origin's main had no .github/workflows/ci.yml");
+    try contains(green.stdout, "landed v0.1.1 on main at ");
+    // The commit after the old main holds the caller and nothing else.
+    const added = try s.output(".", &.{ "git", "-C", s.origin, "rev-list", "--reverse", try s.arena.allocator().print("{s}..main", .{before}) });
+    const first = added[0 .. std.mem.findScalar(u8, added, '\n') orelse added.len];
+    try std.testing.expectEqualStrings(".github/workflows/ci.yml", try s.output(".", &.{ "git", "-C", s.origin, "diff-tree", "--no-commit-id", "--name-only", "-r", first }));
+    try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.remote("refs/tags/v0.1.1^{commit}"));
+}
+
 test "a landing rewrites no branch, whatever rebase.updateRefs says" {
     const s = try Scene.init();
     defer s.deinit();

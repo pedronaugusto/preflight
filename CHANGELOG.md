@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `land` on a repository whose default branch does not hold the caller (a new one, its main made first) pushes the branch's caller there alone, in a commit of its own, then lands: GitHub dispatches only a workflow the default branch holds, and the dispatch failed with "HTTP 404: workflow not found on the default branch".
 - A program the build makes for the host and the tests run (a table check's generator) is built for the baseline CPU where compile-once replays it: built for the compiling runner's own CPU, it died with an illegal instruction on a runner of another model. Only the replayed artifact's graph is changed; another artifact sharing its modules keeps its CPU.
 
 ## [0.4.5] - 2026-10-13

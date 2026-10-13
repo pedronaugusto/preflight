@@ -14,6 +14,9 @@ pub const Options = struct {
     test_log_level: std.log.Level,
     /// The package's recorded durations, repository-relative.
     durations: []const u8,
+    /// The hardened run: `std.testing.allocator` is backed by the package's own
+    /// shakedown's quarantine, which the runner then imports as `shakedown`.
+    quarantine: bool = false,
 };
 
 /// A package keeps the default bound unless it says why not.
@@ -99,6 +102,8 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         runner.addOption(?[]const u8, "timings", if (options.timing) timings(b, artifact, names) else null);
         runner.addOption([]const u8, "durations", context.durations);
+        runner.addOption(bool, "quarantine", options.quarantine);
+        if (options.quarantine) quarantine(b, run, artifact);
         artifact.root_module.addOptions("preflight_runner_options", runner);
     }
     if (artifact.test_runner != null) {
@@ -161,4 +166,26 @@ test "the default test timeout needs no reason, any other one does" {
 test "timeout rejects nanoseconds that cannot fit the runner option" {
     const too_large: std.Io.Duration = .fromNanoseconds(@as(i96, std.math.maxInt(u64)) + 1);
     try std.testing.expectEqual(@as(?std.Io.Duration, null), TestTimeout.duration(.{ .bound = .{ .limit = too_large, .reason = "explicit large bound" } }));
+}
+
+/// The hardened run's runner imports `shakedown` for its quarantine from the test module:
+/// the shakedown its graph already holds under that name, so it is the one copy, or else the
+/// one the package declares. A package that declares none is refused by name.
+fn quarantine(b: *std.Build, run: *std.Build.Step.Run, artifact: *std.Build.Step.Compile) void {
+    const root = artifact.root_module;
+    if (root.import_table.get("shakedown") != null) return;
+    var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
+    graph.put(b.allocator, root, {}) catch @panic("OOM");
+    var next: usize = 0;
+    while (next < graph.count()) : (next += 1) {
+        const module = graph.keys()[next];
+        if (module.import_table.get("shakedown")) |found| {
+            root.addImport("shakedown", found);
+            return;
+        }
+        for (module.import_table.values()) |imported| graph.put(b.allocator, imported, {}) catch @panic("OOM");
+    }
+    const dep = (configure.declared(b, "shakedown", .{ .target = root.resolved_target.?, .optimize = root.optimize orelse .debug }) catch return) orelse
+        return refuse("{s}: the hardened run backs std.testing.allocator with shakedown's quarantine; declare shakedown: a dev dependency with bay, else a lazy one", b, run, .{artifact.name});
+    root.addImport("shakedown", dep.module("shakedown"));
 }

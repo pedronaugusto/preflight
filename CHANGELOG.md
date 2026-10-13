@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The hardened run backs `std.testing.allocator` with the package's shakedown's quarantine (`shakedown.alloc.Quarantine`, an inaccessible page after each block, no address reused), one per test, where it took the page allocator: a read or write after free of a block the allocator takes whole faults at the line, in every run. A package with a hardened run declares shakedown.
+- Every package that declares shakedown has the `fuzz` step: it fuzzes `Config.fuzz_step`, else the step the hardened run fuzzes, else `test`, where a package had to name one to have any.
 - `land` runs again, up to three times, the jobs of its run that GitHub found no runner for ("The job was not acquired by Runner of type hosted even after multiple attempts", macOS when its runners are short): such a job is cancelled before a step runs and says nothing of the change, where the landing reported it red.
 - The release tier runs the Debug and ReleaseSafe suites on GitHub's ARM runners, `ubuntu-24.04-arm` and `windows-11-arm` (Windows on ARM links once and replays, as Windows does), and the Debug suite on riscv64 Linux under QEMU's user mode (`-Dtarget=riscv64-linux-musl -fqemu` on the Linux runner, which installs it). The toolchain carries the checks and bay for both ARM runners; `shards` takes `linux_arm` and `windows_arm`.
 

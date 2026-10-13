@@ -284,11 +284,11 @@ runs shakedown's `shakedown-fuzz` over the package's `check` properties, as many
 of `zig build test --fuzz=<limit>` as it is given, with the fuzzer's corpora in a store
 outside the repository and every failure shrunk to the tape to add to the property's
 `.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. It fuzzes
-`Config.fuzz_step`, which a package sets to opt in: a step whose every test binary has a
-property (the fuzzer refuses a binary with none). The fuzzer and the properties are the
-package's own shakedown, which the build that calls `addCi` declares (a dev dependency with
-bay); a package that sets no `fuzz_step` has no `fuzz`
-step and fetches nothing for one. The fuzzing,
+`Config.fuzz_step`, else the step the hardened run fuzzes, else `test`: a step whose every
+test binary has a property (the fuzzer refuses a binary with none). The fuzzer and the
+properties are the package's own shakedown, which the build that calls `addCi` declares (a
+dev dependency with bay); a package that declares none has no `fuzz` step and fetches
+nothing for one, and one that names a `fuzz_step` without it is refused. The fuzzing,
 the corpora and the shrinking are shakedown's; preflight wires the step.
 
 What is not fuzzed is visible. `zig build lint` reports, without failing, the parsers of
@@ -303,7 +303,7 @@ with the reason: `"fuzz": { "trusted": { "parseCache": "the package's own cache 
 
 Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, and `"hardened": true` in `ci/workflow.json`, then regenerate the caller. Dedicated steps must execute tests. Defaults select `test`, so a package without fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign.
 
-`zig build hardened` runs the ordinary suite with `-Dci-hardened=true`; its test modules use Debug or ReleaseSafe with the LLVM backend selected explicitly for native sanitizer and fuzz instrumentation. Normal build modes remain caller-selected. A measured source loop can explicitly disable safety at its boundary, with its reason and matched measurements; this batch adds no such exceptions. Source-site rules belong to glint, architectural rules to gantry. No startup-allocation policy is forced on a consumer.
+`zig build hardened` runs the ordinary suite with `-Dci-hardened=true`; its test modules use Debug or ReleaseSafe with the LLVM backend selected explicitly for native sanitizer and fuzz instrumentation. Its `std.testing.allocator` takes its memory from the package's shakedown's quarantine (`shakedown.alloc.Quarantine`, a mapping per block with an inaccessible page after it, no address handed out twice), so a read or write after free of a block std's allocator takes whole faults at the line, in every run; a package with a hardened run declares shakedown. Normal build modes remain caller-selected. A measured source loop can explicitly disable safety at its boundary, with its reason and matched measurements; this batch adds no such exceptions. Source-site rules belong to glint, architectural rules to gantry. No startup-allocation policy is forced on a consumer.
 
 `zig build hardened-fuzz` executes the installed Zig 0.17 bounded native fuzzer, with caller options forwarded. The current compiler supports native 64-bit non-Windows hosts; foreign targets and unsupported backends must fail execution. Seed corpora belong in `std.testing.fuzz` options. Zig reports campaign counts and instrumented coverage, retains corpus/coverage beneath `.zig-cache/v`, and reports failing inputs and reproduction details. Hosted jobs retain the actual configured local-cache v directory, including on failure, for seven days. Preserve those files and the printed test seed when reproducing; accumulated coverage is not a coverage guarantee.
 

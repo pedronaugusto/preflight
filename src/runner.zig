@@ -18,6 +18,29 @@ var order: []usize = &.{};
 /// As upstream's runner sets up `std.testing.allocator` for each test.
 const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701ba, .check_write_after_free = true };
 
+/// What `std.testing.allocator` takes its memory from, one per test: the page
+/// allocator, as upstream's runner does, or in the hardened run the package's
+/// shakedown's quarantine, a mapping per block with an inaccessible page after it,
+/// whose address is never handed out again. Then a block std's allocator takes
+/// whole (one larger than three quarters of its buckets) faults at the line on a
+/// read or write after it is freed or past the page it ends on, and a bucket of
+/// smaller blocks does once every block in it is freed; std's allocator still
+/// reports leaks, double frees and a damaged block footer. Every run fails the same way.
+const Backing = struct {
+    const Quarantine = if (options.quarantine) @import("shakedown").alloc.Quarantine else void;
+    var quarantine: Quarantine = undefined;
+
+    fn begin() std.mem.Allocator {
+        if (!options.quarantine) return std.heap.page_allocator;
+        quarantine = .init(.{ .guard = .after });
+        return quarantine.allocator();
+    }
+
+    fn end() void {
+        if (options.quarantine) quarantine.deinit();
+    }
+};
+
 pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
     if (level == .err) _ = errors.fetchAdd(1, .monotonic);
     upstream.log(level, scope, format, args);
@@ -151,7 +174,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     defer watchdog.stop();
     testing.environ = init.environ;
     testing.log_level = log_level;
-    testing.allocator_instance = .init(std.heap.page_allocator, allocator_options);
+    testing.allocator_instance = .init(Backing.begin(), allocator_options);
     testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
     errors.store(0, .monotonic);
     fuzz_called = false;
@@ -168,6 +191,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     watchdog.phase.store(.io_teardown, .release);
     testing.io_instance.deinit();
     const leaks = testing.allocator_instance.deinit();
+    Backing.end();
     if (leaks != 0 or errors.load(.monotonic) != 0) report("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
     watchdog.phase.store(.reporting, .release);
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
@@ -191,7 +215,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         defer watchdog.stop();
         testing.environ = init.environ;
         testing.log_level = log_level;
-        testing.allocator_instance = .init(std.heap.page_allocator, allocator_options);
+        testing.allocator_instance = .init(Backing.begin(), allocator_options);
         testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
         errors.store(0, .monotonic);
         const start: std.Io.Clock.Timestamp = .now(io, .awake);
@@ -206,6 +230,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         watchdog.phase.store(.io_teardown, .release);
         testing.io_instance.deinit();
         const leaks = testing.allocator_instance.deinit();
+        Backing.end();
         watchdog.phase.store(.reporting, .release);
         try recorder.record(io, test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;

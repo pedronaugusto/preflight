@@ -1160,6 +1160,37 @@ test "toolchain hardened preserves test allocator ownership and detects write af
     try std.testing.expect(std.mem.find(u8, bad.stderr, "write after free") != null or std.mem.find(u8, bad.stderr, "use after free") != null);
 }
 
+test "the hardened run backs the test allocator with shakedown's quarantine: a read after free faults at the line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A block of its own, freed, and another of the same size after it: the page allocator
+    // may hand the second the first's address, and the read then sees live memory.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data =
+        \\test "read after free" {
+        \\    const a = @import("std").testing.allocator;
+        \\    const first = try a.alloc(u8, 1 << 16);
+        \\    a.free(first);
+        \\    const second = try a.alloc(u8, 1 << 16);
+        \\    defer a.free(second);
+        \\    const ptr: *volatile u8 = &first[0];
+        \\    _ = ptr.*;
+        \\}
+    });
+    for (0..2) |_| {
+        const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "hardened" }, .cwd = .{ .dir = tmp.dir } });
+        try std.testing.expect(!command.succeeded(bad));
+        // Linux says a segmentation fault, macOS a bus error, of an inaccessible page.
+        const faulted = std.mem.find(u8, bad.stderr, "Segmentation fault") != null or std.mem.find(u8, bad.stderr, "Bus error") != null;
+        if (!faulted) std.debug.print("{s}", .{bad.stderr});
+        try std.testing.expect(faulted);
+        try std.testing.expect(std.mem.find(u8, bad.stderr, "sample.zig:8") != null);
+    }
+}
+
 test "toolchain facts come from the configured build including options and generated test roots" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

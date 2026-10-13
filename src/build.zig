@@ -32,11 +32,12 @@ pub const Config = struct {
     bench: ?Bench = null,
     /// Opt-in native safety checks; release artifacts keep their chosen mode.
     hardened: ?Hardened = null,
-    /// Opt-in continuous fuzzing: the step `zig build fuzz` fuzzes, one whose
-    /// every test binary has a `check` property or a fuzz test, since the
-    /// fuzzer refuses a binary with none. It runs the package's own shakedown,
-    /// whose properties the tests are written with. Null adds no `fuzz` step
-    /// and fetches nothing for one.
+    /// Continuous fuzzing: the step `zig build fuzz` fuzzes, one whose every
+    /// test binary has a `check` property or a fuzz test, since the fuzzer
+    /// refuses a binary with none. It runs the package's own shakedown, whose
+    /// properties the tests are written with. Null fuzzes the step the hardened
+    /// run fuzzes, else `test`, in a package that declares shakedown; one that
+    /// declares none has no `fuzz` step. Naming a step requires shakedown.
     fuzz_step: ?[]const u8 = null,
 };
 
@@ -173,9 +174,12 @@ const Steps = struct {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
             break :fail std.Io.Duration.zero;
         };
-        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations });
+        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
-        if (config.fuzz_step) |step| fuzz.add(b, package, config.tests, step);
+        // One way to fuzz, in every package: its properties, by the step it names, else
+        // the one its hardened run fuzzes, else its tests.
+        const fuzzed = config.fuzz_step orelse if (config.hardened) |profile| profile.fuzz_step else "test";
+        fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
         if (config.portable_tests) portable.add(b, package, config.tests, executable);

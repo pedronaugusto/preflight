@@ -5,8 +5,11 @@
 const std = @import("std");
 const configure = @import("configure.zig");
 
-pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, step: []const u8) void {
+/// `named`: the package named the step, and so must declare shakedown; else a package that
+/// declares none has no `fuzz` step, as it has no properties.
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, step: []const u8, named: bool) void {
     const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .safe }) catch return) orelse {
+        if (!named) return;
         tests.dependOn(&b.addFail("addCi .fuzz_step: the fuzzer is shakedown's, as are the properties it fuzzes; declare shakedown: a dev dependency with bay, else a lazy one").step);
         return;
     };

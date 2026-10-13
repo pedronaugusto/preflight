@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-13
+
 ### Fixed
 
 - `addConsumerCheck` gives the consumer's build every package its listed dependencies need in turn, not only the listed ones: with fetching off, a package whose dependency gained one of its own (reactor 0.3.0 on shuttle) failed its consumer check with "package not found".

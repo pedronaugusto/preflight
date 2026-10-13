@@ -50,6 +50,14 @@ runs:
       with:
         version: ${{ inputs.zig-version }}
         use-cache: false
+    # bay builds a package with the Zig its manifest names, which it downloads, unless ZIG
+    # names one: a hosted job has just installed that Zig, so bay takes it.
+    - name: Give bay the Zig just installed
+      shell: bash
+      run: |
+        zig_path=$(command -v zig)
+        if [ "$RUNNER_OS" = Windows ]; then zig_path=$(cygpath -w "$zig_path"); fi
+        echo "ZIG=$zig_path" >> "$GITHUB_ENV"
     # What the build of the package makes stays in .zig-cache and is not kept:
     # the next run changes the sources, and what a run built from them is of no
     # use to it, though it fills a gigabyte. Zig's own cache holds what lasts.

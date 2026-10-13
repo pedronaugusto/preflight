@@ -12,6 +12,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The consumer check reads the graph plain `zig build` fetches for the package, each dependency's manifest as published with no selection over the pins, and fails when it holds a package at two revisions (two lines a package names in `.coexist` aside), naming the package, each revision and who pins it: a package developed with bay is still a plain Zig package, and bay's one selection hid a consumer's two copies (bay 0.1.10 pinned aegis 0.1.5 beside ensign 0.2.1's 0.1.4).
 - The unfuzzed-parser report follows calls across the package's files, eight deep, where it looked only in the fuzz test's own file: a property that drives a whole pipeline (gantry's scan, which hands each manifest to its parser) reaches the parsers through it, and they are no longer reported.
 - Every package that declares shakedown has the `fuzz` step: it fuzzes `Config.fuzz_step`, else the step the hardened run fuzzes, else `test`, where a package had to name one to have any.
 - `land` runs again, up to three times, the jobs of its run that GitHub found no runner for ("The job was not acquired by Runner of type hosted even after multiple attempts", macOS when its runners are short): such a job is cancelled before a step runs and says nothing of the change, where the landing reported it red.

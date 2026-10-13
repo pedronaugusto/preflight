@@ -3,6 +3,7 @@
 //! The build runs this file as a program to write the project.
 const std = @import("std");
 const configure = @import("configure.zig");
+const plain = @import("plain.zig");
 
 pub const Options = struct {
     /// The dependency name a consumer gives the package, as in its build.zig.zon.
@@ -57,6 +58,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     build.addDirectoryArg2(package.path("."), .{});
     build.addFileArg(options.program);
     build.addArg(options.package);
+    build.addDirectoryArg2(b.graph.path(.global_cache, "."), .{});
     for (options.options) |option| build.addArg(switch (option.value) {
         .flag => |flag| b.fmt("-D{s}=bool:{}", .{ option.name, flag }),
         .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
@@ -78,8 +80,9 @@ fn gather(b: *std.Build, closure: *std.array_hash_map.String(void), hash: []cons
     for (entry.deps) |dependency| gather(b, closure, dependency[1]);
 }
 
-/// Writes the project and builds it: `<zig> <project> <packages> <package
-/// root> <program> <package> <module>...`.
+/// Checks the graph plain `zig build` fetches for the package, then writes the
+/// project and builds it: `<zig> <project> <packages> <package root> <program>
+/// <package> <global cache> <module>...`.
 /// The build has a Zig cache of its own: a consumer has none of the
 /// package's cached packages, and Zig 0.17's `--system` asserts on a lazy
 /// package it finds only in the global cache.
@@ -89,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
     const a = arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(a);
-    if (args.len < 8) return error.MissingConsumerArguments;
+    if (args.len < 9) return error.MissingConsumerArguments;
     const cwd = std.Io.Dir.cwd();
     var dir = try cwd.createDirPathOpen(io, args[2], .{});
     defer dir.close(io);
@@ -101,10 +104,23 @@ pub fn main(init: std.process.Init) !void {
     const text = try cwd.readFileAlloc(io, args[5], a, .limited(16 * 1024 * 1024));
     var modules: std.ArrayList([]const u8) = .empty;
     var dependency_options: std.ArrayList(Option) = .empty;
-    for (args[7..]) |arg| {
+    for (args[8..]) |arg| {
         if (std.mem.startsWith(u8, arg, "-D")) try dependency_options.append(a, try parseOption(arg[2..])) else try modules.append(a, arg);
     }
     const shape: Shape = .{ .package = args[6], .modules = modules.items, .options = dependency_options.items };
+    // A consumer that builds without bay takes every pin as written: two packages that pin
+    // a third at two revisions link both, which bay's one selection hides.
+    var global = try cwd.openDir(io, args[7], .{});
+    defer global.close(io);
+    const package_manifest = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
+    const found = try plain.conflicts(a, io, try cwd.readFileAlloc(io, package_manifest, a, .limited(1024 * 1024)), shape.package, .{ .global = global, .zig = args[1] });
+    if (found.len != 0) {
+        var buffer: [1024]u8 = undefined;
+        var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
+        try plain.describe(&stderr.interface, found);
+        try stderr.interface.flush();
+        std.process.exit(1);
+    }
     try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
     try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });

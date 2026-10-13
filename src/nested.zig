@@ -8,7 +8,7 @@ const std = @import("std");
 const configure = @import("configure.zig");
 
 /// A package pinned by its source and hash.
-pub const Pin = struct { name: []const u8, url: []const u8, hash: []const u8 };
+pub const Pin = struct { name: []const u8, url: []const u8, hash: []const u8, lazy: bool = false };
 
 /// A package taken by path.
 pub const PathDependency = struct { name: []const u8, path: []const u8 };
@@ -203,10 +203,33 @@ pub fn pinsIn(a: std.mem.Allocator, root: []const u8, lists: []const []const u8)
             const url = field(&zoir, entry, "url") orelse continue;
             const hash = field(&zoir, entry, "hash") orelse continue;
             if (url != .string_literal or hash != .string_literal) return error.InvalidManifest;
-            try found.append(a, .{ .name = name.get(&zoir), .url = url.string_literal, .hash = hash.string_literal });
+            const lazy = if (field(&zoir, entry, "lazy")) |value| value == .true else false;
+            try found.append(a, .{ .name = name.get(&zoir), .url = url.string_literal, .hash = hash.string_literal, .lazy = lazy });
         }
     }
     return found.items;
+}
+
+/// The names `.coexist` lists, which may meet in a graph at one revision per line.
+pub fn coexistIn(a: std.mem.Allocator, root: []const u8) ![]const []const u8 {
+    const source = try a.dupeSentinel(u8, root, 0);
+    const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
+    const zoir = try std.zig.ZonGen.generate(a, ast, .{});
+    if (zoir.hasCompileErrors()) return error.InvalidManifest;
+    const top = std.zig.Zoir.Node.Index.root.get(&zoir);
+    if (top != .struct_literal) return error.InvalidManifest;
+    const list = field(&zoir, top, "coexist") orelse return &.{};
+    var names: std.ArrayList([]const u8) = .empty;
+    switch (list) {
+        .empty_literal => {},
+        .array_literal => |items| for (0..items.len) |i| {
+            const item = items.at(@intCast(i)).get(&zoir); // safe: i < items.len, a u32
+            if (item != .string_literal) return error.InvalidManifest;
+            try names.append(a, item.string_literal);
+        },
+        else => return error.InvalidManifest,
+    }
+    return names.items;
 }
 
 fn field(zoir: *const std.zig.Zoir, node: std.zig.Zoir.Node, name: []const u8) ?std.zig.Zoir.Node {

@@ -37,7 +37,14 @@ pub const Options = struct {
     /// Failed looks in a row, at the run or for it, that end the landing: GitHub or the
     /// connection to it failing for a moment says nothing of the run.
     gh_failures: usize = 10,
+    /// Gives the configuration the targets whose link needs Apple's SDK (`sdk_targets`),
+    /// read from the configured build, when the caller is generated again: the checks cannot
+    /// read the build themselves.
+    sdk: ?Sdk = null,
 };
+
+/// Adds `sdk_targets` to a gate configuration.
+pub const Sdk = *const fn (*src.Context, *src.Value) anyerror!void;
 
 pub const Outcome = union(enum) {
     /// The default branch already holds the branch, and the package needs no release.
@@ -346,7 +353,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     if (!(try git(c, &.{ "cat-file", "-e", try c.a.print("{s}:{s}", .{ base.ref, path }) })).ok) main = try bootstrap(c, base, start, main, path);
     const landing: Landing = .{ .repo = repo, .file = found.name, .base = base, .branch = branch, .start = start };
-    const prepared = try assemble(c, branch, base, found, start, main, options.date);
+    const prepared = try assemble(c, branch, base, found, start, main, options.date, options.sdk);
     const ref = prepared.ref orelse return nothing(c, landing, prepared);
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
     try gate(c, landing, ref, prepared.sha, options);
@@ -428,14 +435,14 @@ fn removeWorktree(c: *src.Context, top: []const u8) void {
 
 /// The landing commit, made in a scratch worktree, and pushed to a ref of its own unless the
 /// default branch, at `main`, already holds it. The worktree goes on every way out.
-fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, start: []const u8, main: []const u8, date: []const u8) !Prepared {
+fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, start: []const u8, main: []const u8, date: []const u8, sdk: ?Sdk) !Prepared {
     const scratch = try Scratch.add(c, start, found.directory);
     defer scratch.remove(c);
     var w = c.*;
     w.dir = scratch.dir;
     w.errors = 0;
     defer c.errors += w.errors;
-    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory, .gate = found.gate, .config = found.config }, date);
+    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory, .gate = found.gate, .config = found.config }, date, sdk);
     prepared.stem = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
     if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) return prepared;
     const ref = try c.a.print("{s}-{s}", .{ prepared.stem, prepared.sha[0..12] });
@@ -447,7 +454,7 @@ fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, star
 /// In the scratch worktree, detached at the branch: rebased on origin's default branch, tidied,
 /// the changelog told of re-pins, released and committed. The rebase moves no branch, whatever
 /// `rebase.updateRefs` says.
-fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date: []const u8) !Prepared {
+fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date: []const u8, sdk: ?Sdk) !Prepared {
     const rebased = try git(c, &.{ "rebase", "-q", "--no-update-refs", base.ref });
     if (!rebased.ok) {
         const conflicts = (try git(c, &.{ "diff", "--name-only", "--diff-filter=U" })).out;
@@ -478,7 +485,7 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
             }
         }
     }
-    try refreshCaller(c, found);
+    try refreshCaller(c, found, sdk);
     try noteChangelog(c);
     const outcome = release.run(c, date) catch |err| switch (err) {
         // Each of these named its fix.
@@ -506,7 +513,7 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
 /// The caller generated again, as `plan -- --workflow <caller>` generates it, when it names
 /// another preflight than the manifest pins, so the landed commit holds the caller its
 /// preflight writes. preflight's own caller runs the commit under test and is left alone.
-fn refreshCaller(c: *src.Context, found: Caller) !void {
+fn refreshCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
     defer top.close(c.io);
     var at_top = c.*;
@@ -521,7 +528,8 @@ fn refreshCaller(c: *src.Context, found: Caller) !void {
     if (std.mem.find(u8, existing, try c.a.print("preflight-ref: {s}\n", .{pin})) != null) return;
     // The label the caller was generated with, so that only the pin changes.
     const label = if (std.mem.startsWith(u8, existing, workflow.header)) existing[workflow.header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
-    const config = try workflow.configuration(c.*, found.config);
+    var config = try workflow.configuration(c.*, found.config);
+    if (sdk) |add| try add(c, &config);
     const text = workflow.generate(c.*, config, "build.zig.zon", found.gate, false, label, existing, &.{}) catch |err| {
         if (err == error.UndeclaredCallerJob) {
             c.fail("land: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs, then land", .{ path, workflow.undeclared });

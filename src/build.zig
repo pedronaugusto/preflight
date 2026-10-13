@@ -181,6 +181,7 @@ const Steps = struct {
         if (config.portable_tests) portable.add(b, package, config.tests, executable);
         const plan = executable.run(b);
         plan.addArg("plan");
+        plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
         plan.addPassthruArgs();
         plan.setCwd(package.path("."));
         configure.claim(b, "plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
@@ -199,6 +200,7 @@ const Steps = struct {
         configure.claim(b, "release", "Give a changed package its next version in build.zig.zon and CHANGELOG.md, or say it needs none").dependOn(&release.step);
         const land = executable.run(b);
         land.addArg("land");
+        land.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
         land.addPassthruArgs();
         land.setCwd(package.path("."));
         land.has_side_effects = true;

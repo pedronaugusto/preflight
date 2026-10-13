@@ -176,6 +176,25 @@ pub fn notification(a: std.mem.Allocator, reader: *Io.Reader) ![]const u8 {
     return path orelse error.MissingBuildConfiguration;
 }
 
+/// Whether a module an artifact of the configured build compiles links a framework, which
+/// only a host holding Apple's SDK can find.
+pub fn linksFramework(a: std.mem.Allocator, snapshot: Snapshot) !bool {
+    const c = &snapshot.config;
+    var modules: std.AutoHashMapUnmanaged(C.Module.Index, void) = .empty;
+    var pending: std.ArrayList(C.Module.Index) = .empty;
+    for (c.steps) |step| {
+        const compiled = step.extended.cast(c, C.Step.Compile) orelse continue;
+        try pending.append(a, compiled.root_module);
+    }
+    while (pending.pop()) |id| {
+        if ((try modules.getOrPut(a, id)).found_existing) continue;
+        const module = id.get(c);
+        if (module.frameworks.slice.len != 0) return true;
+        for (module.import_table.get(c).imports.mal.items(.module)) |imported| try pending.append(a, imported);
+    }
+    return false;
+}
+
 pub fn write(a: std.mem.Allocator, snapshot: Snapshot, writer: *Io.Writer) !void {
     const c = &snapshot.config;
     var modules: std.AutoHashMapUnmanaged(C.Module.Index, void) = .empty;

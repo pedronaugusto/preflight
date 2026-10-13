@@ -53,8 +53,9 @@ const workflow_options = [_][]const u8{
     "portable_hosts",     "hardened",           "compile_step",     "setup_step",
     "before_tests_step",  "windows_git_latest", "test_job_timeout", "windows_job_timeout",
     "source_job_timeout", "cross_job_timeout",
-    // `ci/costs.json`, which the planner reads beside the configuration.
-     "measured",
+    // `ci/costs.json`, which the planner reads beside the configuration, and the macOS
+    // targets whose build links a framework, which `plan` and `land` read from the build.
+    "measured", "sdk_targets",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -517,16 +518,28 @@ fn sdkJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !
         const options = try crossOptions(a, config, target);
         const name = options[1]["-Dtarget=".len..];
         const query = try std.Target.Query.parse(.{ .arch_os_abi = name });
+        // Zig links a macOS program on Linux with the libSystem it ships; a framework needs
+        // Apple's SDK, which only a Mac holds.
         const host = switch (query.os_tag orelse return error.InvalidCrossTarget) {
-            .macos => hosts[1],
+            .macos => if (try linksFramework(a, config, name)) hosts[1] else hosts[0],
             .windows => hosts[2],
             else => continue,
         };
         var text: std.Io.Writer.Allocating = .init(a);
         defer text.deinit();
         for (options) |arg| try text.writer.print("{s}{s}", .{ if (text.written().len == 0) "" else " ", arg });
-        try jobs.append(a, .{ .os = host, .name = try a.print("SDK link ({s})", .{name}), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link });
+        try jobs.append(a, .{ .os = host, .name = try a.print("{s}link ({s})", .{ if (std.mem.eql(u8, host, hosts[0])) "" else "SDK ", name }), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link });
     }
+}
+
+/// Whether the build for the macOS target `name` links a framework, as `sdk_targets` says.
+/// A configuration that does not say, one not read with its build, keeps the link on a Mac.
+fn linksFramework(a: std.mem.Allocator, config: src.Value, name: []const u8) !bool {
+    const listed = src.get(config, "sdk_targets");
+    if (listed == .null) return true;
+    if (listed != .array) return error.InvalidSdkTargets;
+    for (try src.strings(a, listed)) |target| if (std.mem.eql(u8, target, name)) return true;
+    return false;
 }
 
 fn validatedArgs(a: std.mem.Allocator, value: src.Value) ![]const []const u8 {
@@ -928,6 +941,30 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     }
     const bad = (try std.json.parseFromSlice(src.Value, a, "{\"build_args\":[\"-Dtarget=x86_64-macos\"]}", .{})).value;
     try std.testing.expectError(error.InvalidBuildArgs, plan(a, bad, .fast));
+}
+
+test "a macOS link that needs no framework runs on Linux; one that links a framework keeps the Mac" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"targets":["x86_64-macos","aarch64-macos","x86_64-windows-gnu"],"sdk_targets":["aarch64-macos"]}
+    , .{})).value;
+    var seen: usize = 0;
+    for (try plan(a, config, .release)) |job| {
+        if (!std.mem.eql(u8, job.step, "ci-link")) continue;
+        seen += 1;
+        if (std.mem.find(u8, job.args, "x86_64-macos") != null) {
+            try std.testing.expectEqualStrings(hosts[0], job.os);
+            try std.testing.expectEqualStrings("link (x86_64-macos)", job.name);
+        } else if (std.mem.find(u8, job.args, "aarch64-macos") != null) {
+            try std.testing.expectEqualStrings(hosts[1], job.os);
+            try std.testing.expectEqualStrings("SDK link (aarch64-macos)", job.name);
+        } else try std.testing.expectEqualStrings(hosts[2], job.os);
+    }
+    try std.testing.expectEqual(@as(usize, 3), seen);
+    const wrong = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\"],\"sdk_targets\":\"x86_64-macos\"}", .{})).value;
+    try std.testing.expectError(error.InvalidSdkTargets, plan(a, wrong, .release));
 }
 
 test "hardened planner schedules native execution with no portable sanitizer replay" {

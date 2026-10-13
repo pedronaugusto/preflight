@@ -1010,6 +1010,36 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.zig", .{}));
 }
 
+test "the plan links a macOS target on Linux unless its build links a framework" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"targets\":[\"x86_64-macos\",\"aarch64-macos\"]}" });
+    // Only the build for x86_64 links a framework.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n", "    const tests = b.addTest(.{ .root_module = module });\n    if (target.result.os.tag == .macos and target.result.cpu.arch == .x86_64) module.linkFramework(\"Security\", .{});\n");
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "plan", "--", "--tier", "release" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+    const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;
+    var seen: usize = 0;
+    for (src.items(src.get(matrix, "include"))) |job| {
+        const name = src.string(src.get(job, "name"), "");
+        const os = src.string(src.get(job, "os"), "");
+        if (std.mem.eql(u8, name, "SDK link (x86_64-macos)")) {
+            try std.testing.expectEqualStrings("macos-latest", os);
+            seen += 1;
+        } else if (std.mem.eql(u8, name, "link (aarch64-macos)")) {
+            try std.testing.expectEqualStrings("ubuntu-latest", os);
+            seen += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), seen);
+}
+
 test "toolchain measuring builds without executing and injects shakedown for a consumer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

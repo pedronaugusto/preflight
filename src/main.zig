@@ -20,7 +20,9 @@ pub fn main(init: std.process.Init) !void {
         errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
         errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
         try planOptions(args[2..]);
-        const config = try checks.workflow.configuration(c, option(args, "--config") orelse "ci/workflow.json");
+        if (option(args, "--zig-exe")) |zig| c.zig = zig;
+        var config = try checks.workflow.configuration(c, option(args, "--config") orelse "ci/workflow.json");
+        try sdkTargets(&c, &config);
         if (option(args, "--full") != null) return error.FullReplacedByTier;
         const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
         if (option(args, "--workflow")) |path| {
@@ -164,21 +166,40 @@ fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
     }
 }
 
+/// The macOS targets of `config` whose build links a framework, as `sdk_targets`: only their
+/// links need a Mac, with Apple's SDK; Zig links any other macOS target on Linux. Each is read
+/// from the build configured for that target, so a framework linked for macOS alone counts.
+fn sdkTargets(c: *src.Context, config: *src.Value) anyerror!void {
+    if (config.* != .object) return;
+    var linking: std.json.Array = .init(c.a);
+    for (src.items(src.get(config.*, "targets"))) |target| {
+        const options = try checks.matrix.crossOptions(c.a, config.*, target);
+        const name = checks.matrix.targetName(target);
+        const query = std.Target.Query.parse(.{ .arch_os_abi = name }) catch return error.InvalidCrossTarget;
+        if (query.os_tag != .macos) continue;
+        const snapshot = try facts.read(c.*, c.zig, options);
+        if (try facts.linksFramework(c.a, snapshot)) try linking.append(.{ .string = name });
+    }
+    try config.object.put(c.a, "sdk_targets", .{ .array = linking });
+}
+
 /// `land`: the branch checked out, released, through the merge tier and onto main.
 fn landCommand(c: *src.Context, args: []const []const u8) !void {
     var index: usize = 2;
     while (index < args.len) : (index += 2) {
-        const known = for ([_][]const u8{ "--date", "--poll", "--config", "--working-directory" }) |name| {
+        const known = for ([_][]const u8{ "--date", "--poll", "--config", "--working-directory", "--zig-exe" }) |name| {
             if (std.mem.eql(u8, args[index], name)) break true;
         } else false;
         if (!known) return error.UnknownLandOption;
         if (index + 1 == args.len) return error.MissingLandOptionValue;
     }
+    if (option(args, "--zig-exe")) |zig| c.zig = zig;
     // `--config` and `--working-directory` as `plan` takes them; by default what the caller's first line says it was planned with.
     var options: checks.land.Options = .{
         .date = option(args, "--date") orelse try checks.release.today(c.a, c.io),
         .config = option(args, "--config"),
         .working_directory = option(args, "--working-directory"),
+        .sdk = sdkTargets,
     };
     // `--poll <seconds>`: between two looks at GitHub, for the run and at it.
     if (option(args, "--poll")) |text| {
@@ -260,7 +281,7 @@ fn planOptions(args: []const []const u8) !void {
         const flag = args[index];
         if (std.mem.eql(u8, flag, "--self")) continue;
         var known = false;
-        for ([_][]const u8{ "--config", "--tier", "--output", "--workflow", "--manifest", "--working-directory", "--full", "--drop" }) |name| {
+        for ([_][]const u8{ "--config", "--tier", "--output", "--workflow", "--manifest", "--working-directory", "--full", "--drop", "--zig-exe" }) |name| {
             if (std.mem.eql(u8, name, flag)) known = true;
         }
         if (!known) return error.UnknownPlanOption;

@@ -363,9 +363,11 @@ The gate has four tiers, each holding everything the one before it checks:
   configured cross target (macOS and Windows run natively instead). It is the required
   status check of a pull request, and with `land` it moves main.
 - **release**: the full matrix, nightly and before a cut: every mode on every host
-  (Debug and ReleaseSafe everywhere, ReleaseFast on Linux), ReleaseSmall, every
-  cross target with the ReleaseFast benchmarks, the SDK links, TSan and the
-  hardened checks where configured, and the Debug suite on Linux with Zig master.
+  (Debug and ReleaseSafe everywhere, ARM Linux and Windows included, ReleaseFast on
+  Linux), the Debug suite on riscv64 Linux under QEMU, ReleaseSmall, every cross
+  target with the ReleaseFast benchmarks, the links of every macOS and Windows target
+  (a macOS one on a Mac only when its build links a framework), TSan and the hardened
+  checks where configured, and the Debug suite on Linux with Zig master.
 
 The release tier also runs the Debug suite on Linux with Zig master,
 the next release in development. That job never blocks: the run's summary

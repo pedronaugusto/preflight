@@ -181,6 +181,11 @@ pub fn sharedPin(a: std.mem.Allocator, root: []const u8, name: []const u8) !Pin 
 /// Every package `root` (a `build.zig.zon`) pins by source and hash: its dependencies, then its
 /// dev dependencies. A package taken by path is no pin.
 pub fn pins(a: std.mem.Allocator, root: []const u8) ![]const Pin {
+    return pinsIn(a, root, &.{ "dependencies", "dev_dependencies" });
+}
+
+/// The pins of the lists named, of `.dependencies` and `.dev_dependencies`.
+pub fn pinsIn(a: std.mem.Allocator, root: []const u8, lists: []const []const u8) ![]const Pin {
     const source = try a.dupeSentinel(u8, root, 0);
     const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
     const zoir = try std.zig.ZonGen.generate(a, ast, .{});
@@ -188,7 +193,7 @@ pub fn pins(a: std.mem.Allocator, root: []const u8) ![]const Pin {
     const top = std.zig.Zoir.Node.Index.root.get(&zoir);
     if (top != .struct_literal) return error.InvalidManifest;
     var found: std.ArrayList(Pin) = .empty;
-    for ([_][]const u8{ "dependencies", "dev_dependencies" }) |list| {
+    for (lists) |list| {
         const dependencies = field(&zoir, top, list) orelse continue;
         if (dependencies == .empty_literal) continue;
         if (dependencies != .struct_literal) return error.InvalidManifest;

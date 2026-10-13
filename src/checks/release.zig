@@ -223,9 +223,72 @@ fn changedSince(c: src.Context, tag: []const u8, listed: []const []const u8, exc
     var names = std.mem.tokenizeScalar(u8, result.stdout, 0);
     while (names.next()) |name| {
         if (except) |path| if (std.mem.eql(u8, name, path)) continue;
+        // A manifest whose development pins alone moved ships what it shipped.
+        if (std.mem.eql(u8, name, "build.zig.zon") and !try manifestShipsOther(c, tag)) continue;
         if (shipped(listed, name)) return true;
     }
     return false;
+}
+
+/// Whether the manifest differs from `tag`'s in anything a consumer's build reads:
+/// `.dev_dependencies` is not read by one, so a development pin moving ships nothing.
+fn manifestShipsOther(c: src.Context, tag: []const u8) !bool {
+    const released = try git(c, &.{ "git", "show", try c.a.print("{s}:./build.zig.zon", .{tag}) });
+    if (!succeeded(released)) return true;
+    const now = c.read("build.zig.zon") catch return true;
+    const before = shippedTokens(c.a, released.stdout) catch return true;
+    const after = shippedTokens(c.a, now) catch return true;
+    return !std.mem.eql(u8, before, after);
+}
+
+/// The manifest's tokens without its `.dev_dependencies` field, one space apart: what a
+/// consumer's build reads of it, whatever its layout and comments.
+pub fn shippedTokens(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+    const ast = try std.zig.Ast.parse(a, try a.dupeSentinel(u8, text, 0), .{ .mode = .zon });
+    if (ast.errors.len != 0) return error.InvalidManifest;
+    // The skipped tokens, `[from, to)`: `.dev_dependencies = .{ ... },`.
+    var from: usize = 0;
+    var to: usize = 0;
+    var buffer: [2]std.zig.Ast.Node.Index = undefined;
+    if (ast.fullStructInit(&buffer, ast.rootDecls()[0])) |init| for (init.ast.fields) |value| {
+        const first = ast.firstToken(value);
+        if (first < 3 or !std.mem.eql(u8, ast.tokenSlice(first - 2), "dev_dependencies")) continue;
+        from = first - 3;
+        to = ast.lastToken(value) + 1;
+        if (to < ast.tokens.len and ast.tokenTag(@intCast(to)) == .comma) to += 1; // safe: to < tokens.len, a u32 count
+    };
+    var kept: std.ArrayList(std.zig.Ast.TokenIndex) = .empty;
+    for (0..ast.tokens.len) |i| if (i < from or i >= to) try kept.append(a, @intCast(i)); // safe: i < tokens.len, a u32 count
+    var out: std.Io.Writer.Allocating = .init(a);
+    for (kept.items, 0..) |token, k| {
+        // A comma before a closing brace is layout, as is one the removed field leaves.
+        if (ast.tokenTag(token) == .comma and k + 1 < kept.items.len and ast.tokenTag(kept.items[k + 1]) == .r_brace) continue;
+        try out.writer.writeAll(ast.tokenSlice(token));
+        try out.writer.writeByte(' ');
+    }
+    return out.written();
+}
+
+test "a manifest whose development pins alone moved ships the same; any other change ships" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = try shippedTokens(a, ".{ .name = .pkg, .version = \"0.1.0\", .dependencies = .{ .lib = .{ .url = \"u1\", .hash = \"h1\" } }, .dev_dependencies = .{ .tool = .{ .url = \"t1\", .hash = \"th1\" } }, .paths = .{\"\"} }");
+    // A development pin moved, the layout changed and a comment came: the same.
+    try std.testing.expectEqualStrings(base, try shippedTokens(a,
+        \\.{
+        \\    .name = .pkg,
+        \\    .version = "0.1.0",
+        \\    .dependencies = .{ .lib = .{ .url = "u1", .hash = "h1" } },
+        \\    // A tool the package develops with.
+        \\    .dev_dependencies = .{ .tool = .{ .url = "t2", .hash = "th2" } },
+        \\    .paths = .{""},
+        \\}
+    ));
+    // No development pins at all: the same.
+    try std.testing.expectEqualStrings(base, try shippedTokens(a, ".{ .name = .pkg, .version = \"0.1.0\", .dependencies = .{ .lib = .{ .url = \"u1\", .hash = \"h1\" } }, .paths = .{\"\"} }"));
+    // A dependency a consumer fetches moved: not the same.
+    try std.testing.expect(!std.mem.eql(u8, base, try shippedTokens(a, ".{ .name = .pkg, .version = \"0.1.0\", .dependencies = .{ .lib = .{ .url = \"u2\", .hash = \"h2\" } }, .dev_dependencies = .{ .tool = .{ .url = \"t1\", .hash = \"th1\" } }, .paths = .{\"\"} }")));
 }
 
 /// Whether a file the manifest ships other than `except` differs between `tag` and the working tree.
@@ -261,15 +324,17 @@ pub fn run(c: *src.Context, date: []const u8) !Outcome {
         return error.NoUnreleasedSection;
     };
     if (!found.entries) {
-        // A release made and not yet tagged is not a second one.
-        if (tag) |name| if (Version.parse(std.mem.trimStart(u8, name, "v")) catch null) |tagged| {
-            const marker = try c.a.print("## [{f}]", .{current});
-            if (current.order(tagged) == .gt and std.mem.find(u8, changelog, marker) != null) return .{ .prepared = current };
-        };
+        // A release made and not yet tagged is not a second one; a first one has no tag before it.
+        const marker = try c.a.print("## [{f}]", .{current});
+        if (tag) |name| {
+            if (Version.parse(std.mem.trimStart(u8, name, "v")) catch null) |tagged|
+                if (current.order(tagged) == .gt and std.mem.find(u8, changelog, marker) != null) return .{ .prepared = current };
+        } else if (std.mem.find(u8, changelog, marker) != null) return .{ .prepared = current };
         c.fail("CHANGELOG.md: the package changed since {s}, and [Unreleased] lists nothing; add what changed under it ({s})", .{ tag orelse "its start", "### Breaking for an incompatible change, otherwise ### Changed, ### Added or ### Fixed" });
         return error.EmptyUnreleased;
     }
-    const to = current.next(found.breaking);
+    // The first release is the version the manifest names: nothing came before it to move from.
+    const to = if (tag == null) current else current.next(found.breaking);
     const name = try c.a.print("v{f}", .{to});
     if (try tagExists(c.*, name)) {
         c.fail("tag {s} exists: a tag is never moved; the version in build.zig.zon is behind the tags, set it to the newest release and run again", .{name});
@@ -510,14 +575,18 @@ test "a changed package with an empty Unreleased fails and writes nothing" {
     try std.testing.expectEqualStrings(before, try f.read("CHANGELOG.md"));
 }
 
-test "a package with no tag yet is released from the manifest's version" {
+test "a package with no tag yet is released at the manifest's version, and once made is not made again" {
     const f = try Fixture.init("0.1.0");
     defer f.deinit();
     try f.unreleased("- First change.\n");
     try f.commit("Entry");
     var c = f.context();
     const outcome = try run(&c, "2026-03-04");
-    try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 1 }, outcome.released.to);
+    try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 0 }, outcome.released.to);
+    try f.commit("Release");
+    var again = f.context();
+    try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 0 }, (try run(&again, "2026-03-04")).prepared);
+    try std.testing.expectEqual(@as(usize, 0), again.errors);
 }
 
 test "a release made and not yet tagged is not made twice" {

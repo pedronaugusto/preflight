@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A package's first release is the version its manifest names: with no v* tag before it, `release` bumped it, so a new package could not be released as 0.1.0 without a Breaking entry that was not true.
+
+### Changed
+
+- The Zig master leg takes bay from the toolchain, as every other job does, and sets `ZIG` to Zig master: a package developed with bay ran there with no bay at all, and bay builds with `ZIG` over the manifest's version.
+- A change confined to the manifest's `.dev_dependencies` releases nothing, and `land` notes only re-pins of `.dependencies`: no consumer's build reads development pins, so a tool the package develops with moving (preflight, shakedown) lands without a version, where it re-released every package.
+
 ## [0.4.2] - 2026-10-13
 
 ### Added

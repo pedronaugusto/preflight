@@ -497,8 +497,9 @@ fn noteChangelog(c: *src.Context) !void {
     const tag = try release.lastTag(c.*) orelse return;
     const released = try git(c, &.{ "show", try c.a.print("{s}:./build.zig.zon", .{tag}) });
     if (!released.ok) return;
-    const before = nested.pins(c.a, released.out) catch return;
-    const after = nested.pins(c.a, try c.read("build.zig.zon")) catch {
+    // What a consumer's build fetches: a development pin moving is no change of the package.
+    const before = nested.pinsIn(c.a, released.out, &.{"dependencies"}) catch return;
+    const after = nested.pinsIn(c.a, try c.read("build.zig.zon"), &.{"dependencies"}) catch {
         c.fail("land: build.zig.zon: not a manifest preflight can read", .{});
         return error.LandFailed;
     };

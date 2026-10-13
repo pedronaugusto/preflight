@@ -253,6 +253,9 @@ jobs:
     # Zig master (the next release in development) never blocks: its result is
     # read at each merge, and a break is a note for the next port's codemod table.
     # It builds its own checks, since they must be built by the Zig they read.
+    # bay comes from the toolchain, as for every other job: it only runs
+    # `zig build`, and `ZIG` makes that Zig master for a package bay develops.
+    needs: toolchain
     if: '!inputs.attest && inputs.tier == ''release'''
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
@@ -278,6 +281,19 @@ jobs:
           build-args: -Doptimize=debug -Dci-lint=false
           working-directory: ${{ inputs.working-directory }}
           build-key: master-linux-debug
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 2
+        with:
+          name: toolchain-${{ inputs.preflight-ref }}
+          path: ${{ runner.temp }}/toolchain
+      - name: Take bay from the toolchain, building with Zig master
+        timeout-minutes: 1
+        run: |
+          mkdir -p "$RUNNER_TEMP/bay-bin"
+          cp "$RUNNER_TEMP/toolchain/linux/bay" "$RUNNER_TEMP/bay-bin/bay"
+          chmod +x "$RUNNER_TEMP/bay-bin/bay"
+          echo "$RUNNER_TEMP/bay-bin" >> "$GITHUB_PATH"
+          echo "ZIG=$(command -v zig)" >> "$GITHUB_ENV"
       - name: Set up test tools (attempt 1/3)
         id: tools1
         timeout-minutes: 5

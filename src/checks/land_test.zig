@@ -294,7 +294,7 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     // Every attempt's ref of the version goes.
     try std.testing.expectEqualStrings("", try s.landRefs());
     const changelog = try s.gitOut(&.{ "show", "HEAD:CHANGELOG.md" });
-    try contains(changelog, "## [Unreleased]\n\n## [0.1.1] - " ++ date ++ "\n\n### Fixed\n\n- A fix.\n\n### Changed\n\n- Pins dep 0.2.0 and preflight 0.1.1.\n\n## [0.1.0]");
+    try contains(changelog, "## [Unreleased]\n\n## [0.1.1] - " ++ date ++ "\n\n### Fixed\n\n- A fix.\n\n### Changed\n\n- Pins dep 0.2.0.\n\n## [0.1.0]");
     try contains(changelog, "[0.1.1]: https://example.invalid/pkg/compare/v0.1.0...v0.1.1\n");
     const manifest = try s.gitOut(&.{ "show", "HEAD:build.zig.zon" });
     try contains(manifest, ".version = \"0.1.1\"");
@@ -388,6 +388,21 @@ test "a version whose tag exists is not landed, and nothing moves" {
     try std.testing.expectEqualStrings(main, try s.remote("refs/heads/main"));
     try std.testing.expectEqualStrings("", try s.landRefs());
     try std.testing.expect(std.mem.find(u8, try s.calls(), "workflow run") == null);
+}
+
+test "a landing whose only move is a development pin releases nothing and notes nothing" {
+    const s = try Scene.init();
+    defer s.deinit();
+    // tidy moves preflight, which the package develops with, and nothing a consumer fetches.
+    try s.env.put("FAKE_BAY_FROM", old_pin ++ " " ++ old_preflight);
+    try s.env.put("FAKE_BAY_TO", new_pin ++ " " ++ new_preflight);
+    try s.git(&.{ "checkout", "-q", "-b", "tools" });
+    const result = try s.land("success");
+    try expectExit(result, 0);
+    try contains(result.stdout, "pushed land/tools-");
+    try std.testing.expectEqualStrings("", try s.remote("refs/tags/v0.1.1"));
+    try contains(try s.gitOut(&.{ "show", "origin/main:build.zig.zon" }), new_preflight);
+    try contains(try s.gitOut(&.{ "show", "origin/main:CHANGELOG.md" }), "## [Unreleased]\n\n## [0.1.0]");
 }
 
 test "a branch that changes nothing the package ships lands on land/<branch>- and tags nothing" {
@@ -593,5 +608,5 @@ test "an empty [Unreleased] beside other changes is refused, though tidy re-pins
     try s.git(&.{ "reset", "-q", "--hard", "main" });
     const green = try s.land("success");
     try expectExit(green, 0);
-    try contains(try s.gitOut(&.{ "show", "HEAD:CHANGELOG.md" }), "## [0.1.1] - " ++ date ++ "\n\n### Changed\n\n- Pins dep 0.2.0 and preflight 0.1.1.\n");
+    try contains(try s.gitOut(&.{ "show", "HEAD:CHANGELOG.md" }), "## [0.1.1] - " ++ date ++ "\n\n### Changed\n\n- Pins dep 0.2.0.\n");
 }

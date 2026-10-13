@@ -47,7 +47,7 @@ which bay makes whatever revisions the two pin.
 Without bay, preflight is a lazy dependency, and `build` adds the gate over its own package:
 pin it with `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
 add `.lazy = true` to the entry, then
-`if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });`
+`@setEvalBranchQuota(100_000); if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });`
 after creating the test step, and `zig build plan -- --workflow .github/workflows/ci.yml`. A
 package preflight is built from (aegis, sweep, glint, gantry, shakedown) uses bay: as a
 dependency it would make a cycle with preflight.

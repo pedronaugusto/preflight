@@ -7,5 +7,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = module });
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+    // lazyImport compares every package of the tree at comptime.
+    @setEvalBranchQuota(100_000);
     if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });
 }

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-13
+
 ### Fixed
 
 - preflight's own suite: the default-policy test is one test per rule, every fixture's lint shares one build cache (each built preflight's checks from cold in a fresh directory), and its tests are bounded at 300 s with the reason stated, as a cold first build of the checks can pass 120 s on a hosted runner.

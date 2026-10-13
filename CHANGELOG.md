@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Breaking
 
 - `revision_exceptions` in `ci/preflight.json` is gone: a package two lines of which may meet in an artifact is named in the manifest's `.coexist`, the field bay reads for the same choice, so one declaration serves both. It allows one revision per line, as bay selects; two on one line are still reported, and a package naming itself is refused. The one-revision message says to build with bay or pin one revision, where it said to bind a dependency by hand.

@@ -12,6 +12,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The unfuzzed-parser report follows calls across the package's files, eight deep, where it looked only in the fuzz test's own file: a property that drives a whole pipeline (gantry's scan, which hands each manifest to its parser) reaches the parsers through it, and they are no longer reported.
 - Every package that declares shakedown has the `fuzz` step: it fuzzes `Config.fuzz_step`, else the step the hardened run fuzzes, else `test`, where a package had to name one to have any.
 - `land` runs again, up to three times, the jobs of its run that GitHub found no runner for ("The job was not acquired by Runner of type hosted even after multiple attempts", macOS when its runners are short): such a job is cancelled before a step runs and says nothing of the change, where the landing reported it red.
 - The release tier runs the Debug and ReleaseSafe suites on GitHub's ARM runners, `ubuntu-24.04-arm` and `windows-11-arm` (Windows on ARM links once and replays, as Windows does), and the Debug suite on riscv64 Linux under QEMU's user mode (`-Dtarget=riscv64-linux-musl -fqemu` on the Linux runner, which installs it). The toolchain carries the checks and bay for both ARM runners; `shards` takes `linux_arm` and `windows_arm`.

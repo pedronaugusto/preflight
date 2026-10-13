@@ -199,6 +199,37 @@ pub fn nested(c: *src.Context) !void {
     }
 }
 
+/// The directories, relative to the package, of the other manifests that take the package
+/// itself by `.path` (a sample, a fixture built on it): the package is in their graph, so
+/// what they pin must follow what it pins, and bay refuses one whose pins are behind.
+pub fn builtOn(c: *src.Context) ![]const []const u8 {
+    var found: std.ArrayList([]const u8) = .empty;
+    var dir = try c.directory().openDir(c.io, ".", .{ .iterate = true });
+    defer dir.close(c.io);
+    var walker = try dir.walkSelectively(c.a);
+    defer walker.deinit();
+    while (try walker.next(c.io)) |entry| {
+        if (entry.kind == .directory) {
+            if (!configure.generated(entry.basename)) try walker.enter(c.io, entry);
+            continue;
+        }
+        if (entry.kind != .file or !std.mem.eql(u8, entry.basename, "build.zig.zon") or std.mem.eql(u8, entry.path, "build.zig.zon")) continue;
+        const path = try c.a.dupe(u8, entry.path);
+        std.mem.replaceScalar(u8, path, '\\', '/');
+        const directory = std.Io.Dir.path.dirnamePosix(path) orelse continue;
+        const pins = gantry.manifests.parse(c.a, "build.zig.zon", try c.read(path)) catch continue;
+        for (pins) |pin| {
+            if (pin.origin != .local) continue;
+            const target = try std.Io.Dir.path.resolveAllocPosix(c.a, &.{ directory, pin.source });
+            if (std.mem.eql(u8, target, ".") or target.len == 0) {
+                try found.append(c.a, directory);
+                break;
+            }
+        }
+    }
+    return found.items;
+}
+
 pub const Drift = struct { name: []const u8, ours: []const u8, theirs: []const u8 };
 
 /// The remote pins in `pins` that name a package `own` also pins remotely, at another revision.

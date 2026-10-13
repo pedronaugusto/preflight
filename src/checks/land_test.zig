@@ -478,6 +478,23 @@ test "a first landing on a default branch without the caller puts the caller the
     try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.remote("refs/tags/v0.1.1^{commit}"));
 }
 
+test "a build that takes the package by path pins what the package does once landed; one that does not keeps its pins" {
+    const s = try Scene.init();
+    defer s.deinit();
+    const pinned = ".{ .name = .x, .version = \"0.0.0\", .dependencies = .{ .pkg = .{ .path = \"PATH\" }, .dep = .{ .url = \"git+https://example.invalid/dep#1111111111111111111111111111111111111111\", .hash = \"" ++ old_hash ++ "\" } } }\n";
+    const a = s.arena.allocator();
+    try s.write("sample/bay/build.zig.zon", try std.mem.replaceOwned(u8, a, pinned, "PATH", "../.."));
+    try s.write("fixture/build.zig.zon", try std.mem.replaceOwned(u8, a, pinned, "PATH", "../elsewhere"));
+    try s.commit("A sample and a fixture");
+    try s.git(&.{ "push", "-q", "origin", "main" });
+    try s.git(&.{ "checkout", "-q", "-b", "work" });
+    try s.change(2);
+    const green = try s.land("success");
+    try expectExit(green, 0);
+    try contains(try s.gitOut(&.{ "show", "HEAD:sample/bay/build.zig.zon" }), new_hash);
+    try contains(try s.gitOut(&.{ "show", "HEAD:fixture/build.zig.zon" }), old_hash);
+}
+
 test "a landing rewrites no branch, whatever rebase.updateRefs says" {
     const s = try Scene.init();
     defer s.deinit();

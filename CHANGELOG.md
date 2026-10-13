@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `land` tidies, with bay, each build in the repository that takes the package by `.path` (a sample), as it tidies the package: such a build has the package in its graph, and a pin left behind what the package now asks for (`sample/bay`'s aegis 0.1.3 under glint 0.2.4) failed the landing's run, as bay refuses it.
 - `land` on a repository whose default branch does not hold the caller (a new one, its main made first) pushes the branch's caller there alone, in a commit of its own, then lands: GitHub dispatches only a workflow the default branch holds, and the dispatch failed with "HTTP 404: workflow not found on the default branch".
 - A program the build makes for the host and the tests run (a table check's generator) is built for the baseline CPU where compile-once replays it: built for the compiling runner's own CPU, it died with an illegal instruction on a runner of another model. Only the replayed artifact's graph is changed; another artifact sharing its modules keeps its CPU.
 

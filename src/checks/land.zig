@@ -16,6 +16,7 @@ const src = @import("source.zig");
 const release = @import("release.zig");
 const nested = @import("../nested.zig");
 const workflow = @import("workflow.zig");
+const manifest = @import("manifest.zig");
 
 pub const Options = struct {
     /// The release's date, `YYYY-MM-DD`.
@@ -464,6 +465,17 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
         if (!tidied.ok) {
             c.fail("land: bay tidy: {s}", .{tidied.err});
             return error.LandFailed;
+        }
+        // A build that takes the package by path (a sample) pins what the package now asks for.
+        for (try manifest.builtOn(c)) |directory| {
+            var w = c.*;
+            w.dir = try c.directory().openDir(c.io, directory, .{});
+            defer w.dir.?.close(c.io);
+            const nested_tidy = try exec(&w, &.{ bay, "tidy" });
+            if (!nested_tidy.ok) {
+                c.fail("land: bay tidy in {s}: {s}", .{ directory, nested_tidy.err });
+                return error.LandFailed;
+            }
         }
     }
     try refreshCaller(c, found);

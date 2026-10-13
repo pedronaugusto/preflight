@@ -1021,7 +1021,10 @@ test "the plan links a macOS target on Linux unless its build links a framework"
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"targets\":[\"x86_64-macos\",\"aarch64-macos\"]}" });
     // Only the build for x86_64 links a framework.
     try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n", "    const tests = b.addTest(.{ .root_module = module });\n    if (target.result.os.tag == .macos and target.result.cpu.arch == .x86_64) module.linkFramework(\"Security\", .{});\n");
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "plan", "--", "--tier", "release" }, .cwd = .{ .dir = tmp.dir } });
+    // A hosted run sets GITHUB_OUTPUT, where the plan would write in place of stdout.
+    var env = try std.testing.environ.createMap(a);
+    _ = env.swapRemove("GITHUB_OUTPUT");
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "plan", "--", "--tier", "release" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;

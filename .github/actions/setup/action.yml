@@ -71,7 +71,9 @@ runs:
         # Zig builds its own build runner for the CPU it runs on, so what it built on one
         # model of the runners' CPUs is of no use on another.
         case "$RUNNER_OS" in
-          Linux) cpu=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2) ;;
+          # An ARM Linux names no model in /proc/cpuinfo; lscpu does.
+          Linux) cpu=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 || true)
+            [ -n "$cpu" ] || cpu=$(lscpu | grep -m1 "Model name" | cut -d: -f2) ;;
           macOS) cpu=$(sysctl -n machdep.cpu.brand_string) ;;
           *) cpu=$PROCESSOR_IDENTIFIER ;;
         esac

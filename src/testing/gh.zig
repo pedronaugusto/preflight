@@ -6,7 +6,7 @@
 //! directory whose remote it does not know.
 //!
 //! - `gh workflow run <file> --ref <branch> ...` starts a run of `<file>` on the branch's commit
-//!   on origin, a `workflow_dispatch`, and prints its URL as gh 2.100 does, which ends in `FAKE_GH_OUTCOME` (`success` or `failure`)
+//!   on origin, a `workflow_dispatch`, and prints its URL as gh 2.100 does, which ends in `FAKE_GH_OUTCOME` (`success`, `failure`, or `unstarted`: a job GitHub found no runner for, cancelled with no step run)
 //!   after `FAKE_GH_POLLS` looks at it (none by default). A run that ends green does what the
 //!   caller's land job does: it fast-forwards origin's default branch to the commit and tags it
 //!   `v<.version>` when that tag does not exist. Each dispatch adds a line to
@@ -27,7 +27,7 @@
 //!   (both separated by spaces) in `build.zig.zon`, as re-pins.
 const std = @import("std");
 
-const Job = struct { name: []const u8, conclusion: []const u8 };
+const Job = struct { name: []const u8, conclusion: []const u8, steps: []const struct { name: []const u8 } = &.{} };
 const Run = struct {
     databaseId: i64,
     workflowName: []const u8,
@@ -164,7 +164,7 @@ const Fake = struct {
         const green = std.mem.eql(u8, run.outcome, "success") and try f.land(run.headSha);
         run.status = "completed";
         run.conclusion = if (green) "success" else "failure";
-        run.jobs = if (green) &.{ .{ .name = "Linux Debug", .conclusion = "success" }, .{ .name = "land", .conclusion = "success" } } else &.{ .{ .name = "source checks", .conclusion = "success" }, .{ .name = "Linux Debug", .conclusion = "failure" }, .{ .name = "land", .conclusion = "skipped" } };
+        run.jobs = if (green) &.{ .{ .name = "Linux Debug", .conclusion = "success" }, .{ .name = "land", .conclusion = "success" } } else if (std.mem.eql(u8, run.outcome, "unstarted")) &.{ .{ .name = "source checks", .conclusion = "success", .steps = &.{.{ .name = "Run the gate" }} }, .{ .name = "test (macos-latest, Debug)", .conclusion = "cancelled" }, .{ .name = "land", .conclusion = "skipped" } } else &.{ .{ .name = "source checks", .conclusion = "success" }, .{ .name = "Linux Debug", .conclusion = "failure" }, .{ .name = "land", .conclusion = "skipped" } };
     }
 
     fn view(f: Fake, id: i64) !void {
@@ -181,6 +181,19 @@ const Fake = struct {
                 try f.save(all);
             }
             return f.print(run.*);
+        }
+        return error.NoSuchRun;
+    }
+
+    /// `gh run rerun <id> --failed`: the jobs that did not pass run again, and this time get a runner.
+    fn rerun(f: Fake, id: i64) !void {
+        const all = try f.runs();
+        for (all) |*run| {
+            if (run.databaseId != id) continue;
+            run.status = "queued";
+            run.conclusion = "";
+            run.outcome = "success";
+            return f.save(all);
         }
         return error.NoSuchRun;
     }
@@ -251,5 +264,6 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[0], "workflow") and std.mem.eql(u8, args[1], "run") and args.len > 2) return f.dispatch(args[2], option(args, "--ref") orelse return error.NoRef);
     if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "list")) return f.list(args);
     if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "view") and args.len > 2) return f.view(try std.fmt.parseInt(i64, args[2], 10));
+    if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "rerun") and args.len > 2) return f.rerun(try std.fmt.parseInt(i64, args[2], 10));
     return error.UnknownCommand;
 }

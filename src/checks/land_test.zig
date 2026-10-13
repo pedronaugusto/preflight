@@ -478,13 +478,15 @@ test "a first landing on a default branch without the caller puts the caller the
     try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.remote("refs/tags/v0.1.1^{commit}"));
 }
 
-test "a build that takes the package by path pins what the package does once landed; one that does not keeps its pins" {
+test "once landed, a nested build pins a shared package as the package does, and one that takes the package by path follows its graph" {
     const s = try Scene.init();
     defer s.deinit();
     const pinned = ".{ .name = .x, .version = \"0.0.0\", .dependencies = .{ .pkg = .{ .path = \"PATH\" }, .dep = .{ .url = \"git+https://example.invalid/dep#1111111111111111111111111111111111111111\", .hash = \"" ++ old_hash ++ "\" } } }\n";
     const a = s.arena.allocator();
     try s.write("sample/bay/build.zig.zon", try std.mem.replaceOwned(u8, a, pinned, "PATH", "../.."));
-    try s.write("fixture/build.zig.zon", try std.mem.replaceOwned(u8, a, pinned, "PATH", "../elsewhere"));
+    // The fixture also pins a package the package does not, which stays as it is.
+    const fixture = try std.mem.replaceOwned(u8, a, try std.mem.replaceOwned(u8, a, pinned, "PATH", "../elsewhere"), "} } }", "}, .other = .{ .url = \"git+https://example.invalid/other#2222222222222222222222222222222222222222\", .hash = \"other-0.1.0-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE\" } } }");
+    try s.write("fixture/build.zig.zon", fixture);
     try s.commit("A sample and a fixture");
     try s.git(&.{ "push", "-q", "origin", "main" });
     try s.git(&.{ "checkout", "-q", "-b", "work" });
@@ -492,7 +494,21 @@ test "a build that takes the package by path pins what the package does once lan
     const green = try s.land("success");
     try expectExit(green, 0);
     try contains(try s.gitOut(&.{ "show", "HEAD:sample/bay/build.zig.zon" }), new_hash);
-    try contains(try s.gitOut(&.{ "show", "HEAD:fixture/build.zig.zon" }), old_hash);
+    const landed_fixture = try s.gitOut(&.{ "show", "HEAD:fixture/build.zig.zon" });
+    try contains(landed_fixture, ".dep = .{ .url = \"git+https://example.invalid/dep#1111111111111111111111111111111111111111\", .hash = \"" ++ new_hash ++ "\" }");
+    try contains(landed_fixture, ".other = .{ .url = \"git+https://example.invalid/other#2222222222222222222222222222222222222222\", .hash = \"other-0.1.0-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE\" }");
+}
+
+test "a job GitHub found no runner for runs again, and the landing lands" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.git(&.{ "checkout", "-q", "-b", "work" });
+    try s.change(2);
+    const green = try s.land("unstarted");
+    try expectExit(green, 0);
+    try contains(green.stderr, "land: GitHub ran no runner for a job of https://github.invalid/runs/1; running the jobs that did not pass again (1/3)");
+    try contains(green.stdout, "landed v0.1.1 on main at ");
+    try contains(try s.calls(), "run rerun 1 --failed --repo owner/pkg");
 }
 
 test "a landing rewrites no branch, whatever rebase.updateRefs says" {

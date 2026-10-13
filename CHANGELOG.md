@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `land` runs again, up to three times, the jobs of its run that GitHub found no runner for ("The job was not acquired by Runner of type hosted even after multiple attempts", macOS when its runners are short): such a job is cancelled before a step runs and says nothing of the change, where the landing reported it red.
 - The release tier runs the Debug and ReleaseSafe suites on GitHub's ARM runners, `ubuntu-24.04-arm` and `windows-11-arm` (Windows on ARM links once and replays, as Windows does), and the Debug suite on riscv64 Linux under QEMU's user mode (`-Dtarget=riscv64-linux-musl -fqemu` on the Linux runner, which installs it). The toolchain carries the checks and bay for both ARM runners; `shards` takes `linux_arm` and `windows_arm`.
 
 ### Changed
@@ -16,6 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `land` gives every other manifest of the repository (a fixture, a sample) the package's own pin of each package both pin, the drift `lint` reports, so no train syncs them by hand.
 - A build that fails to configure when preflight reads its facts says why: what it wrote to stderr is reported with the command, where only `BuildConfigurationFailed` was.
 - Every hosted job gives bay the Zig the job installed (`ZIG`), so bay no longer downloads a second copy of it in each job.
 - `land` tidies, with bay, each build in the repository that takes the package by `.path` (a sample), as it tidies the package: such a build has the package in its graph, and a pin left behind what the package now asks for (`sample/bay`'s aegis 0.1.3 under glint 0.2.4) failed the landing's run, as bay refuses it.

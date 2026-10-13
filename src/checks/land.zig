@@ -37,6 +37,8 @@ pub const Options = struct {
     /// Failed looks in a row, at the run or for it, that end the landing: GitHub or the
     /// connection to it failing for a moment says nothing of the run.
     gh_failures: usize = 10,
+    /// Times the jobs GitHub found no runner for are run again before the run counts as red.
+    unstarted_reruns: usize = 3,
     /// Gives the configuration the targets whose link needs Apple's SDK (`sdk_targets`),
     /// read from the configured build, when the caller is generated again: the checks cannot
     /// read the build themselves.
@@ -473,6 +475,10 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
             c.fail("land: bay tidy: {s}", .{tidied.err});
             return error.LandFailed;
         }
+    }
+    // Another manifest of the repository (a fixture, a sample) pins a package the package pins as it does.
+    try manifest.alignNested(c);
+    if (c.bay) |bay| {
         // A build that takes the package by path (a sample) pins what the package now asks for.
         for (try manifest.builtOn(c)) |directory| {
             var w = c.*;
@@ -617,6 +623,19 @@ const Looks = struct {
     }
 };
 
+/// Whether every job of a red run that did not pass was cancelled before any step ran: one
+/// GitHub found no runner for, and none that failed.
+fn unstarted(view: src.Value) bool {
+    var any = false;
+    for (src.items(src.get(view, "jobs"))) |job| {
+        const ended = src.string(src.get(job, "conclusion"), "");
+        if (std.mem.eql(u8, ended, "success") or std.mem.eql(u8, ended, "skipped") or std.mem.eql(u8, ended, "neutral")) continue;
+        if (!std.mem.eql(u8, ended, "cancelled") or src.items(src.get(job, "steps")).len != 0) return false;
+        any = true;
+    }
+    return any;
+}
+
 /// The run a dispatch started: its id, and where to see it.
 const Started = struct { id: []const u8, url: []const u8 };
 
@@ -644,6 +663,7 @@ fn find(c: *src.Context, looks: *Looks, list: []const []const u8, earlier: src.V
 
 /// Waits for the run to end; green returns, red names the failed jobs.
 fn wait(c: *src.Context, looks: *Looks, ref: []const u8, started: Started, options: Options) !void {
+    var reruns: usize = 0;
     while (true) {
         const view = (looks.take(c, &.{ "run", "view", started.id, "--json", "status,conclusion,url,jobs" }) catch |err| {
             if (err == error.LandFailed) c.report("the run goes on without this landing, and may still land; look at {s}, then land again: a landed version lands nothing\n", .{started.url});
@@ -658,6 +678,20 @@ fn wait(c: *src.Context, looks: *Looks, ref: []const u8, started: Started, optio
         }
         const conclusion = src.string(src.get(view, "conclusion"), "");
         if (std.mem.eql(u8, conclusion, "success")) return;
+        // A job GitHub found no runner for ("not acquired by Runner ... after multiple attempts",
+        // macOS when its runners are short) is cancelled before a step runs: it says nothing of
+        // the change, so it runs again, and the land job after it.
+        if (unstarted(view) and reruns < options.unstarted_reruns) {
+            reruns += 1;
+            c.report("land: GitHub ran no runner for a job of {s}; running the jobs that did not pass again ({d}/{d})\n", .{ started.url, reruns, options.unstarted_reruns });
+            const again = try exec(c, &.{ "gh", "run", "rerun", started.id, "--failed", "--repo", looks.repo });
+            if (!again.ok) {
+                c.fail("land: gh run rerun: {s}", .{again.err});
+                return error.LandFailed;
+            }
+            try std.Io.sleep(c.io, options.wait_every, .awake);
+            continue;
+        }
         c.fail("land: {s} is red ({s}): {s}", .{ ref, if (conclusion.len == 0) "no conclusion" else conclusion, started.url });
         for (src.items(src.get(view, "jobs"))) |job| {
             const ended = src.string(src.get(job, "conclusion"), "");

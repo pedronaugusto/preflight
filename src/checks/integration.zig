@@ -447,6 +447,21 @@ fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]c
     return names.items;
 }
 
+/// The durations column the runner recorded under, which it balances shards by.
+fn recordedKey(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]const u8 {
+    var timings = try dir.openDir(std.testing.io, ".zig-cache/preflight-timings", .{ .iterate = true });
+    defer timings.close(std.testing.io);
+    var iterator = timings.iterate();
+    while (try iterator.next(std.testing.io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
+        const text = try timings.readFileAlloc(std.testing.io, entry.name, a, .limited(1024 * 1024));
+        const line = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
+        const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
+        return a.dupe(u8, src.string(src.get(row, "key"), ""));
+    }
+    return error.NoTimingRecord;
+}
+
 test "shards split the tests once between them by recorded duration, natively and in portable replay" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -469,7 +484,7 @@ test "shards split the tests once between them by recorded duration, natively an
     // One test outweighs the rest together, so its shard runs it alone.
     var heavy: []const u8 = "";
     var durations: std.Io.Writer.Allocating = .init(a);
-    try durations.writer.print("{{\"keys\":[\"{s}-debug\"],\"tests\":{{", .{@tagName(builtin.target.os.tag)});
+    try durations.writer.print("{{\"keys\":[\"{s}\"],\"tests\":{{", .{try recordedKey(a, tmp.dir, "-all.ndjson")});
     for (all, 0..) |name, i| {
         if (std.mem.endsWith(u8, name, "case-0")) heavy = name;
         try durations.writer.print("{s}{f}:[{d}]", .{ if (i == 0) "" else ",", std.json.fmt(name, .{}), @as(u32, if (std.mem.endsWith(u8, name, "case-0")) 100 else 1) });

@@ -5,8 +5,15 @@ const builtin = @import("builtin");
 // Compiled into every package's test binaries, so it links std alone: any
 // package it imported could be a second copy beside the tested package's own.
 
-/// The column of `ci/durations.json` this test binary reads.
-pub const key = @tagName(builtin.target.os.tag) ++ "-" ++ @tagName(builtin.optimize);
+/// The column of `ci/durations.json` this test binary reads: its system and mode, and
+/// its architecture where the hosted runners of one system have two (Linux and Windows
+/// on ARM beside x86_64), so the two never share a column.
+pub const key = @tagName(builtin.target.os.tag) ++ arch ++ "-" ++ @tagName(builtin.optimize);
+const arch = switch (builtin.target.cpu.arch) {
+    .x86_64 => "",
+    .aarch64 => if (builtin.target.os.tag == .macos) "" else "-aarch64",
+    else => |other| "-" ++ @tagName(other),
+};
 
 /// A test that records no time still costs its process a little.
 const floor_seconds = 0.001;

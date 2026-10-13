@@ -48,6 +48,65 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
     }
 }
 
+/// A replayed program runs on another runner than the one that built it, whose CPU may be
+/// another model: built for the building runner's own CPU, as a program the build makes for
+/// the host (`b.graph.host`) is whatever `-Dcpu` says, it dies there on the first
+/// instruction the other lacks. Every module of `artifact` that asks for the native CPU asks
+/// for that architecture's baseline instead, in `artifact`'s graph alone: such a module, and
+/// each that imports one, is copied for it, so another artifact sharing them keeps its CPU.
+fn baseline(b: *std.Build, artifact: *std.Build.Step.Compile) void {
+    const Module = std.Build.Module;
+    var graph: std.array_hash_map.Auto(*Module, ?*Module) = .empty;
+    graph.put(b.allocator, artifact.root_module, null) catch @panic("OOM");
+    var next: usize = 0;
+    while (next < graph.count()) : (next += 1) {
+        for (graph.keys()[next].import_table.values()) |imported| graph.put(b.allocator, imported, null) catch @panic("OOM");
+    }
+    // A module is copied when it asks for the native CPU or imports one that is copied; the
+    // graph may be cyclic, so the marks spread until nothing changes.
+    const marked = b.allocator.alloc(bool, graph.count()) catch @panic("OOM");
+    for (graph.keys(), marked) |module, *mark| mark.* = native(module);
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (graph.keys(), marked) |module, *mark| {
+            if (mark.*) continue;
+            for (module.import_table.values()) |imported| if (marked[graph.getIndex(imported).?]) {
+                mark.* = true;
+                changed = true;
+                break;
+            };
+        }
+    }
+    for (graph.keys(), graph.values(), marked) |module, *copy, mark| {
+        if (!mark) continue;
+        const made = b.allocator.create(Module) catch @panic("OOM");
+        made.* = module.*;
+        made.cached_graph = .{ .modules = &.{}, .names = &.{} };
+        if (native(module)) {
+            var query = module.resolved_target.?.query;
+            query.cpu_model = .baseline;
+            query.cpu_features_add = .empty;
+            query.cpu_features_sub = .empty;
+            made.resolved_target = b.resolveTargetQuery(query);
+        }
+        copy.* = made;
+    }
+    for (graph.values()) |copy| {
+        const made = copy orelse continue;
+        made.import_table = made.import_table.clone(b.allocator) catch @panic("OOM");
+        for (made.import_table.values()) |*imported| {
+            if (graph.get(imported.*).?) |replacement| imported.* = replacement;
+        }
+    }
+    if (graph.values()[0]) |root| artifact.root_module = root;
+}
+
+fn native(module: *const std.Build.Module) bool {
+    const target = module.resolved_target orelse return false;
+    return target.query.cpu_model == .native or target.query.isNativeCpu();
+}
+
 /// Whether `step` makes a fresh temporary directory, as `b.tmpPath()` does.
 fn temporary(step: *std.Build.Step) bool {
     const write = step.cast(std.Build.Step.WriteFile) orelse return false;
@@ -63,6 +122,7 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
         // A test run with an environment fails by name (record.zig); any
         // other run would replay without it.
         if (run.environ_map != null and artifact.kind != .@"test") @panic("portable tests must not carry an environment");
+        baseline(b, artifact);
         const name = b.fmt("test-{d}{s}", .{ commands.items.len, if (artifact.root_module.resolved_target.?.result.os.tag == .windows) ".exe" else "" });
         const install = b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "preflight/bin" } }, .dest_sub_path = name });
         compile.dependOn(&install.step);

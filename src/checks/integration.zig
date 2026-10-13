@@ -163,6 +163,51 @@ test "portable replay records timings and still rejects failed tests and leaked 
     try tmp.dir.access(io, ".zig-cache/preflight-timings", .{});
 }
 
+test "a program the build makes for the host replays on another CPU: it is built for the baseline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The tool and a module it imports both ask for the host; the tests step runs the tool, as a
+    // table check runs its generator. Built for this machine's own CPU, it fails.
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
+        \\    step.dependOn(&b.addRunArtifact(tests).step);
+        \\    const probe = b.createModule(.{ .root_source_file = b.path("src/probe.zig"), .target = b.graph.host });
+        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = b.graph.host, .imports = &.{.{ .name = "probe", .module = probe }} }) });
+        \\    step.dependOn(&b.addRunArtifact(tool).step);
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/probe.zig", .data =
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\pub fn baseline() bool {
+        \\    const cpu = std.Target.Cpu.baseline(builtin.cpu.arch, builtin.os);
+        \\    return builtin.cpu.model == cpu.model and builtin.cpu.features.eql(cpu.features);
+        \\}
+        \\
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data =
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\const probe = @import("probe");
+        \\pub fn main() !void {
+        \\    const cpu = std.Target.Cpu.baseline(builtin.cpu.arch, builtin.os);
+        \\    if (builtin.cpu.model != cpu.model or !builtin.cpu.features.eql(cpu.features)) return error.ToolNotBaseline;
+        \\    if (!probe.baseline()) return error.ModuleNotBaseline;
+        \\}
+        \\
+    });
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
+    try std.testing.expect(command.succeeded(compiled));
+    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
+    try std.testing.expect(command.succeeded(executed));
+}
+
 fn lintFixture(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
     const format = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = dir } });
     if (!command.succeeded(format)) return error.FixtureFormatFailed;

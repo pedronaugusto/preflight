@@ -20,10 +20,12 @@ const workflow = @import("workflow.zig");
 pub const Options = struct {
     /// The release's date, `YYYY-MM-DD`.
     date: []const u8,
-    /// The gate's configuration, as `plan` takes it with `--config`.
-    config: []const u8 = "ci/workflow.json",
+    /// The gate's configuration, as `plan` takes it with `--config`; by default what the
+    /// caller's first line says it was planned with, `ci/workflow.json` unless it says other.
+    config: ?[]const u8 = null,
     /// The directory the caller's gate runs in, from the repository's top, as `plan` writes
-    /// it with `--working-directory`; the package's own by default.
+    /// it with `--working-directory`; by default the package's own, or the one directory the
+    /// caller's first line says it was planned to run in.
     working_directory: ?[]const u8 = null,
     /// Between two looks for the run the dispatch started.
     find_every: std.Io.Duration = .fromSeconds(5),
@@ -249,21 +251,22 @@ const Base = struct { name: []const u8, ref: []const u8 };
 /// in it, the default branch, and the branch landing with the commit it was at.
 const Landing = struct { repo: []const u8, file: []const u8, base: Base, branch: []const u8, start: []const u8 };
 
-/// The caller generated from `ci/workflow.json` for this package: its file under the
-/// repository's `.github/workflows`, the repository's top and the package's directory in it.
-const Caller = struct { name: []const u8, top: []const u8, directory: []const u8 };
+/// The caller generated for this package: its file under the repository's
+/// `.github/workflows`, the repository's top, the package's directory in it, the directory
+/// its gate runs in and the configuration it was planned from.
+const Caller = struct { name: []const u8, top: []const u8, directory: []const u8, gate: []const u8 = ".", config: []const u8 = "ci/workflow.json" };
 
-/// The workflow file under the repository's `.github/workflows` whose gate runs in the
-/// package's directory.
+/// The workflow file under the repository's `.github/workflows` that is this package's
+/// caller: the one whose gate runs in `working_directory`, given; else the one whose gate
+/// runs in the package's directory; else the one generated workflow planned to run in a
+/// directory inside the package, as preflight's own runs in its sample.
 fn caller(c: *src.Context, working_directory: ?[]const u8) !Caller {
     const top = try must(c, &.{ "rev-parse", "--show-toplevel" });
     const prefix = std.mem.trimEnd(u8, try must(c, &.{ "rev-parse", "--show-prefix" }), "/");
     const directory = if (prefix.len == 0) "." else prefix;
-    // The gate runs in the package's directory unless the caller was generated to run it in another.
-    const gate_directory = working_directory orelse directory;
-    const wanted = try c.a.print("      working-directory: {s}\n", .{try std.json.Stringify.valueAlloc(c.a, gate_directory, .{})});
+    const Found = struct { name: []const u8, planned: workflow.Planned, gate: []const u8 };
+    var generated: std.ArrayList(Found) = .empty;
     const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github", "workflows" });
-    var found: std.ArrayList([]const u8) = .empty;
     if (std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true })) |opened| {
         var dir = opened;
         defer dir.close(c.io);
@@ -271,17 +274,41 @@ fn caller(c: *src.Context, working_directory: ?[]const u8) !Caller {
         while (try entries.next(c.io)) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml"))) continue;
             const text = try dir.readFileAlloc(c.io, entry.name, c.a, .limited(16 * 1024 * 1024));
-            if (std.mem.startsWith(u8, text, workflow.header) and std.mem.find(u8, text, wanted) != null) try found.append(c.a, try c.a.dupe(u8, entry.name));
+            const planned = workflow.planned(text) orelse continue;
+            try generated.append(c.a, .{ .name = try c.a.dupe(u8, entry.name), .planned = planned, .gate = gateOf(text) orelse continue });
         }
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
-    if (found.items.len == 1) return .{ .name = found.items[0], .top = top, .directory = directory };
+    var found: std.ArrayList(Found) = .empty;
+    for (generated.items) |each| if (std.mem.eql(u8, each.gate, working_directory orelse directory)) try found.append(c.a, each);
+    // A package whose gate runs in a directory of its own, planned so from the package.
+    if (found.items.len == 0 and working_directory == null) for (generated.items) |each| {
+        const elsewhere = each.planned.working_directory orelse continue;
+        if (std.mem.eql(u8, directory, ".") or std.mem.startsWith(u8, elsewhere, try c.a.print("{s}/", .{directory}))) try found.append(c.a, each);
+    };
+    if (found.items.len == 1) {
+        const one = found.items[0];
+        return .{ .name = one.name, .top = top, .directory = directory, .gate = one.gate, .config = one.planned.config };
+    }
     if (found.items.len == 0) {
-        c.fail("land: no workflow in .github/workflows is the caller generated from ci/workflow.json for this package; generate it with plan -- --workflow .github/workflows/ci.yml", .{});
-    } else c.fail("land: {s} are each a caller of this package; keep one", .{try std.mem.join(c.a, ", ", found.items)});
+        c.fail("land: no workflow in .github/workflows is the caller generated for this package; generate it with plan -- --workflow .github/workflows/ci.yml", .{});
+    } else {
+        var callers: std.ArrayList([]const u8) = .empty;
+        for (found.items) |each| try callers.append(c.a, each.name);
+        c.fail("land: {s} are each a caller of this package; keep one, or name its directory with --working-directory", .{try std.mem.join(c.a, ", ", callers.items)});
+    }
     return error.LandFailed;
+}
+
+/// The directory a generated caller's gate runs in, as its `working-directory:` line says.
+fn gateOf(text: []const u8) ?[]const u8 {
+    const key = "      working-directory: \"";
+    const at = std.mem.find(u8, text, key) orelse return null;
+    const start = at + key.len;
+    const end = std.mem.findScalarPos(u8, text, start, '"') orelse return null;
+    return text[start..end];
 }
 
 /// What the landing commit is: its commit and, with a release, its version; the stem of its
@@ -290,10 +317,6 @@ const Prepared = struct { sha: []const u8, version: ?release.Version, declared: 
 
 /// Lands the branch checked out; every failure is reported, and `error.LandFailed` says so.
 pub fn run(c: *src.Context, options: Options) !Outcome {
-    if (refusal(try c.options(options.config))) |why| {
-        c.fail("land: {s}", .{why});
-        return error.LandFailed;
-    }
     const branch = (try git(c, &.{ "symbolic-ref", "--short", "-q", "HEAD" })).out;
     if (branch.len == 0) {
         c.fail("land: HEAD is detached; check out the branch to land", .{});
@@ -303,7 +326,12 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
         c.fail("land: the tree has changes; commit or stash them first", .{});
         return error.LandFailed;
     }
-    const found = try caller(c, options.working_directory);
+    var found = try caller(c, options.working_directory);
+    if (options.config) |given| found.config = given;
+    if (refusal(try c.options(found.config))) |why| {
+        c.fail("land: {s}", .{why});
+        return error.LandFailed;
+    }
     const repo = try githubRepository(c);
     _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
     const start = try must(c, &.{ "rev-parse", "HEAD" });
@@ -377,7 +405,7 @@ fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, star
     w.dir = scratch.dir;
     w.errors = 0;
     defer c.errors += w.errors;
-    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory }, date);
+    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory, .gate = found.gate, .config = found.config }, date);
     prepared.stem = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
     if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) return prepared;
     const ref = try c.a.print("{s}-{s}", .{ prepared.stem, prepared.sha[0..12] });
@@ -452,8 +480,8 @@ fn refreshCaller(c: *src.Context, found: Caller) !void {
     if (std.mem.find(u8, existing, try c.a.print("preflight-ref: {s}\n", .{pin})) != null) return;
     // The label the caller was generated with, so that only the pin changes.
     const label = if (std.mem.startsWith(u8, existing, workflow.header)) existing[workflow.header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
-    const config = try workflow.configuration(c.*, "ci/workflow.json");
-    const text = workflow.generate(c.*, config, "build.zig.zon", found.directory, false, label, existing, &.{}) catch |err| {
+    const config = try workflow.configuration(c.*, found.config);
+    const text = workflow.generate(c.*, config, "build.zig.zon", found.gate, false, label, existing, &.{}) catch |err| {
         if (err == error.UndeclaredCallerJob) {
             c.fail("land: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs, then land", .{ path, workflow.undeclared });
         } else c.fail("land: {s} cannot be generated again: {t}", .{ path, err });

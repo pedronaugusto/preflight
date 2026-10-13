@@ -90,7 +90,7 @@ const Scene = struct {
         const config = "{\"land\":true,\"release\":true}\n";
         try s.write("ci/workflow.json", config);
         const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
-        try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, old_pin, ".", false, ".github/workflows/ci.yml"));
+        try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, old_pin, ".", false, "ci/workflow.json: zig build plan -- --workflow .github/workflows/ci.yml"));
         try s.commit("First");
         try s.git(&.{ "tag", "v0.1.0" });
         try s.git(&.{ "remote", "add", "origin", url });
@@ -301,7 +301,7 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try contains(manifest, new_hash);
     // The caller names the preflight tidy pinned, generated as plan generates it.
     const parsed = (try std.json.parseFromSlice(std.json.Value, s.arena.allocator(), "{\"land\":true,\"release\":true}", .{})).value;
-    const regenerated = try workflow.render(s.arena.allocator(), parsed, new_pin, ".", false, ".github/workflows/ci.yml");
+    const regenerated = try workflow.render(s.arena.allocator(), parsed, new_pin, ".", false, "ci/workflow.json: zig build plan -- --workflow .github/workflows/ci.yml");
     try std.testing.expectEqualStrings(std.mem.trim(u8, regenerated, " \r\n"), try s.gitOut(&.{ "show", "HEAD:.github/workflows/ci.yml" }));
     try contains(regenerated, "preflight-ref: " ++ new_pin ++ "\n");
 
@@ -314,7 +314,7 @@ test "a red landing leaves the branch as it was; landing again lands the same re
     try std.testing.expectEqualStrings(landed, try s.remote("refs/heads/main"));
 }
 
-test "a package whose gate is configured and run in another directory lands with --config and --working-directory" {
+test "a package whose gate is configured and run in another directory lands as its caller's first line says it was planned" {
     const s = try Scene.init();
     defer s.deinit();
     const a = s.arena.allocator();
@@ -323,13 +323,13 @@ test "a package whose gate is configured and run in another directory lands with
     try s.git(&.{ "rm", "-q", "ci/workflow.json" });
     try s.write("sample/ci/workflow.json", config);
     const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
-    try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, "${{ github.sha }}", "sample", true, ".github/workflows/ci.yml"));
+    const heading = try workflow.heading(a, "sample/ci/workflow.json", ".github/workflows/ci.yml", "sample", true);
+    try s.write(".github/workflows/ci.yml", try workflow.render(a, parsed, "${{ github.sha }}", "sample", true, heading));
     try s.commit("The gate in the sample");
     try s.git(&.{ "push", "-q", "origin", "main" });
     try s.branch();
-    try expectExit(try s.land("success"), 1);
-    const green = try s.landWith("success", &.{ "--config", "sample/ci/workflow.json", "--working-directory", "sample" });
-    try expectExit(green, 0);
+    // No flags to remember: the caller says where the gate is configured and runs.
+    try expectExit(try s.land("success"), 0);
     try std.testing.expectEqualStrings(try s.remote("refs/heads/main"), try s.remote("refs/tags/v0.1.1"));
 }
 

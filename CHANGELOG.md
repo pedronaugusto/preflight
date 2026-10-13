@@ -13,6 +13,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A generated caller's first line is the `plan` command that wrote it, `--config`, `--working-directory` and `--self` included, and `land` reads its configuration and directory there: a package whose gate runs elsewhere, as preflight's own runs in its sample, lands with no flags. preflight's own caller said it was planned from `ci/workflow.json`, which it was not.
 - A nested build (`addNestedBuild`) run from a development build runs through `bay build`, so its graph has one version of each package as the package's does; under `zig build` a shared package's own pins could bring a second revision unnoticed.
 - The tests take shakedown as bay gives it, with no `.aegis = .consumer` or `useAegis` binding: bay gives a graph one aegis, so shakedown's is this package's.
 

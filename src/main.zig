@@ -28,7 +28,8 @@ pub fn main(init: std.process.Init) !void {
             var drops: std.ArrayList([]const u8) = .empty;
             for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--drop") and i + 1 < args.len) try drops.append(a, args[i + 1]);
             const existing = if (c.exists(path)) try c.read(path) else null;
-            const text = try checks.workflow.generate(c, config, option(args, "--manifest") orelse "build.zig.zon", option(args, "--working-directory") orelse ".", hasFlag(args, "--self"), path, existing, drops.items);
+            const heading = try checks.workflow.heading(a, option(args, "--config"), path, option(args, "--working-directory"), hasFlag(args, "--self"));
+            const text = try checks.workflow.generate(c, config, option(args, "--manifest") orelse "build.zig.zon", option(args, "--working-directory") orelse ".", hasFlag(args, "--self"), heading, existing, drops.items);
             try checks.workflow.write(c, path, text);
             return;
         }
@@ -173,10 +174,10 @@ fn landCommand(c: *src.Context, args: []const []const u8) !void {
         if (!known) return error.UnknownLandOption;
         if (index + 1 == args.len) return error.MissingLandOptionValue;
     }
-    // `--config` and `--working-directory` as `plan` takes them: preflight's own gate is configured in its sample.
+    // `--config` and `--working-directory` as `plan` takes them; by default what the caller's first line says it was planned with.
     var options: checks.land.Options = .{
         .date = option(args, "--date") orelse try checks.release.today(c.a, c.io),
-        .config = option(args, "--config") orelse "ci/workflow.json",
+        .config = option(args, "--config"),
         .working_directory = option(args, "--working-directory"),
     };
     // `--poll <seconds>`: between two looks at GitHub, for the run and at it.

@@ -15,7 +15,7 @@ pub const Options = struct {
     /// The package's recorded durations, repository-relative.
     durations: []const u8,
     /// The hardened run: `std.testing.allocator` is backed by the package's own
-    /// shakedown's quarantine, which the runner then imports as `shakedown`.
+    /// shakedown's quarantine, which the runner imports as `preflight_quarantine`.
     quarantine: bool = false,
 };
 
@@ -168,24 +168,24 @@ test "timeout rejects nanoseconds that cannot fit the runner option" {
     try std.testing.expectEqual(@as(?std.Io.Duration, null), TestTimeout.duration(.{ .bound = .{ .limit = too_large, .reason = "explicit large bound" } }));
 }
 
-/// The hardened run's runner imports `shakedown` for its quarantine from the test module:
-/// the shakedown its graph already holds under that name, so it is the one copy, or else the
-/// one the package declares. A package that declares none is refused by name.
+/// The hardened run's runner imports the package's shakedown, for its quarantine, as
+/// `preflight_quarantine`: the shakedown the test module's graph holds already, so it is
+/// the one copy, or else the one the package declares. A package that declares none is
+/// refused by name.
 fn quarantine(b: *std.Build, run: *std.Build.Step.Run, artifact: *std.Build.Step.Compile) void {
     const root = artifact.root_module;
-    if (root.import_table.get("shakedown") != null) return;
     var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
     graph.put(b.allocator, root, {}) catch @panic("OOM");
     var next: usize = 0;
     while (next < graph.count()) : (next += 1) {
         const module = graph.keys()[next];
         if (module.import_table.get("shakedown")) |found| {
-            root.addImport("shakedown", found);
+            root.addImport("preflight_quarantine", found);
             return;
         }
         for (module.import_table.values()) |imported| graph.put(b.allocator, imported, {}) catch @panic("OOM");
     }
     const dep = (configure.declared(b, "shakedown", .{ .target = root.resolved_target.?, .optimize = root.optimize orelse .debug }) catch return) orelse
         return refuse("{s}: the hardened run backs std.testing.allocator with shakedown's quarantine; declare shakedown: a dev dependency with bay, else a lazy one", b, run, .{artifact.name});
-    root.addImport("shakedown", dep.module("shakedown"));
+    root.addImport("preflight_quarantine", dep.module("shakedown"));
 }

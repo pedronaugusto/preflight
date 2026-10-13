@@ -35,6 +35,7 @@ const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named depen
     "test_options",
     "preflight_default_test_runner",
     "preflight_runner_options",
+    "preflight_quarantine",
     "shakedown",
     "preflight_bench_options",
     "facts",

@@ -27,7 +27,7 @@ const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701b
 /// smaller blocks does once every block in it is freed; std's allocator still
 /// reports leaks, double frees and a damaged block footer. Every run fails the same way.
 const Backing = struct {
-    const Quarantine = if (options.quarantine) @import("shakedown").alloc.Quarantine else void;
+    const Quarantine = if (options.quarantine) @import("preflight_quarantine").alloc.Quarantine else void;
     var quarantine: Quarantine = undefined;
 
     fn begin() std.mem.Allocator {

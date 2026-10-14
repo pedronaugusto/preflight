@@ -154,12 +154,10 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     // The cache every fixture's build shares (integration.zig), so the gate it builds is not
-    // compiled again from nothing; the global one as a hosted job sets it, or that same
-    // absolute directory, as setup-zig gives one for both.
+    // compiled again from nothing; the global cache stays the one the run has.
     try std.Io.Dir.cwd().createDirPath(io, try std.Io.Dir.path.join(a, &.{ root, ".zig-cache", "fixtures" }));
     const cache = try std.Io.Dir.cwd().realPathFileAlloc(io, try std.Io.Dir.path.join(a, &.{ root, ".zig-cache", "fixtures" }), a);
     try env.put("ZIG_LOCAL_CACHE_DIR", cache);
-    if (env.get("ZIG_GLOBAL_CACHE_DIR") == null) try env.put("ZIG_GLOBAL_CACHE_DIR", cache);
     try env.put("STEP", "probe");
     try env.put("BUILD_ARGS", "");
     try env.put("PREFLIGHT_SETUP", "true");

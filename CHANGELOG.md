@@ -20,6 +20,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- preflight's own suite shares one Zig cache across every fixture's build, where each fixture built preflight's checks, its runner and its tools from cold, about a minute apiece: the suite takes 12 minutes on an M-series Mac where it took 25.
 - The release tier links a macOS target on Linux, as `link (<target>)`, unless the build for it links a framework: Zig links a macOS program with the libSystem it ships, and only a framework needs Apple's SDK on a Mac. `plan` and `land` read that from the build configured for each macOS target, so a package that links none uses no Mac runner for its links.
 
 ### Fixed

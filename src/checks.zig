@@ -18,6 +18,7 @@ pub const manifest = @import("checks/manifest.zig");
 pub const lazy_import = @import("checks/lazy_import.zig");
 pub const release = @import("checks/release.zig");
 pub const land = @import("checks/land.zig");
+pub const local = @import("checks/local.zig");
 pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
 

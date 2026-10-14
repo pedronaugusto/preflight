@@ -362,6 +362,88 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     return finish(c, landing, prepared);
 }
 
+/// What `ready` made: the landing commit on the branch, and its release when it has one.
+pub const Readied = struct { sha: []const u8, version: ?release.Version };
+
+/// The landing made on the branch checked out, in place, for a landing gated on the machines
+/// at hand rather than by a hosted run: rebased on origin's default branch, tidied, the nested
+/// manifests aligned, the caller generated again when its preflight moved, the changelog told
+/// of re-pins, and the release cut and committed, as `land` makes it. The commit is gated
+/// (`gate`, on every machine the landing asks for), then `publish` puts it on origin. Under bay,
+/// the tidy is bay's where it runs: in a workspace, its members at their releases, so a landing
+/// is readied where no `bay.work` is in effect.
+pub fn ready(c: *src.Context, options: Options) !Readied {
+    const branch = (try git(c, &.{ "symbolic-ref", "--short", "-q", "HEAD" })).out;
+    if (branch.len == 0) {
+        c.fail("ready: HEAD is detached; check out the branch to land", .{});
+        return error.LandFailed;
+    }
+    if ((try must(c, &.{ "status", "--porcelain" })).len != 0) {
+        c.fail("ready: the tree has changes; commit or stash them first", .{});
+        return error.LandFailed;
+    }
+    var found = try caller(c, options.working_directory);
+    if (options.config) |given| found.config = given;
+    _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
+    const default = try defaultBranch(c);
+    const base: Base = .{ .name = default, .ref = try c.a.print("refs/remotes/origin/{s}", .{default}) };
+    if ((try git(c, &.{ "rev-parse", "--verify", "-q", base.ref })).out.len == 0) {
+        c.fail("ready: origin has no {s}, its default branch, to land on", .{base.name});
+        return error.LandFailed;
+    }
+    const prepared = try prepare(c, branch, base, found, options.date, options.sdk);
+    return .{ .sha = prepared.sha, .version = prepared.version };
+}
+
+/// What `publish` put on origin: the default branch's new commit, and the tag made on it.
+pub const Published = struct { onto: []const u8, sha: []const u8, tag: ?[]const u8 };
+
+/// The commit checked out, gated, onto origin's default branch, as a fast-forward and never
+/// forced, with the tag of the version its manifest declares when its changelog has released
+/// that version and no tag names it yet. Both go in one push, so origin never holds the
+/// release without its tag. A tag that names another commit is never moved: that refuses.
+pub fn publish(c: *src.Context) !Published {
+    if ((try must(c, &.{ "status", "--porcelain" })).len != 0) {
+        c.fail("publish: the tree has changes, which no gate ran on; commit or stash them first", .{});
+        return error.LandFailed;
+    }
+    _ = try must(c, &.{ "fetch", "-q", "--tags", "origin" });
+    const default = try defaultBranch(c);
+    const base = try c.a.print("refs/remotes/origin/{s}", .{default});
+    const sha = try must(c, &.{ "rev-parse", "HEAD" });
+    if (!(try git(c, &.{ "merge-base", "--is-ancestor", base, sha })).ok) {
+        c.fail("publish: HEAD does not hold origin/{s}, which moved or was never under it; ready it again, gate it, then publish", .{default});
+        return error.LandFailed;
+    }
+    const declared = release.declared(c) catch |err| switch (err) {
+        // It named its fix.
+        error.InvalidVersion, error.InvalidManifest => return error.LandFailed,
+        else => return err,
+    };
+    const name = try c.a.print("v{f}", .{declared});
+    const released = c.exists("CHANGELOG.md") and std.mem.find(u8, try c.read("CHANGELOG.md"), try c.a.print("## [{f}]", .{declared})) != null;
+    const tagged = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/tags/{s}^{{commit}}", .{name}) })).out;
+    var tag: ?[]const u8 = null;
+    if (tagged.len != 0) {
+        if (!std.mem.eql(u8, tagged, sha)) {
+            if (!(try git(c, &.{ "merge-base", "--is-ancestor", tagged, sha })).ok) {
+                c.fail("publish: the tag {s} names {s}, which HEAD does not hold; a tag is never moved", .{ name, tagged[0..12] });
+                return error.LandFailed;
+            }
+        } else tag = name;
+    } else if (released) {
+        _ = try must(c, &.{ "tag", name, sha });
+        tag = name;
+    }
+    const refspec = try c.a.print("{s}:refs/heads/{s}", .{ sha, default });
+    const pushed = try git(c, if (tag) |t| &.{ "push", "-q", "--atomic", "origin", refspec, try c.a.print("refs/tags/{s}", .{t}) } else &.{ "push", "-q", "origin", refspec });
+    if (!pushed.ok) {
+        c.fail("publish: the push to origin failed, and nothing moved there: {s}", .{pushed.err});
+        return error.LandFailed;
+    }
+    return .{ .onto = default, .sha = sha, .tag = tag };
+}
+
 /// The default branch holds the branch's work already, and nothing needs a release: an earlier
 /// landing whose end this clone did not see, it may be. When the tag of the declared version is
 /// on the default branch, that version's attempts that no landing needs go; the branch follows.

@@ -666,3 +666,54 @@ test "an empty [Unreleased] beside other changes is refused, though tidy re-pins
     try expectExit(green, 0);
     try contains(try s.gitOut(&.{ "show", "HEAD:CHANGELOG.md" }), "## [0.1.1] - " ++ date ++ "\n\n### Changed\n\n- Pins dep 0.2.0.\n");
 }
+
+/// `preflight <command>` in the clone, with `extra` options after it.
+fn hand(s: *Scene, command: []const []const u8) !std.process.RunResult {
+    var work = try s.tmp.dir.openDir(std.testing.io, "work", .{});
+    defer work.close(std.testing.io);
+    const program = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.preflight, s.arena.allocator());
+    return std.process.run(s.arena.allocator(), std.testing.io, .{ .argv = try std.mem.concat(s.arena.allocator(), []const u8, &.{ &.{program}, command }), .cwd = .{ .dir = work }, .environ_map = &s.env });
+}
+
+test "a hand landing: ready makes the release on the branch, publish puts it and its tag on origin, and nothing goes to GitHub" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    const ready = try hand(s, &.{ "ready", "--date", date });
+    try expectExit(ready, 0);
+    try contains(ready.stdout, "ready: v0.1.1 at ");
+    // Rebased on main, re-pinned, released, all on the branch itself.
+    try std.testing.expectEqualStrings("Release v0.1.1", try s.gitOut(&.{ "log", "-1", "--format=%s" }));
+    try s.git(&.{ "merge-base", "--is-ancestor", "origin/main", "HEAD" });
+    const changelog = try s.tmp.dir.readFileAlloc(std.testing.io, "work/CHANGELOG.md", s.arena.allocator(), .limited(1 << 20));
+    try contains(changelog, "## [0.1.1] - " ++ date);
+    try std.testing.expectEqualStrings("", try s.remote("refs/tags/v0.1.1"));
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    const published = try hand(s, &.{"publish"});
+    try expectExit(published, 0);
+    try contains(published.stdout, "as v0.1.1");
+    try std.testing.expectEqualStrings(head, try s.remote("refs/heads/main"));
+    try std.testing.expectEqualStrings(head, try s.remote("refs/tags/v0.1.1^{commit}"));
+    try std.testing.expectEqualStrings("", try s.calls());
+    try std.testing.expectEqualStrings("", try s.landRefs());
+}
+
+test "publish refuses a commit that does not hold origin's main, a tree with changes, and a tag that names another commit" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    // The branch is behind main: publishing it would rewrite main.
+    try expectExit(try hand(s, &.{"publish"}), 1);
+    try expectExit(try hand(s, &.{ "ready", "--date", date }), 0);
+    try s.write("src/a.zig", "pub const a = 3;\n");
+    try expectExit(try hand(s, &.{"publish"}), 1);
+    try s.git(&.{ "checkout", "-q", "--", "src/a.zig" });
+    // Another commit took the version's tag on origin.
+    const other = try s.gitOut(&.{ "commit-tree", "origin/main^{tree}", "-p", "origin/main", "-m", "Another" });
+    try s.git(&.{ "tag", "v0.1.1", other });
+    try s.git(&.{ "push", "-q", "origin", "v0.1.1" });
+    const refused = try hand(s, &.{"publish"});
+    try expectExit(refused, 1);
+    try contains(refused.stderr, "a tag is never moved");
+    try std.testing.expect(!std.mem.eql(u8, try s.gitOut(&.{ "rev-parse", "HEAD" }), try s.remote("refs/heads/main")));
+}

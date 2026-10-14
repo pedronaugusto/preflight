@@ -53,6 +53,12 @@ pub fn main(init: std.process.Init) !void {
         try releaseCommand(&c, args);
     } else if (std.mem.eql(u8, command, "land")) {
         try landCommand(&c, args);
+    } else if (std.mem.eql(u8, command, "ready")) {
+        try readyCommand(&c, args);
+    } else if (std.mem.eql(u8, command, "gate")) {
+        try gateCommand(&c, init.environ_map, args);
+    } else if (std.mem.eql(u8, command, "publish")) {
+        try publishCommand(&c);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
     } else if (std.mem.eql(u8, command, "executable")) {
@@ -222,6 +228,86 @@ fn landCommand(c: *src.Context, args: []const []const u8) !void {
         .nothing => |why| try stdout(c.*, try c.a.print("nothing to land: {s}\n", .{why})),
         .landed => |landed| try stdout(c.*, try c.a.print("landed {s} on {s} at {s}{s}\n", .{ landed.name, landed.onto, landed.sha[0..12], if (landed.followed) "" else ", and the branch stays where it was" })),
     }
+}
+
+/// `ready`: the landing commit made on the branch checked out, for a landing gated by hand.
+fn readyCommand(c: *src.Context, args: []const []const u8) !void {
+    var index: usize = 2;
+    while (index < args.len) : (index += 2) {
+        const known = for ([_][]const u8{ "--date", "--config", "--working-directory", "--zig-exe" }) |name| {
+            if (std.mem.eql(u8, args[index], name)) break true;
+        } else false;
+        if (!known) return error.UnknownReadyOption;
+        if (index + 1 == args.len) return error.MissingReadyOptionValue;
+    }
+    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+    const readied = checks.land.ready(c, .{
+        .date = option(args, "--date") orelse try checks.release.today(c.a, c.io),
+        .config = option(args, "--config"),
+        .working_directory = option(args, "--working-directory"),
+        .sdk = sdkTargets,
+    }) catch |err| switch (err) {
+        // Reported where it failed.
+        error.LandFailed => return error.CheckFailed,
+        else => return err,
+    };
+    const what = if (readied.version) |version| try c.a.print("v{f}", .{version}) else "no release";
+    try stdout(c.*, try c.a.print("ready: {s} at {s}; gate it on each machine (gate), then publish\n", .{ what, readied.sha[0..12] }));
+}
+
+/// `gate`: the release tier's jobs this machine runs, each as the hosted job runs it, the
+/// first failure ending it; what it cannot run is named.
+fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
+    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+    const config = try checks.workflow.configuration(c.*, option(args, "--config") orelse "ci/workflow.json");
+    const jobs = try checks.matrix.plan(c.a, config, .release);
+    const host: checks.local.Host = .{ .os = builtin.os.tag, .arch = builtin.cpu.arch, .qemu = onPath(c.*, environ, "qemu-riscv64") };
+    const decisions = try checks.local.decide(c.a, jobs, host);
+    var not_here: std.ArrayList([]const u8) = .empty;
+    for (jobs, decisions) |job, decision| switch (decision) {
+        .covered => {},
+        .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
+        .run => {
+            var env = try environ.clone(c.a);
+            try env.put("STEP", checks.local.stepOf(job));
+            try env.put("BUILD_ARGS", job.args);
+            try env.put("PREFLIGHT_TARGETS", job.targets);
+            try env.put("PREFLIGHT_SHARD", job.shard);
+            try env.put("PREFLIGHT_SETUP", if (job.setup) "true" else "false");
+            try env.put("PREFLIGHT_SETUP_STEP", job.prepare);
+            var w = c.*;
+            w.environ_map = &env;
+            if (job.directory.len != 0) w.dir = try c.directory().openDir(c.io, job.directory, .{});
+            defer if (job.directory.len != 0) w.dir.?.close(c.io);
+            try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));
+            runGate(w, &env) catch |err| {
+                c.report("gate: {s} failed: {t}\n", .{ job.name, err });
+                return error.CheckFailed;
+            };
+        },
+    };
+    try stdout(c.*, try c.a.print("gate: green here{s}{s}\n", .{ if (not_here.items.len == 0) "" else "; not run here: ", try std.mem.join(c.a, "; ", not_here.items) }));
+}
+
+/// Whether `name` is a program on the PATH.
+fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const u8) bool {
+    const path = environ.get("PATH") orelse return false;
+    var dirs = std.mem.tokenizeScalar(u8, path, std.fs.path.delimiter);
+    while (dirs.next()) |dir| {
+        const candidate = std.Io.Dir.path.join(c.a, &.{ dir, name }) catch return false;
+        if (std.Io.Dir.cwd().access(c.io, candidate, .{})) |_| return true else |_| {}
+    }
+    return false;
+}
+
+/// `publish`: the gated commit onto origin's default branch, with its release's tag.
+fn publishCommand(c: *src.Context) !void {
+    const published = checks.land.publish(c) catch |err| switch (err) {
+        // Reported where it failed.
+        error.LandFailed => return error.CheckFailed,
+        else => return err,
+    };
+    try stdout(c.*, try c.a.print("published {s} on {s}{s}{s}\n", .{ published.sha[0..12], published.onto, if (published.tag != null) " as " else "", published.tag orelse "" }));
 }
 
 /// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.

@@ -209,6 +209,20 @@ const Steps = struct {
         land.setCwd(package.path("."));
         land.has_side_effects = true;
         configure.claim(b, "land", "Release the branch on a land branch, run the merge tier with land, and on green follow main").dependOn(&land.step);
+        // A landing gated by hand on the machines at hand: ready, gate on each, publish.
+        for ([_]struct { name: []const u8, description: []const u8 }{
+            .{ .name = "ready", .description = "Make the landing commit on the branch: rebased on main, tidied, the caller refreshed, the release cut" },
+            .{ .name = "gate", .description = "Run the release tier's jobs this machine runs, and name the ones it cannot" },
+            .{ .name = "publish", .description = "Push the gated commit onto main, with its release's tag, never forced" },
+        }) |command| {
+            const run = executable.run(b);
+            run.addArg(command.name);
+            if (!std.mem.eql(u8, command.name, "publish")) run.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+            run.addPassthruArgs();
+            run.setCwd(package.path("."));
+            run.has_side_effects = true;
+            configure.claim(b, command.name, command.description).dependOn(&run.step);
+        }
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(package.path("."));

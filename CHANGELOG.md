@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-14
+
 ### Fixed
 
 - An error one test logs fails that test alone: the runner's log counted it in upstream's runner as well, whose count only upstream's own loop resets, so the next test that fuzzed panicked with "error logs detected" and took every test after it in the process down with it (relic's Windows nightly, 2026-10-14).

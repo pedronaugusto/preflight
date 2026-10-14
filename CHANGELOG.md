@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-14
+
 ### Fixed
 
 - The toolchain carries bay 0.1.12, which fetches a package pinned by an archive URL as a build does: under bay 0.1.8 to 0.1.11 a nested build (morse's and visor's conformance) left the emulator's dependencies in Zig's cache with one directory too many, and the build refused every one of them for a hash mismatch.

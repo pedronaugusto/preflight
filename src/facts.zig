@@ -358,11 +358,32 @@ fn rootPath(a: std.mem.Allocator, c: *const C, checked: C.Package.Index, index: 
         .source_path => |source| {
             if (source.owner == checked) return try a.dupe(u8, source.sub_path.slice(c));
             const package = source.owner.get(c) orelse return try a.dupe(u8, source.sub_path.slice(c));
-            return try Io.Dir.path.join(a, &.{ package.root_path.slice(c), source.sub_path.slice(c) });
+            const own = checked.get(c) orelse return try Io.Dir.path.join(a, &.{ package.root_path.slice(c), source.sub_path.slice(c) });
+            return try packagePath(a, own.root_path.slice(c), package.root_path.slice(c), source.sub_path.slice(c));
         },
         .relative => |relative| return if (relative.flags.base == .cwd) try a.dupe(u8, relative.sub_path.slice(c)) else null,
         .generated => return null,
     }
+}
+
+/// A file of the package at `root`, as lint names it: relative to the repository when that
+/// package is the checked one reached again (a build that depends on its own package twice,
+/// as a benchmark built in another mode does, has two packages at one directory), else
+/// where the package is.
+fn packagePath(a: std.mem.Allocator, checked_root: []const u8, root: []const u8, sub_path: []const u8) ![]const u8 {
+    const own = try Io.Dir.path.resolveAlloc(a, &.{checked_root});
+    const other = try Io.Dir.path.resolveAlloc(a, &.{root});
+    if (std.mem.eql(u8, own, other)) return try a.dupe(u8, sub_path);
+    return try Io.Dir.path.join(a, &.{ root, sub_path });
+}
+
+test "a module of the checked package reached through a second package is named as the repository's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("src/root.zig", try packagePath(a, "/work/pkg/.zig-cache/bay/../..", "/work/pkg", "src/root.zig"));
+    try std.testing.expectEqualStrings("src/root.zig", try packagePath(a, "/work/pkg", "/work/pkg/.zig-cache/bay/../..", "src/root.zig"));
+    try std.testing.expectEqualStrings("/work/zig-pkg/dep/src/root.zig", try packagePath(a, "/work/pkg", "/work/zig-pkg/dep", "src/root.zig"));
 }
 
 /// Source roots of configured root-package test artifacts. Compiler module IDs supply roots;

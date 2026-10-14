@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins glint 0.2.7: the aegis rules decide receivers reached through arrays, slices, joined literals and generic results written around `T`.
+
+### Fixed
+
+- Lint binds an import to the checked package's own module when the build reaches that package a second time, as a benchmark built in another mode does: the module's root was named by the second package's directory (`.zig-cache/bay/../..`), two modules bound one name to two paths, and every import of it from such a file was left unresolved.
+
 ## [0.5.3] - 2026-10-14
 
 ### Changed

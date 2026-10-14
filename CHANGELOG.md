@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `hardened-tsan` runs on aarch64 Linux too, where Zig ships ThreadSanitizer's runtime as on x86_64: a package's race checks run on an ARM machine at hand and on the ARM runners, where they were refused.
+
 ### Added
 
 - A landing by hand, gated on the machines at hand rather than by a hosted run (`ready`, `gate`, `publish`): `ready` makes the landing commit on the branch as `land` makes it in its worktree (rebase, tidy, nested manifests aligned and samples tidied, the caller generated again when its preflight moved, re-pins noted, the release cut and committed); `gate` runs the release tier's jobs this machine can, each as the hosted job runs it, and names the ones it cannot; `publish` pushes the gated commit onto main with its release's tag in one atomic push, never forced, and refuses a tag that names another commit.

@@ -307,7 +307,7 @@ Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "pr
 
 `zig build hardened-fuzz` executes the installed Zig 0.17 bounded native fuzzer, with caller options forwarded. The current compiler supports native 64-bit non-Windows hosts; foreign targets and unsupported backends must fail execution. Seed corpora belong in `std.testing.fuzz` options. Zig reports campaign counts and instrumented coverage, retains corpus/coverage beneath `.zig-cache/v`, and reports failing inputs and reproduction details. Hosted jobs retain the actual configured local-cache v directory, including on failure, for seven days. Preserve those files and the printed test seed when reproducing; accumulated coverage is not a coverage guarantee.
 
-`zig build hardened-tsan` compiles with LLVM ThreadSanitizer and executes the selected tests on native x86_64 Linux. Every selected module's target is checked. Other hosts fail with an explicit eligibility message. The sample executes real concurrent tests; preflight's Linux regression first runs a synchronized consumer, then requires a real intentional-race diagnostic. Sanitizer startup failures remain failures. The existing test runner continues to own `std.testing.allocator`, using std's SafeAllocator with `check_write_after_free = true`; a real consumer test frees storage and writes through it to prove detection. There is no substitute allocator, verifier or future language feature.
+`zig build hardened-tsan` compiles with LLVM ThreadSanitizer and executes the selected tests on native x86_64 or aarch64 Linux. Every selected module's target is checked. Other hosts fail with an explicit eligibility message. The sample executes real concurrent tests; preflight's Linux regression first runs a synchronized consumer, then requires a real intentional-race diagnostic. Sanitizer startup failures remain failures. The existing test runner continues to own `std.testing.allocator`, using std's SafeAllocator with `check_write_after_free = true`; a real consumer test frees storage and writes through it to prove detection. There is no substitute allocator, verifier or future language feature.
 
 ### Configured build facts
 
@@ -543,7 +543,7 @@ a step `addCi` adds (`bay ready`, `bay gate`, `bay publish` under bay):
    (a Linux machine of either architecture runs the Linux ones, once each), and on every
    machine the source checks, every target's compile, the optimizing compile and the hardened
    runs; each as the hosted job runs it, the first failure ending the gate. It names what it
-   did not run and why: another system's suite, ThreadSanitizer off x86_64 Linux, riscv64
+   did not run and why: another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64
    with no `qemu-riscv64` on the PATH. Run it on a machine of each system the landing asks for.
 3. `publish` pushes the commit checked out onto origin's main, as a fast-forward and never
    forced, with the tag of the version the manifest declares when the changelog released it

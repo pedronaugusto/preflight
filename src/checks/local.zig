@@ -3,7 +3,7 @@
 //! one's, so that a Linux machine of either architecture runs the Linux suites, a Mac the macOS
 //! ones; the jobs no system decides (the source checks, every target's compile, the hardened
 //! runs) run on each machine. What this machine cannot run is said, never skipped quietly:
-//! another system's suite, ThreadSanitizer off x86_64 Linux, riscv64 with no QEMU here.
+//! another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64 with no QEMU here.
 const std = @import("std");
 const matrix = @import("matrix.zig");
 
@@ -38,9 +38,9 @@ pub fn decide(a: std.mem.Allocator, jobs: []const matrix.Job, host: Host) ![]Dec
 }
 
 fn one(job: matrix.Job, host: Host) Decision {
-    // ThreadSanitizer's runtime is preflight's on x86_64 Linux alone.
+    // ThreadSanitizer runs on Linux, x86_64 and aarch64.
     if (std.mem.eql(u8, job.step, "hardened-tsan")) {
-        return if (host.os == .linux and host.arch == .x86_64) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 Linux" };
+        return if (host.os == .linux and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux" };
     }
     if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-riscv64 on the PATH" } else .run;
     if (anywhere(job)) return .run;

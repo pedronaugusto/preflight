@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-14
+
 ### Changed
 
 - The per-test watchdog's bound is ten times as long under ThreadSanitizer, which runs a test several times slower: a heavy test under the sanitizer was taken for a hang.

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
 ### Breaking
 
 - The hardened run backs `std.testing.allocator` with the package's shakedown's quarantine (`shakedown.alloc.Quarantine`, an inaccessible page after each block, no address reused), one per test, where it took the page allocator: a read or write after free of a block the allocator takes whole faults at the line, in every run. A package with a hardened run declares shakedown.
@@ -20,6 +22,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Pins bay 0.1.11 and glint 0.2.5.
 - preflight's own suite shares one Zig cache across every fixture's build, where each fixture built preflight's checks, its runner and its tools from cold, about a minute apiece: the suite takes 12 minutes on an M-series Mac where it took 25.
 - The release tier links a macOS target on Linux, as `link (<target>)`, unless the build for it links a framework: Zig links a macOS program with the libSystem it ships, and only a framework needs Apple's SDK on a Mac. `plan` and `land` read that from the build configured for each macOS target, so a package that links none uses no Mac runner for its links.
 

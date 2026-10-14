@@ -718,6 +718,34 @@ test "the test log level is a preflight option" {
     try std.testing.expect(std.mem.find(u8, loud.stderr, "preflight-log-marker") != null);
 }
 
+test "an error one test logs fails that test alone, and a fuzz test after it runs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    var text: std.Io.Writer.Allocating = .init(a);
+    try text.writer.writeAll("const std = @import(\"std\");\ntest \"logs an error\" {\n    std.log.err(\"preflight-error-marker\", .{});\n}\n");
+    for (0..4) |i| try text.writer.print("test \"fuzzes {d}\" {{\n    try std.testing.fuzz({{}}, struct {{\n        fn one(_: void, smith: *std.testing.Smith) anyerror!void {{\n            _ = smith;\n        }}\n    }}.one, .{{}});\n}}\n", .{i});
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text.written() });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("PREFLIGHT_TEST_SEED", "42");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "preflight-error-marker") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "error logs detected") == null);
+    // Every test ran to its end; the one that logged is failed for it.
+    try std.testing.expect(std.mem.find(u8, result.stderr, "5 pass (5 total); 1 error logs") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "'sample.test.logs an error' logged 1 errors") != null);
+    // The seed puts a fuzz test after the one that logs, or nothing here
+    // would be tried.
+    const order = try recordedOrder(a, tmp.dir);
+    const logged = std.mem.find(u8, order, "logs an error").?;
+    try std.testing.expect(std.mem.findLast(u8, order, "fuzzes ").? > logged);
+}
+
 test "timing records of two test runs with one name stay apart" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

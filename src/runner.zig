@@ -43,7 +43,15 @@ const Backing = struct {
 
 pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
     if (level == .err) _ = errors.fetchAdd(1, .monotonic);
-    upstream.log(level, scope, format, args);
+    // Upstream's log counts errors in a counter only upstream's own loop
+    // resets. This loop runs every test but a fuzzing build's, so here the
+    // count is `errors`, reset per test: through upstream's, one failed
+    // test's error would still be counted when a later test fuzzes, and
+    // upstream's `fuzz` panics on it, crashing a test that did nothing
+    // wrong and every test after it in the process.
+    if (builtin.fuzz) return upstream.log(level, scope, format, args);
+    if (@backingInt(level) > @backingInt(testing.log_level)) return;
+    report("[" ++ @tagName(scope) ++ "] (" ++ @tagName(level) ++ "): " ++ format ++ "\n", args);
 }
 
 /// Whether the test running now called `std.testing.fuzz`. A build finds

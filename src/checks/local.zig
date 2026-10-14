@@ -3,7 +3,8 @@
 //! one's, so that a Linux machine of either architecture runs the Linux suites and the jobs
 //! the hosted gate runs on Linux (the source checks, every target's compile), a Mac the macOS
 //! suites; the hardened runs, which each system decides for itself, run on each machine. What
-//! this machine cannot run is said, never skipped quietly: another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64 with no QEMU here.
+//! this machine cannot run is said, never skipped quietly: another system's suite,
+//! ThreadSanitizer off x86_64 and aarch64 Linux, riscv64 with no QEMU here.
 const std = @import("std");
 const matrix = @import("matrix.zig");
 

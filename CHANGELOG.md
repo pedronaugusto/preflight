@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-14
+
 ### Changed
 
 - Pins glint 0.2.7: the aegis rules decide receivers reached through arrays, slices, joined literals and generic results written around `T`.

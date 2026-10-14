@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins glint 0.2.8: A002 decides copies of plain vectors, payloads, `if` expressions and labeled blocks.
+
 ## [0.5.4] - 2026-10-14
 
 ### Changed

@@ -12,7 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Pins bay 0.1.12.
+- The aegis rules come from glint 0.2.6, which decides a receiver by the type it resolves to where 0.2.5 left it undecided: a package gating A001-A004 may meet findings at sites that were undecided.
+- Pins bay 0.1.12, glint 0.2.6.
 
 ## [0.5.1] - 2026-10-14
 

@@ -694,7 +694,9 @@ test "a hand landing: ready makes the release on the branch, publish puts it and
     try contains(published.stdout, "as v0.1.1");
     try std.testing.expectEqualStrings(head, try s.remote("refs/heads/main"));
     try std.testing.expectEqualStrings(head, try s.remote("refs/tags/v0.1.1^{commit}"));
-    try std.testing.expectEqualStrings("", try s.calls());
+    // The stand-in saw bay's tidy and no call of GitHub's.
+    var calls = std.mem.tokenizeScalar(u8, try s.calls(), '\n');
+    while (calls.next()) |call| try std.testing.expectEqualStrings("tidy", call);
     try std.testing.expectEqualStrings("", try s.landRefs());
 }
 

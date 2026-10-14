@@ -1,9 +1,9 @@
 //! `gate`: the release tier's jobs a machine at hand runs, for a landing gated on the machines
 //! the person has rather than by a hosted run. A job runs here when its runner's system is this
-//! one's, so that a Linux machine of either architecture runs the Linux suites, a Mac the macOS
-//! ones; the jobs no system decides (the source checks, every target's compile, the hardened
-//! runs) run on each machine. What this machine cannot run is said, never skipped quietly:
-//! another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64 with no QEMU here.
+//! one's, so that a Linux machine of either architecture runs the Linux suites and the jobs
+//! the hosted gate runs on Linux (the source checks, every target's compile), a Mac the macOS
+//! suites; the hardened runs, which each system decides for itself, run on each machine. What
+//! this machine cannot run is said, never skipped quietly: another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64 with no QEMU here.
 const std = @import("std");
 const matrix = @import("matrix.zig");
 
@@ -57,13 +57,14 @@ fn one(job: matrix.Job, host: Host) Decision {
     };
 }
 
-/// A job whose outcome the system it runs on does not decide: the source checks, an object
-/// compile of named targets, the optimizing compile and the hardened runs on this host.
+/// A job whose outcome depends on the system it runs on although the hosted gate runs it on
+/// one: the hardened runs, whose faults and allocator are each system's own. The source
+/// checks and every compile of named targets say the same anywhere, and run once, where
+/// their runner's system is.
 fn anywhere(job: matrix.Job) bool {
-    if (job.operation == .objects) return true;
     if (job.declared) return false;
-    for ([_][]const u8{ "lint", "hardened", "hardened-fuzz" }) |step| if (std.mem.eql(u8, job.step, step)) return true;
-    return std.mem.eql(u8, job.name, "compile (ReleaseSmall)");
+    for ([_][]const u8{ "hardened", "hardened-fuzz" }) |step| if (std.mem.eql(u8, job.step, step)) return true;
+    return false;
 }
 
 /// The system a hosted runner label is.
@@ -86,7 +87,7 @@ pub fn stepOf(job: matrix.Job) []const u8 {
     return if (job.operation == .replay) "ci" else job.step;
 }
 
-test "a Mac runs its own suites and what no system decides, and names the rest" {
+test "a Mac runs its own suites and the hardened runs, and names the rest" {
     const a = std.testing.allocator;
     const jobs = [_]matrix.Job{
         .{ .os = "ubuntu-latest", .name = "test (ubuntu-latest, Debug)", .args = "-Doptimize=debug" },
@@ -101,7 +102,7 @@ test "a Mac runs its own suites and what no system decides, and names the rest" 
     };
     const decisions = try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64, .qemu = false });
     defer a.free(decisions);
-    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .run, .elsewhere, .elsewhere, .elsewhere };
+    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .elsewhere, .elsewhere, .run, .elsewhere, .elsewhere, .elsewhere };
     for (expected, decisions) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
 }
 

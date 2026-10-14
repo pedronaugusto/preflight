@@ -540,9 +540,9 @@ a step `addCi` adds (`bay ready`, `bay gate`, `bay publish` under bay):
    told of re-pins, the release cut and committed as `Release vX.Y.Z`. Under bay the tidy is
    bay's where it runs, so a landing is readied where no `bay.work` is in effect.
 2. `gate` runs, on this machine, the release tier's jobs it can: the suites of its own system
-   (a Linux machine of either architecture runs the Linux ones, once each), and on every
-   machine the source checks, every target's compile, the optimizing compile and the hardened
-   runs; each as the hosted job runs it, the first failure ending the gate. It names what it
+   (a Linux machine of either architecture runs the Linux ones, once each, with the source
+   checks and every target's compile, which the hosted gate runs on Linux), and on every
+   machine the hardened runs; each as the hosted job runs it, the first failure ending the gate. It names what it
    did not run and why: another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64
    with no `qemu-riscv64` on the PATH. Run it on a machine of each system the landing asks for.
 3. `publish` pushes the commit checked out onto origin's main, as a fast-forward and never

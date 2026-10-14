@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `gate` runs the source checks and every target's compile on the Linux machine alone, where the hosted gate runs them, since they say the same on any system; a Mac runs its suites and the hardened runs. Each compile of every target was made twice.
+
 ## [0.5.5] - 2026-10-14
 
 ### Changed

@@ -54,6 +54,7 @@ test {
     _ = release;
     _ = land;
     _ = @import("checks/land_test.zig");
+    _ = @import("checks/local.zig");
     _ = lazy_import;
     _ = command;
     _ = paths;

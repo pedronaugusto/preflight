@@ -51,14 +51,8 @@ pub fn main(init: std.process.Init) !void {
         try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)}));
     } else if (std.mem.eql(u8, command, "release")) {
         try releaseCommand(&c, args);
-    } else if (std.mem.eql(u8, command, "land")) {
-        try landCommand(&c, args);
-    } else if (std.mem.eql(u8, command, "ready")) {
-        try readyCommand(&c, args);
-    } else if (std.mem.eql(u8, command, "gate")) {
-        try gateCommand(&c, init.environ_map, args);
-    } else if (std.mem.eql(u8, command, "publish")) {
-        try publishCommand(&c);
+    } else if (landing.get(command)) |which| {
+        try landingCommand(&c, init.environ_map, which, args);
     } else if (std.mem.eql(u8, command, "cache")) {
         try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
     } else if (std.mem.eql(u8, command, "executable")) {
@@ -193,6 +187,20 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
         if (try facts.linksFramework(c.a, snapshot)) try linking.append(.{ .string = name });
     }
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
+}
+
+/// The commands that move main: `land` through the hosted merge tier, and the landing by
+/// hand, `ready`, `gate` on each machine, then `publish`.
+const Landing = enum { land, ready, gate, publish };
+const landing: std.StaticStringMap(Landing) = .initComptime(.{ .{ "land", .land }, .{ "ready", .ready }, .{ "gate", .gate }, .{ "publish", .publish } });
+
+fn landingCommand(c: *src.Context, environ: *const std.process.Environ.Map, which: Landing, args: []const []const u8) !void {
+    switch (which) {
+        .land => try landCommand(c, args),
+        .ready => try readyCommand(c, args),
+        .gate => try gateCommand(c, environ, args),
+        .publish => try publishCommand(c),
+    }
 }
 
 /// `land`: the branch checked out, released, through the merge tier and onto main.

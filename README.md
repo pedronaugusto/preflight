@@ -68,7 +68,7 @@ project, and preflight's own gate runs it on every host.
 
 `addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
-`check-imports`, `release`, `land`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
+`check-imports`, `release`, `land`, `ready`, `gate`, `publish`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
@@ -528,6 +528,27 @@ ten failures in a row end the wait, saying the run goes on and may still land.
   landing still succeeds.
 - Red: the failed jobs are named, the attempt's branch stays to be looked at, and nothing
   else moves, so landing again makes the same version.
+
+### Landing by hand
+
+A package gated on the machines at hand rather than by a hosted run lands in three steps, each
+a step `addCi` adds (`bay ready`, `bay gate`, `bay publish` under bay):
+
+1. `ready` makes the landing commit on the branch itself, as `land` makes it in its worktree:
+   rebased on origin's main, tidied, the nested manifests aligned and the builds that take the
+   package by path tidied, the caller generated again when its preflight moved, the changelog
+   told of re-pins, the release cut and committed as `Release vX.Y.Z`. Under bay the tidy is
+   bay's where it runs, so a landing is readied where no `bay.work` is in effect.
+2. `gate` runs, on this machine, the release tier's jobs it can: the suites of its own system
+   (a Linux machine of either architecture runs the Linux ones, once each), and on every
+   machine the source checks, every target's compile, the optimizing compile and the hardened
+   runs; each as the hosted job runs it, the first failure ending the gate. It names what it
+   did not run and why: another system's suite, ThreadSanitizer off x86_64 Linux, riscv64
+   with no `qemu-riscv64` on the PATH. Run it on a machine of each system the landing asks for.
+3. `publish` pushes the commit checked out onto origin's main, as a fast-forward and never
+   forced, with the tag of the version the manifest declares when the changelog released it
+   and no tag names it yet, both in one atomic push. A HEAD that does not hold origin's main,
+   a tree with changes, or a tag that already names another commit is refused.
 - A landing whose end this clone did not see (an origin it could not fetch, a wait it gave
   up on) is finished by landing again: there is nothing left to land, the version's
   attempts no landing needs go, and the branch moves to main.

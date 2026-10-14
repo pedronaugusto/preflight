@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - `gate` runs the source checks and every target's compile on the Linux machine alone, where the hosted gate runs them, since they say the same on any system; a Mac runs its suites and the hardened runs. Each compile of every target was made twice.
+- `gate` runs every job it can, where the first failure ended it, and names every job that failed: a red on one leg no longer hides the rest.
 
 ## [0.5.5] - 2026-10-14
 

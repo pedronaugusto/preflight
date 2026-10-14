@@ -263,8 +263,8 @@ fn readyCommand(c: *src.Context, args: []const []const u8) !void {
     try stdout(c.*, try c.a.print("ready: {s} at {s}; gate it on each machine (gate), then publish\n", .{ what, readied.sha[0..12] }));
 }
 
-/// `gate`: the release tier's jobs this machine runs, each as the hosted job runs it, the
-/// first failure ending it; what it cannot run is named.
+/// `gate`: the release tier's jobs this machine runs, each as the hosted job runs it, all of
+/// them, so a red names every job that failed here; what it cannot run is named.
 fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
     if (option(args, "--zig-exe")) |zig| c.zig = zig;
     const config = try checks.workflow.configuration(c.*, option(args, "--config") orelse "ci/workflow.json");
@@ -272,6 +272,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: [
     const host: checks.local.Host = .{ .os = builtin.os.tag, .arch = builtin.cpu.arch, .qemu = onPath(c.*, environ, "qemu-riscv64") };
     const decisions = try checks.local.decide(c.a, jobs, host);
     var not_here: std.ArrayList([]const u8) = .empty;
+    var failed: std.ArrayList([]const u8) = .empty;
     for (jobs, decisions) |job, decision| switch (decision) {
         .covered => {},
         .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
@@ -290,11 +291,16 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: [
             try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));
             runGate(w, &env) catch |err| {
                 c.report("gate: {s} failed: {t}\n", .{ job.name, err });
-                return error.CheckFailed;
+                try failed.append(c.a, job.name);
             };
         },
     };
-    try stdout(c.*, try c.a.print("gate: green here{s}{s}\n", .{ if (not_here.items.len == 0) "" else "; not run here: ", try std.mem.join(c.a, "; ", not_here.items) }));
+    const elsewhere = if (not_here.items.len == 0) "" else try c.a.print("; not run here: {s}", .{try std.mem.join(c.a, "; ", not_here.items)});
+    if (failed.items.len != 0) {
+        c.report("gate: red here: {s}{s}\n", .{ try std.mem.join(c.a, "; ", failed.items), elsewhere });
+        return error.CheckFailed;
+    }
+    try stdout(c.*, try c.a.print("gate: green here{s}\n", .{elsewhere}));
 }
 
 /// Whether `name` is a program on the PATH.

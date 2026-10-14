@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The per-test watchdog's bound is ten times as long under ThreadSanitizer, which runs a test several times slower: a heavy test under the sanitizer was taken for a hang.
 - Pins bay 0.1.13, which gives Zig a relative package directory: Zig 0.17 refuses the path dependencies of a package unpacked under an absolute one, which a nested build met in ghostty's `pkg/` (morse's conformance in the VM).
 - `gate` runs the source checks and every target's compile on the Linux machine alone, where the hosted gate runs them, since they say the same on any system; a Mac runs its suites and the hardened runs. Each compile of every target was made twice.
 - `gate` runs every job it can, where the first failure ended it, and names every job that failed: a red on one leg no longer hides the rest.

@@ -174,7 +174,10 @@ const Steps = struct {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
             break :fail std.Io.Duration.zero;
         };
-        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = timeout, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
+        // ThreadSanitizer runs a test several times slower: the bound a test is held to
+        // scales with it, so a heavy test under the sanitizer is not taken for a hang.
+        const bounded: std.Io.Duration = if (steps.profile_options.tsan) .fromNanoseconds(timeout.toNanoseconds() *| hardened.tsan_slowdown) else timeout;
+        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         // One way to fuzz, in every package: its properties, by the step it names, else
         // the one its hardened run fuzzes, else its tests.

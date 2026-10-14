@@ -81,6 +81,11 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     } else tsan_step.dependOn(&tsan.step);
 }
 
+/// How many times a test's bound grows under ThreadSanitizer, which runs code
+/// five to fifteen times slower: relic's heaviest tests passed under it and still
+/// met the unscaled 120 s bound on a loaded machine.
+pub const tsan_slowdown = 10;
+
 /// Where ThreadSanitizer runs: Linux on x86_64 and aarch64, where Zig ships its runtime.
 pub fn sanitized(target: std.Target) bool {
     return target.os.tag == .linux and (target.cpu.arch == .x86_64 or target.cpu.arch == .aarch64);

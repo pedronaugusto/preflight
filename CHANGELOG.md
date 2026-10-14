@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-14
+
 ### Changed
 
 - `hardened-tsan` runs on aarch64 Linux too, where Zig ships ThreadSanitizer's runtime as on x86_64: a package's race checks run on an ARM Linux machine, where they were refused.

@@ -104,7 +104,7 @@ const Scene = struct {
     fn environment(a: std.mem.Allocator) !std.process.Environ.Map {
         const inherited = try std.testing.environ.createMap(a);
         var env: std.process.Environ.Map = .init(a);
-        const kept: []const []const u8 = if (@import("builtin").os.tag == .windows) &.{ "PATH", "SystemRoot" } else &.{"PATH"};
+        const kept: []const []const u8 = if (@import("builtin").target.os.tag == .windows) &.{ "PATH", "SystemRoot" } else &.{"PATH"};
         for (kept) |name| if (inherited.get(name)) |value| try env.put(name, value);
         return env;
     }

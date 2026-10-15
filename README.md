@@ -347,6 +347,19 @@ Test runs carry no environment from the build: Zig keeps a run's environment in
 its cached configuration, so the runner reads the shard and seed when it runs.
 Test artifacts that share a root module share its runner options and timing record.
 
+`-Dci-vm` runs what a build makes for riscv64 Linux, which no hosted runner is, on a
+riscv64 Linux kernel under QEMU's system emulation (`qemu-system-riscv64` on the PATH),
+where QEMU's user mode would emulate one process and leave out what a kernel does:
+reaping, pidfds, io_uring, file maps. The machine is Alpine Linux's kernel and root
+file system, pinned by hash in preflight's manifest and fetched only by a build that
+asks for it, with a first process of preflight's own. Each test or program run boots
+it (about a second), runs the program as the build's user with the host's directories
+it names (where it runs, where it is, what its arguments point to) at their paths and
+its scratch directory in the machine's memory, and ends as the program ended: its exit
+code, or its signal. Its standard streams are pipes, as on any host. The watchdog's
+bound is ten times as long there. The release tier's riscv64 job runs its Debug suite
+this way.
+
 ### Hosted gate
 
 The gate has four tiers, each holding everything the one before it checks:
@@ -364,7 +377,7 @@ The gate has four tiers, each holding everything the one before it checks:
   status check of a pull request, and with `land` it moves main.
 - **release**: the full matrix, nightly and before a cut: every mode on every host
   (Debug and ReleaseSafe everywhere, ARM Linux and Windows included, ReleaseFast on
-  Linux), the Debug suite on riscv64 Linux under QEMU, ReleaseSmall, every cross
+  Linux), the Debug suite on a riscv64 Linux kernel under QEMU, ReleaseSmall, every cross
   target with the ReleaseFast benchmarks, the links of every macOS and Windows target
   (a macOS one on a Mac only when its build links a framework), TSan and the hardened
   checks where configured, and the Debug suite on Linux with Zig master.
@@ -544,7 +557,9 @@ a step `addCi` adds (`bay ready`, `bay gate`, `bay publish` under bay):
    checks and every target's compile, which the hosted gate runs on Linux), and on every
    machine the hardened runs; each as the hosted job runs it, every one of them, so a red names all that failed. It names what it
    did not run and why: another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux, riscv64
-   with no `qemu-riscv64` on the PATH. Run it on a machine of each system the landing asks for.
+   with no `qemu-system-riscv64` on the PATH. Run it on a machine of each system the landing asks for.
+   `--working-directory <dir>` gates a package whose caller runs its planned jobs there and its
+   declared jobs in their own directories, as preflight's own caller runs its sample.
 3. `publish` pushes the commit checked out onto origin's main, as a fast-forward and never
    forced, with the tag of the version the manifest declares when the changelog released it
    and no tag names it yet, both in one atomic push. A HEAD that does not hold origin's main,

@@ -1,0 +1,80 @@
+//! `-Dci-vm`: the tests and programs a build runs for riscv64 Linux, which no
+//! hosted runner is, run on a riscv64 Linux kernel booted under QEMU's system
+//! emulation, not under its user mode, which emulates one process and leaves out
+//! what a kernel does (process reaping, pidfds, io_uring, file maps). The
+//! machine is Alpine Linux's kernel and root file system, pinned by hash in
+//! preflight's manifest and fetched only by a build that asks for the machine,
+//! with preflight's own first process (vm/guest.zig) and host side (vm/host.zig).
+const std = @import("std");
+
+/// How many times slower a test runs on the machine than on the host, at most:
+/// QEMU translates every instruction of a whole system, on one host thread per
+/// processor it emulates, where a riscv64 board runs it natively. The watchdog's
+/// bound scales by it.
+pub const slowdown = 10;
+
+/// Puts the machine in front of each run under `tests` of an artifact built for
+/// riscv64 Linux. `pkg` is the preflight whose sources and pins the machine
+/// comes from. Called after every other part of the gate has added its runs.
+pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Build.ResolvedTarget) void {
+    // Fetched on first use: a build that asks for the machine configures again once they land.
+    const alpine = pkg.dependencyLazy("alpine_riscv64", .{}) catch return;
+    const rootfs = pkg.dependencyLazy("alpine_riscv64_rootfs", .{}) catch return;
+    const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = b.createModule(.{
+        .root_source_file = pkg.path("src/vm/guest.zig"),
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .none }),
+        .optimize = .safe,
+    }) });
+    const runner = b.addExecutable(.{ .name = "preflight-vm", .root_module = b.createModule(.{
+        .root_source_file = pkg.path("src/vm/host.zig"),
+        .target = host,
+        .optimize = .safe,
+    }) });
+    const boot = b.addRunArtifact(runner);
+    boot.addArg("image");
+    boot.addDirectoryArg2(alpine.path("."), .{});
+    boot.addDirectoryArg2(rootfs.path("."), .{});
+    boot.addArtifactArg2(guest, .{});
+    const machine: Machine = .{ .runner = runner, .kernel = boot.addOutputFileArg2("Image", .{}), .initrd = boot.addOutputFileArg2("initrd.cpio", .{}) };
+    var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+    visit(b, tests, machine, &seen);
+}
+
+const Machine = struct {
+    runner: *std.Build.Step.Compile,
+    kernel: std.Build.LazyPath,
+    initrd: std.Build.LazyPath,
+};
+
+fn visit(b: *std.Build, step: *std.Build.Step, machine: Machine, seen: *std.AutoHashMapUnmanaged(*std.Build.Step, void)) void {
+    if ((seen.getOrPut(b.allocator, step) catch @panic("OOM")).found_existing) return;
+    for (step.dependencies.items) |child| visit(b, child, machine, seen);
+    const run = step.cast(std.Build.Step.Run) orelse return;
+    if (run.argv.items.len == 0 or run.argv.items[0] != .artifact) return;
+    const target = run.argv.items[0].artifact.artifact.root_module.resolved_target.?.result;
+    if (!needsMachine(target, b.graph.host.result)) return;
+    // `preflight-vm run <kernel> <initrd>` in front of the run's own command line,
+    // whose program and arguments the machine receives as they are.
+    const own = b.allocator.dupe(std.Build.Step.Run.Arg, run.argv.items) catch @panic("OOM");
+    run.argv.clearRetainingCapacity();
+    run.addArtifactArg(machine.runner);
+    run.addArg("run");
+    run.addFileArg(machine.kernel);
+    run.addFileArg(machine.initrd);
+    run.argv.appendSlice(b.graph.arena, own) catch @panic("OOM");
+}
+
+/// A run for riscv64 Linux on a host that is not one.
+pub fn needsMachine(target: std.Target, host: std.Target) bool {
+    return target.os.tag == .linux and target.cpu.arch == .riscv64 and !(host.os.tag == .linux and host.cpu.arch == .riscv64);
+}
+
+test "only a riscv64 Linux run on another host needs the machine" {
+    const riscv = try std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .musl });
+    const arm = try std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu });
+    const mac = try std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = .aarch64, .os_tag = .macos });
+    try std.testing.expect(needsMachine(riscv, arm));
+    try std.testing.expect(needsMachine(riscv, mac));
+    try std.testing.expect(!needsMachine(riscv, riscv));
+    try std.testing.expect(!needsMachine(arm, mac));
+}

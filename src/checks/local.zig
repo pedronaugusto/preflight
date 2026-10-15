@@ -12,7 +12,7 @@ const matrix = @import("matrix.zig");
 pub const Host = struct {
     os: std.Target.Os.Tag,
     arch: std.Target.Cpu.Arch,
-    /// QEMU's user mode for riscv64 is on the PATH.
+    /// QEMU's riscv64 system emulation is on the PATH.
     qemu: bool,
 };
 
@@ -43,7 +43,7 @@ fn one(job: matrix.Job, host: Host) Decision {
     if (std.mem.eql(u8, job.step, "hardened-tsan")) {
         return if (host.os == .linux and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux" };
     }
-    if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-riscv64 on the PATH" } else .run;
+    if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-system-riscv64 on the PATH" } else .run;
     if (anywhere(job)) return .run;
     const system = systemOf(job.os) orelse return .{ .elsewhere = "a runner no machine here is" };
     if (system != host.os) return .{ .elsewhere = switch (system) {
@@ -98,7 +98,7 @@ test "a Mac runs its own suites and the hardened runs, and names the rest" {
         .{ .os = "ubuntu-latest", .name = "Cross compile 1/2", .step = "preflight-cross-bench", .operation = .objects, .targets = "x86_64-linux-gnu" },
         .{ .os = "ubuntu-latest", .name = "hardened", .step = "hardened" },
         .{ .os = "ubuntu-latest", .name = "hardened-tsan", .step = "hardened-tsan" },
-        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux under QEMU, Debug)", .qemu = true },
+        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
     };
     const decisions = try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64, .qemu = false });
@@ -114,7 +114,7 @@ test "an ARM Linux machine runs the Linux suites once each, and riscv64 with QEM
         .{ .os = "ubuntu-latest", .name = "test (ubuntu-latest, ReleaseFast)", .args = "-Doptimize=fast" },
         .{ .os = "ubuntu-24.04-arm", .name = "test (ubuntu-24.04-arm, Debug)", .args = "-Doptimize=debug" },
         .{ .os = "macos-latest", .name = "native link for test (macos-latest, Debug)", .step = "ci-build", .operation = .link },
-        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux under QEMU, Debug)", .qemu = true },
+        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
     };
     const decisions = try decide(a, &jobs, .{ .os = .linux, .arch = .aarch64, .qemu = true });

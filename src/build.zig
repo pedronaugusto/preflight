@@ -9,6 +9,7 @@ pub const nested = @import("nested.zig");
 const bench = @import("bench.zig");
 const fuzz = @import("fuzz.zig");
 const hardened = @import("hardened.zig");
+const vm = @import("vm.zig");
 const Tool = @import("tool.zig").Tool;
 
 pub const Config = struct {
@@ -105,6 +106,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .lint_enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
+        .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux on its own kernel under QEMU's system emulation (qemu-system-riscv64 on PATH)") orelse false,
     };
 }
 /// Controls accepted during a root script's lazy-discovery pass.
@@ -115,6 +117,7 @@ pub const CiOptions = struct {
     lint_enabled: bool,
     timing: bool,
     checks: ?[]const u8,
+    vm: bool,
 };
 
 const Steps = struct {
@@ -128,6 +131,7 @@ const Steps = struct {
     sdk: ?[]const u8,
     checks: ?[]const u8,
     smoke: bool,
+    vm: bool,
     profile_options: hardened.Options,
 
     fn create(b: *std.Build, config: Config) Steps {
@@ -139,7 +143,7 @@ const Steps = struct {
         const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -174,9 +178,13 @@ const Steps = struct {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
             break :fail std.Io.Duration.zero;
         };
-        // ThreadSanitizer runs a test several times slower: the bound a test is held to
-        // scales with it, so a heavy test under the sanitizer is not taken for a hang.
-        const bounded: std.Io.Duration = if (steps.profile_options.tsan) .fromNanoseconds(timeout.toNanoseconds() *| hardened.tsan_slowdown) else timeout;
+        // ThreadSanitizer, and a machine QEMU emulates instruction by instruction, run a
+        // test several times slower: the bound a test is held to scales with them, so a
+        // heavy test there is not taken for a hang.
+        const sanitizer: i96 = if (steps.profile_options.tsan) hardened.tsan_slowdown else 1;
+        const emulation: i96 = if (steps.vm) vm.slowdown else 1;
+        const slowdown = sanitizer * emulation;
+        const bounded: std.Io.Duration = .fromNanoseconds(timeout.toNanoseconds() *| slowdown);
         record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         // One way to fuzz, in every package: its properties, by the step it names, else
@@ -242,6 +250,8 @@ const Steps = struct {
         deprecations.setCwd(package.path("."));
         configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
         steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig);
+        // Last, so that every run the gate added is in front of the machine too.
+        if (steps.vm) vm.add(b, config.tests, pkg, host);
     }
 
     fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {

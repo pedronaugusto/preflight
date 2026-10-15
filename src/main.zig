@@ -265,11 +265,17 @@ fn readyCommand(c: *src.Context, args: []const []const u8) !void {
 
 /// `gate`: the release tier's jobs this machine runs, each as the hosted job runs it, all of
 /// them, so a red names every job that failed here; what it cannot run is named.
+///
+/// `--working-directory <dir>` gates a package whose planned jobs run in `dir` while its
+/// declared jobs' directories are the repository's, as the hosted caller runs them
+/// (preflight's own gate runs its sample there); `--config` defaults to `dir`'s.
 fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
     if (option(args, "--zig-exe")) |zig| c.zig = zig;
-    const config = try checks.workflow.configuration(c.*, option(args, "--config") orelse "ci/workflow.json");
+    const working = option(args, "--working-directory") orelse ".";
+    const config_path = option(args, "--config") orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
+    const config = try checks.workflow.configuration(c.*, config_path);
     const jobs = try checks.matrix.plan(c.a, config, .release);
-    const host: checks.local.Host = .{ .os = builtin.os.tag, .arch = builtin.cpu.arch, .qemu = onPath(c.*, environ, "qemu-riscv64") };
+    const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch, .qemu = onPath(c.*, environ, "qemu-system-riscv64") };
     const decisions = try checks.local.decide(c.a, jobs, host);
     var not_here: std.ArrayList([]const u8) = .empty;
     var failed: std.ArrayList([]const u8) = .empty;
@@ -286,8 +292,12 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: [
             try env.put("PREFLIGHT_SETUP_STEP", job.prepare);
             var w = c.*;
             w.environ_map = &env;
-            if (job.directory.len != 0) w.dir = try c.directory().openDir(c.io, job.directory, .{});
-            defer if (job.directory.len != 0) w.dir.?.close(c.io);
+            const directory = if (job.directory.len != 0) job.directory else working;
+            const moved = !std.mem.eql(u8, directory, ".");
+            if (moved) w.dir = try c.directory().openDir(c.io, directory, .{});
+            defer if (moved) w.dir.?.close(c.io);
+            // The package there builds as it is developed: with bay only if its manifest says so.
+            if (moved) w.bay = w.bayFor(&env);
             try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));
             runGate(w, &env) catch |err| {
                 c.report("gate: {s} failed: {t}\n", .{ job.name, err });
@@ -306,7 +316,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: [
 /// Whether `name` is a program on the PATH.
 fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const u8) bool {
     const path = environ.get("PATH") orelse return false;
-    var dirs = std.mem.tokenizeScalar(u8, path, std.fs.path.delimiter);
+    var dirs = std.mem.tokenizeScalar(u8, path, std.Io.Dir.path.delimiter);
     while (dirs.next()) |dir| {
         const candidate = std.Io.Dir.path.join(c.a, &.{ dir, name }) catch return false;
         if (std.Io.Dir.cwd().access(c.io, candidate, .{})) |_| return true else |_| {}
@@ -474,7 +484,7 @@ fn append(c: src.Context, path: []const u8, text: []const u8) !void {
 }
 
 fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
-    if (builtin.os.tag == .macos) {
+    if (builtin.target.os.tag == .macos) {
         const sdk = try std.process.run(c.a, c.io, .{ .argv = &.{ "xcrun", "--no-cache", "--sdk", "macosx", "--show-sdk-path" } });
         if (sdk.term != .exited or sdk.term.exited != 0) return error.NativeSdkUnavailable;
         const path = std.mem.trim(u8, sdk.stdout, " \t\r\n");
@@ -548,7 +558,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     {
         const timer = checks.phases.Timer.begin(c, "configure the build");
         defer timer.end(c, log);
-        // A flag of the build runner's own (`-fqemu`) changes no configuration.
+        // A flag of the build runner's own (`-fwine`, `-fqemu`) changes no configuration.
         var options: std.ArrayList([]const u8) = .empty;
         for (argv.items[first_option..]) |option_text| if (std.mem.startsWith(u8, option_text, "-D")) try options.append(c.a, option_text);
         const snapshot = try facts.read(c, c.zig, options.items);
@@ -561,7 +571,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             // cannot retain a different runner's SDKROOT environment. A build that
             // does not declare it (a nested package, a custom step) is not asked: Zig
             // refuses an option a build does not know.
-            if (std.mem.eql(u8, name, "ci-sdk") and builtin.os.tag == .macos) {
+            if (std.mem.eql(u8, name, "ci-sdk") and builtin.target.os.tag == .macos) {
                 if (env.get("SDKROOT")) |sdk| try argv.append(c.a, try c.a.print("-Dci-sdk={s}", .{sdk}));
             }
         }

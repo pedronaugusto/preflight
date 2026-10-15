@@ -28,6 +28,9 @@ test {
     _ = @import("nested.zig");
     _ = @import("plain.zig");
     _ = @import("record.zig");
+    _ = @import("vm.zig");
+    _ = @import("vm/cpio.zig");
+    _ = @import("vm/host.zig");
     _ = @import("record_test.zig");
     _ = @import("configure.zig");
     _ = @import("facts.zig");

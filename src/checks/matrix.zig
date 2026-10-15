@@ -48,7 +48,8 @@ pub const Job = struct {
     prepare: []const u8 = "",
     /// A job of the package's own (`jobs`), which runs as declared: never split into a link and a replay.
     declared: bool = false,
-    /// The job runs a foreign Linux target's tests under QEMU's user mode, which the runner installs.
+    /// The job runs riscv64 Linux's tests on a riscv64 kernel under QEMU's system emulation
+    /// (`-Dci-vm`), which the runner installs.
     qemu: bool = false,
 };
 
@@ -283,13 +284,14 @@ fn linuxHost(host: []const u8) bool {
 }
 
 /// The Debug suite on riscv64 Linux, which no hosted runner is: built for it on the Linux
-/// runner and run under QEMU's user mode (`zig build -fqemu`), static with musl so that no
-/// riscv64 system root is needed. Its durations are QEMU's, so it records none.
+/// runner, static with musl, and run on a riscv64 Linux kernel QEMU emulates (`-Dci-vm`), so
+/// that what a kernel does (reaping, pidfds, io_uring, file maps) is a kernel's, not a
+/// user-mode emulator's. Its durations are QEMU's, so it records none.
 fn emulatedJob(a: std.mem.Allocator, config: src.Value) !Job {
     return .{
         .os = hosts[0],
-        .name = "test (riscv64-linux under QEMU, Debug)",
-        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dtarget=riscv64-linux-musl -fqemu{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+        .name = "test (riscv64-linux on its kernel under QEMU, Debug)",
+        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dtarget=riscv64-linux-musl -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
         .setup = true,
         .qemu = true,
         .job_timeout = try minutes(config, "test_job_timeout"),
@@ -904,7 +906,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         "test (macos-latest, Debug)",         "test (macos-latest, ReleaseSafe)",      "test (windows-latest, Debug)",
         "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
         "Cross compile",                      "test (ubuntu-24.04-arm, Debug)",        "test (ubuntu-24.04-arm, ReleaseSafe)",
-        "test (windows-11-arm, Debug)",       "test (windows-11-arm, ReleaseSafe)",    "test (riscv64-linux under QEMU, Debug)",
+        "test (windows-11-arm, Debug)",       "test (windows-11-arm, ReleaseSafe)",    "test (riscv64-linux on its kernel under QEMU, Debug)",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {
@@ -918,7 +920,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     // durations are not the target's, so the emulated job records none.
     for (jobs) |job| {
         if (job.qemu) {
-            try std.testing.expect(std.mem.find(u8, job.args, "-Dtarget=riscv64-linux-musl -fqemu") != null);
+            try std.testing.expect(std.mem.find(u8, job.args, "-Dtarget=riscv64-linux-musl -Dci-vm") != null);
             continue;
         }
         if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);

@@ -5,7 +5,8 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "supported Zig versions", .patterns = &.{"src/zig_version.zig"} },
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
-    .{ .name = "build helper", .patterns = &.{ "src/configure.zig", "src/bench.zig", "src/fuzz.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/plain.zig", "src/nested.zig", "src/tool.zig", "src/build.zig" } },
+    .{ .name = "test machine", .patterns = &.{ "src/vm/cpio.zig", "src/vm/guest.zig", "src/vm/host.zig" } },
+    .{ .name = "build helper", .patterns = &.{ "src/vm.zig", "src/configure.zig", "src/bench.zig", "src/fuzz.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/plain.zig", "src/nested.zig", "src/tool.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{ "src/checks/*.zig", "src/checks/glint/*.zig" } },
     .{ .name = "deprecation codemod", .patterns = &.{ "src/deprecations/*.zig", "src/deprecations.zig" } },
     .{ .name = "configuration validation", .patterns = &.{"src/facts/*.zig"} },
@@ -17,7 +18,7 @@ pub const layers: []const gantry.rules.Layer = &.{
 };
 pub const required = [_][]const u8{ "src/main.zig", "src/structure.zig", "src/build.zig", "src/runner.zig", "src/order.zig", "src/timings.zig" };
 /// Roots a build compiles; nothing imports them.
-pub const entries: []const []const u8 = &.{ "src/structure.zig", "src/build.zig", "src/runner.zig", "src/layers_default.zig" };
+pub const entries: []const []const u8 = &.{ "src/structure.zig", "src/build.zig", "src/runner.zig", "src/layers_default.zig", "src/vm/guest.zig", "src/vm/host.zig" };
 /// The modules the build helper injects into a package's test binaries.
 pub const modules: []const gantry.NamedModule = &.{
     .{ .name = "preflight_order", .path = "src/order.zig" },
@@ -42,8 +43,10 @@ const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named depen
 } }};
 pub const references: []const gantry.rules.ReferenceRule = &package_references;
 
-/// preflight writes no durable files, and its callers own asynchronous work.
+/// preflight writes no durable files, and its callers own asynchronous work. The test
+/// machine's first process is a system's init: it writes the machine's caches back
+/// before it powers off, as any system does.
 pub const owned: []const gantry.rules.TokenRule = &.{
-    .{ .name = "durability is not preflight's", .sequences = &.{ &.{ ".", "sync", "(" }, &.{ ".", "syncFile", "(" }, &.{ ".", "syncDir", "(" }, &.{ "createFileAtomic", "(" }, &.{ "fsync", "(" }, &.{ "fdatasync", "(" }, &.{ "FlushFileBuffers", "(" } } },
+    .{ .name = "durability is not preflight's", .sequences = &.{ &.{ ".", "sync", "(" }, &.{ ".", "syncFile", "(" }, &.{ ".", "syncDir", "(" }, &.{ "createFileAtomic", "(" }, &.{ "fsync", "(" }, &.{ "fdatasync", "(" }, &.{ "FlushFileBuffers", "(" } }, .owners = &.{"src/vm/guest.zig"} },
     .{ .name = "async belongs to the caller", .sequences = &.{&.{ "io", ".", "async", "(" }} },
 };

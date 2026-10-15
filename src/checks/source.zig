@@ -40,7 +40,7 @@ pub const Context = struct {
         if (!c.developedWithBay()) return null;
         if (environ.get("BAY")) |bay| return bay;
         const self = std.process.executableDirPathAlloc(c.io, c.a) catch return "bay";
-        const beside = std.Io.Dir.path.join(c.a, &.{ self, if (@import("builtin").os.tag == .windows) "bay.exe" else "bay" }) catch @panic("OOM");
+        const beside = std.Io.Dir.path.join(c.a, &.{ self, if (@import("builtin").target.os.tag == .windows) "bay.exe" else "bay" }) catch @panic("OOM");
         std.Io.Dir.cwd().access(c.io, beside, .{}) catch return "bay";
         return beside;
     }

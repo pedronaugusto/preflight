@@ -381,7 +381,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
 
 test "caller output refuses symlink files and directories and propagates write failures" {
     const builtin = @import("builtin");
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const FaultIo = @import("shakedown").FaultIo;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

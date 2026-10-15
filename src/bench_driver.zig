@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
     const build: []const []const u8 = if (optional(args, "--bay")) |bay| &.{ bay, "bench-build" } else &.{ zig, "build", "bench-build" };
     _ = try command(a, init.io, checkout, build);
     _ = try command(a, init.io, candidate, build);
-    const suffix = if (builtin.os.tag == .windows) ".exe" else "";
+    const suffix = if (builtin.target.os.tag == .windows) ".exe" else "";
     const executable = try a.print("{s}{s}", .{ program, suffix });
     const base_bin = try Io.Dir.path.join(a, &.{ checkout, "zig-out", "bench", executable });
     const candidate_bin = try Io.Dir.path.join(a, &.{ candidate, "zig-out", "bench", executable });

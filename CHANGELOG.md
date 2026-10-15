@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `-Dci-vm`: what a build makes for riscv64 Linux runs on a riscv64 Linux kernel under QEMU's system emulation, booted for each test or program run (about a second): Alpine Linux's kernel and root file system, pinned by hash and fetched only by a build that asks, with preflight's own first process. The program runs as the build's user, with its standard streams as pipes, the host's directories it names at their paths and its scratch directory in the machine's memory, and ends as it ended there, by its exit code or its signal. The watchdog's bound is ten times as long on it.
+
+### Changed
+
+- The release tier's riscv64 job runs its Debug suite on that kernel (`-Dci-vm`; the runner installs `qemu-system-misc`), in place of QEMU's user mode, which emulates one process and not a kernel: a subreaper, pidfds and io_uring failed there and would on no riscv64 machine (shakedown, conduit and reactor pass on the kernel). `gate` runs it where `qemu-system-riscv64` is on the PATH.
+- `gate --working-directory <dir>` runs the planned jobs in `dir` and the declared ones in their own directories, as the hosted caller does: preflight gates itself from its root with `--working-directory sample`, where every planned job passed preflight's own build an `-Doptimize` it does not declare.
+
 ## [0.6.0] - 2026-10-15
 
 ### Breaking

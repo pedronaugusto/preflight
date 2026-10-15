@@ -97,7 +97,7 @@ fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(
 /// where they can be removed.
 pub fn normalize(a: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error![]const u8 {
     const resolved = try std.Io.Dir.path.resolveAlloc(a, &.{path});
-    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, resolved, '\\', '/');
+    if (builtin.target.os.tag == .windows) std.mem.replaceScalar(u8, resolved, '\\', '/');
     return resolved;
 }
 

@@ -17,6 +17,20 @@
             .lazy = true,
         },
 
+        // The riscv64 test machine (`-Dci-vm`): Alpine Linux's kernel, its modules and
+        // its root file system, fetched only by a build that runs on the machine.
+        .alpine_riscv64 = .{
+            .url = "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/riscv64/alpine-uboot-3.24.2-riscv64.tar.gz",
+            .hash = "N-V-__8AAK2jSwMxK2QTcDLqXDrakaAa7TS3ShXkjIic0xBt",
+            .lazy = true,
+        },
+
+        .alpine_riscv64_rootfs = .{
+            .url = "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/riscv64/alpine-minirootfs-3.24.2-riscv64.tar.gz",
+            .hash = "N-V-__8AAIMAbQDh5mA2AUF0Pyrm-UxpzkldsIiukdrGCem4",
+            .lazy = true,
+        },
+
         .bay = .{
             .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.13#e944c70991c96e942b4a8063c4633a6181255126",
             .hash = "bay-0.1.13-uwJ5Z_PVBACjpb7hkhcyRbLrO-q_BdiAheQqOrWDf3cj",

@@ -870,7 +870,7 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(timed)) std.debug.print("{s}\n", .{timed.stderr});
     try std.testing.expect(command.succeeded(timed));
-    try tmp.dir.access(io, if (builtin.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
+    try tmp.dir.access(io, if (builtin.target.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
     // Compiled once and run elsewhere, the smoke run gets a fresh directory there too.
     const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(built)) std.debug.print("{s}\n", .{built.stderr});
@@ -977,7 +977,7 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
-    if (builtin.os.tag == .macos) {
+    if (builtin.target.os.tag == .macos) {
         if (env.get("SDKROOT")) |sdk| {
             const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
             if (timed.term != .exited or timed.term.exited != 0) std.debug.print("{s}", .{timed.stderr});
@@ -1268,7 +1268,7 @@ test "toolchain facts come from the configured build including options and gener
 }
 
 test "toolchain TSan executes a native consumer and detects an intentional race" {
-    if (builtin.os.tag != .linux or (builtin.cpu.arch != .x86_64 and builtin.cpu.arch != .aarch64)) return error.SkipZigTest;
+    if (builtin.target.os.tag != .linux or (builtin.target.cpu.arch != .x86_64 and builtin.target.cpu.arch != .aarch64)) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

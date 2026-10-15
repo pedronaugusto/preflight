@@ -417,8 +417,8 @@ test "the default policy gates correctness and the sites that can hide undefined
     try std.testing.expect(policy.base.strict_suppressions);
     try std.testing.expectEqual(.production, policy.base.cast_scope);
     try std.testing.expectEqual(.pointer, policy.base.casts);
-    for ([_]glint.Rule{ .Z003, .Z013, .P002, .P004 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
-    for ([_]glint.Rule{ .P001, .P003, .Z011, .P005, .Z026, .Z012, .Z016, .Z001, .Z006, .Z032 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
+    for ([_]glint.Rule{ .Z003, .Z013, .Z026, .P002, .P004 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
+    for ([_]glint.Rule{ .P001, .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
     for ([_]glint.Rule{ .Z024, .P006, .D001 }) |rule| try std.testing.expectEqual(.off, policy.base.level(rule));
     try std.testing.expect(policy.fails(.Z011) and policy.fails(.P005));
     try std.testing.expect(!policy.fails(.Z012) and !policy.fails(.Z001));
@@ -495,7 +495,8 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     const forked = try policy.forFile(a, "src/tls.zig");
     try std.testing.expectEqual(.off, forked.level(.P001));
     try std.testing.expectEqual(.off, forked.level(.P003));
-    try std.testing.expectEqual(.report, forked.level(.Z026));
+    // A vendored fork is exempt from the house style, not from correctness.
+    try std.testing.expectEqual(.gate, forked.level(.Z026));
     try std.testing.expectEqual(.gate, (try policy.forFile(a, "src/other.zig")).level(.P001));
     try std.testing.expectEqual(Policy.Kind.test_file, policy.kind("src/deep/x_test.zig"));
     try std.testing.expectEqual(Policy.Kind.test_file, policy.kind("src/tests.zig"));

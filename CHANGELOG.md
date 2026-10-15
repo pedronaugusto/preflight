@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- The default policy gates Z026: an empty `catch` with no reason written at the site fails the lint, where it was reported. A discarded error is a result nobody read; a best-effort cleanup is a fine reason, silence is not. A repository that wants it reported names it (`{"id": "Z026", "level": "report"}`).
+
 ## [0.5.6] - 2026-10-14
 
 ### Changed

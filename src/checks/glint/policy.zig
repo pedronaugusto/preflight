@@ -29,11 +29,11 @@ const Entry = struct { rule: glint.Rule, weight: Weight };
 /// turned off without a reason (P002), `catch unreachable` without an invariant
 /// (P004), a debug print the project forbids (P005). A cast's written reason (P001)
 /// and the function reading budget (P003) are a house style, reported until a package
-/// gates them in its `glint.rules`; the
-/// Zig style rules, and the discarded errors (Z026), are reported until a
-/// package is clean under them and gates them itself: glint finds 3 times the
-/// sites the fork's Z026 did,
-/// and the review's order is reported, then gated. The readability report
+/// gates them in its `glint.rules`. A discarded error (Z026, an empty `catch`
+/// with no reason written at it) is a result nobody read, and gates: a
+/// best-effort cleanup is a fine reason, silence is not. The Zig style rules are
+/// reported until a package is clean under them and gates them itself, the
+/// review's order reported, then gated. The readability report
 /// (Z024) stays off, as the fork's selection kept it.
 const defaults = [_]Entry{
     .{ .rule = .Z003, .weight = .gate },
@@ -44,7 +44,7 @@ const defaults = [_]Entry{
     .{ .rule = .P003, .weight = .report },
     .{ .rule = .P004, .weight = .gate },
     .{ .rule = .P005, .weight = .finding },
-    .{ .rule = .Z026, .weight = .report },
+    .{ .rule = .Z026, .weight = .gate },
     .{ .rule = .Z012, .weight = .report },
     .{ .rule = .Z016, .weight = .report },
     .{ .rule = .Z001, .weight = .report },

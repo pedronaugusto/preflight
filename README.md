@@ -212,9 +212,9 @@ it, at any revision that keeps its public names.
 
 | Rule | Weight |
 |---|---|
-| Z003 syntax, Z013 dead import, P002 safety-off reasons, P004 `catch unreachable` | gate |
+| Z003 syntax, Z013 dead import, Z026 discarded error, P002 safety-off reasons, P004 `catch unreachable` | gate |
 | Z011 deprecated call, P005 debug print | finding: any finding fails, and a call glint cannot resolve is counted, not a verdict |
-| P001 cast reasons, P003 function length, Z026 discarded error, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
+| P001 cast reasons, P003 function length, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
 | Z024 line length, P006 disallowed declarations, D001 dead declarations | off (P006 gates once `disallowed` names something) |
 
 `gate` is glint's: a finding fails the run, and so does any site the rule could

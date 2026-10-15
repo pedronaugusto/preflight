@@ -145,13 +145,13 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
     try f.file("src/root.zig", "pub fn run(f: anytype) void {\n    f() catch unreachable; // unreachable: f has no error path\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
-    // A discarded error is reported until a repository gates it, then carries its reason at the site.
+    // A discarded error fails unless its reason is written at the site; a repository may only report it.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
-    const gated = "{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"gate\"}]}}";
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
-    try std.testing.expect(try f.run(gated, .{}) != 0);
+    const reported = "{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}";
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(reported, .{}));
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    // glint-ignore: Z026 -- cleanup after a failure the caller already gets\n    f() catch {};\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run(gated, .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
 }
 
 test "style is reported and does not fail; a repository may gate it" {

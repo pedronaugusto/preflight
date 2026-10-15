@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-15
+
 ### Changed
 
 - Pins glint 0.2.10: the aegis rules decide receivers inside generics, through the arguments the project's own calls pass, a generic call's result and `@TypeOf`/`@typeInfo`.

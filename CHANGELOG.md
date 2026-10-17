@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins glint 0.2.13: A003 follows an owner through `while` and `for` loops and reads one returned held as its caller's; the aegis rules decide receivers through std's lists (`ArrayList(T).items`), `if` and `switch` expressions whose other branches leave, labeled blocks and function pointer fields; A002 finds a copy of an owner that resolves to one by value.
+
 ## [0.8.0] - 2026-10-17
 
 ### Breaking

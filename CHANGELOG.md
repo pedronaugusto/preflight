@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- glint is told the module names a file's build binds in no module that compiles it (`Project.Input.absent`, glint 0.2.14): code that needs one is not compiled in this build, so a call that passes something from it binds nothing. warp's CRC folding, whose x86 kernels are modules only an x86 build has, lints decided on ARM.
+- `addConsumerCheck` also checks the consumer's program against the package's own modules in the configured build (an object nothing installs), which tells lint what each name the program imports is: clearance's `ci/consumer.zig` read `clearance` unmapped.
+
+### Changed
+
+- glint 0.2.14.
+
 ## [0.9.0] - 2026-10-17
 
 ### Breaking

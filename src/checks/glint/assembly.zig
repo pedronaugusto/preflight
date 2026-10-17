@@ -229,6 +229,17 @@ const Loader = struct {
         return path;
     }
 
+    /// Whether the build binds no module named `name` in any module that compiles `from`:
+    /// a module this build does not have there, as glint is told. Zig's own names (`std`,
+    /// `builtin`, `root`) are always there, and a file no configured module compiles has no
+    /// bindings to go by.
+    fn absent(self: *Loader, from: []const u8, name: []const u8) !bool {
+        if (std.mem.endsWith(u8, name, ".zig")) return false;
+        for ([_][]const u8{ "std", "builtin", "root" }) |own| if (std.mem.eql(u8, name, own)) return false;
+        if (!self.modules_of.contains(from)) return false;
+        return try self.bound(from, name) == .unbound;
+    }
+
     const Bound = union(enum) { unbound, ambiguous, path: []const u8 };
 
     fn bound(self: *Loader, from: []const u8, name: []const u8) !Bound {
@@ -274,14 +285,19 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
     var cursor: usize = 0;
     while (cursor < loader.inputs.items.len) : (cursor += 1) {
         const from = loader.inputs.items[cursor];
+        var absent: std.ArrayList([]const u8) = .empty;
         for (try loader.importsOf(from.name, from.bytes)) |name| {
-            const path = (try loader.lead(from.name, name)) orelse continue;
+            const path = (try loader.lead(from.name, name)) orelse {
+                if (try loader.absent(from.name, name)) try absent.append(c.a, name);
+                continue;
+            };
             const found = (loader.load(path, false, .production) catch |err| switch (err) {
                 error.ProjectBudgetExceeded => return budget(c),
                 else => return err,
             }) orelse continue;
             try imports.append(c.a, .{ .from = .fromRaw(@intCast(cursor)), .spelling = name, .target = .fromRaw(found) });
         }
+        loader.inputs.items[cursor].absent = absent.items;
     }
     const project = glint.Project.init(gpa, loader.inputs.items, imports.items, .{}) catch |err| switch (err) {
         error.ProjectBudgetExceeded => return budget(c),
@@ -358,7 +374,7 @@ test "an import means what the configured build binds it to, in the module that 
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try write(tmp.dir, "src/root.zig", "const lib = @import(\"lib\");\nconst helper = @import(\"helper.zig\");\nconst std = @import(\"std\");\n");
+    try write(tmp.dir, "src/root.zig", "const lib = @import(\"lib\");\nconst helper = @import(\"helper.zig\");\nconst std = @import(\"std\");\nconst kernels = @import(\"kernels\");\nconst builtin = @import(\"builtin\");\n");
     try write(tmp.dir, "src/helper.zig", "const lib = @import(\"lib\");\nconst other = @import(\"other\");\n");
     try write(tmp.dir, "src/shared.zig", "const lib = @import(\"lib\");\n");
     try write(tmp.dir, "dep/lib.zig", "pub const Thing = struct {};\nconst inner = @import(\"inner.zig\");\n");
@@ -406,4 +422,13 @@ test "an import means what the configured build binds it to, in the module that 
         if (std.mem.eql(u8, input.name, "stdlib/mem.zig") or std.mem.eql(u8, input.name, "dep/inner.zig")) names += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), names);
+    // A name no module that compiles the file binds is a module this build does not have;
+    // Zig's own names and a name bound two ways are not.
+    for (project.inputs) |input| {
+        if (std.mem.eql(u8, input.name, "src/root.zig")) {
+            try std.testing.expectEqual(@as(usize, 1), input.absent.len);
+            try std.testing.expectEqualStrings("kernels", input.absent[0]);
+        }
+        if (std.mem.eql(u8, input.name, "src/helper.zig")) try std.testing.expectEqual(@as(usize, 0), input.absent.len);
+    }
 }

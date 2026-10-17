@@ -64,9 +64,17 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
         .text => |text| b.fmt("-D{s}=str:{s}", .{ option.name, text }),
     });
-    build.addArgs(if (options.modules.len > 0) options.modules else &.{options.package});
+    const names = if (options.modules.len > 0) options.modules else &.{options.package};
+    build.addArgs(names);
     build.has_side_effects = true;
-    configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package})).dependOn(&build.step);
+    const step = configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package}));
+    step.dependOn(&build.step);
+    // The program checked against the package's own modules too, which also tells lint what
+    // each name it imports is: the configured graph is all lint reads, and the consumer's
+    // project is written only when the check runs.
+    const program = b.createModule(.{ .root_source_file = options.program, .target = b.graph.host, .optimize = .debug });
+    for (names) |name| program.addImport(name, package.modules.get(name) orelse @panic(b.fmt("addConsumerCheck: the package has no module {s}", .{name})));
+    step.dependOn(&b.addObject(.{ .name = "consumer-program", .root_module = program }).step);
 }
 
 /// Puts `hash` and every package it depends on, transitively, into `closure`: with

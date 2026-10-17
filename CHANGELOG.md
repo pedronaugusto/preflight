@@ -14,6 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - glint 0.2.14.
+- The riscv64 machine's runner is passed to a test's run step with `addArtifactArg2`: Zig 0.17 deprecates `addArtifactArg`, which glint 0.2.14 now resolves (Z011).
 
 ## [0.9.0] - 2026-10-17
 

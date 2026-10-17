@@ -70,7 +70,7 @@ fn visit(b: *std.Build, step: *std.Build.Step, machine: Machine, seen: *std.Auto
     // whose program and arguments the machine receives as they are.
     const own = b.allocator.dupe(std.Build.Step.Run.Arg, run.argv.items) catch @panic("OOM");
     run.argv.clearRetainingCapacity();
-    run.addArtifactArg(machine.runner);
+    run.addArtifactArg2(machine.runner, .{});
     run.addArg("run");
     run.addFileArg(machine.kernel);
     run.addFileArg(machine.initrd);

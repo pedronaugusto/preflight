@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-17
+
 ### Breaking
 
 - A process a test started that still holds the tests' output two seconds after they ended fails the run, named with its arguments on Linux and macOS. The build used to wait for it, up to a minute, and then killed the runner outside any test with no name (`test runner failed to respond`, conduit's ThreadSanitizer job); one that let go within the minute passed.

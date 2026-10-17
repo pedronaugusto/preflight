@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-17
+
 ### Changed
 
 - glint 0.2.15 (the aegis contract's five waiting fields, `Atomic`, task contexts, ordered locks and `Counter`; receivers through type information, builtins, destructuring and loop values), which selects aegis 0.1.14.

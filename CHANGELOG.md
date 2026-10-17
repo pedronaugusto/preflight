@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- A process a test started that still holds the tests' output two seconds after they ended fails the run, named with its arguments on Linux and macOS. The build used to wait for it, up to a minute, and then killed the runner outside any test with no name (`test runner failed to respond`, conduit's ThreadSanitizer job); one that let go within the minute passed.
+
+### Fixed
+
+- Serving the build, the test runner runs the tests in a process of its own and keeps the build's streams: the tests' process holds the protocol on descriptors no child inherits, with the null device as stdin and its stderr as stdout, and its output reaches the build through a pipe the runner forwards. A process a test started no longer holds the build's streams, reads the protocol's bytes or writes into it, and a crash's report reaches the build whole. A single-threaded build, or a system that cannot start a process, keeps the tests in one process, with the protocol still moved.
+
 ## [0.8.2] - 2026-10-17
 
 ### Added

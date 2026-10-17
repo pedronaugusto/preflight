@@ -108,6 +108,32 @@ caller holding a job the configuration does not declare. Landing is one caller j
 gate and alone holds write permission; without `land` the caller asks for none, since a reusable
 workflow cannot be granted more than its caller holds whatever its jobs' conditions say.
 
+## The runner's streams
+
+Zig's Run step serves the test runner its protocol on the runner's stdin and stdout, and
+ends the runner only when both its stdout and stderr reach their end, allowing 60 s of
+silence outside a test. Every process a test starts inherits those streams unless the
+test says otherwise, so one still running after the last test held the build's end open
+and the build killed the runner a minute later, outside any test and past the watchdog;
+one that read its stdin took the protocol's bytes, and one that wrote its stdout wrote
+into it. Serving the build, the process the build starts (the supervisor) starts the
+tests' process with its own stdin and stdout and a pipe as stderr. That process moves
+the protocol to descriptors (handles, on Windows) no child inherits, takes the null
+device as stdin and its stderr as stdout. The supervisor forwards the pipe to its own
+stderr while it waits for the tests' process, so what that process wrote, a crash's
+report included, is in the pipe before its ending is seen: once it has ended, the
+forwarding stops, its read canceled through `std.Io.Batch`, which still yields a read
+that completed as it was canceled, and never between a read and its write; the rest is
+read until the pipe ends. A process that still holds the pipe two seconds after the
+last byte is named (Linux: the descriptors in `/proc`; macOS: libproc's pipe peers) and
+fails a run that would have passed. The tests' ending becomes the supervisor's: its exit
+status, Windows' whole, or its signal raised again. The tests' process ends with the
+supervisor however that ends (the build kills the process it started when a test
+outlasts a `--test-timeout` given by hand): it holds the read end of a pipe whose write
+end only the supervisor holds, and a thread of its own ends it when that pipe ends. The supervisor takes threads and a
+spawn, so a single-threaded build or a system that cannot start a process runs the
+tests in the one process, with the protocol still moved.
+
 ## Shard and watchdog boundaries
 
 `Shard.init` and `Shard.parse` establish a nonzero count and an index below it.

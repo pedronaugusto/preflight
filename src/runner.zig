@@ -136,9 +136,13 @@ pub fn main(init: std.process.Init.Minimal) void {
     var allocator: std.heap.FixedBufferAllocator = .init(&arg_buffer);
     const args = init.args.toSlice(allocator.allocator()) catch @panic("test runner arguments");
     var listen = false;
+    var lifeline: ?[]const u8 = null;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--listen=-")) listen = true;
+        if (std.mem.startsWith(u8, arg, Supervisor.flag)) lifeline = arg[Supervisor.flag.len..];
     }
+    if (Supervisor.possible) if (lifeline) |handle| Supervisor.follow(handle) catch |err| std.debug.panic("preflight test runner: the supervisor's lifeline: {t}", .{err});
+    if (listen and lifeline == null and Supervisor.possible) Supervisor.run(init, args);
     order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     job_deadline = readDeadline(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_DEADLINE: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
@@ -154,8 +158,9 @@ fn readDeadline(environ: std.process.Environ) !?i64 {
 fn serve(init: std.process.Init.Minimal) !void {
     var input: [4096]u8 = undefined;
     var output: [4096]u8 = undefined;
-    var reader = std.Io.File.stdin().readerStreaming(io, &input);
-    var writer = std.Io.File.stdout().writerStreaming(io, &output);
+    const protocol = try Protocol.claim();
+    var reader = protocol.in.readerStreaming(io, &input);
+    var writer = protocol.out.writerStreaming(io, &output);
     var server: std.zig.Server = .{ .in = &reader.interface, .out = &writer.interface };
     try server.serveStringMessage(.zig_version, builtin.zig_version_string);
     const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
@@ -170,6 +175,405 @@ fn serve(init: std.process.Init.Minimal) !void {
         }
     }
 }
+
+/// The process the build starts, when the runner serves the build and can
+/// start a process. It runs the tests in a process of their own, which takes
+/// the build's protocol from it (`Protocol`) and writes everything else, its
+/// own and its tests' output and a crash's report alike, into a pipe this
+/// process forwards to the build. A process a test started that outlives the
+/// tests holds that pipe, never the build's stderr: the build would wait for
+/// it, and kill the runner a minute later outside any test (conduit's
+/// ThreadSanitizer job). Here the tests' process ending is the end: what it
+/// wrote is forwarded whole, a process still holding the pipe a moment later
+/// is named and fails the run, and the tests' ending, an exit or a signal,
+/// becomes this process's own.
+const Supervisor = struct {
+    /// What the supervisor adds to the tests' process's arguments, before
+    /// the lifeline's descriptor (handle, on Windows) in decimal.
+    const flag = "--preflight-supervised=";
+    /// Starting a process, and forwarding while waiting for one, take threads.
+    const possible = std.process.can_spawn and !builtin.single_threaded;
+    /// How long a process the tests left may hold their output after the
+    /// tests' process has ended: one that is ending lets go well within it.
+    const release: std.Io.Duration = .fromSeconds(2);
+
+    fn run(init: std.process.Init.Minimal, args: []const [:0]const u8) noreturn {
+        var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = init.environ });
+        const sio = threaded.io();
+        const ending = supervise(sio, args) catch |err| std.debug.panic("preflight test runner: supervising the tests: {t}", .{err});
+        exitAs(ending);
+    }
+
+    const Ending = struct {
+        term: std.process.Child.Term,
+        /// Windows' exit status whole, where `term` keeps its low byte.
+        status: u32,
+        /// Whether a process the tests started still held their output.
+        held: bool,
+    };
+
+    fn supervise(sio: std.Io, args: []const [:0]const u8) !Ending {
+        const gpa = std.heap.page_allocator;
+        const self = try std.process.executablePathAlloc(sio, gpa);
+        defer gpa.free(self);
+        const argv = try gpa.alloc([]const u8, args.len + 1);
+        defer gpa.free(argv);
+        argv[0] = self;
+        for (args[1..], argv[1..args.len]) |arg, *slot| slot.* = arg;
+        // The tests' process ends with this one, however this one ends: the
+        // build kills it, not the tests', when a test outlasts a timeout given
+        // by hand. The lifeline's write end is this process's alone, so its
+        // read end ends as this process does.
+        const lifeline = try Lifeline.open();
+        defer lifeline.write.close(sio);
+        var number: [32]u8 = undefined;
+        argv[args.len] = try std.mem.print(&number, flag ++ "{d}", .{Lifeline.number(lifeline.read)});
+        var child = spawn: {
+            defer lifeline.read.close(sio);
+            break :spawn try std.process.spawn(sio, .{ .argv = argv, .stderr = .pipe, .inherit_files = &.{lifeline.read} });
+        };
+        // The pipe is this process's, not the child's: `wait` closes what the
+        // child still names, and the forwarding outlives the wait.
+        const output = child.stderr.?;
+        child.stderr = null;
+        defer output.close(sio);
+        const stderr = std.Io.File.stderr();
+        var forwarding = try sio.concurrent(pump, .{ sio, output, stderr, .none });
+        // Everything the tests' process wrote is in the pipe once it has
+        // ended. The forwarding stops then, losing nothing it read, and the
+        // rest is read here, until the pipe ends or stays quiet for `release`
+        // with a process still holding it.
+        const status = waitStatus(&child);
+        const term = try child.wait(sio);
+        const forwarded = try forwarding.cancel(sio);
+        const held = switch (forwarded) {
+            .ended => false,
+            .quiet => unreachable, // forwarding has no quiet bound
+            .canceled => try pump(sio, output, stderr, .{ .duration = .{ .raw = release, .clock = .awake } }) == .quiet,
+        };
+        if (held) try nameHolders(sio, output, stderr);
+        return .{ .term = term, .status = status, .held = held };
+    }
+
+    /// A pipe whose write end only the supervisor holds; the tests' process
+    /// holds the read end, which ends when the supervisor does.
+    const Lifeline = struct {
+        read: std.Io.File,
+        write: std.Io.File,
+
+        /// Both ends close on exec and are not inherited; the spawn passes the
+        /// read end alone.
+        fn open() !Lifeline {
+            if (builtin.os.tag == .windows) {
+                var read: std.os.windows.HANDLE = undefined;
+                var write: std.os.windows.HANDLE = undefined;
+                if (CreatePipe(&read, &write, null, 0) == .FALSE) return error.LifelineUnopened;
+                return .{ .read = file(read), .write = file(write) };
+            }
+            const ends = try std.Io.Threaded.pipe2(.{ .CLOEXEC = true });
+            return .{ .read = file(ends[0]), .write = file(ends[1]) };
+        }
+
+        fn file(handle: std.Io.File.Handle) std.Io.File {
+            return .{ .handle = handle, .flags = .{ .nonblocking = false } };
+        }
+
+        fn number(end: std.Io.File) usize {
+            return if (builtin.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle); // safe: a descriptor is never negative
+        }
+
+        extern "kernel32" fn CreatePipe(read: *std.os.windows.HANDLE, write: *std.os.windows.HANDLE, security: ?*std.os.windows.SECURITY_ATTRIBUTES, size: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+    };
+
+    /// In the tests' process: keeps the lifeline from every process it starts,
+    /// and ends this process when the lifeline ends, the supervisor gone.
+    fn follow(text: []const u8) !void {
+        const value = std.fmt.parseUnsigned(usize, text, 10) catch return error.InvalidLifeline;
+        const end: std.Io.File = if (builtin.os.tag == .windows)
+            Lifeline.file(@ptrFromInt(value))
+        else
+            Lifeline.file(std.math.cast(std.posix.fd_t, value) orelse return error.InvalidLifeline);
+        if (builtin.os.tag == .windows) {
+            if (Protocol.SetHandleInformation(end.handle, Protocol.handle_flag_inherit, 0) == .FALSE) return error.InvalidLifeline;
+        } else if (std.posix.errno(std.posix.system.fcntl(end.handle, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC))) != .SUCCESS) return error.InvalidLifeline;
+        const watch = try std.Thread.spawn(.{}, awaitEnd, .{end});
+        watch.detach();
+    }
+
+    fn awaitEnd(end: std.Io.File) void {
+        var byte: [1]u8 = undefined;
+        // Nothing is ever written: a read returns when the write end closes.
+        // glint-ignore: Z026 -- an ending, an error or a byte all mean the lifeline is done
+        _ = end.readStreaming(io, &.{&byte}) catch {};
+        std.process.exit(1);
+    }
+
+    /// How forwarding stopped.
+    const Pumped = enum { ended, quiet, canceled };
+
+    /// Forwards `from` to `to` until `from` ends, nothing comes for `quiet`
+    /// (`.none`: never), or the task is canceled. Every byte read is written
+    /// however it stops: a read is canceled through its batch, which still
+    /// yields a read that completed as it was canceled, and the write that
+    /// follows is never canceled.
+    fn pump(sio: std.Io, from: std.Io.File, to: std.Io.File, quiet: std.Io.Timeout) !Pumped {
+        var buffer: [4096]u8 = undefined;
+        var storage: [1]std.Io.Operation.Storage = undefined;
+        var batch: std.Io.Batch = .init(&storage);
+        defer batch.cancel(sio);
+        while (true) {
+            batch.addAt(0, .{ .file_read_streaming = .{ .file = from, .data = &.{&buffer} } });
+            var stop: ?Pumped = null;
+            batch.awaitConcurrent(sio, quiet) catch |err| switch (err) {
+                error.Timeout => stop = .quiet,
+                error.Canceled => stop = .canceled,
+                else => |e| return e,
+            };
+            const protection = sio.swapCancelProtection(.blocked);
+            defer _ = sio.swapCancelProtection(protection);
+            if (stop != null) batch.cancel(sio);
+            const read = batch.next() orelse return stop orelse error.ReadVanished;
+            const n = read.result.file_read_streaming catch |err| switch (err) {
+                error.EndOfStream => return .ended,
+                else => |e| return e,
+            };
+            try to.writeStreamingAll(sio, buffer[0..n]);
+            // Bytes came, so it was not quiet; a cancel still stops here.
+            if (stop == .canceled) return .canceled;
+        }
+    }
+
+    /// Says that processes the tests started hold their output, and on Linux
+    /// which, by the processes whose descriptors name the pipe.
+    fn nameHolders(sio: std.Io, output: std.Io.File, to: std.Io.File) !void {
+        var buffer: [1024]u8 = undefined;
+        var writer = to.writerStreaming(sio, &buffer);
+        const w = &writer.interface;
+        try w.print("\npreflight: the tests' process ended, and processes it started still hold its output {d} ms later:\n", .{release.toMilliseconds()});
+        switch (builtin.os.tag) {
+            .linux => try listHolders(sio, output, w),
+            .macos => try Darwin.listHolders(output, w),
+            else => try w.writeAll("  (this system does not say which)\n"),
+        }
+        try w.flush();
+    }
+
+    fn listHolders(sio: std.Io, output: std.Io.File, w: *std.Io.Writer) !void {
+        const stat = try output.stat(sio);
+        var name: [64]u8 = undefined;
+        const pipe = try std.mem.print(&name, "pipe:[{d}]", .{stat.inode});
+        var proc = try std.Io.Dir.openDirAbsolute(sio, "/proc", .{ .iterate = true });
+        defer proc.close(sio);
+        var processes = proc.iterate();
+        while (try processes.next(sio)) |process| {
+            const pid = std.fmt.parseUnsigned(u32, process.name, 10) catch continue;
+            if (pid == std.os.linux.getpid()) continue;
+            var path: [64]u8 = undefined;
+            // A process that ended since the listing has no descriptors left to read.
+            var fds = proc.openDir(sio, try std.mem.print(&path, "{d}/fd", .{pid}), .{ .iterate = true }) catch continue;
+            defer fds.close(sio);
+            var descriptors = fds.iterate();
+            const holds = while (descriptors.next(sio) catch null) |fd| {
+                var target: [64]u8 = undefined;
+                const len = fds.readLink(sio, fd.name, &target) catch continue;
+                if (std.mem.eql(u8, target[0..len], pipe)) break true;
+            } else false;
+            if (!holds) continue;
+            var line: [512]u8 = undefined;
+            const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch line[0..0];
+            for (command) |*byte| if (byte.* == 0) {
+                byte.* = ' ';
+            };
+            try w.print("  pid {d}: {s}\n", .{ pid, std.mem.trimEnd(u8, command, " ") });
+        }
+    }
+
+    /// libproc's view of the processes holding a pipe: a writer's descriptor
+    /// names the read end this process holds as its peer.
+    const Darwin = struct {
+        const list_fds = 1; // PROC_PIDLISTFDS
+        const pipe_info = 6; // PROC_PIDFDPIPEINFO
+        const fd_type_pipe = 6; // PROX_FDTYPE_PIPE
+        const FdInfo = extern struct { fd: i32, type: u32 };
+        /// `struct pipe_fdinfo`: a `proc_fileinfo`, then `pipe_info` with a
+        /// `vinfo_stat` before the two ends' handles.
+        const PipeFdInfo = extern struct {
+            file: [24]u8,
+            stat: [136]u8,
+            handle: u64,
+            peer: u64,
+            status: i32,
+            reserved: i32,
+        };
+        extern "c" fn proc_listallpids(buffer: ?*anyopaque, size: c_int) c_int;
+        extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, size: c_int) c_int;
+        extern "c" fn proc_pidfdinfo(pid: c_int, fd: c_int, flavor: c_int, buffer: ?*anyopaque, size: c_int) c_int;
+
+        fn listHolders(output: std.Io.File, w: *std.Io.Writer) !void {
+            const own = pipeOf(std.c.getpid(), output.handle) orelse return error.PipeUnnamed;
+            var pids: [8192]c_int = undefined;
+            const count = proc_listallpids(&pids, @sizeOf(@TypeOf(pids)));
+            if (count <= 0) return error.ProcessesUnlisted;
+            for (pids[0..@min(@as(usize, @intCast(count)), pids.len)]) |pid| {
+                if (pid == std.c.getpid() or !holds(pid, own.handle)) continue;
+                var arguments: [1024]u8 = undefined;
+                try w.print("  pid {d}: {s}\n", .{ pid, commandLine(pid, &arguments) });
+            }
+        }
+
+        fn holds(pid: c_int, handle: u64) bool {
+            var fds: [512]FdInfo = undefined;
+            const size = proc_pidinfo(pid, list_fds, 0, &fds, @sizeOf(@TypeOf(fds)));
+            if (size <= 0) return false;
+            for (fds[0..@min(@as(usize, @intCast(size)) / @sizeOf(FdInfo), fds.len)]) |fd| {
+                if (fd.type != fd_type_pipe) continue;
+                const pipe = pipeOf(pid, fd.fd) orelse continue;
+                if (pipe.peer == handle) return true;
+            }
+            return false;
+        }
+
+        fn pipeOf(pid: c_int, fd: c_int) ?PipeFdInfo {
+            var info: PipeFdInfo = undefined;
+            if (proc_pidfdinfo(pid, fd, pipe_info, &info, @sizeOf(PipeFdInfo)) != @sizeOf(PipeFdInfo)) return null;
+            return info;
+        }
+
+        /// The process's arguments, from `kern.procargs2`: the argument count,
+        /// the executable's path, then the arguments, each ending in a zero.
+        fn commandLine(pid: c_int, buffer: []u8) []const u8 {
+            var mib = [_]c_int{ std.c.CTL.KERN, std.c.KERN.PROCARGS2, pid };
+            var size: usize = buffer.len;
+            if (std.c.sysctl(&mib, mib.len, buffer.ptr, &size, null, 0) != 0 or size < @sizeOf(c_int)) return "";
+            const argc: usize = @intCast(@max(std.mem.readInt(c_int, buffer[0..@sizeOf(c_int)], .little), 0));
+            var rest = buffer[@sizeOf(c_int)..size];
+            // The executable's path, then the zeros that align the arguments.
+            rest = rest[(std.mem.findScalar(u8, rest, 0) orelse return "")..];
+            rest = rest[(std.mem.findNone(u8, rest, &.{0}) orelse return "")..];
+            var length: usize = 0;
+            var seen: usize = 0;
+            while (seen < argc and length < rest.len) : (seen += 1) {
+                length += (std.mem.findScalar(u8, rest[length..], 0) orelse rest.len - length) + 1;
+            }
+            const line = rest[0..@min(length, rest.len)];
+            for (line) |*byte| if (byte.* == 0) {
+                byte.* = ' ';
+            };
+            return std.mem.trimEnd(u8, line, " ");
+        }
+    };
+
+    /// Windows' exit status whole, read before `wait` closes the process
+    /// handle; elsewhere the status is all in the term.
+    fn waitStatus(child: *std.process.Child) u32 {
+        if (builtin.os.tag != .windows) return 0;
+        const windows = std.os.windows;
+        const process = child.id.?;
+        _ = WaitForSingleObject(process, std.math.maxInt(windows.DWORD)); // INFINITE
+        var code: windows.DWORD = 0;
+        if (GetExitCodeProcess(process, &code) == .FALSE) return 1;
+        return code;
+    }
+
+    /// Ends this process as the tests' process ended: with its exit status,
+    /// or by its signal, so the build reads the tests' ending as its own.
+    /// Held output fails a run that would have passed.
+    fn exitAs(ending: Ending) noreturn {
+        if (builtin.os.tag == .windows) {
+            const status: u32 = if (ending.status == 0 and ending.held) 1 else ending.status;
+            std.os.windows.ntdll.RtlExitUserProcess(status);
+        }
+        switch (ending.term) {
+            .exited => |code| std.process.exit(if (code == 0 and ending.held) 1 else code),
+            .signal => |sig| {
+                const default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
+                std.posix.sigaction(sig, &default, null);
+                var only = std.posix.sigemptyset();
+                std.posix.sigaddset(&only, sig);
+                std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &only, null);
+                // glint-ignore: Z026 -- a signal this process cannot raise ends it below, with the shell's code for that signal
+                std.posix.raise(sig) catch {};
+                std.process.exit(128 +| @as(u8, @truncate(@backingInt(sig))));
+            },
+            .stopped, .unknown => std.process.exit(1),
+        }
+    }
+
+    extern "kernel32" fn WaitForSingleObject(handle: std.os.windows.HANDLE, milliseconds: std.os.windows.DWORD) callconv(.winapi) std.os.windows.DWORD;
+    extern "kernel32" fn GetExitCodeProcess(process: std.os.windows.HANDLE, code: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+};
+
+/// The build's protocol, on streams of the runner's own. Zig hands the runner
+/// the protocol as its stdin and stdout, which every process a test starts
+/// with inherited streams would share: a descendant still running after the
+/// last test holds the build's end open, so the build waits for an ending that
+/// never comes and kills the runner a minute later, outside any test and past
+/// the watchdog (conduit's ThreadSanitizer job); one that writes to its stdout
+/// writes into the protocol. The runner keeps the protocol on streams no
+/// process inherits, and gives the tests an empty stdin and its stderr as
+/// their stdout, where what they and their processes write reaches the build
+/// as a test's output.
+const Protocol = struct {
+    in: std.Io.File,
+    out: std.Io.File,
+
+    fn claim() !Protocol {
+        if (builtin.os.tag == .windows) return claimWindows();
+        const in = try private(std.posix.STDIN_FILENO);
+        const out = try private(std.posix.STDOUT_FILENO);
+        const empty = try std.Io.Dir.cwd().openFile(io, "/dev/null", .{});
+        defer empty.close(io);
+        try std.Io.Threaded.dup2(empty.handle, std.posix.STDIN_FILENO);
+        try std.Io.Threaded.dup2(std.posix.STDERR_FILENO, std.posix.STDOUT_FILENO);
+        return .{ .in = .{ .handle = in, .flags = .{ .nonblocking = false } }, .out = .{ .handle = out, .flags = .{ .nonblocking = false } } };
+    }
+
+    /// A copy of `fd` above the standard streams that closes on exec.
+    fn private(fd: std.posix.fd_t) !std.posix.fd_t {
+        const rc = if (builtin.os.tag == .linux)
+            std.os.linux.fcntl(fd, std.os.linux.F.DUPFD_CLOEXEC, 3)
+        else
+            std.c.fcntl(fd, std.c.F.DUPFD_CLOEXEC, @as(c_int, 3));
+        if (std.posix.errno(rc) != .SUCCESS) return error.ProtocolStream;
+        return @intCast(rc); // safe: a successful fcntl(F_DUPFD_CLOEXEC) returns a descriptor
+    }
+
+    /// On Windows a process starts with what its parent names as its standard
+    /// handles and every inheritable handle: the protocol's handles stop being
+    /// inheritable, the process's standard input becomes the null device and
+    /// its standard output its standard error.
+    fn claimWindows() !Protocol {
+        const windows = std.os.windows;
+        const parameters = windows.peb().ProcessParameters;
+        const in = parameters.hStdInput;
+        const out = parameters.hStdOutput;
+        for ([_]windows.HANDLE{ in, out }) |handle| {
+            if (SetHandleInformation(handle, handle_flag_inherit, 0) == .FALSE) return error.ProtocolStream;
+        }
+        var inherited: windows.SECURITY_ATTRIBUTES = .{ .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES), .lpSecurityDescriptor = null, .bInheritHandle = .TRUE };
+        const empty = CreateFileW(std.unicode.utf8ToUtf16LeStringLiteral("NUL"), generic_read, file_share_read | file_share_write, &inherited, open_existing, 0, null);
+        if (empty == windows.INVALID_HANDLE_VALUE) return error.ProtocolStream;
+        parameters.hStdInput = empty;
+        parameters.hStdOutput = parameters.hStdError;
+        return .{ .in = .{ .handle = in, .flags = .{ .nonblocking = false } }, .out = .{ .handle = out, .flags = .{ .nonblocking = false } } };
+    }
+
+    const handle_flag_inherit = 0x1;
+    const generic_read = 0x80000000;
+    const file_share_read = 0x1;
+    const file_share_write = 0x2;
+    const open_existing = 3;
+    extern "kernel32" fn SetHandleInformation(handle: std.os.windows.HANDLE, mask: std.os.windows.DWORD, flags: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+    extern "kernel32" fn CreateFileW(
+        name: [*:0]const u16,
+        access: std.os.windows.DWORD,
+        share: std.os.windows.DWORD,
+        security: ?*std.os.windows.SECURITY_ATTRIBUTES,
+        disposition: std.os.windows.DWORD,
+        flags: std.os.windows.DWORD,
+        template: ?std.os.windows.HANDLE,
+    ) callconv(.winapi) std.os.windows.HANDLE;
+};
 
 fn metadata(server: *std.zig.Server) !void {
     const a = std.heap.page_allocator;

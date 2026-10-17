@@ -83,6 +83,12 @@ own or a single-threaded build, which otherwise fail the build by name. prefligh
 passes the build runner no `--test-timeout`; one given by hand bounds each test there
 too. `.test_log_level = .info` prints a library's `std.log.info` lines in its tests,
 where Zig's runner prints `.warn` and above. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
+Serving the build, the runner runs the tests in a process of its own and keeps the
+build's streams to itself: the tests get an empty stdin, and their stdout and stderr
+reach the build through it. A process a test started that still holds that output two
+seconds after the tests ended fails the run, named with its arguments on Linux and
+macOS, where the build would otherwise wait for it and kill the runner a minute later
+with no name. A crash's report reaches the build whole either way.
 `-Dci-lint=false` lets the hosted optimization and shard jobs use the source job's
 result; the default local gate always checks sources.
 Compiled caches never skip test execution: each gate runs the test binaries even

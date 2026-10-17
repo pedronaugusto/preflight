@@ -602,6 +602,84 @@ test "the watchdog names the Io teardown of a test that leaves a task running" {
     try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers exceeded 300 ms; phase io_teardown") != null);
 }
 
+test "a process a test leaves holding the tests' output is named at once, and a crash's report still reaches the build" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The leftover outlives the release the runner gives it, and ends on its
+    // own; before the runner kept the tests' output, the build waited for it.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\test "writes to its stdout" {
+        \\    try std.Io.File.stdout().writeStreamingAll(std.testing.io, "a line on the test's stdout\n");
+        \\}
+        \\test "leaves a process" {
+        \\    _ = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "6" } });
+        \\}
+        \\
+    });
+    const left = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!command.succeeded(left));
+    try std.testing.expect(std.mem.find(u8, left.stderr, "a line on the test's stdout") != null);
+    try std.testing.expect(std.mem.find(u8, left.stderr, "processes it started still hold its output") != null);
+    try std.testing.expect(std.mem.find(u8, left.stderr, ": sleep 6") != null);
+    try std.testing.expect(std.mem.find(u8, left.stderr, "failed to respond") == null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\test "leaves a process, then crashes" {
+        \\    _ = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "6" } });
+        \\    @panic("the crash's own words");
+        \\}
+        \\
+    });
+    const crashed = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!command.succeeded(crashed));
+    try std.testing.expect(std.mem.find(u8, crashed.stderr, "the crash's own words") != null);
+    try std.testing.expect(std.mem.find(u8, crashed.stderr, "processes it started still hold its output") != null);
+}
+
+test "the tests' process ends with the runner the build kills" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A timeout given by hand: the build kills the process it started when a
+    // test outlasts it, and the tests run in another.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\test "hangs" {
+        \\    const pid = if (builtin.os.tag == .linux) std.os.linux.getpid() else std.c.getpid();
+        \\    var buffer: [32]u8 = undefined;
+        \\    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = "hung.pid", .data = try std.mem.print(&buffer, "{d}", .{pid}) });
+        \\    try std.Io.sleep(std.testing.io, .fromSeconds(60), .awake);
+        \\}
+        \\
+    });
+    const hung = try gate(a, tmp.dir, &.{ "--test-timeout", "3s" });
+    try std.testing.expect(!command.succeeded(hung));
+    var buffer: [32]u8 = undefined;
+    const pid = try std.fmt.parseInt(std.posix.pid_t, try tmp.dir.readFile(io, "hung.pid", &buffer), 10);
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromSeconds(10), .clock = .awake });
+    while (std.posix.kill(pid, @fromBackingInt(@intCast(0)))) |_| {
+        if (std.Io.Clock.Timestamp.compare(.now(io, .awake), .gte, deadline)) {
+            // glint-ignore: Z026 -- the process may end on its own first; the test fails either way
+            std.posix.kill(pid, .KILL) catch {};
+            return error.TestsProcessOutlivedTheRunner;
+        }
+        try std.Io.sleep(io, .fromMilliseconds(20), .awake);
+    } else |err| try std.testing.expectEqual(error.ProcessNotFound, err);
+}
+
 test "the consumer check builds the package as a dependency with nothing fetched" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

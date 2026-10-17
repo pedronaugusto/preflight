@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A declared job's `shards` splits its test step over that many jobs on each host (`<name> shard i/n`), each running the share `PREFLIGHT_SHARD` names, balanced as the hosts' test jobs are: a sanitizer run of a suite that outgrew one job's time limit.
+
 ## [0.6.2] - 2026-10-15
 
 ### Changed

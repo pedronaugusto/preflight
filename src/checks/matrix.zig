@@ -137,7 +137,11 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
 ///
 ///     {"name": "conformance", "step": "test", "directory": "conformance",
 ///      "os": ["ubuntu-latest", "macos-latest"], "tiers": ["merge", "release"],
-///      "args": ["-Dsuite=full"], "setup": true, "timeout": 20}
+///      "args": ["-Dsuite=full"], "setup": true, "timeout": 20, "shards": 2}
+///
+/// `shards` splits a test step over that many jobs per host, as the hosts' own test
+/// jobs are split: each runs the share `PREFLIGHT_SHARD` names, balanced by the durations
+/// the package records.
 fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.ArrayList(Job)) !void {
     const declared = src.get(config, "jobs");
     if (declared == .null) return;
@@ -146,7 +150,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
     for (declared.array.items) |entry| {
         if (entry != .object) return error.InvalidDeclaredJob;
         for (entry.object.keys()) |key_name| {
-            for ([_][]const u8{ "name", "step", "os", "tiers", "args", "directory", "setup", "timeout" }) |known| {
+            for ([_][]const u8{ "name", "step", "os", "tiers", "args", "directory", "setup", "timeout", "shards" }) |known| {
                 if (std.mem.eql(u8, key_name, known)) break;
             } else {
                 problem = key_name;
@@ -170,6 +174,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
         }
         const setup = src.get(entry, "setup");
         if (setup != .null and setup != .bool and setup != .string) return error.InvalidDeclaredJob;
+        const count = shardCount(src.get(entry, "shards")) catch return error.InvalidDeclaredJob;
         const hosted = src.get(entry, "os");
         const systems: []const src.Value = if (hosted == .null) &.{.{ .string = hosts[0] }} else if (hosted == .array and hosted.array.items.len != 0) hosted.array.items else return error.InvalidDeclaredJob;
         for (systems) |system| {
@@ -178,19 +183,24 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
                 if (std.mem.eql(u8, known, os)) break;
             } else return error.InvalidDeclaredJob;
             if (!wanted) continue;
-            var job: Job = .{
-                .os = os,
-                .name = if (systems.len > 1) try a.print("{s} ({s})", .{ name, os }) else name,
-                .step = step,
-                .args = std.mem.trimStart(u8, try buildArgs(a, src.get(entry, "args")), " "),
-                .setup = setup != .bool or setup.bool,
-                .prepare = if (setup == .string) setup.string else "",
-                .job_timeout = try minutes(entry, "timeout"),
-                .directory = directory,
-                .declared = true,
-            };
-            job.cache_key = try key(a, job);
-            try jobs.append(a, job);
+            const hosted_name = if (systems.len > 1) try a.print("{s} ({s})", .{ name, os }) else name;
+            for (0..count) |i| {
+                const shard = try shardName(a, i, count);
+                var job: Job = .{
+                    .os = os,
+                    .name = if (count > 1) try a.print("{s} shard {s}", .{ hosted_name, shard }) else hosted_name,
+                    .step = step,
+                    .args = std.mem.trimStart(u8, try buildArgs(a, src.get(entry, "args")), " "),
+                    .shard = shard,
+                    .setup = setup != .bool or setup.bool,
+                    .prepare = if (setup == .string) setup.string else "",
+                    .job_timeout = try minutes(entry, "timeout"),
+                    .directory = directory,
+                    .declared = true,
+                };
+                job.cache_key = try key(a, job);
+                try jobs.append(a, job);
+            }
         }
     }
 }
@@ -1065,6 +1075,19 @@ test "a package's own jobs join the tiers they name, on the hosts they name, wit
         try std.testing.expectEqualStrings("reports-setup", job.prepare);
     };
     try std.testing.expect(reports);
+    // A declared test step split in shards is one job per shard, each naming its share.
+    const sharded = (try std.json.parseFromSlice(src.Value, a,
+        \\{"jobs":[{"name":"ThreadSanitizer","step":"test","args":["-Dthread-sanitizer=true"],"tiers":["release"],"shards":3}]}
+    , .{})).value;
+    var shards: std.ArrayList([]const u8) = .empty;
+    for (try plan(a, sharded, .release)) |job| if (job.declared) {
+        try std.testing.expectEqualStrings("test", job.step);
+        try std.testing.expectEqualStrings("-Dthread-sanitizer=true", job.args);
+        try std.testing.expectEqualStrings(job.shard, job.name["ThreadSanitizer shard ".len..]);
+        try shards.append(a, job.shard);
+    };
+    try std.testing.expectEqual(@as(usize, 3), shards.items.len);
+    for (shards.items, [_][]const u8{ "1/3", "2/3", "3/3" }) |got, want| try std.testing.expectEqualStrings(want, got);
     // Declared jobs run where the gate does: natively, never replayed from a link.
     var linked = config;
     try linked.object.put(a, "compile_once", .{ .bool = true });
@@ -1081,6 +1104,8 @@ test "a package's own jobs join the tiers they name, on the hosts they name, wit
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"tiers\":[\"nightly\"]}]}",
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"directory\":\"../up\"}]}",
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"timeout\":0}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"shards\":0}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"shards\":\"2\"}]}",
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"needs\":\"gate\"}]}",
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\"},{\"name\":\"x\",\"step\":\"u\"}]}",
     }) |bad| try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .merge)));

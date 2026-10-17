@@ -440,7 +440,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   {"jobs": [
     {"name": "conformance", "step": "test", "directory": "conformance", "os": ["ubuntu-latest", "macos-latest"]},
     {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["merge", "release"]},
-    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["fast", "merge", "release"], "setup": false, "timeout": 30}
+    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["fast", "merge", "release"], "setup": false, "timeout": 30},
+    {"name": "ThreadSanitizer", "step": "test", "args": ["-Dthread-sanitizer=true"], "tiers": ["release"], "shards": 3}
   ]}
   ```
 
@@ -448,7 +449,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   flags (the package's `build_args` are its own builds', not a declared job's); `directory` is
   relative to the repository and defaults to the package; `setup` runs the package's
   `setup_step` (true, the default), nothing (false) or a step of the job's own; `timeout` is
-  in minutes. A declared job has the gate's setup, caches and toolchain, and a landing waits for
+  in minutes; `shards` splits a test step over that many jobs on each host, each running the
+  share `PREFLIGHT_SHARD` names, as the hosts' own test jobs are split. A declared job has the gate's setup, caches and toolchain, and a landing waits for
   it. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
 - `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,

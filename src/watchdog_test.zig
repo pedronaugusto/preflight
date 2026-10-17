@@ -2,7 +2,7 @@
 //! the watch, and only the whole bound expires it.
 const std = @import("std");
 const Clock = @import("shakedown").Clock;
-const watchdog = @import("watchdog.zig");
+const watchdog = @import("preflight_watchdog");
 
 const Watch = struct {
     done: std.atomic.Value(u32) = .init(0),

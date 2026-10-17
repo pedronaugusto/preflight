@@ -72,11 +72,11 @@ pub fn dev(b: *std.Build, _: type) void {
     const fake = b.addExecutable(.{ .name = "gh", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/gh.zig"), .target = target, .optimize = .debug }) });
     options.addOptionPath("gh", fake.getEmittedBin());
     tests.root_module.addOptions("test_options", options);
-    // The gate below gives the suite preflight's runner, as it does a
-    // consumer's tests; the order module and the watchdog the runner
-    // imports run their own tests beside it.
+    // The gate below gives every test here preflight's runner, as it does a
+    // consumer's tests: the order module's and the watchdog's tests import
+    // them as the runner does, so they run under it too.
     const suite = &b.addRunArtifact(tests).step;
-    const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = package.path("src/order.zig"), .target = target, .optimize = .debug }) });
+    const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = package.path("src/order_test.zig"), .target = target, .optimize = .debug }), .filters = test_filters });
     const order_run = b.addRunArtifact(order);
     test_step.dependOn(suite);
     test_step.dependOn(&order_run.step);
@@ -97,7 +97,7 @@ pub fn dev(b: *std.Build, _: type) void {
     b.step("profile-tests", "Native protocol fuzzer and concurrent tests").dependOn(&b.addRunArtifact(profile).step);
     // preflight gates its own sources with the checks it ships: the preflight
     // the gate finds among this build's dependencies is this package.
-    ci.addCi(b, package, .{ .tests = suite, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
+    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
         .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" }, .{ .name = "configuration", .source = "bench/configuration.zig" } },
         .imports = benchImports,
         .target = target,
@@ -109,8 +109,6 @@ pub fn dev(b: *std.Build, _: type) void {
     check.dependOn(&executable.step);
     const verify = b.step("verify", "Check format, sources, checker regressions and the hosted runner");
     verify.dependOn(&b.top_level_steps.get("ci").?.step);
-    verify.dependOn(&order_run.step);
-    verify.dependOn(watch_run);
     verify.dependOn(&b.addFmt(.{ .paths = package.pathList(&.{"."}), .check = true }).step);
     verify.dependOn(&executable.step);
 }

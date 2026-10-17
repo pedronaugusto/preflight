@@ -16,13 +16,14 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "structure runner", .patterns = &.{ "src/structure.zig", "src/layers_default.zig" } },
     .{ .name = "commands", .patterns = &.{"src/main.zig"} },
 };
-pub const required = [_][]const u8{ "src/main.zig", "src/structure.zig", "src/build.zig", "src/runner.zig", "src/order.zig", "src/timings.zig" };
+pub const required = [_][]const u8{ "src/main.zig", "src/structure.zig", "src/build.zig", "src/runner.zig", "src/order.zig", "src/timings.zig", "src/watchdog.zig" };
 /// Roots a build compiles; nothing imports them.
 pub const entries: []const []const u8 = &.{ "src/structure.zig", "src/build.zig", "src/runner.zig", "src/layers_default.zig", "src/vm/guest.zig", "src/vm/host.zig" };
 /// The modules the build helper injects into a package's test binaries.
 pub const modules: []const gantry.NamedModule = &.{
     .{ .name = "preflight_order", .path = "src/order.zig" },
     .{ .name = "preflight_timings", .path = "src/timings.zig" },
+    .{ .name = "preflight_watchdog", .path = "src/watchdog.zig" },
     .{ .name = "checks", .path = "src/checks.zig" },
     .{ .name = "facts", .path = "src/facts.zig" },
 };

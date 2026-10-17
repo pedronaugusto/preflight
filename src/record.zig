@@ -95,6 +95,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         // The runner and its modules link std alone, so the artifact holds no
         // package it did not ask for.
         artifact.root_module.addAnonymousImport("preflight_order", .{ .root_source_file = context.pkg.path("src/order.zig") });
+        artifact.root_module.addAnonymousImport("preflight_watchdog", .{ .root_source_file = context.pkg.path("src/watchdog.zig") });
         const runner = b.addOptions();
         // The generated options schema is raw u64, validated by TestTimeout.duration and
         // wrapped by the runner.

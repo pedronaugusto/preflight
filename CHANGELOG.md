@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Breaking
 
 - A hosted job, and `gate`, refuse a test the step runs without preflight's runner, naming it: one the build gave its tests after `addCi` read them, which ran with no watchdog, shard, timing record or riscv64 machine (conduit's `containment-tests` ran on the riscv64 leg's host, where it cannot). Add it to the tests before `addCi`.
+- The runner takes its watchdog as a module of the test, `preflight_watchdog`, as it takes `preflight_order`; preflight's own order and watchdog tests import both so and run under the runner, as the refusal above asks.
 
 ### Added
 

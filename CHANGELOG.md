@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `vm_packages` in `addCi`'s configuration: the Alpine packages a package's tests need on the riscv64 machine (`-Dci-vm`), such as `git` or `openssl`. Alpine's `apk` installs them on the machine when the build makes it, from the release's own repositories over QEMU's user network, verified by the release's own keys, and the boot image carries them; a build that runs nothing on the machine fetches nothing.
+
 ## [0.8.1] - 2026-10-17
 
 ### Changed

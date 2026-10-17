@@ -361,6 +361,13 @@ code, or its signal. Its standard streams are pipes, as on any host. The watchdo
 bound is ten times as long there. The release tier's riscv64 job runs its Debug suite
 this way.
 
+The machine is Alpine's minimal system. Tests that need more of it, such as `git` or
+`openssl`, name Alpine's packages in `vm_packages`; Alpine's own `apk` installs them
+on the machine, over QEMU's user network, when the build first makes it. They come
+from the release's repositories, verified by its signing keys. Alpine keeps only the
+newest build of a package there, so a fresh cache takes the release's current build,
+as a hosted runner's tools are its image's.
+
 ### Hosted gate
 
 The gate has four tiers, each holding everything the one before it checks:

@@ -40,6 +40,12 @@ pub const Config = struct {
     /// run fuzzes, else `test`, in a package that declares shakedown; one that
     /// declares none has no `fuzz` step. Naming a step requires shakedown.
     fuzz_step: ?[]const u8 = null,
+    /// Alpine Linux packages the tests need on the riscv64 machine (`-Dci-vm`)
+    /// beside its minimal system, by Alpine's names (`git`, `openssl`). Alpine's
+    /// `apk` installs them on the machine when the build makes it, from the
+    /// release's own repositories, verified by the release's own keys; a build
+    /// that runs nothing on the machine fetches nothing.
+    vm_packages: []const []const u8 = &.{},
 };
 
 pub const Bench = bench.Bench;
@@ -251,7 +257,7 @@ const Steps = struct {
         configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
         steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig);
         // Last, so that every run the gate added is in front of the machine too.
-        if (steps.vm) vm.add(b, config.tests, pkg, host);
+        if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
     }
 
     fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {

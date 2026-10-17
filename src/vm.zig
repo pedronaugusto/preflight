@@ -15,8 +15,9 @@ pub const slowdown = 10;
 
 /// Puts the machine in front of each run under `tests` of an artifact built for
 /// riscv64 Linux. `pkg` is the preflight whose sources and pins the machine
-/// comes from. Called after every other part of the gate has added its runs.
-pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Build.ResolvedTarget) void {
+/// comes from; `packages` are the Alpine packages installed on it beside its
+/// minimal system. Called after every other part of the gate has added its runs.
+pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Build.ResolvedTarget, packages: []const []const u8) void {
     // Fetched on first use: a build that asks for the machine configures again once they land.
     const alpine = pkg.dependencyLazy("alpine_riscv64", .{}) catch return;
     const rootfs = pkg.dependencyLazy("alpine_riscv64_rootfs", .{}) catch return;
@@ -35,7 +36,19 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Bui
     boot.addDirectoryArg2(alpine.path("."), .{});
     boot.addDirectoryArg2(rootfs.path("."), .{});
     boot.addArtifactArg2(guest, .{});
-    const machine: Machine = .{ .runner = runner, .kernel = boot.addOutputFileArg2("Image", .{}), .initrd = boot.addOutputFileArg2("initrd.cpio", .{}) };
+    const kernel = boot.addOutputFileArg2("Image", .{});
+    const base = boot.addOutputFileArg2("initrd.cpio", .{});
+    const initrd = if (packages.len == 0) base else installed: {
+        const install = b.addRunArtifact(runner);
+        install.addArg("install");
+        install.addFileArg(kernel);
+        install.addFileArg(base);
+        install.addDirectoryArg2(rootfs.path("."), .{});
+        const out = install.addOutputFileArg2("initrd-packages.cpio", .{});
+        install.addArgs(packages);
+        break :installed out;
+    };
+    const machine: Machine = .{ .runner = runner, .kernel = kernel, .initrd = initrd };
     var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
     visit(b, tests, machine, &seen);
 }

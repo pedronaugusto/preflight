@@ -5,9 +5,11 @@
 //!
 //! `preflight-vm image <alpine> <rootfs> <init> <kernel> <initrd>` makes the
 //! boot image once per build, from Alpine Linux's boot files and root file
-//! system and the machine's first process (vm/guest.zig). `preflight-vm run
-//! <kernel> <initrd> <program> [args...]` runs one program on it: the build
-//! puts it in front of each run of a riscv64 test or program.
+//! system and the machine's first process (vm/guest.zig). `preflight-vm install
+//! <kernel> <initrd> <rootfs> <initrd-out> <package>...` adds the Alpine packages
+//! a package's tests need to it, installed by Alpine's own `apk` on the machine.
+//! `preflight-vm run <kernel> <initrd> <program> [args...]` runs one program on
+//! it: the build puts it in front of each run of a riscv64 test or program.
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -15,6 +17,7 @@ const cpio = @import("cpio.zig");
 
 const usage =
     \\usage: preflight-vm image <alpine> <rootfs> <init> <kernel-out> <initrd-out>
+    \\       preflight-vm install <kernel> <initrd> <rootfs> <initrd-out> <package>...
     \\       preflight-vm run <kernel> <initrd> <program> [args...]
     \\
 ;
@@ -33,6 +36,7 @@ pub fn main(init: std.process.Init) !u8 {
         try image(io, gpa, .{ .alpine = args[2], .rootfs = args[3], .init = args[4], .kernel = args[5], .initrd = args[6] });
         return 0;
     }
+    if (args.len >= 7 and std.mem.eql(u8, args[1], "install")) return install(io, gpa, .{ .kernel = args[2], .initrd = args[3], .rootfs = args[4], .out = args[5] }, args[6..]);
     if (args.len >= 5 and std.mem.eql(u8, args[1], "run")) return run(io, gpa, init.environ_map, args[2], args[3], args[4..]);
     try Io.File.stderr().writeStreamingAll(io, usage);
     return 2;
@@ -62,7 +66,7 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
 
     var rootfs = try cwd.openDir(io, paths.rootfs, .{ .iterate = true });
     defer rootfs.close(io);
-    try addTree(io, gpa, &archive, rootfs);
+    try addTree(io, gpa, &archive, rootfs, &.{}, null);
 
     const initramfs = try gunzip(gpa, try alpine.readFileAlloc(io, "boot/initramfs-lts", gpa, limit));
     var modules: cpio.Reader = .{ .bytes = initramfs };
@@ -79,16 +83,30 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     try file_writer.interface.flush();
 }
 
-/// Every member of the root file system, parents before what they hold. The
-/// package cache keeps no owners and only the executable bit, so files are
-/// root's, 0755 or 0644.
-fn addTree(io: Io, gpa: std.mem.Allocator, archive: *cpio.Writer, root: Io.Dir) !void {
+/// Every member of a root file system, parents before what they hold, but those
+/// under `leave`. The package cache keeps no owners and only the executable bit,
+/// so files are root's, 0755 or 0644. A tree unpacked over `over` keeps that
+/// tree's links where it has a directory: what it holds goes through the link.
+fn addTree(io: Io, gpa: std.mem.Allocator, archive: *cpio.Writer, root: Io.Dir, leave: []const []const u8, over: ?Io.Dir) !void {
     var walker = try root.walk(gpa);
     defer walker.deinit();
     var link_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     while (try walker.next(io)) |entry| {
+        if (leftOut(entry.path, leave)) {
+            if (entry.kind == .directory) walker.leave(io);
+            continue;
+        }
         switch (entry.kind) {
-            .directory => try archive.add(.{ .name = entry.path, .kind = .directory, .mode = 0o755 }),
+            .directory => {
+                if (over) |base| {
+                    const stat: ?Io.File.Stat = base.statFile(io, entry.path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+                        error.FileNotFound, error.NotDir => null,
+                        else => |e| return e,
+                    };
+                    if (stat) |found| if (found.kind == .sym_link) continue;
+                }
+                try archive.add(.{ .name = entry.path, .kind = .directory, .mode = 0o755 });
+            },
             .sym_link => {
                 const len = try root.readLink(io, entry.path, &link_buffer);
                 try archive.add(.{ .name = entry.path, .kind = .symlink, .mode = 0o777, .data = link_buffer[0..len] });
@@ -115,10 +133,7 @@ fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
 fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, kernel: []const u8, initrd: []const u8, argv: []const []const u8) !u8 {
     const cwd = Io.Dir.cwd();
     const here = try cwd.realPathFileAlloc(io, ".", gpa);
-    var random: [8]u8 = undefined;
-    io.random(&random);
-    const run_path = try gpa.print("{s}/.zig-cache/tmp/preflight-vm-{x}", .{ here, random });
-    try cwd.createDirPath(io, run_path);
+    const run_path = try runDirectory(io, gpa, here);
     // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the run's ending is the result
     defer cwd.deleteTree(io, run_path) catch {};
     var run_dir = try cwd.openDir(io, run_path, .{});
@@ -160,11 +175,101 @@ fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, 
     // The machine runs the program as this user, as the build does here.
     try run_dir.writeFile(io, .{ .sub_path = "user", .data = try gpa.print("{d} {d}\n", .{ std.posix.system.getuid(), std.posix.system.getgid() }) });
 
+    switch (try boot(io, gpa, kernel, initrd, run_path, .offline)) {
+        .exited => |code| return code,
+        .signal => |sig| raiseOwn(sig),
+    }
+}
+
+const InstallPaths = struct { kernel: []const u8, initrd: []const u8, rootfs: []const u8, out: []const u8 };
+
+/// Where the machine's `apk` installs, on the run's share.
+const install_root = "/run/preflight/root";
+
+/// The boot image with `packages` added: Alpine's `apk` installs them and what they
+/// need on the machine, from the release's own repositories over QEMU's user
+/// network, into a root on the run's share, trusting the release's own signing
+/// keys; that root follows the image as a second archive, which the kernel
+/// unpacks over the first. Alpine keeps only the newest build of a package in a
+/// release's repositories, so the packages are the release's current ones when
+/// the image is made, as a hosted runner's tools are its image's.
+fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []const []const u8) !u8 {
+    const cwd = Io.Dir.cwd();
+    const here = try cwd.realPathFileAlloc(io, ".", gpa);
+    const run_path = try runDirectory(io, gpa, here);
+    // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the image is the result
+    defer cwd.deleteTree(io, run_path) catch {};
+    var run_dir = try cwd.openDir(io, run_path, .{});
+    defer run_dir.close(io);
+
+    // apk reads the keys it trusts and the repositories it installs from under its root.
+    var rootfs = try cwd.openDir(io, paths.rootfs, .{});
+    defer rootfs.close(io);
+    try run_dir.createDirPath(io, "root/etc/apk/keys");
+    var keys = try rootfs.openDir(io, "etc/apk/keys", .{ .iterate = true });
+    defer keys.close(io);
+    var key_files = keys.iterate();
+    while (try key_files.next(io)) |key| {
+        if (key.kind != .file) continue;
+        const data = try keys.readFileAlloc(io, key.name, gpa, .limited(64 * 1024));
+        try run_dir.writeFile(io, .{ .sub_path = try gpa.print("root/etc/apk/keys/{s}", .{key.name}), .data = data });
+    }
+    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = try rootfs.readFileAlloc(io, "etc/apk/repositories", gpa, .limited(64 * 1024)) });
+
+    var guest_argv: std.ArrayList(u8) = .empty;
+    for ([_][]const u8{ "/sbin/apk", "add", "--root", install_root, "--initdb", "--usermode", "--no-scripts", "--no-cache", "--no-progress" }) |arg| try appendEntry(gpa, &guest_argv, arg);
+    for (packages) |package| try appendEntry(gpa, &guest_argv, package);
+    try run_dir.writeFile(io, .{ .sub_path = "argv", .data = guest_argv.items });
+    for ([_][]const u8{ "environ", "binds", "scratch" }) |name| try run_dir.writeFile(io, .{ .sub_path = name, .data = "" });
+    try run_dir.writeFile(io, .{ .sub_path = "cwd", .data = "/" });
+    // As the build's user, who owns the share: apk's user mode leaves owners alone,
+    // which the share could not keep.
+    try run_dir.writeFile(io, .{ .sub_path = "user", .data = try gpa.print("{d} {d}\n", .{ std.posix.system.getuid(), std.posix.system.getgid() }) });
+
+    switch (try boot(io, gpa, paths.kernel, paths.initrd, run_path, .online)) {
+        .exited => |code| if (code != 0) {
+            try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: apk could not install {s} (exit {d})\n", .{ try std.mem.join(gpa, " ", packages), code }));
+            return code;
+        },
+        .signal => |sig| raiseOwn(sig),
+    }
+
+    const out = try cwd.createFile(io, paths.out, .{});
+    defer out.close(io);
+    var buffer: [64 * 1024]u8 = undefined;
+    var file_writer = out.writer(io, &buffer);
+    try file_writer.interface.writeAll(try cwd.readFileAlloc(io, paths.initrd, gpa, .limited(1024 * 1024 * 1024)));
+    var archive: cpio.Writer = .{ .out = &file_writer.interface };
+    var root = try run_dir.openDir(io, "root", .{ .iterate = true });
+    defer root.close(io);
+    // The package database stays the image's own: these files are tools for tests.
+    try addTree(io, gpa, &archive, root, &.{ "etc/apk", "lib/apk", "var/cache/apk" }, rootfs);
+    try archive.finish();
+    try file_writer.interface.flush();
+    return 0;
+}
+
+/// A scratch directory for one boot, shared with the machine as `run`.
+fn runDirectory(io: Io, gpa: std.mem.Allocator, here: []const u8) ![]const u8 {
+    var random: [8]u8 = undefined;
+    io.random(&random);
+    const run_path = try gpa.print("{s}/.zig-cache/tmp/preflight-vm-{x}", .{ here, random });
+    try Io.Dir.cwd().createDirPath(io, run_path);
+    return run_path;
+}
+
+/// Whether the machine reaches the network: only to install packages.
+const Network = enum { offline, online };
+
+/// Boots the machine on the run described in `run_path` and returns how its
+/// program ended.
+fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, initrd: []const u8, run_path: []const u8, network: Network) !Ending {
+    const cwd = Io.Dir.cwd();
     const cpus = @min(std.Thread.getCpuCount() catch 1, max_cpus);
     const console = try gpa.print("file:{s}/console", .{run_path});
     const status_path = try gpa.print("{s}/status", .{run_path});
     const share = try gpa.print("local,id=run,path={s},security_model=none", .{run_path});
-    const qemu_argv = [_][]const u8{
+    const machine_argv = [_][]const u8{
         qemu,                                       "-machine",                                  "virt",                                     "-cpu",                              "rv64",
         "-smp",                                     try gpa.print("{d}", .{cpus}),               "-m",                                       memory,                              "-nodefaults",
         "-display",                                 "none",                                      "-no-reboot",                               "-bios",                             "default",
@@ -177,7 +282,16 @@ fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, 
         "-device",                                  "virtserialport,chardev=status,name=status", "-fsdev",                                   share,                               "-device",
         "virtio-9p-device,fsdev=run,mount_tag=run", "-fsdev",                                    "local,id=host,path=/,security_model=none", "-device",                           "virtio-9p-device,fsdev=host,mount_tag=host",
     };
-    var child = std.process.spawn(io, .{ .argv = &qemu_argv, .stdin = .pipe, .stdout = .inherit, .stderr = .inherit }) catch |err| {
+    // QEMU's user network: the machine is 10.0.2.15 behind a gateway at 10.0.2.2
+    // and a resolver at 10.0.2.3, which the first process sets up when told to.
+    const network_argv = [_][]const u8{ "-netdev", "user,id=net", "-device", "virtio-net-device,netdev=net" };
+    const online_argv = machine_argv ++ network_argv;
+    const qemu_argv: []const []const u8 = switch (network) {
+        .offline => &machine_argv,
+        .online => &online_argv,
+    };
+    if (network == .online) try cwd.writeFile(io, .{ .sub_path = try gpa.print("{s}/network", .{run_path}), .data = "" });
+    var child = std.process.spawn(io, .{ .argv = qemu_argv, .stdin = .pipe, .stdout = .inherit, .stderr = .inherit }) catch |err| {
         try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: starting {s}: {t}\n", .{ qemu, err }));
         return err;
     };
@@ -188,14 +302,20 @@ fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, 
     const term = try child.wait(io);
 
     const status = cwd.readFileAlloc(io, status_path, gpa, .limited(256)) catch "";
-    if (parseStatus(status)) |ending| switch (ending) {
-        .exited => |code| return code,
-        .signal => |sig| raiseOwn(sig),
-    };
+    if (parseStatus(status)) |ending| return ending;
     try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: the machine ended ({any}) without its program's status \"{s}\"; its console:\n", .{ term, std.mem.trimEnd(u8, status, "\n") }));
     const log = cwd.readFileAlloc(io, try gpa.print("{s}/console", .{run_path}), gpa, .limited(16 * 1024 * 1024)) catch "";
     try Io.File.stderr().writeStreamingAll(io, log[log.len -| 8192..]);
-    return 1;
+    return error.MachineFailed;
+}
+
+/// Whether `path` is one of `leave` or lies under one.
+fn leftOut(path: []const u8, leave: []const []const u8) bool {
+    for (leave) |prefix| {
+        if (std.mem.eql(u8, path, prefix)) return true;
+        if (path.len > prefix.len and std.mem.startsWith(u8, path, prefix) and path[prefix.len] == '/') return true;
+    }
+    return false;
 }
 
 fn appendEntry(gpa: std.mem.Allocator, list: *std.ArrayList(u8), entry: []const u8) !void {
@@ -252,6 +372,15 @@ fn raiseOwn(sig: u32) noreturn {
         std.posix.raise(signal) catch {};
     }
     std.process.exit(@truncate(128 +% sig)); // safe: an exit code is a byte, as a shell takes 128 + a signal
+}
+
+test "a path is left out when it is one of those named or lies under one" {
+    const leave = [_][]const u8{ "etc/apk", "lib/apk" };
+    try std.testing.expect(leftOut("etc/apk", &leave));
+    try std.testing.expect(leftOut("etc/apk/keys/a.pub", &leave));
+    try std.testing.expect(!leftOut("etc/apk-tools", &leave));
+    try std.testing.expect(!leftOut("etc", &leave));
+    try std.testing.expect(!leftOut("usr/bin/git", &leave));
 }
 
 test "the first process's status reads back as an ending" {

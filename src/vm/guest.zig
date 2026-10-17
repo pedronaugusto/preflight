@@ -11,7 +11,8 @@
 //!
 //! The run is described by the host (vm/host.zig) in files on the `run` share:
 //! `argv`, `environ`, `binds` (each machine path, then the host's resolved
-//! path) and `scratch`, each a list of NUL-terminated strings, and `cwd`. The program's stdin and stdout are the `io` port, its
+//! path) and `scratch`, each a list of NUL-terminated strings, and `cwd`; a
+//! `network` file asks for QEMU's user network, which only an install has. The program's stdin and stdout are the `io` port, its
 //! stderr the `err` port, and `status` takes `exited N` or `signal N`.
 const std = @import("std");
 const linux = std.os.linux;
@@ -22,6 +23,8 @@ const Io = std.Io;
 const boot_modules = [_][]const u8{ "virtio_mmio", "virtio_console", "loop", "squashfs" };
 /// From the full module tree: 9p over virtio, which carries the host's files.
 const share_modules = [_][]const u8{ "9pnet_virtio", "9p" };
+/// From the full module tree, for an install: the network device.
+const network_modules = [_][]const u8{"virtio_net"};
 /// The full module tree, a squashfs image the boot image carries.
 const module_image = "/preflight/modules.squashfs";
 const module_mount = "/run/modules";
@@ -60,6 +63,10 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try loadModules(io, gpa, full_tree, &share_modules);
 
     try mount9p("run", run_mount);
+    if (exists(io, run_mount ++ "/network")) {
+        try loadModules(io, gpa, full_tree, &network_modules);
+        try networkUp(io);
+    }
     const argv = try readList(io, gpa, run_mount ++ "/argv");
     const environ = try readList(io, gpa, run_mount ++ "/environ");
     const binds = try readList(io, gpa, run_mount ++ "/binds");
@@ -133,6 +140,71 @@ fn loopbackUp() !void {
     @memcpy(request.ifrn.name[0..2], "lo");
     request.ifru.flags = .{ .UP = true, .LOOPBACK = true, .RUNNING = true };
     try check(linux.ioctl(fd, linux.SIOCSIFFLAGS, @intFromPtr(&request)), error.LoopbackUp); // safe: ioctl takes the request by address
+}
+
+/// QEMU's user network on the first Ethernet device: the machine at 10.0.2.15/24,
+/// its gateway at 10.0.2.2 and its resolver at 10.0.2.3, as QEMU always places them.
+fn networkUp(io: Io) !void {
+    const rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC, 0);
+    if (linux.errno(rc) != .SUCCESS) return error.NetworkSocket;
+    const fd: linux.fd_t = @intCast(rc); // safe: a successful socket call returns a descriptor
+    defer _ = linux.close(fd); // safe: closing a socket only we hold
+    var request: linux.ifreq = std.mem.zeroes(linux.ifreq);
+    @memcpy(request.ifrn.name[0..4], "eth0");
+    request.ifru.addr = inet(.{ 10, 0, 2, 15 });
+    // The device registers as its driver probes it; wait for it as for a device node.
+    var tries: usize = 0;
+    while (true) : (tries += 1) {
+        const set = linux.ioctl(fd, linux.SIOCSIFADDR, @intFromPtr(&request)); // safe: ioctl takes the request by address
+        switch (linux.errno(set)) {
+            .SUCCESS => break,
+            .NODEV => if (tries == 1000) return error.NetworkMissing,
+            else => |e| {
+                say("eth0 address: {t}", .{e});
+                return error.NetworkAddress;
+            },
+        }
+        try io.sleep(.fromMilliseconds(10), .awake);
+    }
+    request.ifru.netmask = inet(.{ 255, 255, 255, 0 });
+    try check(linux.ioctl(fd, linux.SIOCSIFNETMASK, @intFromPtr(&request)), error.NetworkMask); // safe: ioctl takes the request by address
+    request.ifru.flags = .{ .UP = true, .RUNNING = true };
+    try check(linux.ioctl(fd, linux.SIOCSIFFLAGS, @intFromPtr(&request)), error.NetworkUp); // safe: ioctl takes the request by address
+    var route: Route = .{ .gateway = inet(.{ 10, 0, 2, 2 }), .flags = route_up | route_gateway };
+    try check(linux.ioctl(fd, linux.SIOCADDRT, @intFromPtr(&route)), error.NetworkRoute); // safe: ioctl takes the route by address
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = "/etc/resolv.conf", .data = "nameserver 10.0.2.3\n" });
+}
+
+/// Linux's `struct rtentry`, for SIOCADDRT: a default route has every address
+/// but its gateway's zero.
+const Route = extern struct {
+    pad1: c_ulong = 0,
+    destination: linux.sockaddr = inet(.{ 0, 0, 0, 0 }),
+    gateway: linux.sockaddr,
+    mask: linux.sockaddr = inet(.{ 0, 0, 0, 0 }),
+    flags: c_ushort,
+    pad2: c_short = 0,
+    pad3: c_ulong = 0,
+    pad4: ?*anyopaque = null,
+    metric: c_short = 0,
+    device: ?[*:0]u8 = null,
+    mtu: c_ulong = 0,
+    window: c_ulong = 0,
+    irtt: c_ushort = 0,
+};
+const route_up = 0x1;
+const route_gateway = 0x2;
+
+/// An IPv4 address with no port, as `struct sockaddr_in` lays it out.
+fn inet(address: [4]u8) linux.sockaddr {
+    var data: [14]u8 = @splat(0);
+    data[2..6].* = address;
+    return .{ .family = linux.AF.INET, .data = data };
+}
+
+fn exists(io: Io, path: []const u8) bool {
+    Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
 }
 
 /// Loads `names` and what they depend on, from `tree`'s `modules.dep`, each once;

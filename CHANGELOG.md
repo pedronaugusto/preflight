@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-17
+
 ### Breaking
 
 - A hosted job, and `gate`, refuse a test the step runs without preflight's runner, naming it: one the build gave its tests after `addCi` read them, which ran with no watchdog, shard, timing record or riscv64 machine (conduit's `containment-tests` ran on the riscv64 leg's host, where it cannot). Add it to the tests before `addCi`.

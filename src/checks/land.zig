@@ -17,6 +17,7 @@ const release = @import("release.zig");
 const nested = @import("../nested.zig");
 const workflow = @import("workflow.zig");
 const manifest = @import("manifest.zig");
+const surface = @import("surface.zig");
 
 pub const Options = struct {
     /// The release's date, `YYYY-MM-DD`.
@@ -43,6 +44,9 @@ pub const Options = struct {
     /// read from the configured build, when the caller is generated again: the checks cannot
     /// read the build themselves.
     sdk: ?Sdk = null,
+    /// The modules the package exports, as the build declares them: a release that removes or
+    /// changes one of their public declarations is breaking.
+    modules: []const surface.Module = &.{},
 };
 
 /// Adds `sdk_targets` to a gate configuration, read from the build in the gate's directory.
@@ -360,7 +364,7 @@ pub fn run(c: *src.Context, options: Options) !Outcome {
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     if (!(try git(c, &.{ "cat-file", "-e", try c.a.print("{s}:{s}", .{ base.ref, path }) })).ok) main = try bootstrap(c, base, start, main, path);
     const landing: Landing = .{ .repo = repo, .file = found.name, .base = base, .branch = branch, .start = start };
-    const prepared = try assemble(c, branch, base, found, start, main, options.date, options.sdk);
+    const prepared = try assemble(c, branch, base, found, start, main, options);
     const ref = prepared.ref orelse return nothing(c, landing, prepared);
     try say(c, "pushed {s} at {s}\n", .{ ref, prepared.sha[0..12] });
     try gate(c, landing, ref, prepared.sha, options);
@@ -396,17 +400,22 @@ pub fn ready(c: *src.Context, options: Options) !Readied {
         c.fail("ready: origin has no {s}, its default branch, to land on", .{base.name});
         return error.LandFailed;
     }
-    const prepared = try prepare(c, branch, base, found, options.date, options.sdk);
+    const prepared = try prepare(c, branch, base, found, options);
     return .{ .sha = prepared.sha, .version = prepared.version };
 }
 
 /// What `publish` put on origin: the default branch's new commit, and the tag made on it.
-pub const Published = struct { onto: []const u8, sha: []const u8, tag: ?[]const u8 };
+pub const Published = struct { onto: []const u8, sha: []const u8, tag: ?[]const u8, programs: usize = 0 };
 
 /// The commit checked out, gated, onto origin's default branch, as a fast-forward and never
 /// forced, with the tag of the version its manifest declares when its changelog has released
 /// that version and no tag names it yet. Both go in one push, so origin never holds the
 /// release without its tag. A tag that names another commit is never moved: that refuses.
+///
+/// A package whose `ci/workflow.json` names a `programs_step` releases the programs that step
+/// of its own build installs (one per host it ships them for): built from the commit published
+/// before anything is pushed, so a release whose programs do not build moves nothing, then
+/// attached to the tag's GitHub release, its notes the changelog's entry for it.
 pub fn publish(c: *src.Context) !Published {
     if ((try must(c, &.{ "status", "--porcelain" })).len != 0) {
         c.fail("publish: the tree has changes, which no gate ran on; commit or stash them first", .{});
@@ -428,6 +437,9 @@ pub fn publish(c: *src.Context) !Published {
     const name = try c.a.print("v{f}", .{declared});
     const released = c.exists("CHANGELOG.md") and std.mem.find(u8, try c.read("CHANGELOG.md"), try c.a.print("## [{f}]", .{declared})) != null;
     const tagged = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/tags/{s}^{{commit}}", .{name}) })).out;
+    // A tag made here is a release made here: its programs go with it, built before anything
+    // is tagged or pushed.
+    const programs: []const []const u8 = if (tagged.len == 0 and released) try buildPrograms(c, name) else &.{};
     var tag: ?[]const u8 = null;
     if (tagged.len != 0) {
         if (!std.mem.eql(u8, tagged, sha)) {
@@ -446,7 +458,60 @@ pub fn publish(c: *src.Context) !Published {
         c.fail("publish: the push to origin failed, and nothing moved there: {s}", .{pushed.err});
         return error.LandFailed;
     }
-    return .{ .onto = default, .sha = sha, .tag = tag };
+    if (programs.len != 0) try attachPrograms(c, name, declared, programs);
+    return .{ .onto = default, .sha = sha, .tag = tag, .programs = programs.len };
+}
+
+/// Where the programs of the release `tag` are installed, under the package's cache.
+fn programsPrefix(c: *src.Context, tag: []const u8) ![]const u8 {
+    return c.a.print(".zig-cache/preflight-programs/{s}", .{tag});
+}
+
+/// The files `programs_step` installs for the release `tag`, built with the package's own build
+/// into a prefix of their own; none when the configuration names no step.
+fn buildPrograms(c: *src.Context, tag: []const u8) ![]const []const u8 {
+    if (!c.exists("ci/workflow.json")) return &.{};
+    const config = try c.options("ci/workflow.json");
+    const step = src.get(config, "programs_step");
+    if (step != .string) return &.{};
+    const prefix = try programsPrefix(c, tag);
+    try c.directory().deleteTree(c.io, prefix);
+    const built = try exec(c, &.{ c.zig, "build", step.string, "--prefix", prefix });
+    if (!built.ok) {
+        c.fail("publish: the release's programs do not build (`zig build {s}`), and nothing moved on origin: {s}", .{ step.string, built.err });
+        return error.LandFailed;
+    }
+    var files: std.ArrayList([]const u8) = .empty;
+    var dir = try c.directory().openDir(c.io, prefix, .{ .iterate = true });
+    defer dir.close(c.io);
+    var walker = try dir.walk(c.a);
+    defer walker.deinit();
+    while (try walker.next(c.io)) |entry| if (entry.kind == .file) try files.append(c.a, try std.Io.Dir.path.join(c.a, &.{ prefix, entry.path }));
+    if (files.items.len == 0) {
+        c.fail("publish: `zig build {s}`, the programs_step, installed nothing, and nothing moved on origin", .{step.string});
+        return error.LandFailed;
+    }
+    std.mem.sort([]const u8, files.items, {}, struct {
+        fn less(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.order(u8, x, y) == .lt;
+        }
+    }.less);
+    return files.items;
+}
+
+/// The release `tag` on GitHub with `programs` attached, its notes the changelog's entry for
+/// `version`. main and the tag are on origin by now, so a failure names the command that
+/// finishes the release.
+fn attachPrograms(c: *src.Context, tag: []const u8, version: release.Version, programs: []const []const u8) !void {
+    const repo = try githubRepository(c);
+    const notes_path = try c.a.print("{s}/notes.md", .{try programsPrefix(c, tag)});
+    try c.directory().writeFile(c.io, .{ .sub_path = notes_path, .data = (try release.notes(c.a, try c.read("CHANGELOG.md"), version)) orelse "" });
+    const argv = try std.mem.concat(c.a, []const u8, &.{ &.{ "gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--title", tag, "--notes-file", notes_path }, programs });
+    const created = try exec(c, argv);
+    if (!created.ok) {
+        c.fail("publish: main and {s} are on origin, but its GitHub release with the programs is not ({s}); finish it with: {s}", .{ tag, created.err, try std.mem.join(c.a, " ", argv) });
+        return error.LandFailed;
+    }
 }
 
 /// The default branch holds the branch's work already, and nothing needs a release: an earlier
@@ -524,14 +589,14 @@ fn removeWorktree(c: *src.Context, top: []const u8) void {
 
 /// The landing commit, made in a scratch worktree, and pushed to a ref of its own unless the
 /// default branch, at `main`, already holds it. The worktree goes on every way out.
-fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, start: []const u8, main: []const u8, date: []const u8, sdk: ?Sdk) !Prepared {
+fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, start: []const u8, main: []const u8, options: Options) !Prepared {
     const scratch = try Scratch.add(c, start, found.directory);
     defer scratch.remove(c);
     var w = c.*;
     w.dir = scratch.dir;
     w.errors = 0;
     defer c.errors += w.errors;
-    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory, .gate = found.gate, .config = found.config }, date, sdk);
+    var prepared = try prepare(&w, branch, base, .{ .name = found.name, .top = scratch.top, .directory = found.directory, .gate = found.gate, .config = found.config }, options);
     prepared.stem = if (prepared.version) |version| try c.a.print("land/v{f}", .{version}) else try c.a.print("land/{s}", .{branch});
     if (prepared.version == null and std.mem.eql(u8, prepared.sha, main)) return prepared;
     const ref = try c.a.print("{s}-{s}", .{ prepared.stem, prepared.sha[0..12] });
@@ -543,7 +608,8 @@ fn assemble(c: *src.Context, branch: []const u8, base: Base, found: Caller, star
 /// In the scratch worktree, detached at the branch: rebased on origin's default branch, tidied,
 /// the changelog told of re-pins, released and committed. The rebase moves no branch, whatever
 /// `rebase.updateRefs` says.
-fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date: []const u8, sdk: ?Sdk) !Prepared {
+fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, options: Options) !Prepared {
+    const sdk = options.sdk;
     const rebased = try git(c, &.{ "rebase", "-q", "--no-update-refs", base.ref });
     if (!rebased.ok) {
         const conflicts = (try git(c, &.{ "diff", "--name-only", "--diff-filter=U" })).out;
@@ -581,9 +647,9 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
     try refreshCaller(c, found, sdk);
     try requireCurrentCaller(c, found, sdk);
     try noteChangelog(c);
-    const outcome = release.run(c, date) catch |err| switch (err) {
+    const outcome = release.run(c, options.date, options.modules) catch |err| switch (err) {
         // Each of these named its fix.
-        error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists => return error.LandFailed,
+        error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists, error.UndeclaredBreaking => return error.LandFailed,
         else => return err,
     };
     const version: ?release.Version = switch (outcome) {

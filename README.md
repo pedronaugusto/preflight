@@ -69,7 +69,7 @@ project, and preflight's own gate runs it on every host.
 
 `addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
-`check-imports`, `release`, `land`, `ready`, `gate`, `publish`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
+`check-imports`, `release`, `surface`, `land`, `ready`, `gate`, `publish`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
@@ -437,7 +437,18 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   `[Unreleased]` into `## [X.Y.Z] - date` under a fresh empty one, with the link references
   following. A package that did not change gets no release and the command says so; one that
   changed with nothing under `[Unreleased]` fails naming the fix; a version whose tag exists
-  fails, since a tag is never moved. `land` below commits the result before the gate tests it.
+  fails, since a tag is never moved. A release with no `### Breaking` entry that removes or
+  changes a public declaration of a module the package exports (`b.addModule`), or of its
+  `build.zig`, which a build depending on it imports, is refused, and
+  the refusal names each one: the surface is read with glint's project model from the modules'
+  root files, following their relative imports, the aliases they are spelled with and the types
+  a function returning `type` makes, at the last tag and now. A line per declaration: a
+  function's parameter and return types, a field's type, the fields a struct literal must name,
+  what a public constant aliases; layout, comments, parameter names and the values of literal
+  constants are not part of it, and an addition is no break. `zig build surface` lists the
+  surface, `zig build surface -- --since <tag>` what changed (`-` removed or changed, `+`
+  added). What it cannot see: a module the package stopped exporting, and the members of what
+  another package's module declares. `land` below commits the result before the gate tests it.
   The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
   manifest's version has no tag yet, with the same token. The version comes from the gate
   (`preflight version`, an output of `zig.yml`), so no workflow parses the manifest.
@@ -470,6 +481,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 - `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
   `compile_once`, `portable_hosts`, `hardened`: what the tiers build and run, described below.
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
+- `programs_step`: the step of the package's own build that installs the programs a release
+  carries, one per host; `publish` builds it and attaches what it installs to the release.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
   with three attempts of five minutes; `before_tests_step`: a step run before the tests.
 - `windows_git_latest`: upgrade Git for Windows first.
@@ -579,7 +592,13 @@ a step `addCi` adds (`bay ready`, `bay gate`, `bay publish` under bay):
 3. `publish` pushes the commit checked out onto origin's main, as a fast-forward and never
    forced, with the tag of the version the manifest declares when the changelog released it
    and no tag names it yet, both in one atomic push. A HEAD that does not hold origin's main,
-   a tree with changes, or a tag that already names another commit is refused.
+   a tree with changes, or a tag that already names another commit is refused. A package that
+   ships programs names the step of its own build that installs them, one per host, as
+   `"programs_step"` in `ci/workflow.json` (bay's `"dist"`): `publish` builds it first, into
+   `.zig-cache/preflight-programs/vX.Y.Z`, so a release whose programs do not build moves
+   nothing, and after the push makes the tag's GitHub release with every file the step
+   installed, its notes the changelog's entry for the version. A failure there names the `gh`
+   command that finishes the release.
 - A landing whose end this clone did not see (an origin it could not fetch, a wait it gave
   up on) is finished by landing again: there is nothing left to land, the version's
   attempts no landing needs go, and the branch moves to main.

@@ -700,6 +700,30 @@ test "a hand landing: ready makes the release on the branch, publish puts it and
     try std.testing.expectEqualStrings("", try s.landRefs());
 }
 
+test "publish builds the release's programs before anything moves, and attaches them to its GitHub release" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.write("ci/workflow.json", "{\"land\":true,\"release\":true,\"programs_step\":\"dist\"}\n");
+    try s.commit("Programs");
+    try s.branch();
+    try expectExit(try hand(s, &.{ "ready", "--date", date }), 0);
+    const head = try s.gitOut(&.{ "rev-parse", "HEAD" });
+    // Programs that do not build: nothing moves on origin.
+    try s.env.put("FAKE_ZIG_BUILD", "fail");
+    const refused = try hand(s, &.{ "publish", "--zig-exe", s.fake });
+    try expectExit(refused, 1);
+    try contains(refused.stderr, "the release's programs do not build (`zig build dist`), and nothing moved on origin");
+    try std.testing.expectEqualStrings("", try s.remote("refs/tags/v0.1.1"));
+    _ = s.env.swapRemove("FAKE_ZIG_BUILD");
+    const published = try hand(s, &.{ "publish", "--zig-exe", s.fake });
+    try expectExit(published, 0);
+    try contains(published.stdout, "as v0.1.1, its GitHub release carrying 2 programs");
+    try std.testing.expectEqualStrings(head, try s.remote("refs/tags/v0.1.1^{commit}"));
+    const calls = try s.calls();
+    try contains(calls, "build dist --prefix .zig-cache/preflight-programs/v0.1.1\n");
+    try contains(calls, "release create v0.1.1 --repo owner/pkg --verify-tag --title v0.1.1 --notes-file .zig-cache/preflight-programs/v0.1.1/notes.md .zig-cache/preflight-programs/v0.1.1/bin/tool-aarch64-macos .zig-cache/preflight-programs/v0.1.1/bin/tool-x86_64-linux\n");
+}
+
 test "ready and gate refuse a caller that is not what plan generates for the package's pins and configuration" {
     const s = try Scene.init();
     defer s.deinit();

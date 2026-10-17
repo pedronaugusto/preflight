@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- A release that removes or changes a public declaration without a `### Breaking` entry is refused (`release`, `ready`, `land`), naming each one. The public surface of the modules the package exports and of its `build.zig` is read with glint's project model, at the last tag and now: a line per declaration (a function's parameter and return types, a field's type, the fields a struct literal must name, what a public constant aliases), following relative imports, aliases and the types a function returning `type` makes. `zig build surface` lists it; `-- --since <tag>` lists what changed.
+
+### Added
+
+- `publish` releases a package's programs: `"programs_step"` in `ci/workflow.json` names the step of its own build that installs them, one per host; `publish` builds it before anything moves, then makes the tag's GitHub release with each file attached and the changelog's entry as its notes.
+
 ## [0.9.3] - 2026-10-17
 
 ### Changed

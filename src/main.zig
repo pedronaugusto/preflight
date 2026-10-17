@@ -18,40 +18,13 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "facts")) {
         try exportFacts(c, args);
     } else if (std.mem.eql(u8, command, "plan")) {
-        errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
-        errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
-        try planOptions(args[2..]);
-        if (option(args, "--zig-exe")) |zig| c.zig = zig;
-        var config = try checks.workflow.configuration(c, option(args, "--config") orelse "ci/workflow.json");
-        try sdkTargets(&c, &config, option(args, "--working-directory") orelse ".");
-        if (option(args, "--full") != null) return error.FullReplacedByTier;
-        const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
-        if (option(args, "--workflow")) |path| {
-            // `--drop <job>`, repeated, names each job of the old caller to let go.
-            var drops: std.ArrayList([]const u8) = .empty;
-            for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--drop") and i + 1 < args.len) try drops.append(a, args[i + 1]);
-            const existing = if (c.exists(path)) try c.read(path) else null;
-            const heading = try checks.workflow.heading(a, option(args, "--config"), path, option(args, "--working-directory"), hasFlag(args, "--self"));
-            const text = try checks.workflow.generate(c, config, option(args, "--manifest") orelse "build.zig.zon", option(args, "--working-directory") orelse ".", hasFlag(args, "--self"), heading, existing, drops.items);
-            try checks.workflow.write(c, path, text);
-            return;
-        }
-        const jobs = try checks.matrix.plan(a, config, tier);
-        const tiers = try checks.matrix.split(a, config, jobs, tier);
-        const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
-        const output = option(args, "--output") orelse init.environ_map.get("GITHUB_OUTPUT");
-        if (output) |path| {
-            try append(c, path, try a.print("matrix={s}\n", .{value}));
-            try append(c, path, try a.print("compile_matrix={s}\nrun_matrix={s}\nportable={s}\n", .{
-                try std.json.Stringify.valueAlloc(a, .{ .include = tiers.compile }, .{}),
-                try std.json.Stringify.valueAlloc(a, .{ .include = tiers.run }, .{}),
-                if (tiers.compile.len > 0) "true" else "false",
-            }));
-        } else try stdout(c, value);
+        try planCommand(&c, init, args);
     } else if (std.mem.eql(u8, command, "version")) {
         try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)}));
     } else if (std.mem.eql(u8, command, "release")) {
         try releaseCommand(&c, args);
+    } else if (std.mem.eql(u8, command, "surface")) {
+        try surfaceCommand(&c, args);
     } else if (landing.get(command)) |which| {
         try landingCommand(&c, init.environ_map, which, args);
     } else if (std.mem.eql(u8, command, "cache")) {
@@ -151,13 +124,13 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: []const []c
 fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
     var index: usize = 2;
     while (index < args.len) : (index += 2) {
-        if (!std.mem.eql(u8, args[index], "--date")) return error.UnknownReleaseOption;
+        if (!std.mem.eql(u8, args[index], "--date") and !std.mem.eql(u8, args[index], "--module")) return error.UnknownReleaseOption;
         if (index + 1 == args.len) return error.MissingReleaseOptionValue;
     }
     const date = option(args, "--date") orelse try checks.release.today(c.a, c.io);
-    const outcome = checks.release.run(c, date) catch |err| switch (err) {
+    const outcome = checks.release.run(c, date, try modules(c.a, args)) catch |err| switch (err) {
         // Each of these named its fix.
-        error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists => return error.CheckFailed,
+        error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists, error.UndeclaredBreaking => return error.CheckFailed,
         else => return err,
     };
     switch (outcome) {
@@ -200,7 +173,7 @@ fn landingCommand(c: *src.Context, environ: *const std.process.Environ.Map, whic
         .land => try landCommand(c, args),
         .ready => try readyCommand(c, args),
         .gate => try gateCommand(c, environ, args),
-        .publish => try publishCommand(c),
+        .publish => try publishCommand(c, args),
     }
 }
 
@@ -208,7 +181,7 @@ fn landingCommand(c: *src.Context, environ: *const std.process.Environ.Map, whic
 fn landCommand(c: *src.Context, args: []const []const u8) !void {
     var index: usize = 2;
     while (index < args.len) : (index += 2) {
-        const known = for ([_][]const u8{ "--date", "--poll", "--config", "--working-directory", "--zig-exe" }) |name| {
+        const known = for ([_][]const u8{ "--date", "--poll", "--config", "--working-directory", "--zig-exe", "--module" }) |name| {
             if (std.mem.eql(u8, args[index], name)) break true;
         } else false;
         if (!known) return error.UnknownLandOption;
@@ -221,6 +194,7 @@ fn landCommand(c: *src.Context, args: []const []const u8) !void {
         .config = option(args, "--config"),
         .working_directory = option(args, "--working-directory"),
         .sdk = sdkTargets,
+        .modules = try modules(c.a, args),
     };
     // `--poll <seconds>`: between two looks at GitHub, for the run and at it.
     if (option(args, "--poll")) |text| {
@@ -243,7 +217,7 @@ fn landCommand(c: *src.Context, args: []const []const u8) !void {
 fn readyCommand(c: *src.Context, args: []const []const u8) !void {
     var index: usize = 2;
     while (index < args.len) : (index += 2) {
-        const known = for ([_][]const u8{ "--date", "--config", "--working-directory", "--zig-exe" }) |name| {
+        const known = for ([_][]const u8{ "--date", "--config", "--working-directory", "--zig-exe", "--module" }) |name| {
             if (std.mem.eql(u8, args[index], name)) break true;
         } else false;
         if (!known) return error.UnknownReadyOption;
@@ -255,6 +229,7 @@ fn readyCommand(c: *src.Context, args: []const []const u8) !void {
         .config = option(args, "--config"),
         .working_directory = option(args, "--working-directory"),
         .sdk = sdkTargets,
+        .modules = try modules(c.a, args),
     }) catch |err| switch (err) {
         // Reported where it failed.
         error.LandFailed => return error.CheckFailed,
@@ -332,14 +307,52 @@ fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const
     return false;
 }
 
+/// `plan`: the jobs of a tier as the hosted caller's matrices, or with `--workflow <caller>` the
+/// caller generated again.
+fn planCommand(c: *src.Context, init: std.process.Init, args: []const []const u8) !void {
+    const a = c.a;
+    errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
+    errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
+    try planOptions(args[2..]);
+    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+    var config = try checks.workflow.configuration(c.*, option(args, "--config") orelse "ci/workflow.json");
+    try sdkTargets(c, &config, option(args, "--working-directory") orelse ".");
+    if (option(args, "--full") != null) return error.FullReplacedByTier;
+    const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
+    if (option(args, "--workflow")) |path| {
+        // `--drop <job>`, repeated, names each job of the old caller to let go.
+        var drops: std.ArrayList([]const u8) = .empty;
+        for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--drop") and i + 1 < args.len) try drops.append(a, args[i + 1]);
+        const existing = if (c.exists(path)) try c.read(path) else null;
+        const heading = try checks.workflow.heading(a, option(args, "--config"), path, option(args, "--working-directory"), hasFlag(args, "--self"));
+        const text = try checks.workflow.generate(c.*, config, option(args, "--manifest") orelse "build.zig.zon", option(args, "--working-directory") orelse ".", hasFlag(args, "--self"), heading, existing, drops.items);
+        try checks.workflow.write(c.*, path, text);
+        return;
+    }
+    const jobs = try checks.matrix.plan(a, config, tier);
+    const tiers = try checks.matrix.split(a, config, jobs, tier);
+    const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
+    const output = option(args, "--output") orelse init.environ_map.get("GITHUB_OUTPUT");
+    if (output) |path| {
+        try append(c.*, path, try a.print("matrix={s}\n", .{value}));
+        try append(c.*, path, try a.print("compile_matrix={s}\nrun_matrix={s}\nportable={s}\n", .{
+            try std.json.Stringify.valueAlloc(a, .{ .include = tiers.compile }, .{}),
+            try std.json.Stringify.valueAlloc(a, .{ .include = tiers.run }, .{}),
+            if (tiers.compile.len > 0) "true" else "false",
+        }));
+    } else try stdout(c.*, value);
+}
+
 /// `publish`: the gated commit onto origin's default branch, with its release's tag.
-fn publishCommand(c: *src.Context) !void {
+fn publishCommand(c: *src.Context, args: []const []const u8) !void {
+    if (option(args, "--zig-exe")) |zig| c.zig = zig;
     const published = checks.land.publish(c) catch |err| switch (err) {
         // Reported where it failed.
         error.LandFailed => return error.CheckFailed,
         else => return err,
     };
-    try stdout(c.*, try c.a.print("published {s} on {s}{s}{s}\n", .{ published.sha[0..12], published.onto, if (published.tag != null) " as " else "", published.tag orelse "" }));
+    const programs = if (published.programs != 0) try c.a.print(", its GitHub release carrying {d} programs", .{published.programs}) else "";
+    try stdout(c.*, try c.a.print("published {s} on {s}{s}{s}{s}\n", .{ published.sha[0..12], published.onto, if (published.tag != null) " as " else "", published.tag orelse "", programs }));
 }
 
 /// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.
@@ -414,6 +427,38 @@ fn planOptions(args: []const []const u8) !void {
     }
     if (hasFlag(args, "--workflow") and hasFlag(args, "--output")) return error.ConflictingPlanOutputs;
     if (!hasFlag(args, "--workflow") and (hasFlag(args, "--self") or hasFlag(args, "--manifest") or hasFlag(args, "--working-directory") or hasFlag(args, "--drop"))) return error.WorkflowOptionWithoutOutput;
+}
+
+/// The modules the package exports, as the build passes them: `--module <name>=<root>`.
+fn modules(a: std.mem.Allocator, args: []const []const u8) ![]const checks.surface.Module {
+    var list: std.ArrayList(checks.surface.Module) = .empty;
+    for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--module")) {
+        if (i + 1 == args.len) return error.MissingModule;
+        const pair = args[i + 1];
+        const equals = std.mem.findScalar(u8, pair, '=') orelse return error.InvalidModule;
+        try list.append(a, .{ .name = pair[0..equals], .root = pair[equals + 1 ..] });
+    };
+    return list.items;
+}
+
+/// `surface`: the public surface of the modules the package exports, a line per declaration;
+/// with `--since <revision>`, what changed since it: `-` before a line removed or changed, `+`
+/// before one added. A release refuses a removed line without a `### Breaking` entry.
+fn surfaceCommand(c: *src.Context, args: []const []const u8) !void {
+    var index: usize = 2;
+    while (index < args.len) : (index += 2) {
+        if (!std.mem.eql(u8, args[index], "--since") and !std.mem.eql(u8, args[index], "--module")) return error.UnknownSurfaceOption;
+        if (index + 1 == args.len) return error.MissingSurfaceOptionValue;
+    }
+    const exported = try modules(c.a, args);
+    var out: std.Io.Writer.Allocating = .init(c.a);
+    if (option(args, "--since")) |since| {
+        const gone = try checks.release.surfaceRemoved(c, since, exported);
+        const added = try checks.release.surfaceAdded(c, since, exported);
+        for (gone) |line| try out.writer.print("- {s}\n", .{line});
+        for (added) |line| try out.writer.print("+ {s}\n", .{line});
+    } else for (try checks.release.surfaceOf(c, exported)) |line| try out.writer.print("{s}\n", .{line});
+    try stdout(c.*, out.written());
 }
 
 fn option(args: []const []const u8, name: []const u8) ?[]const u8 {

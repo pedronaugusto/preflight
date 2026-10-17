@@ -215,13 +215,22 @@ const Steps = struct {
         configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
         const release = executable.run(b);
         release.addArg("release");
+        exported(b, package, release);
         release.addPassthruArgs();
         release.setCwd(package.path("."));
         release.has_side_effects = true;
         configure.claim(b, "release", "Give a changed package its next version in build.zig.zon and CHANGELOG.md, or say it needs none").dependOn(&release.step);
+        const surface = executable.run(b);
+        surface.addArg("surface");
+        exported(b, package, surface);
+        surface.addPassthruArgs();
+        surface.setCwd(package.path("."));
+        surface.has_side_effects = true;
+        configure.claim(b, "surface", "List the public declarations of the modules the package exports; -- --since <tag> lists what changed").dependOn(&surface.step);
         const land = executable.run(b);
         land.addArg("land");
         land.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+        exported(b, package, land);
         land.addPassthruArgs();
         land.setCwd(package.path("."));
         land.has_side_effects = true;
@@ -234,7 +243,8 @@ const Steps = struct {
         }) |command| {
             const run = executable.run(b);
             run.addArg(command.name);
-            if (!std.mem.eql(u8, command.name, "publish")) run.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+            run.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+            if (std.mem.eql(u8, command.name, "ready")) exported(b, package, run);
             run.addPassthruArgs();
             run.setCwd(package.path("."));
             run.has_side_effects = true;
@@ -338,4 +348,18 @@ fn configurationOptions(b: *std.Build, run: *std.Build.Step.Run) void {
         .list => |list| for (list.items) |text| run.addArgs(&.{ "--build-option", b.fmt("-D{s}={s}", .{ name, text }) }),
         else => run.step.dependOn(&b.addFail("build facts: unsupported non-CLI configuration option; cannot reproduce configured graph").step),
     };
+}
+
+/// `--module <name>=<root>` for each module `package` exports whose root is one of its files,
+/// and its `build.zig`, which a build that depends on it imports: the public surface a release
+/// that removes or changes a declaration of breaks.
+fn exported(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
+    run.addArgs(&.{ "--module", "build.zig=build.zig" });
+    for (package.modules.keys(), package.modules.values()) |name, module| {
+        const root = module.root_source_file orelse continue;
+        switch (root) {
+            .src_path => |path| if (path.owner == package) run.addArgs(&.{ "--module", b.fmt("{s}={s}", .{ name, path.sub_path }) }),
+            else => {},
+        }
+    }
 }

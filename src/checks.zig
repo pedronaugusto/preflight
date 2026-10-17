@@ -17,6 +17,7 @@ pub const attest = @import("checks/attest.zig");
 pub const manifest = @import("checks/manifest.zig");
 pub const lazy_import = @import("checks/lazy_import.zig");
 pub const release = @import("checks/release.zig");
+pub const surface = @import("checks/surface.zig");
 pub const land = @import("checks/land.zig");
 pub const local = @import("checks/local.zig");
 pub const command = @import("checks/command.zig");
@@ -24,6 +25,7 @@ pub const phases = @import("checks/phases.zig");
 
 test {
     _ = @import("structure/check.zig");
+    _ = @import("checks/surface.zig");
     _ = @import("consumer.zig");
     _ = @import("nested.zig");
     _ = @import("plain.zig");

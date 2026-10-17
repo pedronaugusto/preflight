@@ -23,6 +23,11 @@
 //!   commit on it, `unreachable` moves origin away to `<FAKE_GH_ORIGIN>.away`.
 //! - `locate --dev` names `FAKE_BAY_ROOT`, or, without it, fails as a bay from before
 //!   `locate` does.
+//! - `gh release create <tag> ... <files>` records the call and succeeds, unless
+//!   `FAKE_GH_RELEASE` is `fail`.
+//! - As zig, `build <step> --prefix <dir>` installs `bin/tool-x86_64-linux` and
+//!   `bin/tool-aarch64-macos` under `<dir>`, a release's programs, unless `FAKE_ZIG_BUILD` is
+//!   `fail`.
 //! - `tidy` replaces each of `FAKE_BAY_FROM` with the one of `FAKE_BAY_TO` in the same place
 //!   (both separated by spaces) in `build.zig.zon`, as re-pins.
 const std = @import("std");
@@ -257,12 +262,23 @@ pub fn main(init: std.process.Init) !void {
     try state.writeFile(init.io, .{ .sub_path = "calls", .data = try a.print("{s}{s}\n", .{ calls, try std.mem.join(a, " ", args) }) });
     if (args.len == 0) return error.NoCommand;
     if (std.mem.eql(u8, args[0], "tidy")) return f.tidy();
+    if (std.mem.eql(u8, args[0], "build")) {
+        if (std.mem.eql(u8, init.environ_map.get("FAKE_ZIG_BUILD") orelse "", "fail")) fail(init.io, "error: the programs did not compile");
+        var prefix = try std.Io.Dir.cwd().createDirPathOpen(init.io, try std.Io.Dir.path.join(a, &.{ option(args, "--prefix") orelse return error.NoPrefix, "bin" }), .{});
+        defer prefix.close(init.io);
+        for ([_][]const u8{ "tool-x86_64-linux", "tool-aarch64-macos" }) |name| try prefix.writeFile(init.io, .{ .sub_path = name, .data = name });
+        return;
+    }
     if (std.mem.eql(u8, args[0], "locate")) return f.locate();
     const repo = init.environ_map.get("FAKE_GH_REPO") orelse return error.NoRepo;
     if (!std.mem.eql(u8, option(args, "--repo") orelse "", repo)) fail(init.io, "none of the git remotes configured for this repository point to a known GitHub host; name one with --repo");
     if (args.len < 2) return error.NoCommand;
     if (std.mem.eql(u8, args[0], "workflow") and std.mem.eql(u8, args[1], "run") and args.len > 2) return f.dispatch(args[2], option(args, "--ref") orelse return error.NoRef);
     if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "list")) return f.list(args);
+    if (std.mem.eql(u8, args[0], "release") and std.mem.eql(u8, args[1], "create")) {
+        if (std.mem.eql(u8, init.environ_map.get("FAKE_GH_RELEASE") orelse "", "fail")) fail(init.io, "HTTP 502: Bad Gateway");
+        return;
+    }
     if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "view") and args.len > 2) return f.view(try std.fmt.parseInt(i64, args[2], 10));
     if (std.mem.eql(u8, args[0], "run") and std.mem.eql(u8, args[1], "rerun") and args.len > 2) return f.rerun(try std.fmt.parseInt(i64, args[2], 10));
     return error.UnknownCommand;

@@ -7,6 +7,7 @@
 //! is the one the gate tests and the landing tags.
 const std = @import("std");
 const src = @import("source.zig");
+const surface = @import("surface.zig");
 
 /// A release number. Pre-release and build parts are not versions a package releases.
 pub const Version = struct {
@@ -306,7 +307,9 @@ pub const Outcome = union(enum) {
 };
 
 /// Decides, then writes the new version and the changelog. A failed decision names its fix and writes nothing.
-pub fn run(c: *src.Context, date: []const u8) !Outcome {
+/// `modules` are the modules the package exports: a release that removes or changes a public
+/// declaration of one is breaking, and refuses unless [Unreleased] says so.
+pub fn run(c: *src.Context, date: []const u8, modules: []const surface.Module) !Outcome {
     const manifest_text = try c.read("build.zig.zon");
     const manifest = try parseManifest(c, manifest_text);
     const current = Version.parse(manifest.version) catch {
@@ -328,11 +331,15 @@ pub fn run(c: *src.Context, date: []const u8) !Outcome {
         const marker = try c.a.print("## [{f}]", .{current});
         if (tag) |name| {
             if (Version.parse(std.mem.trimStart(u8, name, "v")) catch null) |tagged|
-                if (current.order(tagged) == .gt and std.mem.find(u8, changelog, marker) != null) return .{ .prepared = current };
+                if (current.order(tagged) == .gt and std.mem.find(u8, changelog, marker) != null) {
+                    try requireBreaking(c, name, modules, current.order(tagged.next(false)) == .gt);
+                    return .{ .prepared = current };
+                };
         } else if (std.mem.find(u8, changelog, marker) != null) return .{ .prepared = current };
         c.fail("CHANGELOG.md: the package changed since {s}, and [Unreleased] lists nothing; add what changed under it ({s})", .{ tag orelse "its start", "### Breaking for an incompatible change, otherwise ### Changed, ### Added or ### Fixed" });
         return error.EmptyUnreleased;
     }
+    if (tag) |name| try requireBreaking(c, name, modules, found.breaking);
     // The first release is the version the manifest names: nothing came before it to move from.
     const to = if (tag == null) current else current.next(found.breaking);
     const name = try c.a.print("v{f}", .{to});
@@ -347,6 +354,88 @@ pub fn run(c: *src.Context, date: []const u8) !Outcome {
     try dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = cut_manifest });
     return .{ .released = .{ .from = current, .to = to, .breaking = found.breaking } };
 }
+
+/// The changelog's entry for `version`: the lines under its `## [X.Y.Z]` heading, up to the
+/// next release or the link references; null when it has none.
+pub fn notes(a: std.mem.Allocator, changelog: []const u8, version: Version) !?[]const u8 {
+    const at = std.mem.find(u8, changelog, try a.print("## [{f}]", .{version})) orelse return null;
+    const start = (std.mem.findScalarPos(u8, changelog, at, '\n') orelse return null) + 1;
+    var offset = start;
+    while (offset < changelog.len) {
+        const end = std.mem.findScalarPos(u8, changelog, offset, '\n') orelse changelog.len;
+        const line = changelog[offset..end];
+        if (std.mem.startsWith(u8, line, "## ") or isLinkReference(line)) break;
+        offset = end + 1;
+    }
+    return std.mem.trim(u8, changelog[start..@min(offset, changelog.len)], "\n");
+}
+
+test "a release's notes are the lines under its heading" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const log = "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-01-02\n\n### Breaking\n\n- Less.\n\n## [0.1.0] - 2026-01-01\n\n- First.\n\n[0.1.0]: https://example.invalid\n";
+    try std.testing.expectEqualStrings("### Breaking\n\n- Less.", (try notes(a, log, .{ .major = 0, .minor = 2, .patch = 0 })).?);
+    try std.testing.expectEqualStrings("- First.", (try notes(a, log, .{ .major = 0, .minor = 1, .patch = 0 })).?);
+    try std.testing.expect(try notes(a, log, .{ .major = 0, .minor = 3, .patch = 0 }) == null);
+}
+
+/// Refuses a release that is not `breaking` while a public declaration of `modules` that
+/// `tag` had is gone or changed, naming them.
+fn requireBreaking(c: *src.Context, tag: []const u8, modules: []const surface.Module, breaking: bool) !void {
+    if (breaking or modules.len == 0) return;
+    const gone = try surfaceRemoved(c, tag, modules);
+    if (gone.len == 0) return;
+    const shown = @min(gone.len, 20);
+    var listed: std.Io.Writer.Allocating = .init(c.a);
+    for (gone[0..shown]) |line| try listed.writer.print("\n  {s}", .{line});
+    if (gone.len > shown) try listed.writer.print("\n  and {d} more", .{gone.len - shown});
+    c.fail("CHANGELOG.md: since {s} the package removed or changed these public declarations, and [Unreleased] has no ### Breaking entry; say what breaks under ### Breaking (`surface -- --since {s}` lists them):{s}", .{ tag, tag, listed.written() });
+    return error.UndeclaredBreaking;
+}
+
+/// The lines of the public surface `tag` had that the working tree does not: the public
+/// declarations removed or changed since. The modules are the ones the package exports now,
+/// read at `tag` from the same root files.
+pub fn surfaceRemoved(c: *src.Context, tag: []const u8, modules: []const surface.Module) ![]const []const u8 {
+    return surface.removed(c.a, try surfaceAt(c, tag, modules), try surfaceOf(c, modules));
+}
+
+/// The lines of the working tree's public surface that `tag`'s did not have: declarations added.
+pub fn surfaceAdded(c: *src.Context, tag: []const u8, modules: []const surface.Module) ![]const []const u8 {
+    return surface.removed(c.a, try surfaceOf(c, modules), try surfaceAt(c, tag, modules));
+}
+
+/// The working tree's public surface.
+pub fn surfaceOf(c: *src.Context, modules: []const surface.Module) ![]const []const u8 {
+    return surface.list(c.a, c.a, modules, Tree{ .c = c });
+}
+
+fn surfaceAt(c: *src.Context, revision: []const u8, modules: []const surface.Module) ![]const []const u8 {
+    return surface.list(c.a, c.a, modules, Revision{ .c = c, .name = revision });
+}
+
+/// The package's files as the working tree holds them.
+pub const Tree = struct {
+    c: *const src.Context,
+
+    pub fn read(tree: Tree, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
+        if (!tree.c.exists(path)) return null;
+        return try a.dupe(u8, try tree.c.read(path));
+    }
+};
+
+/// The package's files as a revision holds them.
+pub const Revision = struct {
+    c: *const src.Context,
+    name: []const u8,
+
+    pub fn read(at: Revision, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
+        const result = try git(at.c.*, &.{ "git", "show", try a.print("{s}:./{s}", .{ at.name, path }) });
+        if (!succeeded(result)) return null;
+        return result.stdout;
+    }
+};
 
 /// `YYYY-MM-DD` of the current UTC day.
 pub fn today(a: std.mem.Allocator, io: std.Io) ![]const u8 {
@@ -515,7 +604,7 @@ test "a package that did not change since its tag is not released" {
     try f.write("bench/b.zig", "pub const b = 2;\n");
     try f.commit("Bench");
     var c = f.context();
-    const outcome = try run(&c, "2026-03-04");
+    const outcome = try run(&c, "2026-03-04", &.{});
     try std.testing.expectEqualStrings("v0.1.0", outcome.unchanged);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expect(std.mem.find(u8, try f.read("build.zig.zon"), "0.1.0") != null);
@@ -530,7 +619,7 @@ test "a changed package gets the patch, the minor below 1.0 for a breaking entry
         try f.unreleased("### Fixed\n\n- A fix.\n");
         try f.commit("Fix");
         var c = f.context();
-        const outcome = try run(&c, "2026-03-04");
+        const outcome = try run(&c, "2026-03-04", &.{});
         try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 1 }, outcome.released.to);
         try std.testing.expect(std.mem.find(u8, try f.read("build.zig.zon"), ".version = \"0.1.1\"") != null);
         const log = try f.read("CHANGELOG.md");
@@ -545,7 +634,7 @@ test "a changed package gets the patch, the minor below 1.0 for a breaking entry
         try f.unreleased("### Added\n\n- More.\n\n### Breaking\n\n- Less.\n");
         try f.commit("Break");
         var c = f.context();
-        const outcome = try run(&c, "2026-03-04");
+        const outcome = try run(&c, "2026-03-04", &.{});
         try std.testing.expectEqual(Version{ .major = 0, .minor = 2, .patch = 0 }, outcome.released.to);
         try std.testing.expect(outcome.released.breaking);
     }
@@ -557,8 +646,47 @@ test "a changed package gets the patch, the minor below 1.0 for a breaking entry
         try f.unreleased("### Breaking\n\n- Gone.\n");
         try f.commit("Break");
         var c = f.context();
-        const outcome = try run(&c, "2026-03-04");
+        const outcome = try run(&c, "2026-03-04", &.{});
         try std.testing.expectEqual(Version{ .major = 2, .minor = 0, .patch = 0 }, outcome.released.to);
+    }
+}
+
+test "a release that removes or changes a public declaration refuses without a Breaking entry, and is breaking with one" {
+    const modules = [_]surface.Module{.{ .name = "pkg", .root = "src/a.zig" }};
+    {
+        const f = try Fixture.init("0.1.0");
+        defer f.deinit();
+        try f.write("src/a.zig", "pub const a = 1;\npub fn run(size: usize) void { _ = size; }\n");
+        try f.commit("Run");
+        try f.git(&.{ "tag", "v0.1.0" });
+        // An added declaration and a renamed parameter are no break.
+        try f.write("src/a.zig", "pub const a = 1;\npub fn run(length: usize) void { _ = length; }\npub fn more() void {}\n");
+        try f.unreleased("### Added\n\n- More.\n");
+        try f.commit("More");
+        var c = f.context();
+        const outcome = try run(&c, "2026-03-04", &modules);
+        try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 1 }, outcome.released.to);
+    }
+    {
+        const f = try Fixture.init("0.1.0");
+        defer f.deinit();
+        try f.write("src/a.zig", "pub const a = 1;\npub fn run(size: usize) void { _ = size; }\n");
+        try f.commit("Run");
+        try f.git(&.{ "tag", "v0.1.0" });
+        try f.write("src/a.zig", "pub const a = 1;\npub fn run(size: u32) void { _ = size; }\n");
+        try f.unreleased("### Changed\n\n- A smaller size.\n");
+        try f.commit("Change");
+        var c = f.context();
+        const before = try f.read("CHANGELOG.md");
+        try std.testing.expectError(error.UndeclaredBreaking, run(&c, "2026-03-04", &modules));
+        try std.testing.expectEqual(@as(usize, 1), c.errors);
+        try std.testing.expect(std.mem.find(u8, f.held.written(), "pkg.run fn ( usize ) void") != null);
+        try std.testing.expectEqualStrings(before, try f.read("CHANGELOG.md"));
+        try f.unreleased("### Breaking\n\n- `run` takes a `u32`.\n");
+        try f.commit("Say so");
+        var again = f.context();
+        const outcome = try run(&again, "2026-03-04", &modules);
+        try std.testing.expectEqual(Version{ .major = 0, .minor = 2, .patch = 0 }, outcome.released.to);
     }
 }
 
@@ -570,7 +698,7 @@ test "a changed package with an empty Unreleased fails and writes nothing" {
     try f.commit("Change");
     var c = f.context();
     const before = try f.read("CHANGELOG.md");
-    try std.testing.expectError(error.EmptyUnreleased, run(&c, "2026-03-04"));
+    try std.testing.expectError(error.EmptyUnreleased, run(&c, "2026-03-04", &.{}));
     try std.testing.expectEqual(@as(usize, 1), c.errors);
     try std.testing.expectEqualStrings(before, try f.read("CHANGELOG.md"));
 }
@@ -581,11 +709,11 @@ test "a package with no tag yet is released at the manifest's version, and once 
     try f.unreleased("- First change.\n");
     try f.commit("Entry");
     var c = f.context();
-    const outcome = try run(&c, "2026-03-04");
+    const outcome = try run(&c, "2026-03-04", &.{});
     try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 0 }, outcome.released.to);
     try f.commit("Release");
     var again = f.context();
-    try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 0 }, (try run(&again, "2026-03-04")).prepared);
+    try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 0 }, (try run(&again, "2026-03-04", &.{})).prepared);
     try std.testing.expectEqual(@as(usize, 0), again.errors);
 }
 
@@ -597,10 +725,10 @@ test "a release made and not yet tagged is not made twice" {
     try f.unreleased("- A change.\n");
     try f.commit("Change");
     var c = f.context();
-    _ = try run(&c, "2026-03-04");
+    _ = try run(&c, "2026-03-04", &.{});
     try f.commit("Release");
     var again = f.context();
-    const outcome = try run(&again, "2026-03-04");
+    const outcome = try run(&again, "2026-03-04", &.{});
     try std.testing.expectEqual(Version{ .major = 0, .minor = 1, .patch = 1 }, outcome.prepared);
     try std.testing.expectEqual(@as(usize, 0), again.errors);
 }
@@ -617,6 +745,6 @@ test "a version whose tag exists is refused, never moved" {
     try f.write("src/a.zig", "pub const a = 3;\n");
     try f.commit("More");
     var c = f.context();
-    try std.testing.expectError(error.TagExists, run(&c, "2026-03-04"));
+    try std.testing.expectError(error.TagExists, run(&c, "2026-03-04", &.{}));
     try std.testing.expect(c.errors == 1);
 }

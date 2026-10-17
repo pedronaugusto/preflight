@@ -63,10 +63,11 @@ const workflow_options = [_][]const u8{
     "fast_shards",        "cross_jobs",         "cross_seconds",    "compile_once",
     "portable_hosts",     "hardened",           "compile_step",     "setup_step",
     "before_tests_step",  "windows_git_latest", "test_job_timeout", "windows_job_timeout",
-    "source_job_timeout", "cross_job_timeout",
+    "source_job_timeout", "cross_job_timeout",  "programs_step",
     // `ci/costs.json`, which the planner reads beside the configuration, and the macOS
     // targets whose build links a framework, which `plan` and `land` read from the build.
-     "measured",         "sdk_targets",
+       "measured",
+    "sdk_targets",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -538,7 +539,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         }
     }
     for ([_][]const u8{ "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout" }) |name| _ = try minutes(config, name);
-    for ([_][]const u8{ "compile_step", "setup_step", "before_tests_step" }) |name| {
+    for ([_][]const u8{ "compile_step", "setup_step", "before_tests_step", "programs_step" }) |name| {
         const value = src.get(config, name);
         if (value != .null and (value != .string or value.string.len == 0 or std.mem.findAny(u8, value.string, " \t\r\n") != null)) return error.InvalidWorkflowStep;
     }

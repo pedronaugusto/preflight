@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-17
+
 ### Breaking
 
 - A release that removes or changes a public declaration without a `### Breaking` entry is refused (`release`, `ready`, `land`), naming each one. The public surface of the modules the package exports and of its `build.zig` is read with glint's project model, at the last tag and now: a line per declaration (a function's parameter and return types, a field's type, the fields a struct literal must name, what a public constant aliases), following relative imports, aliases and the types a function returning `type` makes. `zig build surface` lists it; `-- --since <tag>` lists what changed.

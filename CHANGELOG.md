@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-17
+
 ### Breaking
 
 - `ready` (and `land`) and `gate` refuse a package whose caller is not what `plan -- --workflow <caller>` generates for its pins and configuration, naming the command that generates it again: a caller left stale has the hosted runs check the package with another preflight than it pins, or other jobs than `ci/workflow.json` declares.

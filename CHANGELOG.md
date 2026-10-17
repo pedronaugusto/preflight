@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-17
+
 ### Changed
 
 - Pins glint 0.2.12 (0.2.11's changes with it): the aegis rules know `BlockingGuarded`, `RwGuarded`, `SpinRwGuarded` and their guards, `Condition`, `Once`, `Lazy` and `Confined`; A003 follows a guard lent to a call that hands it back held, checks acquisitions whose failure is caught, and reads a guard's `handOff()` (aegis 0.1.12) as a declared transfer; A001 decides receivers by what the program does with a field (a member read off it, a literal's fields, its use as a truth value or operand). A package that gates A001-A003 and holds these owners now has their releases checked.

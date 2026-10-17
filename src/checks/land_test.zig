@@ -700,6 +700,24 @@ test "a hand landing: ready makes the release on the branch, publish puts it and
     try std.testing.expectEqualStrings("", try s.landRefs());
 }
 
+test "ready and gate refuse a caller that is not what plan generates for the package's pins and configuration" {
+    const s = try Scene.init();
+    defer s.deinit();
+    try s.branch();
+    // preflight's pin stays, so ready leaves the caller as it is; the configuration moved
+    // without it.
+    _ = s.env.swapRemove("FAKE_BAY_FROM");
+    try s.write("ci/workflow.json", "{\"land\":true,\"release\":true,\"targets\":[\"x86_64-linux-gnu\"]}\n");
+    try s.commit("A target, the caller left as it was");
+    const readied = try hand(s, &.{ "ready", "--date", date });
+    try expectExit(readied, 1);
+    try contains(readied.stderr, ".github/workflows/ci.yml is not what plan generates for this package's pins and ci/workflow.json");
+    try std.testing.expect(!std.mem.startsWith(u8, try s.gitOut(&.{ "log", "-1", "--format=%s" }), "Release"));
+    const gated = try hand(s, &.{"gate"});
+    try expectExit(gated, 1);
+    try contains(gated.stderr, ".github/workflows/ci.yml is not what plan generates");
+}
+
 test "publish refuses a commit that does not hold origin's main, a tree with changes, and a tag that names another commit" {
     const s = try Scene.init();
     defer s.deinit();

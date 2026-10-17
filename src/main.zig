@@ -272,6 +272,13 @@ fn readyCommand(c: *src.Context, args: []const []const u8) !void {
 /// (preflight's own gate runs its sample there); `--config` defaults to `dir`'s.
 fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
     if (option(args, "--zig-exe")) |zig| c.zig = zig;
+    // A caller other than plan generates would have the hosted runs check another landing
+    // than the one gated here.
+    checks.land.currentCaller(c, option(args, "--working-directory"), option(args, "--config"), sdkTargets) catch |err| switch (err) {
+        // Reported where it failed.
+        error.LandFailed => return error.CheckFailed,
+        else => return err,
+    };
     const working = option(args, "--working-directory") orelse ".";
     const config_path = option(args, "--config") orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
     const config = try checks.workflow.configuration(c.*, config_path);

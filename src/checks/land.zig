@@ -271,6 +271,14 @@ const Caller = struct { name: []const u8, top: []const u8, directory: []const u8
 /// runs in the package's directory; else the one generated workflow planned to run in a
 /// directory inside the package, as preflight's own runs in its sample.
 fn caller(c: *src.Context, working_directory: ?[]const u8) !Caller {
+    if (try findCaller(c, working_directory)) |found| return found;
+    c.fail("land: no workflow in .github/workflows is the caller generated for this package; generate it with plan -- --workflow .github/workflows/ci.yml", .{});
+    return error.LandFailed;
+}
+
+/// The package's caller as `caller` finds it, or null when no workflow is one; more than one
+/// fails, naming them.
+fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
     const top = try must(c, &.{ "rev-parse", "--show-toplevel" });
     const prefix = std.mem.trimEnd(u8, try must(c, &.{ "rev-parse", "--show-prefix" }), "/");
     const directory = if (prefix.len == 0) "." else prefix;
@@ -302,13 +310,10 @@ fn caller(c: *src.Context, working_directory: ?[]const u8) !Caller {
         const one = found.items[0];
         return .{ .name = one.name, .top = top, .directory = directory, .gate = one.gate, .config = one.planned.config };
     }
-    if (found.items.len == 0) {
-        c.fail("land: no workflow in .github/workflows is the caller generated for this package; generate it with plan -- --workflow .github/workflows/ci.yml", .{});
-    } else {
-        var callers: std.ArrayList([]const u8) = .empty;
-        for (found.items) |each| try callers.append(c.a, each.name);
-        c.fail("land: {s} are each a caller of this package; keep one, or name its directory with --working-directory", .{try std.mem.join(c.a, ", ", callers.items)});
-    }
+    if (found.items.len == 0) return null;
+    var callers: std.ArrayList([]const u8) = .empty;
+    for (found.items) |each| try callers.append(c.a, each.name);
+    c.fail("land: {s} are each a caller of this package; keep one, or name its directory with --working-directory", .{try std.mem.join(c.a, ", ", callers.items)});
     return error.LandFailed;
 }
 
@@ -574,6 +579,7 @@ fn prepare(c: *src.Context, branch: []const u8, base: Base, found: Caller, date:
         }
     }
     try refreshCaller(c, found, sdk);
+    try requireCurrentCaller(c, found, sdk);
     try noteChangelog(c);
     const outcome = release.run(c, date) catch |err| switch (err) {
         // Each of these named its fix.
@@ -608,23 +614,57 @@ fn refreshCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     at_top.dir = top;
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     const existing = try at_top.read(path);
-    if (std.mem.find(u8, existing, "preflight-ref: ${{ github.sha }}\n") != null) return;
+    if (std.mem.find(u8, existing, own_ref) != null) return;
     const pin = workflow.pinned(c.*, "build.zig.zon") catch |err| {
         c.fail("land: build.zig.zon: {t}; {s} names preflight by the manifest's pin", .{ err, path });
         return error.LandFailed;
     };
     if (std.mem.find(u8, existing, try c.a.print("preflight-ref: {s}\n", .{pin})) != null) return;
-    // The label the caller was generated with, so that only the pin changes.
+    try workflow.write(at_top, path, try generateCaller(c, found, sdk, path, existing));
+}
+
+/// What preflight's own caller names as the preflight it runs: the commit under test.
+const own_ref = "preflight-ref: ${{ github.sha }}\n";
+
+/// The caller at `path`, `existing`, as `plan -- --workflow <caller>` generates it now for the
+/// package's pins and configuration, planned as its first line says it was.
+fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: []const u8) ![]const u8 {
+    // The label the caller was generated with, so that only what it was planned from changes.
     const label = if (std.mem.startsWith(u8, existing, workflow.header)) existing[workflow.header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
     var config = try workflow.configuration(c.*, found.config);
-    if (sdk) |add| try add(&at_top, &config, found.gate);
-    const text = workflow.generate(c.*, config, "build.zig.zon", found.gate, false, label, existing, &.{}) catch |err| {
+    if (sdk) |add| try add(c, &config, found.gate);
+    const own = std.mem.find(u8, existing, own_ref) != null;
+    return workflow.generate(c.*, config, "build.zig.zon", found.gate, own, label, existing, &.{}) catch |err| {
         if (err == error.UndeclaredCallerJob) {
             c.fail("land: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs, then land", .{ path, workflow.undeclared });
         } else c.fail("land: {s} cannot be generated again: {t}", .{ path, err });
         return error.LandFailed;
     };
-    try workflow.write(at_top, path, text);
+}
+
+/// Refuses a caller that is not what `plan -- --workflow <caller>` generates for the package's
+/// pins and configuration: a landing that left it so would have the hosted runs check the
+/// package with another preflight than it pins, or other jobs than ci/workflow.json declares.
+fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
+    var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
+    defer top.close(c.io);
+    var at_top = c.*;
+    at_top.dir = top;
+    const path = try c.a.print(".github/workflows/{s}", .{found.name});
+    const existing = try at_top.read(path);
+    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing))) return;
+    const line = existing[0 .. std.mem.findScalar(u8, existing, '\n') orelse existing.len];
+    const planned_with = if (std.mem.find(u8, line, ": zig build plan -- ")) |at| line[at + 2 ..] else "zig build plan -- --workflow .github/workflows/ci.yml";
+    c.fail("{s} is not what plan generates for this package's pins and {s}: generate it again (`{s}`, `bay dev plan -- ...` under bay) and commit it", .{ path, found.config, planned_with });
+    return error.LandFailed;
+}
+
+/// `gate`'s look at the caller: the package's caller, if it has one, is what `plan` generates
+/// for its pins and configuration. `config` overrides the configuration its first line names.
+pub fn currentCaller(c: *src.Context, working_directory: ?[]const u8, config: ?[]const u8, sdk: ?Sdk) !void {
+    var found = (try findCaller(c, working_directory)) orelse return;
+    if (config) |given| found.config = given;
+    try requireCurrentCaller(c, found, sdk);
 }
 
 /// A changelog line for the dependencies pinned at another revision than at the last release,

@@ -67,6 +67,8 @@ runs:
       shell: bash
       run: |
         echo "ZIG_GLOBAL_CACHE_DIR=${RUNNER_TEMP}/zig-global" >> "$GITHUB_ENV"
+        # When the job started, near enough, for the deadline its test runners keep.
+        [ -n "${PREFLIGHT_STARTED:-}" ] || echo "PREFLIGHT_STARTED=$(date +%s)" >> "$GITHUB_ENV"
         echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
         # Zig builds its own build runner for the CPU it runs on, so what it built on one
         # model of the runners' CPUs is of no use on another.

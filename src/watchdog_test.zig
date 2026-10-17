@@ -47,3 +47,34 @@ test "the watch expires when the whole bound has passed, and not a nanosecond be
     thread.join();
     try std.testing.expectEqual(true, w.expired.?);
 }
+
+test "a job's deadline sooner than the test's limit bounds the wait, and names itself" {
+    var clock: Clock = .init(std.testing.io, .{ .real = .fromNanoseconds(1_000 * std.time.ns_per_s) });
+    const io = clock.io();
+    const limit: std.Io.Duration = .fromSeconds(120);
+    // No deadline, or one past the limit: the limit.
+    try std.testing.expectEqual(watchdog.Bound{ .limit = limit, .job = false }, watchdog.bound(io, limit, null));
+    try std.testing.expectEqual(watchdog.Bound{ .limit = limit, .job = false }, watchdog.bound(io, limit, 1_120));
+    // Sooner: what is left of the job.
+    try std.testing.expectEqual(watchdog.Bound{ .limit = .fromSeconds(30), .job = true }, watchdog.bound(io, limit, 1_030));
+    // Already past: no wait at all.
+    try std.testing.expectEqual(watchdog.Bound{ .limit = .fromSeconds(0), .job = true }, watchdog.bound(io, limit, 900));
+}
+
+test "a job's deadline is whole seconds, or unset" {
+    try std.testing.expectEqual(@as(?i64, null), try watchdog.parseDeadline(null));
+    try std.testing.expectEqual(@as(?i64, 1_700_000_000), try watchdog.parseDeadline("1700000000"));
+    try std.testing.expectError(error.InvalidDeadline, watchdog.parseDeadline("soon"));
+}
+
+test "a hosted job's deadline is its start and limit, less what it does after its tests" {
+    var env: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env.deinit();
+    try std.testing.expectEqual(@as(?i64, null), try watchdog.jobDeadline(&env));
+    try env.put("PREFLIGHT_STARTED", "1700000000");
+    try std.testing.expectError(error.IncompleteJobDeadline, watchdog.jobDeadline(&env));
+    try env.put("PREFLIGHT_JOB_TIMEOUT", "20");
+    try std.testing.expectEqual(@as(?i64, 1700000000 + 20 * 60 - watchdog.after_tests_s), try watchdog.jobDeadline(&env));
+    try env.put("PREFLIGHT_JOB_TIMEOUT", "twenty");
+    try std.testing.expectError(error.InvalidJobTimeout, watchdog.jobDeadline(&env));
+}

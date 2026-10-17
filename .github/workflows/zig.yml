@@ -236,6 +236,8 @@ jobs:
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_TARGETS: ${{ matrix.targets }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
+          # With the job's start, its deadline: a test running then ends named.
+          PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight run
       - uses: actions/upload-artifact@v4
@@ -385,6 +387,8 @@ jobs:
           STEP: ${{ matrix.step }}
           BUILD_ARGS: ${{ matrix.args }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
+          # With the job's start, its deadline: a test running then ends named.
+          PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
         run: preflight run
       - uses: actions/upload-artifact@v4
         with:
@@ -447,6 +451,8 @@ jobs:
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
+          # With the job's start, its deadline: a test running then ends named.
+          PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
         run: preflight run
       - uses: actions/upload-artifact@v4
         if: always() && matrix.step == 'hardened-fuzz'
@@ -474,11 +480,13 @@ jobs:
         with:
           name: toolchain-${{ inputs.preflight-ref }}
           path: .preflight-bin
+      # Each job's records in a directory of its own: jobs on one OS and mode
+      # name their records alike, and merged into one directory they overwrite
+      # each other, interleaved when two downloads write one file at once.
       - uses: actions/download-artifact@v4
         with:
           pattern: timings-*
           path: .preflight-timings
-          merge-multiple: true
       - name: Refresh the per-test durations the shards balance by
         run: |
           chmod +x .preflight-bin/linux/preflight

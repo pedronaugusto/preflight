@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- A hosted job, and `gate`, refuse a test the step runs without preflight's runner, naming it: one the build gave its tests after `addCi` read them, which ran with no watchdog, shard, timing record or riscv64 machine (conduit's `containment-tests` ran on the riscv64 leg's host, where it cannot). Add it to the tests before `addCi`.
+
+### Added
+
+- A hosted test job keeps a deadline, its start and limit less two minutes for its report and upload, and the runner ends a test still running then, named (`preflight: watchdog: <test> was running when the job's time ran out`), where the host would cancel the job and name nothing. The runner reads it from `PREFLIGHT_DEADLINE`, which `preflight run` sets from `PREFLIGHT_STARTED` and `PREFLIGHT_JOB_TIMEOUT`.
+- The riscv64 leg records its tests' durations (`-Dci-timings=true`), a column of its own, and splits into `shards.riscv64` jobs balanced by it: emulated, a suite takes several times as long as on a runner (shakedown's passed the job's limit two nights running).
+
+### Fixed
+
+- The release tier's `profile` job failed now and then with `SyntaxError`: it merged every job's timing records into one directory, where jobs on one OS and mode (x86_64 and aarch64, Debug) write records of one name, so one job's records replaced another's and two downloads writing one file at once interleaved it. Each job's records keep a directory of their own.
+
 ## [0.6.3] - 2026-10-17
 
 ### Added

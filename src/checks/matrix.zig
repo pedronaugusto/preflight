@@ -8,6 +8,8 @@ const host_names = [_][]const u8{ "linux", "macos", "windows" };
 /// one already), and their `shards` keys.
 pub const arm_hosts = [_][]const u8{ "ubuntu-24.04-arm", "windows-11-arm" };
 const arm_host_names = [_][]const u8{ "linux_arm", "windows_arm" };
+/// The `shards` key of the riscv64 job on its emulated kernel.
+const emulated_host_name = "riscv64";
 /// Every runner a job may name.
 const every_host = hosts ++ arm_hosts;
 /// Named cases with weights gave way to per-test shards that the test runner
@@ -245,7 +247,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
         try hostJobs(a, config, &jobs, host, host_name, modes);
     }
     for (arm_hosts, arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe });
-    try jobs.append(a, try emulatedJob(a, config));
+    try emulatedJobs(a, config, &jobs);
     try jobs.append(a, try lintJob(a, config));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
@@ -296,16 +298,23 @@ fn linuxHost(host: []const u8) bool {
 /// The Debug suite on riscv64 Linux, which no hosted runner is: built for it on the Linux
 /// runner, static with musl, and run on a riscv64 Linux kernel QEMU emulates (`-Dci-vm`), so
 /// that what a kernel does (reaping, pidfds, io_uring, file maps) is a kernel's, not a
-/// user-mode emulator's. Its durations are QEMU's, so it records none.
-fn emulatedJob(a: std.mem.Allocator, config: src.Value) !Job {
-    return .{
-        .os = hosts[0],
-        .name = "test (riscv64-linux on its kernel under QEMU, Debug)",
-        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dtarget=riscv64-linux-musl -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
-        .setup = true,
-        .qemu = true,
-        .job_timeout = try minutes(config, "test_job_timeout"),
-    };
+/// user-mode emulator's. Emulated, a suite takes several times as long as on a runner, so
+/// it splits into `shards.riscv64` jobs; its durations, QEMU's, are a column of their own,
+/// which balances them.
+fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
+    const count = try shardCount(src.get(src.get(config, "shards"), emulated_host_name));
+    for (0..count) |i| {
+        const shard = try shardName(a, i, count);
+        try jobs.append(a, .{
+            .os = hosts[0],
+            .name = try a.print("test (riscv64-linux on its kernel under QEMU, Debug){s}{s}", .{ if (count > 1) " shard " else "", shard }),
+            .args = try a.print("-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+            .shard = shard,
+            .setup = true,
+            .qemu = true,
+            .job_timeout = try minutes(config, "test_job_timeout"),
+        });
+    }
 }
 
 pub const Tiers = struct { native: []Job, compile: []Job, run: []Job };
@@ -539,7 +548,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
-    for (host_names ++ arm_host_names) |host| _ = try shardCount(src.get(shards, host));
+    for (host_names ++ arm_host_names ++ .{emulated_host_name}) |host| _ = try shardCount(src.get(shards, host));
     for ([_][]const u8{ "compile_once", "windows_git_latest", "land", "attest", "release" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
@@ -802,6 +811,21 @@ test "each host's shards run every mode, split by count, with the lint and compi
     try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, .release));
 }
 
+test "the riscv64 job on its emulated kernel splits into its shards" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":2}}", .{})).value;
+    var shards: usize = 0;
+    for (try plan(a, config, .release)) |job| if (job.qemu) {
+        shards += 1;
+        try std.testing.expectEqualStrings(try a.print("{d}/2", .{shards}), job.shard);
+        try std.testing.expect(std.mem.endsWith(u8, job.name, try a.print(" shard {d}/2", .{shards})));
+    };
+    try std.testing.expectEqual(@as(usize, 2), shards);
+    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":0}}", .{})).value, .release));
+}
+
 test "named weighted cases are refused, naming the per-test shards that replace them" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -926,11 +950,11 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         };
         try std.testing.expectEqual(@as(usize, 1), found);
     }
-    // Every host the tier executes records its durations; none of it is the fast job. QEMU's
-    // durations are not the target's, so the emulated job records none.
+    // Every host the tier executes records its durations, QEMU's emulated kernel too, a column
+    // of its own; none of it is the fast job.
     for (jobs) |job| {
         if (job.qemu) {
-            try std.testing.expect(std.mem.find(u8, job.args, "-Dtarget=riscv64-linux-musl -Dci-vm") != null);
+            try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm") != null);
             continue;
         }
         if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);

@@ -1349,6 +1349,43 @@ test "toolchain hosted runner passes the SDK only to a build that declares it" {
     try std.testing.expect(command.succeeded(result));
 }
 
+test "toolchain hosted runner refuses a test that joined the tests after addCi read them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
+        \\    preflight.addCi(b, b, .{ .tests = test_step });
+        \\    const late = b.addTest(.{ .name = "late-tests", .root_module = b.createModule(.{ .root_source_file = b.path("src/late.zig"), .target = target, .optimize = optimize }) });
+        \\    test_step.dependOn(&b.addRunArtifact(late).step);
+        \\}
+        \\
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/late.zig", .data = "test \"late\" {}\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = "{}" });
+    const fixture_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const owner = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, root, a);
+    const build = try std.Io.Dir.path.join(a, &.{ owner, "build.zig" });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("STEP", "ci");
+    try env.put("BUILD_ARGS", "-Dci-lint=false");
+    try env.put("PREFLIGHT_SETUP", "false");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "late-tests: `ci` runs it without preflight's runner") != null);
+}
+
 test "toolchain canonical sample declares its benchmark artifacts" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

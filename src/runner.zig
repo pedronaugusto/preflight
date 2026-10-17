@@ -15,6 +15,8 @@ pub const std_options: std.Options = .{ .logFn = log };
 const log_level = @field(std.log.Level, @tagName(options.test_log_level));
 var errors: std.atomic.Value(usize) = .init(0);
 var order: []usize = &.{};
+/// The job's deadline, `PREFLIGHT_DEADLINE`, which a hosted job's runner sets.
+var job_deadline: ?i64 = null;
 /// As upstream's runner sets up `std.testing.allocator` for each test.
 const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701ba, .check_write_after_free = true };
 
@@ -78,7 +80,8 @@ fn report(comptime format: []const u8, args: anytype) void {
 }
 
 /// Ends the process when one test, its Io teardown included, outlasts the
-/// package's `test_timeout`, and says which test and phase it was in.
+/// package's `test_timeout`, or runs when the job's deadline comes, and says
+/// which test and phase it was in.
 const Watchdog = struct {
     name: []const u8,
     phase: std.atomic.Value(Phase) = .init(.body),
@@ -101,8 +104,9 @@ const Watchdog = struct {
     }
 
     fn watch(watchdog: *Watchdog) void {
+        const wait = bound.bound(io, test_timeout, job_deadline);
         // The global single-threaded Io never cancels a wait.
-        if (!bound.expired(io, &watchdog.done, test_timeout)) return;
+        if (!bound.expired(io, &watchdog.done, wait.limit)) return;
         // Not through the stderr lock: a test stalled in a crash handler
         // that hangs holds it, and the watchdog must still say what ran
         // out and end the process.
@@ -111,8 +115,13 @@ const Watchdog = struct {
         const name = watchdog.name;
         const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
         const phase = watchdog.phase.load(.acquire);
-        // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
-        text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch {};
+        if (wait.job) {
+            // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
+            text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {d} ms into it; phase {t}; seed {d}\n", .{ name, wait.limit.toMilliseconds(), phase, testing.random_seed }) catch {};
+        } else {
+            // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
+            text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch {};
+        }
         var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         // glint-ignore: Z026 -- the process ends next either way; a lost line cannot be reported anywhere else
         stderr.interface.writeAll(text.buffered()) catch {};
@@ -131,8 +140,15 @@ pub fn main(init: std.process.Init.Minimal) void {
         if (std.mem.eql(u8, arg, "--listen=-")) listen = true;
     }
     order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
+    job_deadline = readDeadline(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_DEADLINE: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
     serve(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
+}
+
+fn readDeadline(environ: std.process.Environ) !?i64 {
+    var env = try environ.createMap(std.heap.page_allocator);
+    defer env.deinit();
+    return bound.parseDeadline(env.get("PREFLIGHT_DEADLINE"));
 }
 
 fn serve(init: std.process.Init.Minimal) !void {

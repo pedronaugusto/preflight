@@ -4,6 +4,7 @@ const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
 const src = checks.source;
 const facts = @import("facts.zig");
+const watchdog = @import("watchdog.zig");
 
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
@@ -517,7 +518,14 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
     return if (step == .string) step.string else null;
 }
 
-fn runGate(c: src.Context, env: *std.process.Environ.Map) !void {
+fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
+    var c = context;
+    // The test runners end a test that runs when the job's time is up, named,
+    // before the host cancels the job and says nothing of what ran.
+    if (try watchdog.jobDeadline(env)) |deadline| {
+        try env.put("PREFLIGHT_DEADLINE", try c.a.print("{d}", .{deadline}));
+        c.environ_map = env;
+    }
     const step = env.get("STEP") orelse "ci";
     if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
@@ -562,6 +570,10 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         var options: std.ArrayList([]const u8) = .empty;
         for (argv.items[first_option..]) |option_text| if (std.mem.startsWith(u8, option_text, "-D")) try options.append(c.a, option_text);
         const snapshot = try facts.read(c, c.zig, options.items);
+        // A test the step runs outside preflight's runner would pass unwatched.
+        const outside = try facts.testsOutsideRunner(c.a, snapshot, step);
+        for (outside) |name| c.report("preflight: {s}: `{s}` runs it without preflight's runner, so with no watchdog, shard, timing record or riscv64 machine: it joined the tests after addCi read them; add it to them before addCi\n", .{ name, step });
+        if (outside.len != 0) return error.TestOutsideRunner;
         for (snapshot.config.available_options) |available_option| {
             const name = available_option.name.slice(&snapshot.config);
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");

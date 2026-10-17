@@ -56,7 +56,8 @@ In `addCi(b, package, config)`, `b` is the build the steps and their `-D` option
 and the one whose dependencies hold `preflight` and `shakedown`; `package` is the package
 checked, whose sources, manifest, installed artifacts and modules the gate reads. With bay
 they are the development build and the package; without it, one builder is both. The tests
-the gate runs are a step of `b`.
+the gate runs are a step of `b`, complete when `addCi` is called: it gives each test it
+finds there preflight's runner, and the gate refuses one added after, by name.
 
 Pull requests then run the merge tier (source checks, the Debug suite on Linux, macOS
 and Windows, and the configured cross targets), a dispatch runs the tier it names, and a
@@ -679,7 +680,8 @@ run the whole gate, documentation or not: what a landing passes does not depend 
 path filter.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
-jobs. Every job compiles the whole suite once, or downloads it with
+jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, and `riscv64` for the
+riscv64 job on its emulated kernel, which runs a suite several times as long). Every job compiles the whole suite once, or downloads it with
 `compile_once`, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`. A test with no record weighs the mean of those with one;

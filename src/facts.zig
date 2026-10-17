@@ -386,6 +386,50 @@ test "a module of the checked package reached through a second package is named 
     try std.testing.expectEqualStrings("/work/zig-pkg/dep/src/root.zig", try packagePath(a, "/work/pkg", "/work/zig-pkg/dep", "src/root.zig"));
 }
 
+/// The test artifacts a run under the top-level step `step_name` runs without preflight's
+/// runner: ones a build gave its tests after `addCi` read them, which then run with no
+/// watchdog, shard, timing record or riscv64 machine. Empty for a build that gives no test
+/// preflight's runner (one without `addCi`, as a declared job's nested build).
+pub fn testsOutsideRunner(a: std.mem.Allocator, snapshot: Snapshot, step_name: []const u8) ![]const []const u8 {
+    const c = &snapshot.config;
+    var instrumented_any = false;
+    for (c.steps) |step| {
+        const compiled = step.extended.cast(c, C.Step.Compile) orelse continue;
+        if (isTest(compiled) and runsPreflight(c, compiled)) instrumented_any = true;
+    }
+    if (!instrumented_any) return &.{};
+    var pending: std.ArrayList(C.Step.Index) = .empty;
+    for (c.steps, 0..) |step, index| {
+        if (step.owner != .root or step.extended.cast(c, C.Step.TopLevel) == null) continue;
+        if (std.mem.eql(u8, step.name.slice(c), step_name)) try pending.append(a, @fromBackingInt(@intCast(index)));
+    }
+    var seen: std.AutoHashMapUnmanaged(C.Step.Index, void) = .empty;
+    var outside: std.array_hash_map.String(void) = .empty;
+    while (pending.pop()) |index| {
+        if ((try seen.getOrPut(a, index)).found_existing) continue;
+        const step = index.ptr(c);
+        try pending.appendSlice(a, step.deps.slice(c));
+        const run = step.extended.cast(c, C.Step.Run) orelse continue;
+        const producer = run.producer.value orelse continue;
+        const compiled = producer.ptr(c).extended.cast(c, C.Step.Compile) orelse continue;
+        if (isTest(compiled) and !runsPreflight(c, compiled)) try outside.put(a, compiled.root_name.slice(c), {});
+    }
+    return a.dupe([]const u8, outside.keys());
+}
+
+fn isTest(compiled: C.Step.Compile) bool {
+    return compiled.flags3.kind == .@"test" or compiled.flags3.kind == .test_obj;
+}
+
+/// Whether `addCi` gave the artifact preflight's runner: its root module then imports the
+/// runner's options, an artifact with a runner of its own included.
+fn runsPreflight(c: *const C, compiled: C.Step.Compile) bool {
+    for (compiled.root_module.get(c).import_table.get(c).imports.mal.items(.name)) |name| {
+        if (std.mem.eql(u8, name.slice(c), "preflight_runner_options")) return true;
+    }
+    return false;
+}
+
 /// Source roots of configured root-package test artifacts. Compiler module IDs supply roots;
 /// generated roots remain explicit rather than being guessed from path spelling.
 pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot) ![]const []const u8 {

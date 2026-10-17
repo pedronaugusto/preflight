@@ -50,6 +50,17 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
     }
 }
 
+test "the Zig master leg has bay on the path before its setup fetches through it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "master");
+    // The setup's fetch configures the package's build, `bay dev` for a
+    // package bay develops; without bay it fails to start (`FileNotFound`).
+    const bay = std.mem.find(u8, body, "- name: Take bay from the toolchain") orelse return error.TestExpectedBay;
+    const setup = std.mem.find(u8, body, "- uses: ./.preflight/.github/actions/setup") orelse return error.TestExpectedSetup;
+    try std.testing.expect(bay < setup);
+}
+
 test "hosted advisory deadlines expire before the job can cancel the run" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

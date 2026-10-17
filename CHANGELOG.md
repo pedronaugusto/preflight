@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Zig master leg puts bay on the path before its setup, whose fetch configures the package's build (`bay dev` for a package bay develops): it failed every night at `preflight fetch` with `FileNotFound`, the `bay` it could not start.
+
 ## [0.9.1] - 2026-10-17
 
 ### Added

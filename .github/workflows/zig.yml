@@ -282,13 +282,8 @@ jobs:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
           path: .preflight
-      - uses: ./.preflight/.github/actions/setup
-        timeout-minutes: 10
-        with:
-          zig-version: master
-          build-args: -Doptimize=debug -Dci-lint=false
-          working-directory: ${{ inputs.working-directory }}
-          build-key: master-linux-debug
+      # bay is on the path before the setup, whose fetch configures the
+      # package's build: `bay dev` for a package bay develops.
       - uses: actions/download-artifact@v4
         timeout-minutes: 2
         with:
@@ -301,6 +296,13 @@ jobs:
           cp "$RUNNER_TEMP/toolchain/linux/bay" "$RUNNER_TEMP/bay-bin/bay"
           chmod +x "$RUNNER_TEMP/bay-bin/bay"
           echo "$RUNNER_TEMP/bay-bin" >> "$GITHUB_PATH"
+      - uses: ./.preflight/.github/actions/setup
+        timeout-minutes: 10
+        with:
+          zig-version: master
+          build-args: -Doptimize=debug -Dci-lint=false
+          working-directory: ${{ inputs.working-directory }}
+          build-key: master-linux-debug
       - name: Set up test tools (attempt 1/3)
         id: tools1
         timeout-minutes: 5

@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The command line is ensign's (0.2.3, a new dependency): one declaration (`src/cli.zig`) gives every command its options, `--help` and the mistakes' messages, which name the nearest option and exit with status 2. Each command takes exactly its options, so one a command ignored before (`gate --date`) is refused; the forms the build's steps and the generated workflows call are held by tests. `plan --full`, refused since `--tier` replaced it, is an unknown option like any other.
+
 ## [0.10.0] - 2026-10-17
 
 ### Breaking

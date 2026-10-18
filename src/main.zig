@@ -1,134 +1,111 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const ensign = @import("ensign");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
 const src = checks.source;
 const facts = @import("facts.zig");
 const watchdog = @import("watchdog.zig");
+const Cli = @import("cli.zig").Cli;
+const Command = @FieldType(Cli, "command");
 
 pub fn main(init: std.process.Init) !void {
+    // Help and mistakes are answered here, and the program exits.
+    const cli = ensign.parseOrExit(Cli, init);
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     const a = arena.allocator();
     var c: src.Context = .{ .a = a, .io = init.io };
     c.bay = c.bayFor(init.environ_map);
-    const args = try init.minimal.args.toSlice(a);
-    if (args.len < 2) return error.MissingCommand;
-    const command = args[1];
-    if (std.mem.eql(u8, command, "facts")) {
-        try exportFacts(c, args);
-    } else if (std.mem.eql(u8, command, "plan")) {
-        try planCommand(&c, init, args);
-    } else if (std.mem.eql(u8, command, "version")) {
-        try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)}));
-    } else if (std.mem.eql(u8, command, "release")) {
-        try releaseCommand(&c, args);
-    } else if (std.mem.eql(u8, command, "surface")) {
-        try surfaceCommand(&c, args);
-    } else if (landing.get(command)) |which| {
-        try landingCommand(&c, init.environ_map, which, args);
-    } else if (std.mem.eql(u8, command, "cache")) {
-        try checks.cache.trim(c, option(args, "--path") orelse ".zig-cache", try std.fmt.parseInt(usize, option(args, "--cap") orelse "1048576", 10));
-    } else if (std.mem.eql(u8, command, "executable")) {
-        for (args[2..]) |path| try executable(c, path);
-    } else if (std.mem.eql(u8, command, "unsharded")) {
-        if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
-            c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{if (args.len > 2) args[2] else "test"});
-        }
-    } else if (std.mem.eql(u8, command, "setup")) {
-        try setup(c, init.environ_map);
-    } else if (std.mem.eql(u8, command, "prepare")) {
+    switch (cli.command) {
+        .facts => |args| try exportFacts(&c, args),
+        .plan => |args| try planCommand(&c, init, args),
+        .version => try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)})),
+        .release => |args| try releaseCommand(&c, args),
+        .surface => |args| try surfaceCommand(&c, args),
+        .land => |args| try landCommand(&c, args),
+        .ready => |args| try readyCommand(&c, args),
+        .gate => |args| try gateCommand(&c, init.environ_map, args),
+        .publish => |args| try publishCommand(&c, args),
+        .cache => |args| try checks.cache.trim(c, args.path, args.cap),
+        .executable => |args| for (args.paths) |path| try executable(c, path),
+        .unsharded => |args| if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
+            c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{args.name});
+        },
+        .setup => try setup(c, init.environ_map),
         // The hosted workflow owns the attempt deadlines and retries.
-        if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
-    } else if (std.mem.eql(u8, command, "profile")) {
-        const durations = option(args, "--durations") orelse "ci/durations.json";
-        const previous = if (c.exists(durations)) try c.json(durations) else .null;
-        const input = option(args, "--input") orelse ".preflight-timings";
-        const summary = try checks.profile.summarize(c, input, previous);
-        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--output") orelse durations, .data = try checks.profile.render(a, summary) });
-        // The phases the jobs timed, beside the test durations.
-        const costs = option(args, "--costs") orelse "ci/costs.json";
-        const measured = try checks.profile.measure(c, input, if (c.exists(costs)) try c.json(costs) else .null);
-        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = option(args, "--costs-output") orelse costs, .data = try checks.profile.renderCosts(a, measured) });
-    } else if (std.mem.eql(u8, command, "fetch")) {
-        for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv);
-    } else if (std.mem.eql(u8, command, "fuzz-campaign")) {
-        try campaignCommand(&c, init.environ_map, args);
-    } else if (std.mem.eql(u8, command, "run")) {
-        try runGate(c, init.environ_map);
-    } else if (std.mem.eql(u8, command, "skip")) {
-        try skipCommand(&c, init.environ_map, args);
-    } else if (std.mem.eql(u8, command, "attest")) {
-        try checks.attest.run(c, init.environ_map);
-    } else if (std.mem.eql(u8, command, "docs")) {
-        const config = try c.options(option(args, "--config") orelse "ci/preflight.json");
-        if (option(args, "--zig-exe")) |zig| c.zig = zig;
-        const label = try a.print("zig build docs -- {s}", .{checks.docs.region(args[2..])});
-        const generator = src.get(src.get(config, "docs"), label);
-        if (generator == .null) return error.UnknownDocumentationRegion;
-        try stdout(c, try checks.docs.generate(c, generator));
-    } else if (std.mem.eql(u8, command, "deprecations")) {
-        var std_dir = try std.Io.Dir.cwd().openDir(init.io, option(args, "--std") orelse return error.MissingStd, .{});
-        defer std_dir.close(init.io);
-        var paths: std.ArrayList([]const u8) = .empty;
-        var index: usize = 2;
-        while (index < args.len) : (index += 1) {
-            if (std.mem.eql(u8, args[index], "--std")) {
-                index += 1;
-            } else if (!std.mem.eql(u8, args[index], "--write")) try paths.append(a, args[index]);
-        }
-        var buffer: [4096]u8 = undefined;
-        var out = std.Io.File.stdout().writer(init.io, &buffer);
-        _ = try deprecations.run(a, init.io, .cwd(), .{ .std_dir = std_dir, .write = hasFlag(args, "--write"), .paths = paths.items }, &out.interface);
-        try out.interface.flush();
-    } else if (std.mem.eql(u8, command, "lint")) {
-        // A passing lint prints nothing; a failing one prints all it found, and a
-        // hosted job keeps it in the summary either way.
-        var held: std.Io.Writer.Allocating = .init(a);
-        c.held = &held;
-        const outcome = lintCommand(&c, init, args);
-        c.held = null;
-        if (c.summary_path) |path| if (held.written().len != 0) {
-            // glint-ignore: Z026 -- the summary is a copy for the hosted job; the outcome below is the check's
-            append(c, path, try a.print("<details><summary>lint</summary>\n\n```\n{s}```\n</details>\n", .{held.written()})) catch {};
-        };
-        // A finding reported without failing is shown: it is there to be seen.
-        if (std.meta.isError(outcome) or c.errors != 0 or c.notes != 0) c.report("{s}", .{held.written()});
-        try outcome;
-    } else return error.UnknownCommand;
+        .prepare => if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} })),
+        .profile => |args| try profileCommand(c, args),
+        .fetch => for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv),
+        .fuzz_campaign => |args| {
+            c.environ_map = init.environ_map;
+            try checks.campaign.run(&c, args.cache, args.cwd, args.build);
+        },
+        .run => try runGate(c, init.environ_map),
+        .skip => |args| try skipCommand(&c, init.environ_map, args),
+        .attest => try checks.attest.run(c, init.environ_map),
+        .docs => |args| {
+            const config = try c.options(args.config);
+            if (args.zig_exe) |zig| c.zig = zig;
+            const generator = src.get(src.get(config, "docs"), try a.print("zig build docs -- {s}", .{args.region}));
+            if (generator == .null) return error.UnknownDocumentationRegion;
+            try stdout(c, try checks.docs.generate(c, generator));
+        },
+        .deprecations => |args| try deprecationsCommand(init.io, a, args),
+        .lint => |args| {
+            // A passing lint prints nothing; a failing one prints all it found, and a
+            // hosted job keeps it in the summary either way.
+            var held: std.Io.Writer.Allocating = .init(a);
+            c.held = &held;
+            const outcome = lintCommand(&c, init, args);
+            c.held = null;
+            if (c.summary_path) |path| if (held.written().len != 0) {
+                // glint-ignore: Z026 -- the summary is a copy for the hosted job; the outcome below is the check's
+                append(c, path, try a.print("<details><summary>lint</summary>\n\n```\n{s}```\n</details>\n", .{held.written()})) catch {};
+            };
+            // A finding reported without failing is shown: it is there to be seen.
+            if (std.meta.isError(outcome) or c.errors != 0 or c.notes != 0) c.report("{s}", .{held.written()});
+            try outcome;
+        },
+    }
     if (c.errors != 0) return error.CheckFailed;
 }
 
-/// `fuzz-campaign --cache <dir> --cwd <dir> -- <build> <step> --fuzz=<limit>...`: the
-/// campaign run and judged on what the fuzzer leaves in the cache.
-fn campaignCommand(c: *src.Context, env: *std.process.Environ.Map, args: []const []const u8) !void {
-    const separator = for (args, 0..) |arg, i| {
-        if (std.mem.eql(u8, arg, "--")) break i;
-    } else return error.MissingCampaignBuild;
-    c.environ_map = env;
-    try checks.campaign.run(c, option(args, "--cache") orelse return error.MissingCampaignCache, option(args, "--cwd") orelse ".", args[separator + 1 ..]);
+/// `profile`: the jobs' timing records summarized beside the durations and costs so far.
+fn profileCommand(c: src.Context, args: @FieldType(Command, "profile")) !void {
+    const previous = if (c.exists(args.durations)) try c.json(args.durations) else .null;
+    const summary = try checks.profile.summarize(c, args.input, previous);
+    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.output orelse args.durations, .data = try checks.profile.render(c.a, summary) });
+    // The phases the jobs timed, beside the test durations.
+    const measured = try checks.profile.measure(c, args.input, if (c.exists(args.costs)) try c.json(args.costs) else .null);
+    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.costs_output orelse args.costs, .data = try checks.profile.renderCosts(c.a, measured) });
+}
+
+/// `deprecations`: what this Zig release deprecated, rewritten, or with `--write` applied.
+fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Command, "deprecations")) !void {
+    var std_dir = try std.Io.Dir.cwd().openDir(io, args.std, .{});
+    defer std_dir.close(io);
+    var buffer: [4096]u8 = undefined;
+    var out = std.Io.File.stdout().writer(io, &buffer);
+    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = std_dir, .write = args.write, .paths = args.paths }, &out.interface);
+    try out.interface.flush();
 }
 
 /// `skip`: whether the change is documentation alone, which a fast run does not test.
-fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: []const []const u8) !void {
+fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(Command, "skip")) !void {
     // A merge or release candidate keeps the whole gate, docs-only or not.
     const only_docs = std.mem.eql(u8, env.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c.*, environment(env, "PREFLIGHT_BASE"));
     if (env.get("GITHUB_OUTPUT")) |path| try append(c.*, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
     if (only_docs) {
-        const config = try c.options(option(args, "--config") orelse "ci/preflight.json");
+        const config = try c.options(args.config);
         try checks.docs.check(c, config);
     }
 }
 
 /// `release`: the version the commit about to be tested carries, written to `build.zig.zon` and `CHANGELOG.md`.
-fn releaseCommand(c: *src.Context, args: []const []const u8) !void {
-    var index: usize = 2;
-    while (index < args.len) : (index += 2) {
-        if (!std.mem.eql(u8, args[index], "--date") and !std.mem.eql(u8, args[index], "--module")) return error.UnknownReleaseOption;
-        if (index + 1 == args.len) return error.MissingReleaseOptionValue;
-    }
-    const date = option(args, "--date") orelse try checks.release.today(c.a, c.io);
-    const outcome = checks.release.run(c, date, try modules(c.a, args)) catch |err| switch (err) {
+fn releaseCommand(c: *src.Context, args: @FieldType(Command, "release")) !void {
+    const date = args.date orelse try checks.release.today(c.a, c.io);
+    const outcome = checks.release.run(c, date, try modules(c.a, args.module)) catch |err| switch (err) {
         // Each of these named its fix.
         error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists, error.UndeclaredBreaking => return error.CheckFailed,
         else => return err,
@@ -163,42 +140,20 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
 }
 
-/// The commands that move main: `land` through the hosted merge tier, and the landing by
-/// hand, `ready`, `gate` on each machine, then `publish`.
-const Landing = enum { land, ready, gate, publish };
-const landing: std.StaticStringMap(Landing) = .initComptime(.{ .{ "land", .land }, .{ "ready", .ready }, .{ "gate", .gate }, .{ "publish", .publish } });
-
-fn landingCommand(c: *src.Context, environ: *const std.process.Environ.Map, which: Landing, args: []const []const u8) !void {
-    switch (which) {
-        .land => try landCommand(c, args),
-        .ready => try readyCommand(c, args),
-        .gate => try gateCommand(c, environ, args),
-        .publish => try publishCommand(c, args),
-    }
-}
-
 /// `land`: the branch checked out, released, through the merge tier and onto main.
-fn landCommand(c: *src.Context, args: []const []const u8) !void {
-    var index: usize = 2;
-    while (index < args.len) : (index += 2) {
-        const known = for ([_][]const u8{ "--date", "--poll", "--config", "--working-directory", "--zig-exe", "--module" }) |name| {
-            if (std.mem.eql(u8, args[index], name)) break true;
-        } else false;
-        if (!known) return error.UnknownLandOption;
-        if (index + 1 == args.len) return error.MissingLandOptionValue;
-    }
-    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+fn landCommand(c: *src.Context, args: @FieldType(Command, "land")) !void {
+    if (args.zig_exe) |zig| c.zig = zig;
     // `--config` and `--working-directory` as `plan` takes them; by default what the caller's first line says it was planned with.
     var options: checks.land.Options = .{
-        .date = option(args, "--date") orelse try checks.release.today(c.a, c.io),
-        .config = option(args, "--config"),
-        .working_directory = option(args, "--working-directory"),
+        .date = args.date orelse try checks.release.today(c.a, c.io),
+        .config = args.config,
+        .working_directory = args.working_directory,
         .sdk = sdkTargets,
-        .modules = try modules(c.a, args),
+        .modules = try modules(c.a, args.module),
     };
     // `--poll <seconds>`: between two looks at GitHub, for the run and at it.
-    if (option(args, "--poll")) |text| {
-        const every: std.Io.Duration = .fromSeconds(std.fmt.parseInt(u32, text, 10) catch return error.InvalidLandPoll);
+    if (args.poll) |seconds| {
+        const every: std.Io.Duration = .fromSeconds(seconds);
         options.find_every = every;
         options.wait_every = every;
     }
@@ -214,22 +169,14 @@ fn landCommand(c: *src.Context, args: []const []const u8) !void {
 }
 
 /// `ready`: the landing commit made on the branch checked out, for a landing gated by hand.
-fn readyCommand(c: *src.Context, args: []const []const u8) !void {
-    var index: usize = 2;
-    while (index < args.len) : (index += 2) {
-        const known = for ([_][]const u8{ "--date", "--config", "--working-directory", "--zig-exe", "--module" }) |name| {
-            if (std.mem.eql(u8, args[index], name)) break true;
-        } else false;
-        if (!known) return error.UnknownReadyOption;
-        if (index + 1 == args.len) return error.MissingReadyOptionValue;
-    }
-    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+fn readyCommand(c: *src.Context, args: @FieldType(Command, "ready")) !void {
+    if (args.zig_exe) |zig| c.zig = zig;
     const readied = checks.land.ready(c, .{
-        .date = option(args, "--date") orelse try checks.release.today(c.a, c.io),
-        .config = option(args, "--config"),
-        .working_directory = option(args, "--working-directory"),
+        .date = args.date orelse try checks.release.today(c.a, c.io),
+        .config = args.config,
+        .working_directory = args.working_directory,
         .sdk = sdkTargets,
-        .modules = try modules(c.a, args),
+        .modules = try modules(c.a, args.module),
     }) catch |err| switch (err) {
         // Reported where it failed.
         error.LandFailed => return error.CheckFailed,
@@ -245,17 +192,17 @@ fn readyCommand(c: *src.Context, args: []const []const u8) !void {
 /// `--working-directory <dir>` gates a package whose planned jobs run in `dir` while its
 /// declared jobs' directories are the repository's, as the hosted caller runs them
 /// (preflight's own gate runs its sample there); `--config` defaults to `dir`'s.
-fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: []const []const u8) !void {
-    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @FieldType(Command, "gate")) !void {
+    if (args.zig_exe) |zig| c.zig = zig;
     // A caller other than plan generates would have the hosted runs check another landing
     // than the one gated here.
-    checks.land.currentCaller(c, option(args, "--working-directory"), option(args, "--config"), sdkTargets) catch |err| switch (err) {
+    checks.land.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
         // Reported where it failed.
         error.LandFailed => return error.CheckFailed,
         else => return err,
     };
-    const working = option(args, "--working-directory") orelse ".";
-    const config_path = option(args, "--config") orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
+    const working = args.working_directory orelse ".";
+    const config_path = args.config orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
     const config = try checks.workflow.configuration(c.*, config_path);
     const jobs = try checks.matrix.plan(c.a, config, .release);
     const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch, .qemu = onPath(c.*, environ, "qemu-system-riscv64") };
@@ -309,30 +256,28 @@ fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const
 
 /// `plan`: the jobs of a tier as the hosted caller's matrices, or with `--workflow <caller>` the
 /// caller generated again.
-fn planCommand(c: *src.Context, init: std.process.Init, args: []const []const u8) !void {
+fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command, "plan")) !void {
     const a = c.a;
     errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
     errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
-    try planOptions(args[2..]);
-    if (option(args, "--zig-exe")) |zig| c.zig = zig;
-    var config = try checks.workflow.configuration(c.*, option(args, "--config") orelse "ci/workflow.json");
-    try sdkTargets(c, &config, option(args, "--working-directory") orelse ".");
-    if (option(args, "--full") != null) return error.FullReplacedByTier;
-    const tier = std.meta.stringToEnum(checks.matrix.Tier, option(args, "--tier") orelse "fast") orelse return error.UnknownTier;
-    if (option(args, "--workflow")) |path| {
-        // `--drop <job>`, repeated, names each job of the old caller to let go.
-        var drops: std.ArrayList([]const u8) = .empty;
-        for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--drop") and i + 1 < args.len) try drops.append(a, args[i + 1]);
+    if (args.workflow == null and (args.self or args.working_directory != null or args.drop.len != 0)) {
+        c.report("plan: --self, --working-directory and --drop are for the caller --workflow generates\n", .{});
+        return error.CheckFailed;
+    }
+    if (args.zig_exe) |zig| c.zig = zig;
+    var config = try checks.workflow.configuration(c.*, args.config orelse "ci/workflow.json");
+    try sdkTargets(c, &config, args.working_directory orelse ".");
+    if (args.workflow) |path| {
         const existing = if (c.exists(path)) try c.read(path) else null;
-        const heading = try checks.workflow.heading(a, option(args, "--config"), path, option(args, "--working-directory"), hasFlag(args, "--self"));
-        const text = try checks.workflow.generate(c.*, config, option(args, "--manifest") orelse "build.zig.zon", option(args, "--working-directory") orelse ".", hasFlag(args, "--self"), heading, existing, drops.items);
+        const heading = try checks.workflow.heading(a, args.config, path, args.working_directory, args.self);
+        const text = try checks.workflow.generate(c.*, config, args.manifest, args.working_directory orelse ".", args.self, heading, existing, args.drop);
         try checks.workflow.write(c.*, path, text);
         return;
     }
-    const jobs = try checks.matrix.plan(a, config, tier);
-    const tiers = try checks.matrix.split(a, config, jobs, tier);
+    const jobs = try checks.matrix.plan(a, config, args.tier);
+    const tiers = try checks.matrix.split(a, config, jobs, args.tier);
     const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
-    const output = option(args, "--output") orelse init.environ_map.get("GITHUB_OUTPUT");
+    const output = args.output orelse init.environ_map.get("GITHUB_OUTPUT");
     if (output) |path| {
         try append(c.*, path, try a.print("matrix={s}\n", .{value}));
         try append(c.*, path, try a.print("compile_matrix={s}\nrun_matrix={s}\nportable={s}\n", .{
@@ -344,8 +289,8 @@ fn planCommand(c: *src.Context, init: std.process.Init, args: []const []const u8
 }
 
 /// `publish`: the gated commit onto origin's default branch, with its release's tag.
-fn publishCommand(c: *src.Context, args: []const []const u8) !void {
-    if (option(args, "--zig-exe")) |zig| c.zig = zig;
+fn publishCommand(c: *src.Context, args: @FieldType(Command, "publish")) !void {
+    if (args.zig_exe) |zig| c.zig = zig;
     const published = checks.land.publish(c) catch |err| switch (err) {
         // Reported where it failed.
         error.LandFailed => return error.CheckFailed,
@@ -356,16 +301,11 @@ fn publishCommand(c: *src.Context, args: []const []const u8) !void {
 }
 
 /// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.
-fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8) !void {
+fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command, "lint")) !void {
     const a = c.a;
-    var config = try c.options(option(args, "--config") orelse "ci/preflight.json");
-    if (option(args, "--zig-exe")) |zig| c.zig = zig;
-    var build_options: std.ArrayList([]const u8) = .empty;
-    for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--build-option")) {
-        if (i + 1 == args.len) return error.MissingConfigurationOption;
-        try build_options.append(a, args[i + 1]);
-    };
-    const snapshot = try facts.read(c.*, option(args, "--zig-exe") orelse "zig", build_options.items);
+    var config = try c.options(args.config);
+    if (args.zig_exe) |zig| c.zig = zig;
+    const snapshot = try facts.read(c.*, c.zig, args.build_option);
     const roots = try facts.testRoots(a, snapshot);
     var root_values: std.ArrayList(src.Value) = .empty;
     const sources = try std.mem.concat(a, src.Source, &.{ try src.collect(c.*, config), try facts.generatedSources(a, snapshot) });
@@ -375,30 +315,19 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: []const []const u8
     };
     try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = option(args, "--zig-std") }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
 }
 
-fn exportFacts(c: src.Context, args: []const []const u8) !void {
-    const a = c.a;
-    var options: std.ArrayList([]const u8) = .empty;
-    var i: usize = 2;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--zig-exe")) {
-            i += 1;
-            if (i == args.len) return error.MissingCompiler;
-        } else if (std.mem.eql(u8, args[i], "--build-option")) {
-            i += 1;
-            if (i == args.len) return error.MissingConfigurationOption;
-            try options.append(a, args[i]);
-        } else try options.append(a, args[i]);
-    }
-    const snapshot = try facts.read(c, option(args, "--zig-exe") orelse "zig", options.items);
+/// `facts`: the configured build's modules, steps and test roots, as JSON.
+fn exportFacts(c: *src.Context, args: @FieldType(Command, "facts")) !void {
+    if (args.zig_exe) |zig| c.zig = zig;
+    const snapshot = try facts.read(c.*, c.zig, try std.mem.concat(c.a, []const u8, &.{ args.build_option, args.options }));
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writerStreaming(c.io, &buffer);
-    try facts.write(a, snapshot, &out.interface);
+    try facts.write(c.a, snapshot, &out.interface);
     try out.interface.flush();
 }
 
@@ -407,63 +336,29 @@ fn environment(env: *std.process.Environ.Map, key: []const u8) ?[]const u8 {
     return if (value.len > 0) value else null;
 }
 
-fn hasFlag(args: []const []const u8, name: []const u8) bool {
-    for (args) |arg| if (std.mem.eql(u8, arg, name)) return true;
-    return false;
-}
-
-fn planOptions(args: []const []const u8) !void {
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        const flag = args[index];
-        if (std.mem.eql(u8, flag, "--self")) continue;
-        var known = false;
-        for ([_][]const u8{ "--config", "--tier", "--output", "--workflow", "--manifest", "--working-directory", "--full", "--drop", "--zig-exe" }) |name| {
-            if (std.mem.eql(u8, name, flag)) known = true;
-        }
-        if (!known) return error.UnknownPlanOption;
-        index += 1;
-        if (index == args.len or std.mem.startsWith(u8, args[index], "--")) return error.MissingPlanOptionValue;
-    }
-    if (hasFlag(args, "--workflow") and hasFlag(args, "--output")) return error.ConflictingPlanOutputs;
-    if (!hasFlag(args, "--workflow") and (hasFlag(args, "--self") or hasFlag(args, "--manifest") or hasFlag(args, "--working-directory") or hasFlag(args, "--drop"))) return error.WorkflowOptionWithoutOutput;
-}
-
 /// The modules the package exports, as the build passes them: `--module <name>=<root>`.
-fn modules(a: std.mem.Allocator, args: []const []const u8) ![]const checks.surface.Module {
-    var list: std.ArrayList(checks.surface.Module) = .empty;
-    for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, "--module")) {
-        if (i + 1 == args.len) return error.MissingModule;
-        const pair = args[i + 1];
+fn modules(a: std.mem.Allocator, pairs: []const []const u8) ![]const checks.surface.Module {
+    const list = try a.alloc(checks.surface.Module, pairs.len);
+    for (list, pairs) |*module, pair| {
         const equals = std.mem.findScalar(u8, pair, '=') orelse return error.InvalidModule;
-        try list.append(a, .{ .name = pair[0..equals], .root = pair[equals + 1 ..] });
-    };
-    return list.items;
+        module.* = .{ .name = pair[0..equals], .root = pair[equals + 1 ..] };
+    }
+    return list;
 }
 
 /// `surface`: the public surface of the modules the package exports, a line per declaration;
 /// with `--since <revision>`, what changed since it: `-` before a line removed or changed, `+`
 /// before one added. A release refuses a removed line without a `### Breaking` entry.
-fn surfaceCommand(c: *src.Context, args: []const []const u8) !void {
-    var index: usize = 2;
-    while (index < args.len) : (index += 2) {
-        if (!std.mem.eql(u8, args[index], "--since") and !std.mem.eql(u8, args[index], "--module")) return error.UnknownSurfaceOption;
-        if (index + 1 == args.len) return error.MissingSurfaceOptionValue;
-    }
-    const exported = try modules(c.a, args);
+fn surfaceCommand(c: *src.Context, args: @FieldType(Command, "surface")) !void {
+    const exported = try modules(c.a, args.module);
     var out: std.Io.Writer.Allocating = .init(c.a);
-    if (option(args, "--since")) |since| {
+    if (args.since) |since| {
         const gone = try checks.release.surfaceRemoved(c, since, exported);
         const added = try checks.release.surfaceAdded(c, since, exported);
         for (gone) |line| try out.writer.print("- {s}\n", .{line});
         for (added) |line| try out.writer.print("+ {s}\n", .{line});
     } else for (try checks.release.surfaceOf(c, exported)) |line| try out.writer.print("{s}\n", .{line});
     try stdout(c.*, out.written());
-}
-
-fn option(args: []const []const u8, name: []const u8) ?[]const u8 {
-    for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, name) and i + 1 < args.len) return args[i + 1];
-    return null;
 }
 
 /// Gives a downloaded test executable back the permission to run that an

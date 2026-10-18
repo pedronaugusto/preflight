@@ -51,13 +51,15 @@ pub fn dev(b: *std.Build, _: type) void {
     // sets no optimize mode takes its importer's, so the tests, which build
     // aegis in Debug for themselves, take glint in Debug and share it.
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("glint");
+    // The command line's tests hold the forms the build and the workflows call it with.
+    const ensign = (package.dependencyLazy("ensign", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("ensign");
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .debug }).module("shakedown");
     const test_step = b.step("test", "Run the shared check regression suite");
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "shakedown", .module = shakedown } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown } },
     }), .filters = test_filters });
     const options = b.addOptions();
     options.addOptionPathUntracked("root", package.path("."));
@@ -113,20 +115,10 @@ pub fn dev(b: *std.Build, _: type) void {
     verify.dependOn(&executable.step);
 }
 
-/// The preflight program of `package`, built in `b`: ReleaseSafe with glint,
-/// which gantry's Zig frontend shares, so gantry is built the same way. Null
+/// The preflight program of `package`, built in `b` (`ci.programModule`). Null
 /// while a lazy dependency is still to be fetched.
 fn program(b: *std.Build, package: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.Step.Compile {
-    const gantry_dep = package.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch return pendingNull(b);
-    const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch return pendingNull(b)).module("glint");
-    const gantry = ci.dependencyModule(gantry_dep, "gantry") orelse return pendingNull(b);
-    const gantry_zig = ci.dependencyModule(gantry_dep, "gantry.zig") orelse return pendingNull(b);
-    return b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
-        .root_source_file = package.path("src/main.zig"),
-        .target = target,
-        .optimize = .safe,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint } },
-    }) });
+    return b.addExecutable(.{ .name = "preflight", .root_module = ci.programModule(b, package, target) orelse return pendingNull(b) });
 }
 
 /// Ends a configure pass that waits for a lazy dependency, with the CI options
@@ -156,20 +148,10 @@ fn addToolchain(b: *std.Build) bool {
     const step = b.step("toolchain", "Build the checks and bay for the Linux, macOS and Windows runners, ARM ones included, under <prefix>/toolchain");
     for (runners) |runner| {
         const target = b.resolveTargetQuery(runner.query);
-        const gantry_dep = b.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch {
+        const executable = b.addExecutable(.{ .name = "preflight", .root_module = ci.programModule(b, b, target) orelse {
             _ = ci.declareCiOptions(b, null);
             return false;
-        };
-        const glint_dep = b.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch {
-            _ = ci.declareCiOptions(b, null);
-            return false;
-        };
-        const executable = b.addExecutable(.{ .name = "preflight", .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = .safe,
-            .imports = &.{ .{ .name = "gantry", .module = gantry_dep.module("gantry") }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint_dep.module("glint") } },
-        }) });
+        } });
         step.dependOn(&b.addInstallArtifact(executable, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
         // bay sits beside the checks: the runner runs a package developed with it through it.
         const bay = b.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch {

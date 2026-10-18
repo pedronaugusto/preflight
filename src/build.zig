@@ -61,6 +61,24 @@ pub fn dependencyModule(dep: *std.Build.Dependency, name: []const u8) ?*std.Buil
     return dep.builder.modules.get(name);
 }
 
+/// The preflight program's root module from `pkg`'s sources, built in `b` for `target`:
+/// ReleaseSafe with glint, which gantry's Zig frontend shares, so gantry is built the
+/// same way, and ensign for its command line. Null while a lazy dependency is still to
+/// be fetched.
+pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.Module {
+    const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch return null;
+    const gantry = dependencyModule(gantry_dep, "gantry") orelse return null;
+    const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return null;
+    const glint = pkg.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch return null;
+    const ensign = pkg.dependencyLazy("ensign", .{ .target = target, .optimize = .safe }) catch return null;
+    return b.createModule(.{
+        .root_source_file = pkg.path("src/main.zig"),
+        .target = target,
+        .optimize = .safe,
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") } },
+    });
+}
+
 /// CI tools use a stable CPU target across hosted runner models.
 pub fn ciTarget(b: *std.Build) std.Build.ResolvedTarget {
     const host = b.graph.host.result;
@@ -153,24 +171,11 @@ const Steps = struct {
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
-    /// checks compiled here, in ReleaseSafe with glint as one module, so that
-    /// gantry's Zig frontend and glint are built the same way. Null while a
-    /// lazy dependency is still to be fetched.
+    /// checks compiled here (`programModule`). Null while a lazy dependency is
+    /// still to be fetched.
     fn checksTool(steps: Steps, b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget) ?Tool {
         if (steps.checks) |path| return .{ .prebuilt = path };
-        const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .safe, .zig = true }) catch return null;
-        const gantry = dependencyModule(gantry_dep, "gantry") orelse return null;
-        const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return null;
-        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .safe }) catch return null;
-        return .{ .compiled = b.addExecutable(.{
-            .name = "preflight-checks",
-            .root_module = b.createModule(.{
-                .root_source_file = pkg.path("src/main.zig"),
-                .target = host,
-                .optimize = .safe,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint_dep.module("glint") } },
-            }),
-        }) };
+        return .{ .compiled = b.addExecutable(.{ .name = "preflight-checks", .root_module = programModule(b, pkg, host) orelse return null }) };
     }
 
     /// `package` is the package checked; `pkg` is the preflight whose sources and tools the gate runs.

@@ -24,6 +24,7 @@ pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
 
 test {
+    _ = @import("cli.zig");
     _ = @import("structure/check.zig");
     _ = @import("checks/surface.zig");
     _ = @import("consumer.zig");

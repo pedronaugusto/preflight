@@ -36,6 +36,11 @@
             .hash = "bay-0.1.13-uwJ5Z_PVBACjpb7hkhcyRbLrO-q_BdiAheQqOrWDf3cj",
             .lazy = true,
         },
+        .ensign = .{
+            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.2.3#4637655dfb128aee48ea1ef9146c911523075cef",
+            .hash = "ensign-0.2.3-6eMTDycrBACbFVaH6ffvt5cPJNAkyBxEsGMgeXC3_ARP",
+            .lazy = true,
+        },
     },
     .dev_dependencies = .{
         .shakedown = .{

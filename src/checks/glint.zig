@@ -209,23 +209,26 @@ test "function length: the limit, a per-path ceiling and a reasoned exception th
 test "a debug print and a deprecated call are findings the standard library's declarations decide" {
     const f = try Fixture.init();
     defer f.deinit();
+    // The stub standard library holds none of the durability door's declarations, which a real
+    // one does: the door is off here, or its missing declarations leave every run incomplete.
+    const door = ",\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}";
     try f.file("stdlib/std.zig", "pub const debug = @import(\"debug.zig\");\npub const mem = @import(\"mem.zig\");\n");
     try f.file("stdlib/debug.zig", "pub fn print(comptime fmt: []const u8, args: anytype) void {\n    _ = fmt;\n    _ = args;\n}\n");
     try f.file("stdlib/mem.zig", "/// Deprecated: use `find`.\npub fn indexOf(haystack: []const u8, needle: u8) ?usize {\n    _ = haystack;\n    _ = needle;\n    return null;\n}\npub fn find(haystack: []const u8, needle: u8) ?usize {\n    _ = haystack;\n    _ = needle;\n    return null;\n}\n");
     const build: assembly.Build = .{ .std_dir = "stdlib" };
     const paths = "\"glint_paths\":[\"src\"]";
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{});\n}\n");
-    try std.testing.expect(try f.run("{" ++ paths ++ "}", build) != 0);
+    try std.testing.expect(try f.run("{" ++ paths ++ door ++ "}", build) != 0);
     // The same code without the standard library's declarations is unresolved, not a finding.
     try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", .{}));
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"}]}}", build));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"},{\"id\":\"P006\",\"level\":\"off\"}]}}", build));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{}); // glint-ignore: P005 -- the tool's one line of output\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", build));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ door ++ "}", build));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOf(text, 'x');\n}\n");
-    try std.testing.expect(try f.run("{" ++ paths ++ "}", build) != 0);
+    try std.testing.expect(try f.run("{" ++ paths ++ door ++ "}", build) != 0);
     try f.file("src/root_test.zig", "const std = @import(\"std\");\ntest {\n    std.debug.print(\"in a test\", .{});\n}\n");
     try f.file("src/root.zig", "pub const x = 1;\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", build));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ door ++ "}", build));
 }
 
 test "an analysis glint did not finish is never a pass, whatever its findings" {

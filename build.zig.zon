@@ -2,18 +2,20 @@
     .name = .preflight,
     .version = "0.10.2",
     .minimum_zig_version = "0.17.0",
+    // glint 0.4.0 lints; gantry 0.2.6 reads Zig through glint 0.2.15's token tier until it takes 0.4.0.
+    .coexist = .{.glint},
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.2.15#0f272ab89cdcb79bbb408c3809464b17d556d65e",
-            .hash = "glint-0.2.15-3jcpoU91CgBvvbfMBQ68U57dEdyrlfngyjKr-ch2S0mT",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.4.0#d0ff67edc4ea200fe8c152534288004a91746cd0",
+            .hash = "glint-0.4.0-3jcpoY5mCwCAV7LlzJ74F6cLvbi-XEzpDRty67KO4Tb8",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.3#f7b4fa9c3177efd4a55e4fa1150dc3becb0e8e40",
-            .hash = "gantry-0.2.3-1iNrkUC3DAC2gkDFb2WtqjOwoqp63Yg3RpRtMWgLunIJ",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.6#7d8491f9b0f6646fbdc983e8abbc50896daaa34d",
+            .hash = "gantry-0.2.6-1iNrkZq4DAAsdzht3Vfq_hNHv4fkTdcwXW9J7cqGRjJJ",
             .lazy = true,
         },
 

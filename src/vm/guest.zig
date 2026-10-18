@@ -628,7 +628,6 @@ fn powerOff() noreturn {
     // A file the program mapped from a share is the host's once written back. The test
     // machine's first process is its init, writing the caches back before power-off as any
     // system does: no file's durability is promised here.
-    // glint-ignore: P006 -- init flushes the machine before it powers off; nothing here is a durable file
     _ = linux.sync(); // safe: sync reports nothing
     _ = linux.reboot(.MAGIC1, .MAGIC2, .POWER_OFF, null); // safe: only a failed power-off returns
     while (true) _ = linux.pause();

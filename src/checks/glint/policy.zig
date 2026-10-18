@@ -24,12 +24,12 @@ pub const durability = blk: {
     const reason = "durability belongs to airlock: only it says what a sync reached";
     const replacement = "airlock.syncFile, airlock.syncDir or an airlock commit";
     const std_paths = [_][]const u8{
-        "posix.sync",         "posix.syncfs",           "posix.fdatasync",
-        "os.linux.sync",      "os.linux.syncfs",        "os.linux.fsync",
-        "os.linux.fdatasync", "os.linux.IoUring.fsync", "c.F.FULLFSYNC",
-        "c.F.BARRIERFSYNC",   "Io.File.sync",           "Io.Dir.createFileAtomic",
+        "posix.syncfs",       "posix.fdatasync",         "os.linux.syncfs", "os.linux.fsync",
+        "os.linux.fdatasync", "os.linux.IoUring.fsync",  "c.F.FULLFSYNC",   "c.F.BARRIERFSYNC",
+        "Io.File.sync",       "Io.Dir.createFileAtomic",
     };
-    const symbols = [_][]const u8{ "fsync", "fdatasync", "syncfs", "sync", "FlushFileBuffers", "NtFlushBuffersFile", "NtFlushBuffersFileEx" };
+    // A whole-system `sync` is no file's durability, and is not governed.
+    const symbols = [_][]const u8{ "fsync", "fdatasync", "syncfs", "FlushFileBuffers", "NtFlushBuffersFile", "NtFlushBuffersFileEx" };
     var out: [std_paths.len + symbols.len]glint.Config.Disallowed = undefined;
     for (std_paths, out[0..std_paths.len]) |path, *entry| entry.* = .{ .source = "std", .declaration = path, .reason = reason, .replacement = replacement, .scope = .production };
     for (symbols, out[std_paths.len..]) |symbol, *entry| entry.* = .{ .declaration = symbol, .reason = reason, .replacement = replacement, .scope = .production };

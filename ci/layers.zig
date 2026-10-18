@@ -46,10 +46,8 @@ const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named depen
 } }};
 pub const references: []const gantry.rules.ReferenceRule = &package_references;
 
-/// preflight writes no durable files, and its callers own asynchronous work. The test
-/// machine's first process is a system's init: it writes the machine's caches back
-/// before it powers off, as any system does.
+/// preflight's callers own asynchronous work. (Durability is airlock's, held by the
+/// default policy's P006 in every package.)
 pub const owned: []const gantry.rules.TokenRule = &.{
-    .{ .name = "durability is not preflight's", .sequences = &.{ &.{ ".", "sync", "(" }, &.{ ".", "syncFile", "(" }, &.{ ".", "syncDir", "(" }, &.{ "createFileAtomic", "(" }, &.{ "fsync", "(" }, &.{ "fdatasync", "(" }, &.{ "FlushFileBuffers", "(" } }, .owners = &.{"src/vm/guest.zig"} },
     .{ .name = "async belongs to the caller", .sequences = &.{&.{ "io", ".", "async", "(" }} },
 };

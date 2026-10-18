@@ -13,6 +13,29 @@ pub const project_rules = glint.AegisPack.rules;
 /// a fraction of it; a run that spends it is incomplete, never green.
 pub const fact_budget: usize = 4_000_000;
 
+/// The family's one door for durability: only airlock makes the raw sync calls, because only
+/// airlock says what a sync reached (its levels, the refusals std turns into panics). Every
+/// package's production code is held to it by what a reference resolves to (P006, gated):
+/// std's sync declarations and the symbols every `extern` declaration of them binds. A site
+/// that must make the call (airlock's own `sys`, an `Io` implementing `fileSync`) says why at
+/// the site with `// glint-ignore: P006 -- <reason>`; a governed name that does not resolve is
+/// undecided, and an undecided site does not pass a gate.
+pub const durability = blk: {
+    const reason = "durability belongs to airlock: only it says what a sync reached";
+    const replacement = "airlock.syncFile, airlock.syncDir or an airlock commit";
+    const std_paths = [_][]const u8{
+        "posix.sync",         "posix.syncfs",           "posix.fdatasync",
+        "os.linux.sync",      "os.linux.syncfs",        "os.linux.fsync",
+        "os.linux.fdatasync", "os.linux.IoUring.fsync", "c.F.FULLFSYNC",
+        "c.F.BARRIERFSYNC",   "Io.File.sync",           "Io.Dir.createFileAtomic",
+    };
+    const symbols = [_][]const u8{ "fsync", "fdatasync", "syncfs", "sync", "FlushFileBuffers", "NtFlushBuffersFile", "NtFlushBuffersFileEx" };
+    var out: [std_paths.len + symbols.len]glint.Config.Disallowed = undefined;
+    for (std_paths, out[0..std_paths.len]) |path, *entry| entry.* = .{ .source = "std", .declaration = path, .reason = reason, .replacement = replacement, .scope = .production };
+    for (symbols, out[std_paths.len..]) |symbol, *entry| entry.* = .{ .declaration = symbol, .reason = reason, .replacement = replacement, .scope = .production };
+    break :blk out;
+};
+
 /// How a rule weighs on the gate.
 ///
 /// `gate` is glint's: its findings fail the run, and so does any site it
@@ -222,14 +245,16 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
         for (defaults) |entry| named = named or entry.rule == amendment.rule;
         if (!named) try all.append(a, amendment);
     }
-    if (base.disallowed.len != 0) {
+    // The family's durability door holds in every repository, before what it disallows itself.
+    base.disallowed = try std.mem.concat(a, glint.Config.Disallowed, &.{ &durability, base.disallowed });
+    {
         var named = false;
         for (chosen.items) |amendment| named = named or amendment.rule == .P006;
         if (!named) try all.append(a, .{ .rule = .P006, .level = .gate });
     }
     base.selections = all.items;
     base.validate() catch {
-        c.fail("glint: the `glint` setting is not valid: a rule is listed twice, or a disallowed declaration lacks its reason, replacement or source", .{});
+        c.fail("glint: the `glint` setting is not valid: a rule is listed twice, or a disallowed declaration lacks its reason or replacement, or names a symbol with dots", .{});
         return null;
     };
 
@@ -308,15 +333,22 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
         if (width == .integer and width.integer > 0 and width.integer <= std.math.maxInt(u32)) base.max_line_length = @intCast(width.integer) else c.fail("glint: `max_line_length` is a positive byte count", .{});
     }
     const disallowed = src.get(block, "disallowed");
-    if (disallowed != .null and disallowed != .array) c.fail("glint: `disallowed` is a list of {{source, declaration, reason, replacement}}", .{});
+    if (disallowed != .null and disallowed != .array) c.fail("glint: `disallowed` is a list of {{source, declaration, reason, replacement, scope}}: a declaration of a module or `.zig` file, or with no source an external symbol", .{});
     var list: std.ArrayList(glint.Config.Disallowed) = .empty;
     for (src.items(disallowed)) |entry| {
-        var fields: [4][]const u8 = undefined;
-        for ([_][]const u8{ "source", "declaration", "reason", "replacement" }, &fields) |key, *field| {
+        var fields: [3][]const u8 = undefined;
+        for ([_][]const u8{ "declaration", "reason", "replacement" }, &fields) |key, *field| {
             const value = src.get(entry, key);
             field.* = if (value == .string) value.string else "";
         }
-        try list.append(a, .{ .source = fields[0], .declaration = fields[1], .reason = fields[2], .replacement = fields[3] });
+        const source = src.get(entry, "source");
+        if (source != .null and source != .string) c.fail("glint: a disallowed `source` is a module or a `.zig` file", .{});
+        const written = src.get(entry, "scope");
+        const chosen: @FieldType(glint.Config.Disallowed, "scope") = if (written == .null) .all else std.meta.stringToEnum(@FieldType(glint.Config.Disallowed, "scope"), src.string(written, "")) orelse blk: {
+            c.fail("glint: a disallowed `scope` is all or production", .{});
+            break :blk .all;
+        };
+        try list.append(a, .{ .source = if (source == .string) source.string else null, .declaration = fields[0], .reason = fields[1], .replacement = fields[2], .scope = chosen });
     }
     base.disallowed = list.items;
 }
@@ -419,7 +451,10 @@ test "the default policy gates correctness and the sites that can hide undefined
     try std.testing.expectEqual(.pointer, policy.base.casts);
     for ([_]glint.Rule{ .Z003, .Z013, .Z026, .P002, .P004 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
     for ([_]glint.Rule{ .P001, .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
-    for ([_]glint.Rule{ .Z024, .P006, .D001 }) |rule| try std.testing.expectEqual(.off, policy.base.level(rule));
+    for ([_]glint.Rule{ .Z024, .D001 }) |rule| try std.testing.expectEqual(.off, policy.base.level(rule));
+    // The durability door gates in every repository.
+    try std.testing.expectEqual(.gate, policy.base.level(.P006));
+    try std.testing.expectEqual(durability.len, policy.base.disallowed.len);
     try std.testing.expect(policy.fails(.Z011) and policy.fails(.P005));
     try std.testing.expect(!policy.fails(.Z012) and !policy.fails(.Z001));
     for (glint.AegisPack.rules) |rule| try std.testing.expectEqual(.off, policy.base.level(rule.definition.id));

@@ -47,14 +47,15 @@ pub const TestTimeout = union(enum) {
     }
 };
 
-/// `checker` is preflight's command program, which refuses a shard at run
-/// time for a test runner that cannot honour one.
-pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) void {
+/// `roots`: the test step and the step the package fuzzes, whose test runs
+/// all take the runner, one way. `checker` is preflight's command program,
+/// which refuses a shard at run time for a test runner that cannot honour one.
+pub fn add(b: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) void {
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
     var names = std.StringHashMap(void).init(b.allocator);
     const durations = configure.read(b, options.durations, .limited(64 * 1024 * 1024)) orelse "";
     const context: Context = .{ .pkg = pkg, .checker = checker, .options = options, .durations = durations };
-    visit(b, tests, context, &seen, &names);
+    for (roots) |root| visit(b, root, context, &seen, &names);
 }
 
 const Context = struct {

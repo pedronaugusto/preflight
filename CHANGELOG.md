@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build, as one that skips when `builtin.fuzz` is set does, fails the campaign by name. The build finds its fuzz tests in their unfuzzed build, and a test spends its share of a bounded campaign only inside the fuzzer, so upstream's runner, which returns from such a skip quietly, had the fuzzer select it again forever (visor's `hardened-fuzz` never ended). The runner now serves the fuzzing build itself, upstream's protocol but for that, and gives a test there `std.testing.environ`, which upstream's leaves empty.
+- The step a package fuzzes (`fuzz_step`, else the hardened run's) runs its tests on preflight's runner as `tests` does, so a dedicated fuzz step has the watchdog and the check above too.
+
 ## [0.11.0] - 2026-10-20
 
 ### Breaking

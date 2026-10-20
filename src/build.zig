@@ -196,11 +196,15 @@ const Steps = struct {
         const emulation: i96 = if (steps.vm) vm.slowdown else 1;
         const slowdown = sanitizer * emulation;
         const bounded: std.Io.Duration = .fromNanoseconds(timeout.toNanoseconds() *| slowdown);
-        record.add(b, config.tests, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
-        const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         // One way to fuzz, in every package: its properties, by the step it names, else
-        // the one its hardened run fuzzes, else its tests.
+        // the one its hardened run fuzzes, else its tests. Its tests take the runner as
+        // the tests do: a fuzzing build is the runner's to serve (`runner.zig`).
         const fuzzed = config.fuzz_step orelse if (config.hardened) |profile| profile.fuzz_step else "test";
+        var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
+        if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
+        const roots: []const *std.Build.Step = &roots_buffer;
+        record.add(b, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
+        const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });

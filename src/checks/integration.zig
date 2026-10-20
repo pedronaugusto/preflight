@@ -824,6 +824,48 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     try std.testing.expect(std.mem.findLast(u8, order, "fuzzes ").? > logged);
 }
 
+test "a fuzz test that skips in the fuzzing build fails the campaign by name instead of being selected forever" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const fuzzes =
+        \\const std = @import("std");
+        \\test "fuzzes" {
+        \\    try std.testing.fuzz({}, struct {
+        \\        fn one(_: void, smith: *std.testing.Smith) !void {
+        \\            var bytes: [8]u8 = undefined;
+        \\            smith.bytes(&bytes);
+        \\        }
+        \\    }.one, .{});
+        \\}
+        \\
+    ;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data = fuzzes });
+    const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
+    try std.testing.expect(command.succeeded(good));
+    // Found a fuzz test unfuzzed, it never reaches the fuzzer in the fuzzing
+    // build, so it never spends its share of the campaign.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data = fuzzes ++
+        \\test "skips when fuzzing" {
+        \\    if (@import("builtin").fuzz) return error.SkipZigTest;
+        \\    try std.testing.fuzz({}, struct {
+        \\        fn one(_: void, smith: *std.testing.Smith) !void {
+        \\            _ = smith;
+        \\        }
+        \\    }.one, .{});
+        \\}
+        \\
+    });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(bad));
+    if (std.mem.find(u8, bad.stderr, "preflight: fuzz test hardened.test.skips when fuzzing skipped without calling std.testing.fuzz in the fuzzing build") == null) std.debug.print("{s}", .{bad.stderr});
+    try std.testing.expect(std.mem.find(u8, bad.stderr, "preflight: fuzz test hardened.test.skips when fuzzing skipped without calling std.testing.fuzz in the fuzzing build") != null);
+}
+
 test "timing records of two test runs with one name stay apart" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

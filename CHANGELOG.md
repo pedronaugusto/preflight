@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-20
+
 ### Breaking
 
 - `ci-check` compiles the tests and the public modules a second time linking libc, for each target Zig ships a libc for, unless they link it already, since a consumer may build the package with libc and `builtin.link_libc` selects other code (visor 0.5.7 broke on x86_64-windows-gnu with libc, a path no compile reached). The objects are named `<name>-libc`. A program's libc is its own: the installed artifacts and the benchmarks compile as they are built. A package whose code does not compile with libc fails `ci-check` from this release.

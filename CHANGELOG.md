@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-20
+
 ### Breaking
 
 - The default policy holds every package to the family's durability door: P006 gates, in production code, std's sync declarations (`posix.fdatasync`, `posix.syncfs`, `os.linux.fsync`, `os.linux.fdatasync`, `os.linux.syncfs`, `os.linux.IoUring.fsync`, `c.F.FULLFSYNC`, `c.F.BARRIERFSYNC`) and the external functions `fsync`, `fdatasync`, `syncfs`, `FlushFileBuffers`, `NtFlushBuffersFile` and `NtFlushBuffersFileEx` however a program declares them, decided by what each reference resolves to (glint 0.4.1). Its owners, airlock and reactor (whose `Io` backends implement `fileSync`), are named in the entries and carry no suppression; a sync through an `Io` (`std.Io.File.sync`, an atomic file's commit) is the designed path and is not governed. Any other site that must make the call says why with `// glint-ignore: P006 -- <reason>`. The copied `durability belongs to airlock` token rules in `ci/layers.zig` can go.

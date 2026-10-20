@@ -224,8 +224,9 @@ pub fn coexistIn(a: std.mem.Allocator, root: []const u8) ![]const []const u8 {
         .empty_literal => {},
         .array_literal => |items| for (0..items.len) |i| {
             const item = items.at(@intCast(i)).get(&zoir); // safe: i < items.len, a u32
-            if (item != .string_literal) return error.InvalidManifest;
-            try names.append(a, item.string_literal);
+            // As bay reads it: `.coexist = .{ .name }`.
+            if (item != .enum_literal) return error.InvalidManifest;
+            try names.append(a, item.enum_literal.get(&zoir));
         },
         else => return error.InvalidManifest,
     }

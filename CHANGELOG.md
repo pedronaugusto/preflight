@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The consumer check reads `.coexist` as bay writes it (`.{ .name }`); it refused every manifest that named one.
+
 ## [0.10.1] - 2026-10-18
 
 ### Changed

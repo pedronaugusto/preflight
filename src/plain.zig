@@ -141,6 +141,6 @@ test "two packages that pin a third at two revisions are a conflict; one revisio
     const agreeing = try std.mem.replaceOwned(u8, a, root, aegis5, aegis4);
     try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, io, agreeing, "bay", .{ .global = tmp.dir })).len);
     // 0.1.4 and 0.1.5 are one line, so naming aegis to coexist does not allow them.
-    const named = try std.mem.replaceOwned(u8, a, root, ".name = .bay,", ".name = .bay, .coexist = .{\"aegis\"},");
+    const named = try std.mem.replaceOwned(u8, a, root, ".name = .bay,", ".name = .bay, .coexist = .{.aegis},");
     try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, io, named, "bay", .{ .global = tmp.dir })).len);
 }

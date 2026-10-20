@@ -328,9 +328,63 @@ pub fn main(init: std.process.Init.Minimal) void {
     if (listen and lifeline == null and Supervisor.possible) Supervisor.run(init, args);
     order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     job_deadline = readDeadline(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_DEADLINE: {t}", .{err});
+    FuzzNames.read(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_FUZZ_NAMES: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
     serve(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
 }
+
+/// A fuzz campaign's claims on its fuzz tests' names. Zig keeps a fuzz
+/// test's corpus by the test's name alone, so two test binaries of one
+/// campaign with a fuzz test of the same name contend for it, and the second
+/// fuzzer panics mid-campaign ("corpus of ... is in use by another fuzzer").
+/// `fuzz-campaign` names a directory of its own in `PREFLIGHT_FUZZ_NAMES`; in
+/// the unfuzzed run, where the build finds its fuzz tests, each binary claims
+/// the names of its own there, and a name another binary holds fails its test,
+/// naming both, before any fuzzer starts.
+const FuzzNames = struct {
+    var directory: ?[]const u8 = null;
+    var directory_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    /// This run's claim: a number of its own, then its executable's path.
+    /// Two runs of one binary contend as two binaries do.
+    var claim_buffer: [17 + std.Io.Dir.max_path_bytes]u8 = undefined;
+    var own: []const u8 = &.{};
+
+    fn read(environ: std.process.Environ) !void {
+        var env = try environ.createMap(std.heap.page_allocator);
+        defer env.deinit();
+        const value = env.get("PREFLIGHT_FUZZ_NAMES") orelse return;
+        if (value.len > directory_buffer.len) return error.NameTooLong;
+        @memcpy(directory_buffer[0..value.len], value);
+        directory = directory_buffer[0..value.len];
+        var run: [8]u8 = undefined;
+        io.random(&run);
+        const prefix = try std.mem.print(&claim_buffer, "{x} ", .{&run});
+        own = claim_buffer[0 .. prefix.len + try std.process.executablePath(io, claim_buffer[prefix.len..])];
+    }
+
+    /// Claims `name` for this run; the executable of the run that holds it
+    /// already, if another does ("another test binary" before it has
+    /// written its claim).
+    fn claim(name: []const u8, buffer: []u8) !?[]const u8 {
+        const path = directory orelse return null;
+        var dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
+        defer dir.close(io);
+        var key_buffer: [16]u8 = undefined;
+        const key = try std.mem.print(&key_buffer, "{x:0>16}", .{std.hash.Wyhash.hash(0, name)});
+        if (dir.createFile(io, key, .{ .exclusive = true })) |file| {
+            defer file.close(io);
+            try file.writeStreamingAll(io, own);
+            return null;
+        } else |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => |e| return e,
+        }
+        const holder = try dir.readFile(io, key, buffer);
+        if (std.mem.eql(u8, holder, own)) return null;
+        const space = std.mem.findScalar(u8, holder, ' ') orelse return "another test binary";
+        return holder[space + 1 ..];
+    }
+};
 
 fn readDeadline(environ: std.process.Environ) !?i64 {
     var env = try environ.createMap(std.heap.page_allocator);
@@ -885,7 +939,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     fuzz_called = false;
     try server.serveStringMessage(.test_started, &.{});
     const start: std.Io.Clock.Timestamp = .now(io, .awake);
-    const status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
+    var status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
         error.SkipZigTest => .skip,
         else => failure: {
             report("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });
@@ -899,6 +953,14 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     Backing.end();
     if (leaks != 0 or errors.load(.monotonic) != 0) report("preflight: failed test {s}; seed {d}\n", .{ test_fn.name, testing.random_seed });
     watchdog.phase.store(.reporting, .release);
+    if (fuzz_called) {
+        var holder_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const holder = FuzzNames.claim(test_fn.name, &holder_buffer) catch |err| std.debug.panic("preflight test runner: claiming fuzz test {s} in the campaign: {t}", .{ test_fn.name, err });
+        if (holder) |other| {
+            report("preflight: fuzz test {s} runs twice in this campaign, in {s} and in {s}; Zig keeps a fuzz test's corpus by its name, so their fuzzers would contend for it. Give the test to one test run alone\n", .{ test_fn.name, other, FuzzNames.own[std.mem.findScalar(u8, FuzzNames.own, ' ').? + 1 ..] });
+            status = .fail;
+        }
+    }
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     try recorder.record(io, test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{

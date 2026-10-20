@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A fuzz campaign names a fuzz test two test runs of it would fuzz, before any fuzzer starts: Zig keeps a fuzz test's corpus by the test's name alone, so the second fuzzer panicked mid-campaign ("corpus of ... is in use by another fuzzer"; visor's widget binary held its base tests twice). `fuzz-campaign` gives the build a directory of its own in `PREFLIGHT_FUZZ_NAMES`, where each test run claims its fuzz tests' names in its unfuzzed run, and a name another run holds fails the test, naming both executables.
+
 ### Changed
 
 - `ci-check` compiles the tests and the public modules a second time linking libc, for each target Zig ships a libc for, unless they link it already, since a consumer may build the package with libc and `builtin.link_libc` selects other code (visor 0.5.7 broke on x86_64-windows-gnu with libc, a path no compile reached). The objects are named `<name>-libc`. A program's libc is its own: the installed artifacts and the benchmarks compile as they are built.

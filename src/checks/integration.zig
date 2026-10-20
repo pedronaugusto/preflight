@@ -942,6 +942,36 @@ test "a fuzz test that skips in the fuzzing build fails the campaign by name ins
     try std.testing.expect(std.mem.find(u8, bad.stderr, "preflight: fuzz test hardened.test.skips when fuzzing skipped without calling std.testing.fuzz in the fuzzing build") != null);
 }
 
+test "a fuzz test two test runs of one campaign hold is named before the fuzzers contend for its corpus" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The fuzz step's binary and a second one of the same module: both fuzz
+    // the module's fuzz test.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
+        \\const std = @import("std");
+        \\test "fuzzes twice" {
+        \\    try std.testing.fuzz({}, struct {
+        \\        fn one(_: void, smith: *std.testing.Smith) !void {
+        \\            var bytes: [8]u8 = undefined;
+        \\            smith.bytes(&bytes);
+        \\        }
+        \\    }.one, .{});
+        \\}
+        \\
+    });
+    const run_line = "profile_step.dependOn(&b.addRunArtifact(profile).step);\n";
+    try edit(a, tmp.dir, "build.zig", run_line, run_line ++ "    profile_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = profile.root_module, .name = \"again\" })).step);\n");
+    const twice = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(twice));
+    if (std.mem.find(u8, twice.stderr, "preflight: fuzz test hardened.test.fuzzes twice runs twice in this campaign") == null) std.debug.print("{s}", .{twice.stderr});
+    try std.testing.expect(std.mem.find(u8, twice.stderr, "preflight: fuzz test hardened.test.fuzzes twice runs twice in this campaign") != null);
+    try std.testing.expect(std.mem.find(u8, twice.stderr, "is in use by another fuzzer") == null);
+}
+
 test "timing records of two test runs with one name stay apart" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

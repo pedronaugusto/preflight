@@ -62,10 +62,21 @@ pub fn run(c: *src.Context, cache_path: []const u8, cwd: []const u8, argv: []con
     var cache = try std.Io.Dir.cwd().openDir(c.io, absolute, .{});
     defer cache.close(c.io);
     const before = try state(c.io, cache);
+    // Where the test binaries claim their fuzz tests' names (the runner's
+    // `FuzzNames`): a directory of this campaign's own.
+    var id: [8]u8 = undefined;
+    c.io.random(&id);
+    var names_buffer: [64]u8 = undefined;
+    const names = try std.mem.print(&names_buffer, "tmp/preflight-fuzz-names-{x}", .{&id});
+    try cache.createDirPath(c.io, names);
+    // glint-ignore: Z026 -- a directory left in the cache's tmp holds only names, and the campaign's verdict stands
+    defer cache.deleteTree(c.io, names) catch {};
+    var env = try (c.environ_map orelse return error.EnvironmentUnknown).clone(c.a);
+    try env.put("PREFLIGHT_FUZZ_NAMES", try std.Io.Dir.path.join(c.a, &.{ absolute, names }));
     var child = try std.process.spawn(c.io, .{
         .argv = try std.mem.concat(c.a, []const u8, &.{ argv, &.{ "--cache-dir", absolute } }),
         .cwd = .{ .path = cwd },
-        .environ_map = c.environ_map,
+        .environ_map = &env,
     });
     const term = try child.wait(c.io);
     if (term != .exited or term.exited != 0) return c.fail("fuzz campaign: the build failed", .{});

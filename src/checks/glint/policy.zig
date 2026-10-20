@@ -16,23 +16,26 @@ pub const fact_budget: usize = 4_000_000;
 /// The family's one door for durability: only airlock makes the raw sync calls, because only
 /// airlock says what a sync reached (its levels, the refusals std turns into panics). Every
 /// package's production code is held to it by what a reference resolves to (P006, gated):
-/// std's sync declarations and the symbols every `extern` declaration of them binds. A site
-/// that must make the call (airlock's own `sys`, an `Io` implementing `fileSync`) says why at
-/// the site with `// glint-ignore: P006 -- <reason>`; a governed name that does not resolve is
-/// undecided, and an undecided site does not pass a gate.
+/// std's raw sync declarations and the symbols every `extern` declaration of them binds. The
+/// entries name their owners, which carry no suppression for them: airlock, the door itself,
+/// and reactor, whose `Io` backends implement `fileSync`. A sync through an `Io`
+/// (`std.Io.File.sync`, an atomic file's commit) is the designed path, not a raw call, and is
+/// not governed. Any other site that must make the call says why with
+/// `// glint-ignore: P006 -- <reason>`; a governed name that does not resolve is undecided, and
+/// an undecided site does not pass a gate.
 pub const durability = blk: {
     const reason = "durability belongs to airlock: only it says what a sync reached";
     const replacement = "airlock.syncFile, airlock.syncDir or an airlock commit";
+    const owners: []const []const u8 = &.{ "airlock", "reactor" };
     const std_paths = [_][]const u8{
-        "posix.syncfs",       "posix.fdatasync",         "os.linux.syncfs", "os.linux.fsync",
-        "os.linux.fdatasync", "os.linux.IoUring.fsync",  "c.F.FULLFSYNC",   "c.F.BARRIERFSYNC",
-        "Io.File.sync",       "Io.Dir.createFileAtomic",
+        "posix.syncfs",       "posix.fdatasync",        "os.linux.syncfs", "os.linux.fsync",
+        "os.linux.fdatasync", "os.linux.IoUring.fsync", "c.F.FULLFSYNC",   "c.F.BARRIERFSYNC",
     };
     // A whole-system `sync` is no file's durability, and is not governed.
     const symbols = [_][]const u8{ "fsync", "fdatasync", "syncfs", "FlushFileBuffers", "NtFlushBuffersFile", "NtFlushBuffersFileEx" };
     var out: [std_paths.len + symbols.len]glint.Config.Disallowed = undefined;
-    for (std_paths, out[0..std_paths.len]) |path, *entry| entry.* = .{ .source = "std", .declaration = path, .reason = reason, .replacement = replacement, .scope = .production };
-    for (symbols, out[std_paths.len..]) |symbol, *entry| entry.* = .{ .declaration = symbol, .reason = reason, .replacement = replacement, .scope = .production };
+    for (std_paths, out[0..std_paths.len]) |path, *entry| entry.* = .{ .source = "std", .declaration = path, .reason = reason, .replacement = replacement, .scope = .production, .owners = owners };
+    for (symbols, out[std_paths.len..]) |symbol, *entry| entry.* = .{ .declaration = symbol, .reason = reason, .replacement = replacement, .scope = .production, .owners = owners };
     break :blk out;
 };
 

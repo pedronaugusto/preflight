@@ -8,14 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
-- The default policy holds every package to the family's durability door: P006 gates, in production code, std's sync declarations (`posix.fdatasync`, `posix.syncfs`, `os.linux.fsync`, `os.linux.fdatasync`, `os.linux.syncfs`, `os.linux.IoUring.fsync`, `c.F.FULLFSYNC`, `c.F.BARRIERFSYNC`, `Io.File.sync`, `Io.Dir.createFileAtomic`) and the external functions `fsync`, `fdatasync`, `syncfs`, `FlushFileBuffers`, `NtFlushBuffersFile` and `NtFlushBuffersFileEx` however a program declares them, decided by what each reference resolves to (glint 0.4.0). A site that must make the call (airlock's own, an `Io` implementing `fileSync`) says why with `// glint-ignore: P006 -- <reason>`. The copied `durability belongs to airlock` token rules in `ci/layers.zig` can go.
+- The default policy holds every package to the family's durability door: P006 gates, in production code, std's sync declarations (`posix.fdatasync`, `posix.syncfs`, `os.linux.fsync`, `os.linux.fdatasync`, `os.linux.syncfs`, `os.linux.IoUring.fsync`, `c.F.FULLFSYNC`, `c.F.BARRIERFSYNC`) and the external functions `fsync`, `fdatasync`, `syncfs`, `FlushFileBuffers`, `NtFlushBuffersFile` and `NtFlushBuffersFileEx` however a program declares them, decided by what each reference resolves to (glint 0.4.1). Its owners, airlock and reactor (whose `Io` backends implement `fileSync`), are named in the entries and carry no suppression; a sync through an `Io` (`std.Io.File.sync`, an atomic file's commit) is the designed path and is not governed. Any other site that must make the call says why with `// glint-ignore: P006 -- <reason>`. The copied `durability belongs to airlock` token rules in `ci/layers.zig` can go.
 
 ### Added
 
-- A `glint.disallowed` entry with no `source` names an external function by its symbol, and `scope` (`all` or `production`) leaves test code out.
+- A `glint.disallowed` entry with no `source` names an external function by its symbol, and `scope` (`all` or `production`) leaves test code out. An entry's `owners` name the packages it does not govern; glint is told the checked package by its `build.zig.zon` name.
+
 ### Changed
 
-- Pins glint 0.4.0 and gantry 0.2.6; glint coexists with the 0.2 line gantry's Zig frontend reads through.
+- Pins glint 0.4.1 and gantry 0.2.7, both on glint's 0.4 line, so no `.coexist` is owed.
 
 ## [0.10.2] - 2026-10-20
 

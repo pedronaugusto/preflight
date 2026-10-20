@@ -23,6 +23,9 @@ pub const Build = struct {
     modules: []const src.BuildModule = &.{},
     /// Zig's `lib/std`; without it `std` stays unresolved.
     std_dir: ?[]const u8 = null,
+    /// The package the selected files are, as its `build.zig.zon` names it: the package a
+    /// policy's owners are matched against.
+    package: []const u8 = "",
 };
 
 pub const Selected = struct { path: []const u8, kind: Policy.Kind };
@@ -191,7 +194,10 @@ const Loader = struct {
     /// Adds a file to the project, once; null when it is not there.
     fn load(self: *Loader, path: []const u8, selected: bool, kind: Policy.Kind) !?u32 {
         if (self.index.get(path)) |known| {
-            if (selected) self.inputs.items[known].selected = true;
+            if (selected) {
+                self.inputs.items[known].selected = true;
+                self.inputs.items[known].package = self.build.package;
+            }
             return known;
         }
         const bytes = (try self.read(path)) orelse return null;
@@ -205,6 +211,7 @@ const Loader = struct {
             .stem = if (std.mem.endsWith(u8, base, ".zig")) base[0 .. base.len - 4] else base,
             .selected = selected,
             .classification = if (kind == .production) .production else .@"test",
+            .package = if (selected) self.build.package else "",
         });
         try self.index.put(self.c.a, path, id);
         return id;
@@ -398,11 +405,13 @@ test "an import means what the configured build binds it to, in the module that 
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config)).?;
     const paths = (try select(&c, policy, config)).?;
-    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .std_dir = "stdlib" })).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .std_dir = "stdlib", .package = "pkg" })).?;
     defer assembly.deinit();
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqual(@as(usize, 3), assembly.selected.len);
     const project = &assembly.project;
+    // The selected files are the checked package's; what they import is not said.
+    for (project.inputs) |input| try std.testing.expectEqualStrings(if (input.selected) "pkg" else "", input.package);
     var mapped: usize = 0;
     var other_mapped = false;
     for (project.imports) |import| {

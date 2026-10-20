@@ -315,7 +315,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     };
     try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std, .package = try checks.manifest.name(c) }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);

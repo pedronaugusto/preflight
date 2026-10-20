@@ -959,6 +959,8 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
         if (holder) |other| {
             report("preflight: fuzz test {s} runs twice in this campaign, in {s} and in {s}; Zig keeps a fuzz test's corpus by its name, so their fuzzers would contend for it. Give the test to one test run alone\n", .{ test_fn.name, other, FuzzNames.own[std.mem.findScalar(u8, FuzzNames.own, ' ').? + 1 ..] });
             status = .fail;
+            // Not a fuzz test of this run: the build would still fuzz it here.
+            fuzz_called = false;
         }
     }
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);

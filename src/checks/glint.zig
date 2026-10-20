@@ -77,6 +77,8 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
 
     var unfinished: usize = 0;
     var unresolved: usize = 0;
+    // Every incomplete site, where the run prints the first `printed`.
+    var sites: std.Io.Writer.Allocating = .init(c.a);
     for (report.coverage) |note| {
         const file = project.inputs[note.file.raw()].name;
         const gating = if (note.rule) |rule| chosen.base.level(rule) == .gate else false;
@@ -86,15 +88,45 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             .unresolved => gating,
         };
         if (stops or (gating and note.reason != .parsed)) {
-            if (unfinished < printed) c.report("glint: incomplete: {s}:{d}: {s}{s}{s}: {s}\n", .{ file, lineAt(project.inputs[note.file.raw()].bytes, note.start), note.rule_name, if (note.rule_name.len != 0) " " else "", @tagName(note.reason), note.detail });
+            const start = sites.written().len;
+            sites.writer.print("glint: incomplete: {s}:{d}: {s}{s}{s}: {s}\n", .{ file, lineAt(project.inputs[note.file.raw()].bytes, note.start), note.rule_name, if (note.rule_name.len != 0) " " else "", @tagName(note.reason), note.detail }) catch @panic("OOM");
+            if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
             unfinished += 1;
         } else if (note.reason == .unresolved) unresolved += 1;
     }
-    if (unfinished > printed) c.report("glint: {d} more incomplete sites\n", .{unfinished - printed});
+    if (unfinished > printed) {
+        const where = listSites(c, sites.written());
+        c.report("glint: {d} more incomplete sites; all {d}: {s}\n", .{ unfinished - printed, unfinished, where });
+    }
     if (!report.complete) {
         c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
     }
-    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites unresolved\n", .{ project.inputs.len, failing, warned, report.suppressed, unresolved });
+    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.inputs.len, failing, warned, report.suppressed, unfinished, unresolved });
+}
+
+/// Where the whole list of incomplete sites is, the run's report holding the
+/// first `printed`: a file in the package's cache, and in a hosted job the
+/// job's summary too. Says why when the file cannot be written.
+fn listSites(c: *src.Context, sites: []const u8) []const u8 {
+    const dir = c.directory();
+    // glint-ignore: Z026 -- a summary that cannot be written leaves the file, named below
+    if (c.summary_path) |path| appendTo(c.*, dir, path, c.a.print("<details><summary>glint: every incomplete site</summary>\n\n```\n{s}```\n</details>\n", .{sites}) catch @panic("OOM")) catch {};
+    dir.createDirPath(c.io, std.Io.Dir.path.dirname(sites_path).?) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
+    dir.writeFile(c.io, .{ .sub_path = sites_path, .data = sites }) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
+    return sites_path;
+}
+
+/// The whole list of a lint's incomplete sites, relative to the package.
+pub const sites_path = ".zig-cache/preflight-lint/incomplete.txt";
+
+fn appendTo(c: src.Context, dir: std.Io.Dir, path: []const u8, text: []const u8) !void {
+    const file = try dir.createFile(c.io, path, .{ .truncate = false, .read = true });
+    defer file.close(c.io);
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(c.io, &buffer);
+    writer.pos = (try file.stat(c.io)).size;
+    try writer.interface.writeAll(text);
+    try writer.interface.flush();
 }
 
 /// The one-based line of a byte offset.
@@ -252,6 +284,24 @@ test "an analysis glint did not finish is never a pass, whatever its findings" {
     // A finding allowed by amendment does not hide what else is wrong.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\npub fn broken( {\n");
     try std.testing.expect(try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"off\"}]}}", .{}) != 0);
+}
+
+test "a run counts every incomplete site, prints the first ones and lists them all in the cache and the job's summary" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    for (0..printed + 5) |i| try f.file(try f.c.a.print("src/broken{d}.zig", .{i}), "pub fn broken( {\n");
+    var held: std.Io.Writer.Allocating = .init(f.c.a);
+    f.c.held = &held;
+    f.c.summary_path = "summary.md";
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
+    const out = held.written();
+    try std.testing.expectEqual(@as(usize, printed), std.mem.count(u8, out, "glint: incomplete: "));
+    try std.testing.expect(std.mem.find(u8, out, "glint: 5 more incomplete sites; all 30: " ++ sites_path) != null);
+    try std.testing.expect(std.mem.find(u8, out, ", 30 sites incomplete, ") != null);
+    const all = try f.c.read(sites_path);
+    try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, all, "glint: incomplete: "));
+    const summary = try f.c.read("summary.md");
+    try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, summary, "glint: incomplete: "));
 }
 
 test "a file that cannot be read fails the run with the cause, never a pass" {

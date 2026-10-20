@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `ci-check` compiles the tests and the public modules a second time linking libc, for each target Zig ships a libc for, unless they link it already, since a consumer may build the package with libc and `builtin.link_libc` selects other code (visor 0.5.7 broke on x86_64-windows-gnu with libc, a path no compile reached). The objects are named `<name>-libc`. A program's libc is its own: the installed artifacts and the benchmarks compile as they are built.
 - The lint's summary line counts the incomplete sites always (`N sites incomplete`), and a run with more than the 25 it prints writes every one to `.zig-cache/preflight-lint/incomplete.txt`, named on the line that counts the rest, and in a hosted job into the job's summary too. A survey reading the printed lines undercounted aegis (236 sites, not 18) and strand (79, not 23).
 
 ### Fixed

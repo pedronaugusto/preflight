@@ -429,6 +429,32 @@ test "compile-only test graph builds foreign binaries without executing failing 
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
 }
 
+test "the compile check reaches the code a consumer's libc build selects, where Zig ships the target's libc" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // Only a build with libc compiles the broken branch, as visor 0.5.7's
+    // `std.c.getpid` on Windows was.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data =
+        \\const builtin = @import("builtin");
+        \\pub fn id() u32 {
+        \\    if (builtin.link_libc) return undefined_in_libc_builds;
+        \\    return 1;
+        \\}
+        \\test "id" {
+        \\    _ = id();
+        \\}
+        \\
+    });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "use of undeclared identifier 'undefined_in_libc_builds'") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "-libc") != null);
+}
+
 /// Test names recorded in timing files whose names end with `suffix`.
 fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]const []const u8 {
     var timings = try dir.openDir(std.testing.io, ".zig-cache/preflight-timings", .{ .iterate = true });

@@ -4,6 +4,12 @@ const std = @import("std");
 
 /// `ci-check` compiles the tests, the installed artifacts, the package's
 /// `check` graph, its public modules and, in Debug, its benchmarks.
+/// A consumer may build the package with libc, where `builtin.link_libc`
+/// selects other code (visor 0.5.7 broke on x86_64-windows-gnu so, a path no
+/// compile without libc reached): `ci-check` compiles the tests and the public
+/// modules a second time linking libc, for each target Zig ships a libc for,
+/// unless they link it already. A program's libc is its own, so the installed
+/// artifacts and the benchmarks are compiled as they are built.
 /// `ci-check-bench` compiles the benchmarks as they are built to run, which in
 /// ReleaseFast takes longer than all the rest: the fast tier leaves it to the
 /// merge tier, since a benchmark's Debug object already holds what a target
@@ -25,10 +31,16 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, sdk: ?[]c
         var release: Projection = .{ .b = b, .objects = bench_objects, .sdk = sdk };
         release.collect(bench, links);
     }
+    var libc: Projection = .{ .b = b, .objects = objects, .sdk = null, .libc = true };
+    libc.collect(tests, null);
     for (package.modules.values()) |module| {
         const object = b.addObject(.{ .name = "ci-root", .root_module = projection.module(module) });
         _ = object.getEmittedBin();
         objects.dependOn(&object.step);
+        if (!Projection.libcApplies(module)) continue;
+        const with_libc = b.addObject(.{ .name = "ci-root-libc", .root_module = libc.module(module) });
+        _ = with_libc.getEmittedBin();
+        objects.dependOn(&with_libc.step);
     }
 }
 
@@ -38,22 +50,36 @@ const Projection = struct {
     sdk: ?[]const u8,
     /// Compile every module in Debug, whatever the graph asks.
     debug: bool = false,
+    /// Link libc in every module: the tests alone, each where Zig ships the
+    /// target's libc and the test does not link it already.
+    libc: bool = false,
     steps: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty,
     modules: std.AutoHashMapUnmanaged(*std.Build.Module, *std.Build.Module) = .empty,
     sdks: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty,
     artifacts: std.AutoHashMapUnmanaged(*std.Build.Step.Compile, *std.Build.Step.Compile) = .empty,
     options: std.AutoHashMapUnmanaged(*std.Build.Step.Options, *std.Build.Step.Options) = .empty,
 
-    fn collect(p: *Projection, step: *std.Build.Step, links: *std.Build.Step) void {
+    /// `links`: where the compiles found go to be linked, null for a
+    /// projection that only compiles.
+    fn collect(p: *Projection, step: *std.Build.Step, links: ?*std.Build.Step) void {
         const entry = p.steps.getOrPut(p.b.allocator, step) catch @panic("OOM");
         if (entry.found_existing) return;
         if (step.cast(std.Build.Step.Compile)) |compiled| {
+            if (p.libc and (!compiled.kind.isTest() or compiled.dependsOnSystemLibrary("c") or !libcApplies(compiled.root_module))) return;
             p.nativeSdk(compiled);
-            links.dependOn(step);
+            if (links) |link| link.dependOn(step);
             p.objects.dependOn(&p.artifact(compiled).step);
             return;
         }
         for (step.dependencies.items) |dependency| p.collect(dependency, links);
+    }
+
+    /// Whether Zig ships a libc for the module's target, which a module
+    /// without a target takes from its importer and so never knows.
+    fn libcApplies(original: *std.Build.Module) bool {
+        const target = original.resolved_target orelse return false;
+        if (original.link_libc == true) return false;
+        return std.zig.target.canBuildLibC(&target.result);
     }
 
     fn nativeSdk(p: *Projection, compiled: *std.Build.Step.Compile) void {
@@ -71,7 +97,7 @@ const Projection = struct {
     fn artifact(p: *Projection, original: *std.Build.Step.Compile) *std.Build.Step.Compile {
         if (p.artifacts.get(original)) |object| return object;
         const object = std.Build.Step.Compile.create(original.step.owner, .{
-            .name = original.name,
+            .name = if (p.libc) p.b.fmt("{s}-libc", .{original.name}) else original.name,
             .root_module = p.module(original.root_module),
             .kind = if (original.kind.isTest()) .test_obj else .obj,
             .filters = original.filters,
@@ -154,6 +180,7 @@ const Projection = struct {
         const copy = p.b.allocator.create(std.Build.Module) catch @panic("OOM");
         copy.* = original.*;
         if (p.debug) copy.optimize = .Debug;
+        if (p.libc) copy.link_libc = true;
         copy.root_source_file = p.source(original.root_source_file);
         copy.cached_graph = .{ .modules = &.{}, .names = &.{} };
         copy.import_table = .empty;

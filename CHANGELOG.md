@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A test the watchdog ends no longer leaves the processes it started running: the test runner's supervisor runs the tests in a process tree of their own (a process group the tests' process leads on POSIX, a job that ends its processes when it closes on Windows) and ends what is left of it once the tests' process has ended, however it ended, after naming the processes that still hold the tests' output. When the supervisor itself is killed, the tests' process ends its group with it. An integration test's `zig build` once outlived its test and held a fixture cache's lock.
+
 ## [0.11.1] - 2026-10-20
 
 ### Fixed

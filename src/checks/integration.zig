@@ -643,6 +643,52 @@ test "a process a test leaves holding the tests' output is named at once, and a 
     try std.testing.expect(std.mem.find(u8, crashed.stderr, "processes it started still hold its output") != null);
 }
 
+test "a test the watchdog ends leaves no process it started running" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a tree test\" } }");
+    // One process holds the tests' output and one does not: neither outlives
+    // the run, as an integration test's `zig build` once outlived its test.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\test "starts processes, then stalls" {
+        \\    const quiet = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "60" }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+        \\    const holding = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "60" } });
+        \\    var buffer: [64]u8 = undefined;
+        \\    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = "started.pids", .data = try std.mem.print(&buffer, "{d} {d}", .{ quiet.id.?, holding.id.? }) });
+        \\    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);
+        \\}
+        \\
+    });
+    const stalled = try gate(a, tmp.dir, &.{});
+    try std.testing.expect(!command.succeeded(stalled));
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "starts processes, then stalls exceeded 300 ms") != null);
+    var buffer: [64]u8 = undefined;
+    var pids = std.mem.tokenizeScalar(u8, try tmp.dir.readFile(io, "started.pids", &buffer), ' ');
+    while (pids.next()) |text| try expectEnded(try std.fmt.parseInt(std.posix.pid_t, text, 10));
+}
+
+/// Waits a moment for `pid` to be gone: ended and waited for, by the system
+/// for a process whose parent ended first.
+fn expectEnded(pid: std.posix.pid_t) !void {
+    const io = std.testing.io;
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromSeconds(10), .clock = .awake });
+    while (std.posix.kill(pid, @fromBackingInt(@intCast(0)))) |_| {
+        if (std.Io.Clock.Timestamp.compare(.now(io, .awake), .gte, deadline)) {
+            // glint-ignore: Z026 -- the process may end on its own first; the test fails either way
+            std.posix.kill(pid, .KILL) catch {};
+            return error.ProcessOutlivedTheRun;
+        }
+        try std.Io.sleep(io, .fromMilliseconds(20), .awake);
+    } else |err| try std.testing.expectEqual(error.ProcessNotFound, err);
+}
+
 test "the tests' process ends with the runner the build kills" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -659,7 +705,9 @@ test "the tests' process ends with the runner the build kills" {
         \\const builtin = @import("builtin");
         \\test "hangs" {
         \\    const pid = if (builtin.os.tag == .linux) std.os.linux.getpid() else std.c.getpid();
-        \\    var buffer: [32]u8 = undefined;
+        \\    const started = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "60" }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+        \\    var buffer: [64]u8 = undefined;
+        \\    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = "started.pid", .data = try std.mem.print(&buffer, "{d}", .{started.id.?}) });
         \\    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = "hung.pid", .data = try std.mem.print(&buffer, "{d}", .{pid}) });
         \\    try std.Io.sleep(std.testing.io, .fromSeconds(60), .awake);
         \\}
@@ -678,6 +726,8 @@ test "the tests' process ends with the runner the build kills" {
         }
         try std.Io.sleep(io, .fromMilliseconds(20), .awake);
     } else |err| try std.testing.expectEqual(error.ProcessNotFound, err);
+    // And every process it started with it.
+    try expectEnded(try std.fmt.parseInt(std.posix.pid_t, try tmp.dir.readFile(io, "started.pid", &buffer), 10));
 }
 
 test "the consumer check builds the package as a dependency with nothing fetched" {

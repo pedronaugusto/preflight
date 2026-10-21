@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- glint 0.5.1 runs the lint, of glint's new 0.5 line: a package that pins glint itself moves to that line, or names it in `.coexist` (gantry 0.2.10 is on 0.5.0). Its aegis pack decides more sites (`anytype` copies where bound, what a generic passes on of its parameter read at each binding, an owner's address given to a function that releases it, whole allocations through callers and returns, types built by `@Struct`/`@Union`/`@Tuple`, function types reflected), so a package gating A001-A005 may now see a finding its sites hid.
+
+### Changed
+
+- A suppression that suppresses nothing is listed where it is, with the incomplete sites (glint's `Report.stale`), where a count was printed.
+- A nested build with a manifest of its own (a directory with its own `build.zig.zon`, shakedown's `ci/bench-consumer/`) is left out of the default lint, as the manifest checks already treat it: only its own build compiles its files and binds the modules they import, so its imports would not resolve here.
+
 ## [0.13.1] - 2026-10-21
 
 ### Added

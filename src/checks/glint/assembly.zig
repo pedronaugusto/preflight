@@ -64,7 +64,7 @@ pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []co
         }
     } else {
         for (try src.roots(c.a, config)) |root| try collect(c, root, &found);
-        for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |root| if (c.exists(root)) try collect(c, root, &found);
+        for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |root| if (c.exists(root) and !try nested(c, root)) try collect(c, root, &found);
         if (c.exists("build.zig")) try found.put(c.a, "build.zig", {});
     }
     if (c.errors != before) return null;
@@ -88,12 +88,19 @@ fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(
     defer walker.deinit();
     while (try walker.next(c.io)) |entry| {
         if (entry.kind == .directory) {
-            if (!configure.generated(entry.basename)) try walker.enter(c.io, entry);
+            if (!configure.generated(entry.basename) and !try nested(c, try std.Io.Dir.path.join(c.a, &.{ root, entry.path }))) try walker.enter(c.io, entry);
             continue;
         }
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
         try found.put(c.a, try normalize(c.a, try std.Io.Dir.path.join(c.a, &.{ root, entry.path })), {});
     }
+}
+
+/// Whether `directory` is a package of its own: a nested build with its own `build.zig.zon`,
+/// whose files only that build compiles, with the modules it binds. Its imports would not
+/// resolve in this build's lint, so it is left to that build.
+fn nested(c: *src.Context, directory: []const u8) !bool {
+    return c.exists(try std.Io.Dir.path.join(c.a, &.{ directory, "build.zig.zon" }));
 }
 
 /// A path in one lexical form: `/` separators, no `.` or `..` components
@@ -333,13 +340,27 @@ test "default selection is the sources and the directories a repository keeps co
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "src/a.zig", "src/deep/b.zig", "bench/run.zig", "examples/use.zig", "ci/layers.zig", "conformance/build.zig", "build.zig", "src/note.md", "zig-pkg/dep/x.zig", "src/zig-out/y.zig", ".zig-cache/z.zig", "docs/skip.zig", "bench/zig-pkg/q.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
+    for ([_][]const u8{ "src/a.zig", "src/deep/b.zig", "bench/run.zig", "examples/use.zig", "ci/layers.zig", "conformance/build.zig", "build.zig", "src/note.md", "zig-pkg/dep/x.zig", "src/zig-out/y.zig", ".zig-cache/z.zig", "docs/skip.zig", "bench/zig-pkg/q.zig", "bench/emulator/build.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
     const config = try parsed(c.a, "{}");
     const policy = (try policy_module.parse(&c, config)).?;
     const paths = (try select(&c, policy, config)).?;
     try std.testing.expectEqual(@as(usize, 7), paths.len);
     for ([_][]const u8{ "bench/run.zig", "build.zig", "ci/layers.zig", "conformance/build.zig", "examples/use.zig", "src/a.zig", "src/deep/b.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "a nested build's directory is its own package, left out of the default selection" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/build.zig.zon", "conformance/main.zig", "bench/run.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    const config = try parsed(c.a, "{}");
+    const policy = (try policy_module.parse(&c, config)).?;
+    const paths = (try select(&c, policy, config)).?;
+    try std.testing.expectEqual(@as(usize, 2), paths.len);
+    for ([_][]const u8{ "bench/run.zig", "src/a.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
 test "named paths replace the default, accept files and directories and fail when absent" {

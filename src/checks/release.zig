@@ -190,6 +190,41 @@ pub fn declared(c: *src.Context) !Version {
     };
 }
 
+/// The newest release the changelog records: its first `## [X.Y.Z]` heading,
+/// or null before any.
+pub fn newestReleased(changelog: []const u8) ?Version {
+    var lines = std.mem.splitScalar(u8, changelog, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "## [")) continue;
+        const end = std.mem.findScalar(u8, line, ']') orelse continue;
+        return Version.parse(line["## [".len..end]) catch continue;
+    }
+    return null;
+}
+
+/// The version `build.zig.zon` declares is the changelog's newest release:
+/// what a tag of this commit names, which a fetch of it names itself by.
+/// A release cut by hand that set one and not the other is refused here,
+/// in every gate, before its tag is made or after (uplink 0.9.0 and 0.9.1
+/// were tagged with the manifest at 0.8.7). A package that has released
+/// nothing yet has nothing to match.
+pub fn versionAgrees(c: *src.Context) !void {
+    if (!c.exists("CHANGELOG.md")) return;
+    const newest = newestReleased(try c.read("CHANGELOG.md")) orelse return;
+    const version = declared(c) catch |err| switch (err) {
+        // It named its fix.
+        error.InvalidVersion, error.InvalidManifest => return,
+        else => return err,
+    };
+    if (version.order(newest) == .eq) return;
+    c.fail("build.zig.zon: .version is {f} and CHANGELOG.md's newest release is {f}; a tag of this commit names the one the manifest declares, so set them to one release (`ready` sets both)", .{ version, newest });
+}
+
+test "the newest release is the first released heading, past [Unreleased]" {
+    try std.testing.expectEqual(Version{ .major = 0, .minor = 9, .patch = 0 }, newestReleased("# Changelog\n\n## [Unreleased]\n\n## [0.9.0] - 2026-10-21\n\n## [0.8.7] - 2026-10-20\n").?);
+    try std.testing.expectEqual(@as(?Version, null), newestReleased("# Changelog\n\n## [Unreleased]\n\n- something\n"));
+}
+
 /// Whether `path` is one of the manifest's `.paths` or under one.
 pub fn shipped(listed: []const []const u8, path: []const u8) bool {
     for (listed) |entry| {

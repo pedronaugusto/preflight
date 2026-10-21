@@ -434,6 +434,9 @@ pub fn publish(c: *src.Context) !Published {
         error.InvalidVersion, error.InvalidManifest => return error.LandFailed,
         else => return err,
     };
+    const before = c.errors;
+    try release.versionAgrees(c);
+    if (c.errors != before) return error.LandFailed;
     const name = try c.a.print("v{f}", .{declared});
     const released = c.exists("CHANGELOG.md") and std.mem.find(u8, try c.read("CHANGELOG.md"), try c.a.print("## [{f}]", .{declared})) != null;
     const tagged = (try git(c, &.{ "rev-parse", "-q", "--verify", try c.a.print("refs/tags/{s}^{{commit}}", .{name}) })).out;

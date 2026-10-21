@@ -364,6 +364,20 @@ test "a repository still naming a retired lint setting fails by name" {
     try std.testing.expect(std.mem.find(u8, result.stderr, "`ziglint_exceptions` is retired") != null);
 }
 
+test "a manifest whose version is not the changelog's newest release fails the lint by name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A release cut by hand that wrote the changelog and left the manifest.
+    try edit(a, tmp.dir, "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n## [0.1.0] - 2026-10-21\n\n### Added\n\n- The sample.\n");
+    const result = try lintFixture(a, tmp.dir);
+    try std.testing.expect(result.term == .exited and result.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "build.zig.zon: .version is 0.0.0 and CHANGELOG.md's newest release is 0.1.0") != null);
+}
+
 test "hosted output appends to existing records" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

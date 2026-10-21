@@ -399,6 +399,10 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     try checks.manifest.paths(c, config);
     timer.end(c.*, log);
     if (c.errors != 0) return;
+    timer = stage(c, "release version");
+    try checks.release.versionAgrees(c);
+    timer.end(c.*, log);
+    if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| {
         const argv = try checks.docs.zigCommand(c.a, c.buildCommand(), command);
         timer = stage(c, try std.mem.join(c.a, " ", argv));

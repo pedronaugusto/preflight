@@ -1,6 +1,6 @@
 .{
     .name = .preflight,
-    .version = "0.13.0",
+    .version = "0.13.1",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },

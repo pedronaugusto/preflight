@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-21
+
 ### Added
 
 - The lint refuses a manifest whose `.version` is not CHANGELOG.md's newest release, naming both: a tag of the commit names the one the manifest declares, and a fetch of it names itself by it (uplink 0.9.0 and 0.9.1 were tagged with the manifest at 0.8.7, cut by hand). `publish` refuses the same before it tags or pushes. A package that has released nothing yet has nothing to match.

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-21
+
 ### Breaking
 
 - `ci-build` (and every build of a package with `.portable_tests`, which configures it) refuses a portable test given a path by `addOptionPath`, `addOptionPathDirectory` or `addOptionPathUntracked`: the path is the building runner's, which the runner replaying the tests has not. A program the tests run goes through `addTestProgram`.

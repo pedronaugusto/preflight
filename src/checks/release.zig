@@ -7,6 +7,7 @@
 //! is the one the gate tests and the landing tags.
 const std = @import("std");
 const src = @import("source.zig");
+const zon = @import("../zon.zig");
 const surface = @import("surface.zig");
 
 /// A release number. Pre-release and build parts are not versions a package releases.
@@ -164,7 +165,10 @@ fn parseManifest(c: *src.Context, text: []const u8) !Manifest {
         .{
             .gpa = c.a,
             .arena = c.a,
-            .source = try c.a.dupeSentinel(u8, text, 0),
+            .source = (try zon.source(c.a, text)) orelse {
+                c.fail("build.zig.zon: not UTF-8", .{});
+                return error.InvalidManifest;
+            },
             .diagnostics = &diagnostics,
             .ignore_unknown_fields = true,
         },

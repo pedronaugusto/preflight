@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `ci-build` (and every build of a package with `.portable_tests`, which configures it) refuses a portable test given a path by `addOptionPath`, `addOptionPathDirectory` or `addOptionPathUntracked`: the path is the building runner's, which the runner replaying the tests has not. A program the tests run goes through `addTestProgram`.
+
+### Added
+
+- `addTestProgram(b, options, name, program)`: a program the tests run, named to them as `name` in `options` by its path from the package root (`zig-out/preflight/programs/<file>`), installed before they compile. Portable tests replay with it: the replaying runner downloads it with them and preflight restores its permission to run.
+
+### Fixed
+
+- A `build.zig.zon` that is not UTF-8 crashed the checks that read it (std's char literal parsing reads past a UTF-8 sequence cut short, Zig 0.17.0): every manifest read is refused as not UTF-8 first, and the ones read through `ZonGen` also refuse an AST with errors. gantry's fuzz target found it in gantry's own reader (the 2026-10-21 nightly).
+- A portable test given a program by `addOptionPath` failed where it replayed, the path naming the building runner's cache (parley's process tests on every macOS and Windows leg since 2026-10-18, `FileNotFound`). `ci-build` now refuses a portable test given any path by `addOptionPath` (or its directory and untracked kinds), naming `addTestProgram`.
+
 ## [0.12.3] - 2026-10-21
 
 ### Added

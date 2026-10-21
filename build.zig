@@ -12,6 +12,9 @@ pub const Hardened = ci.Hardened;
 pub const TestTimeout = ci.TestTimeout;
 /// Builds, tests and runs a repository check program as one step.
 pub const addCheck = ci.addCheck;
+/// A program the tests run, named to them by its path from the package root,
+/// which holds where portable tests replay.
+pub const addTestProgram = ci.addTestProgram;
 /// Adds `check-consumer`: a project that depends on the package with nothing fetched.
 pub const addConsumerCheck = ci.consumer.add;
 /// What `addConsumerCheck` builds.

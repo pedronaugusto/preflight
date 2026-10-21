@@ -2,6 +2,7 @@
 const gantry = @import("gantry");
 
 pub const layers: []const gantry.rules.Layer = &.{
+    .{ .name = "ZON sources", .patterns = &.{"src/zon.zig"} },
     .{ .name = "supported Zig versions", .patterns = &.{"src/zig_version.zig"} },
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig" } },
     .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },

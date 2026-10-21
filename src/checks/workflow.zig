@@ -2,6 +2,7 @@
 //! and the generated workflow, never another generator.
 const std = @import("std");
 const src = @import("source.zig");
+const zon = @import("../zon.zig");
 const matrix = @import("matrix.zig");
 
 const template = @embedFile("caller.yml");
@@ -68,7 +69,7 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
     const manifest = try std.zon.parse.fromSlice(Manifest, .{
         .gpa = c.a,
         .arena = c.a,
-        .source = try c.a.dupeSentinel(u8, try c.read(manifest_path), 0),
+        .source = (try zon.source(c.a, try c.read(manifest_path))) orelse return error.InvalidManifest,
         .diagnostics = &diagnostics,
         .ignore_unknown_fields = true,
     });

@@ -6,6 +6,7 @@
 //! build. The build runs this file as a program to assemble and run the nested build.
 const std = @import("std");
 const configure = @import("configure.zig");
+const zon = @import("zon.zig");
 
 /// A package pinned by its source and hash.
 pub const Pin = struct { name: []const u8, url: []const u8, hash: []const u8, lazy: bool = false };
@@ -159,8 +160,9 @@ fn pin(w: *std.Io.Writer, each: Pin) !void {
 /// The source and hash `root` (a `build.zig.zon`) pins `name` at, as a dependency
 /// or a dev dependency.
 pub fn sharedPin(a: std.mem.Allocator, root: []const u8, name: []const u8) !Pin {
-    const source = try a.dupeSentinel(u8, root, 0);
+    const source = (try zon.source(a, root)) orelse return error.InvalidManifest;
     const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
+    if (ast.errors.len != 0) return error.InvalidManifest;
     const zoir = try std.zig.ZonGen.generate(a, ast, .{});
     if (zoir.hasCompileErrors()) return error.InvalidManifest;
     const top = std.zig.Zoir.Node.Index.root.get(&zoir);
@@ -186,8 +188,9 @@ pub fn pins(a: std.mem.Allocator, root: []const u8) ![]const Pin {
 
 /// The pins of the lists named, of `.dependencies` and `.dev_dependencies`.
 pub fn pinsIn(a: std.mem.Allocator, root: []const u8, lists: []const []const u8) ![]const Pin {
-    const source = try a.dupeSentinel(u8, root, 0);
+    const source = (try zon.source(a, root)) orelse return error.InvalidManifest;
     const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
+    if (ast.errors.len != 0) return error.InvalidManifest;
     const zoir = try std.zig.ZonGen.generate(a, ast, .{});
     if (zoir.hasCompileErrors()) return error.InvalidManifest;
     const top = std.zig.Zoir.Node.Index.root.get(&zoir);
@@ -212,8 +215,9 @@ pub fn pinsIn(a: std.mem.Allocator, root: []const u8, lists: []const []const u8)
 
 /// The names `.coexist` lists, which may meet in a graph at one revision per line.
 pub fn coexistIn(a: std.mem.Allocator, root: []const u8) ![]const []const u8 {
-    const source = try a.dupeSentinel(u8, root, 0);
+    const source = (try zon.source(a, root)) orelse return error.InvalidManifest;
     const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
+    if (ast.errors.len != 0) return error.InvalidManifest;
     const zoir = try std.zig.ZonGen.generate(a, ast, .{});
     if (zoir.hasCompileErrors()) return error.InvalidManifest;
     const top = std.zig.Zoir.Node.Index.root.get(&zoir);

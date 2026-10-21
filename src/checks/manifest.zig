@@ -5,6 +5,7 @@
 const std = @import("std");
 const gantry = @import("gantry");
 const src = @import("source.zig");
+const zon = @import("../zon.zig");
 const configure = @import("../configure.zig");
 
 /// The files every fetched package ships besides its source roots.
@@ -48,11 +49,14 @@ pub fn coexist(c: *src.Context) ![]const []const u8 {
 const Parsed = struct { zoir: *const std.zig.Zoir, root: std.zig.Zoir.Node };
 
 fn parsed(c: *src.Context) !Parsed {
-    const source = try c.a.dupeSentinel(u8, try c.read("build.zig.zon"), 0);
+    const source = (try zon.source(c.a, try c.read("build.zig.zon"))) orelse {
+        c.fail("build.zig.zon: not UTF-8", .{});
+        return error.InvalidManifest;
+    };
     const ast = try std.zig.Ast.parse(c.a, source, .{ .mode = .zon });
     const zoir = try c.a.create(std.zig.Zoir);
     zoir.* = try std.zig.ZonGen.generate(c.a, ast, .{});
-    if (zoir.hasCompileErrors()) {
+    if (ast.errors.len != 0 or zoir.hasCompileErrors()) {
         c.fail("build.zig.zon: not valid ZON", .{});
         return error.InvalidManifest;
     }
@@ -69,7 +73,10 @@ fn field(manifest: Parsed, wanted: []const u8) ?std.zig.Zoir.Node {
 }
 
 pub fn paths(c: *src.Context, config: src.Value) !void {
-    const text = try c.a.dupeSentinel(u8, try c.read("build.zig.zon"), 0);
+    const text = (try zon.source(c.a, try c.read("build.zig.zon"))) orelse {
+        c.fail("build.zig.zon: not UTF-8", .{});
+        return;
+    };
     var diagnostics: std.zon.parse.Diagnostics = undefined;
     const manifest = std.zon.parse.fromSlice(Manifest, .{
         .gpa = c.a,

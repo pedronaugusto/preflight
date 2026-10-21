@@ -1257,6 +1257,61 @@ test "a helper program a test names by path is compiled to an object, not linked
     }
 }
 
+test "a program a test runs replays with it, named from the package root; a path from addOptionPath is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const script =
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const helper = b.addExecutable(.{ .name = "helper", .root_module = b.createModule(.{ .root_source_file = b.path("src/helper.zig"), .target = target, .optimize = optimize }) });
+        \\    const options = b.addOptions();
+        \\    NAME
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    module.addOptions("options", options);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
+        \\    preflight.addCi(b, b, .{ .tests = test_step, .portable_tests = true });
+        \\}
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, script, "NAME", "preflight.addTestProgram(b, options, \"helper\", helper);") });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/helper.zig", .data = "pub fn main() !void { return error.HelperRan; }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\const options = @import("options");
+        \\test "runs its helper by the path it was given" {
+        \\    try std.testing.expect(!std.Io.Dir.path.isAbsolute(options.helper));
+        \\    const ran = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{options.helper} });
+        \\    defer std.testing.allocator.free(ran.stdout);
+        \\    defer std.testing.allocator.free(ran.stderr);
+        \\    try std.testing.expect(std.mem.find(u8, ran.stderr, "HelperRan") != null);
+        \\}
+        \\
+    });
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (compiled.term != .exited or compiled.term.exited != 0) std.debug.print("{s}", .{compiled.stderr});
+    try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
+    const manifest = try tmp.dir.readFileAlloc(io, "zig-out/preflight/tests.json", a, .limited(1024 * 1024));
+    try std.testing.expect(std.mem.find(u8, manifest, "\"programs\":[\"zig-out/preflight/programs/helper") != null);
+    const replayed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (replayed.term != .exited or replayed.term.exited != 0) std.debug.print("{s}", .{replayed.stderr});
+    try std.testing.expect(replayed.term == .exited and replayed.term.exited == 0);
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, script, "NAME", "options.addOptionPath(\"helper\", helper.getEmittedBin());") });
+    const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(refused.term != .exited or refused.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, refused.stderr, "portable tests must not be given a path by addOptionPath") != null);
+}
+
 test "owner caller regeneration replaces stale pin without a consumer planner" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

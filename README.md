@@ -329,9 +329,15 @@ Compiling and invoked Zig must be the same build, and one `src/zig_version.zig` 
 Packages with relocatable test binaries can set `.portable_tests = true` in the
 build helper and `compile_once: true` in `ci/workflow.json`. Each destination runner links its tests with the native SDK; shards download
 and execute those binaries through
-Zig's test protocol, retaining per-test timeouts and custom watchdogs. Helpers or
-fixtures compiled with absolute runner paths must be made relocatable first.
-An artifact upload drops the permission to run; preflight restores it before execution. The native matrix stays
+Zig's test protocol, retaining per-test timeouts and custom watchdogs. A program
+the tests run (a fixture server, a helper child) is named to them with
+`preflight.addTestProgram(b, options, "name", program)`: it is installed under
+`zig-out/preflight/programs/`, which the replaying runner downloads with the
+tests, and named by that path from the package root, where every test run
+works. A path from `addOptionPath` is the building runner's cache, which the
+replaying runner does not have, so `ci-build` refuses one in a portable test.
+An artifact upload drops the permission to run; preflight restores it for the
+tests and their programs before execution. The native matrix stays
 available for comparing elapsed time and runner minutes against this path.
 
 A tier records the durations of every host and mode it executes, through Zig's

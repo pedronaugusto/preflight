@@ -10,9 +10,24 @@ pub const Command = struct {
     /// The run had a fresh temporary directory (`b.tmpPath()`) as its working
     /// directory, and gets a fresh one where it replays.
     scratch: bool = false,
+    /// The programs the tests run (`addProgram`), from the package root: an
+    /// artifact upload drops their permission to run as it drops the tests'.
+    programs: []const []const u8 = &.{},
 };
 
 const manifest_path = "zig-out/preflight/tests.json";
+/// Where `addProgram` installs, under the install prefix: inside what a
+/// replaying runner downloads.
+const programs_dir = "preflight/programs";
+
+/// A program the tests run, named to them as `name` in `options` by its path
+/// from the package root: every test run's working directory, here and where
+/// portable tests replay, and the path is the same on both runners.
+pub fn addProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const u8, program: *std.Build.Step.Compile) void {
+    const install = b.addInstallArtifact(program, .{ .dest_dir = .{ .override = .{ .custom = programs_dir } }, .pdb_dir = .disabled, .implib_dir = .disabled });
+    options.addOption([]const u8, name, b.fmt("zig-out/{s}/{s}", .{ programs_dir, program.out_filename }));
+    options.step.dependOn(&install.step);
+}
 
 /// `checker` is preflight's command program, which restores the executables'
 /// permission to run that an artifact upload drops.
@@ -37,6 +52,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
     executable.has_side_effects = true;
     for (stored.value) |command| {
         executable.addArg(command.argv[0]);
+        for (command.programs) |program| executable.addArg(program);
         const run = b.addRunFile(package.path(command.argv[0]));
         run.addArgs(command.argv[1..]);
         run.setCwd(if (command.scratch) b.tmpPath() else package.path(command.cwd orelse "."));
@@ -107,6 +123,36 @@ fn native(module: *const std.Build.Module) bool {
     return target.query.cpu_model == .native or target.query.isNativeCpu();
 }
 
+/// The programs `artifact` runs, as `addProgram` named them, from the package
+/// root. A path given to its options by `addOptionPath` (or its directory and
+/// untracked kinds) is refused: it is the building runner's, absolute, and
+/// the runner replaying the tests has no such path.
+fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) []const []const u8 {
+    var programs: std.ArrayList([]const u8) = .empty;
+    // Options reach the artifact as modules, each the generated file of its step.
+    var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
+    graph.put(b.allocator, artifact.root_module, {}) catch @panic("OOM");
+    var next: usize = 0;
+    while (next < graph.count()) : (next += 1) {
+        for (graph.keys()[next].import_table.values()) |imported| graph.put(b.allocator, imported, {}) catch @panic("OOM");
+    }
+    for (graph.keys()) |module| {
+        const root = module.root_source_file orelse continue;
+        const generated = switch (root) {
+            .generated => |generated| generated,
+            else => continue,
+        };
+        const options = b.graph.generated_files.items[@backingInt(generated.index)].cast(std.Build.Step.Options) orelse continue;
+        if (options.files.items.len + options.directories.items.len + options.untracked_paths.items.len != 0)
+            @panic("portable tests must not be given a path by addOptionPath: it is the building runner's own, which the runner replaying them has not; name a program the tests run with preflight.addTestProgram");
+        for (options.step.dependencies.items) |installing| {
+            const install = installing.cast(std.Build.Step.InstallArtifact) orelse continue;
+            programs.append(b.allocator, b.fmt("zig-out/{s}/{s}", .{ programs_dir, install.dest_sub_path orelse install.artifact.out_filename })) catch @panic("OOM");
+        }
+    }
+    return programs.items;
+}
+
 /// Whether `step` makes a fresh temporary directory, as `b.tmpPath()` does.
 fn temporary(step: *std.Build.Step) bool {
     const write = step.cast(std.Build.Step.WriteFile) orelse return false;
@@ -123,6 +169,7 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
         // other run would replay without it.
         if (run.environ_map != null and artifact.kind != .@"test") @panic("portable tests must not carry an environment");
         baseline(b, artifact);
+        const programs = runs(b, artifact);
         const name = b.fmt("test-{d}{s}", .{ commands.items.len, if (artifact.root_module.resolved_target.?.result.os.tag == .windows) ".exe" else "" });
         const install = b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "preflight/bin" } }, .dest_sub_path = name });
         compile.dependOn(&install.step);
@@ -150,7 +197,7 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
             },
             else => @panic("portable tests must use a repository-relative directory"),
         } else null;
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch }) catch @panic("OOM");
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = programs }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }

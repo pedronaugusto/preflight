@@ -39,6 +39,7 @@ test {
     _ = @import("facts_test.zig");
     _ = @import("facts/revisions.zig");
     _ = @import("zig_version.zig");
+    _ = @import("zon.zig");
     _ = @import("profile_test.zig");
     _ = @import("bench_driver.zig");
     _ = source;

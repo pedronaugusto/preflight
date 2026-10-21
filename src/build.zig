@@ -106,6 +106,16 @@ pub fn addCi(b: *std.Build, package: *std.Build, config: Config) void {
     steps.install(b, package, tools.builder, config);
 }
 
+/// A program the tests run (a fixture server, a helper child), named to them as
+/// `name` in `options`: installed under `zig-out/preflight/programs/` before
+/// they compile, and named by its path from the package root, the working
+/// directory of every test run, here and where portable tests replay. A path
+/// from `addOptionPath` is the building runner's cache, which a runner
+/// replaying the tests does not have: portable tests refuse one.
+pub fn addTestProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const u8, program: *std.Build.Step.Compile) void {
+    portable.addProgram(b, options, name, program);
+}
+
 /// Builds and runs a repository check program of `package` and its tests as one
 /// step of `b`. The program runs from the repository root.
 pub fn addCheck(b: *std.Build, package: *std.Build, name: []const u8, source: []const u8) *std.Build.Step.Compile {

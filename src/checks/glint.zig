@@ -115,12 +115,18 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             unfinished += 1;
         } else if (note.reason == .unresolved) unresolved += 1;
     }
+    for (report.stale) |stale| {
+        const start = sites.written().len;
+        sites.writer.print("glint: incomplete: {s}:{d}: {s} suppression suppresses nothing\n", .{ project.inputs[stale.span.file.raw()].name, stale.span.line, stale.name }) catch @panic("OOM");
+        if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
+        unfinished += 1;
+    }
     if (unfinished > printed) {
         const where = listSites(c, sites.written());
         c.report("glint: {d} more incomplete sites; all {d}: {s}\n", .{ unfinished - printed, unfinished, where });
     }
     if (!report.complete) {
-        c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
+        c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} of them suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
     }
     c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.inputs.len, failing, warned, report.suppressed, unfinished, unresolved });
 }

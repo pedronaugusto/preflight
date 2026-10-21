@@ -108,8 +108,6 @@ fn join(a: std.mem.Allocator, directory: []const u8, name: []const u8) std.mem.A
     return normalize(a, try std.Io.Dir.path.join(a, &.{ directory, name }));
 }
 
-const Source = struct { bytes: []const u8 };
-
 const Loader = struct {
     c: *src.Context,
     gpa: std.mem.Allocator,

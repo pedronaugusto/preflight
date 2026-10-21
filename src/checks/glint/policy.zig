@@ -59,8 +59,9 @@ const Entry = struct { rule: glint.Rule, weight: Weight };
 /// with no reason written at it) is a result nobody read, and gates: a
 /// best-effort cleanup is a fine reason, silence is not. The Zig style rules are
 /// reported until a package is clean under them and gates them itself, the
-/// review's order reported, then gated. The readability report
-/// (Z024) stays off, as the fork's selection kept it.
+/// review's order reported, then gated. A private declaration its file never
+/// names (D001) is dead code or a use gone missing, and is reported. The
+/// readability report (Z024) stays off, as the fork's selection kept it.
 const defaults = [_]Entry{
     .{ .rule = .Z003, .weight = .gate },
     .{ .rule = .Z011, .weight = .finding },
@@ -80,6 +81,7 @@ const defaults = [_]Entry{
     .{ .rule = .Z014, .weight = .report },
     .{ .rule = .Z031, .weight = .report },
     .{ .rule = .Z032, .weight = .report },
+    .{ .rule = .D001, .weight = .report },
 };
 
 /// Keys that were ziglint's or a ledger's. A repository still naming one
@@ -210,6 +212,7 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
     base.fact_budget = fact_budget;
     base.cast_scope = .production;
     base.casts = .pointer;
+    base.metrics = true;
 
     const block = src.get(config, "glint");
     var chosen: std.ArrayList(glint.Config.Selection) = .empty;
@@ -453,8 +456,9 @@ test "the default policy gates correctness and the sites that can hide undefined
     try std.testing.expectEqual(.production, policy.base.cast_scope);
     try std.testing.expectEqual(.pointer, policy.base.casts);
     for ([_]glint.Rule{ .Z003, .Z013, .Z026, .P002, .P004 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
-    for ([_]glint.Rule{ .P001, .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
-    for ([_]glint.Rule{ .Z024, .D001 }) |rule| try std.testing.expectEqual(.off, policy.base.level(rule));
+    for ([_]glint.Rule{ .P001, .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032, .D001 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
+    try std.testing.expectEqual(.off, policy.base.level(.Z024));
+    try std.testing.expect(policy.base.metrics);
     // The durability door gates in every repository.
     try std.testing.expectEqual(.gate, policy.base.level(.P006));
     try std.testing.expectEqual(durability.len, policy.base.disallowed.len);

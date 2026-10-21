@@ -48,6 +48,27 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     };
     defer report.deinit();
     judge(c, chosen, &assembled.project, &report);
+    assertions(c, &assembled.project, &report);
+}
+
+/// glint's assertion counts, each call by the declaration it resolves to
+/// (std's `debug.assert`, aegis's `assert` contracts), never by its
+/// spelling: a report, never a gate, since a count says nothing of what an
+/// assertion checks. In a hosted job the per-file table goes to its summary.
+fn assertions(c: *src.Context, project: *const glint.Project, report: *const glint.Report) void {
+    const metrics = report.metrics orelse return;
+    const t = metrics.total;
+    c.report("preflight: assertions: {d} in {d} functions, {d} of them with one; {d} calls spelled like one unresolved\n", .{ t.total(), t.functions, t.asserted, t.unresolved });
+    const path = c.summary_path orelse return;
+    var text: std.Io.Writer.Allocating = .init(c.a);
+    text.writer.writeAll("\nAssertions (report only)\n\n| File | Functions | With one | Assertions | Unresolved |\n|---|---:|---:|---:|---:|\n") catch @panic("OOM");
+    for (metrics.files) |file| {
+        const n = file.counts;
+        if (n.functions == 0 and n.unresolved == 0) continue;
+        text.writer.print("| `{s}` | {d} | {d} | {d} | {d} |\n", .{ project.inputs[file.file.raw()].name, n.functions, n.asserted, n.total(), n.unresolved }) catch @panic("OOM");
+    }
+    // glint-ignore: Z026 -- a summary that cannot be written leaves the line printed above
+    appendTo(c.*, c.directory(), path, text.written()) catch {};
 }
 
 fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report) void {
@@ -302,6 +323,38 @@ test "a run counts every incomplete site, prints the first ones and lists them a
     try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, all, "glint: incomplete: "));
     const summary = try f.c.read("summary.md");
     try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, summary, "glint: incomplete: "));
+}
+
+test "assertions are counted by the declaration a call resolves to, never by its spelling" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    // A stub standard library: `debug.assert` is the declaration the counts look for.
+    try f.file("stdlib/std.zig", "pub const debug = @import(\"debug.zig\");\n");
+    try f.file("stdlib/debug.zig", "pub fn assert(ok: bool) void {\n    if (!ok) unreachable; // unreachable: what an assertion is\n}\n");
+    try f.file("src/root.zig",
+        \\const std = @import("std");
+        \\pub fn checked(x: u8) u8 {
+        \\    std.debug.assert(x != 0);
+        \\    return mine(x);
+        \\}
+        \\fn mine(x: u8) u8 {
+        \\    assert(x == 1);
+        \\    const text = "assert(false)";
+        \\    return @intCast(text.len);
+        \\}
+        \\fn assert(ok: bool) void {
+        \\    _ = ok;
+        \\}
+        \\
+    );
+    var held: std.Io.Writer.Allocating = .init(f.c.a);
+    f.c.held = &held;
+    f.c.summary_path = "summary.md";
+    _ = try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}}", .{ .std_dir = "stdlib" });
+    const out = held.written();
+    try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one; 0 calls spelled like one unresolved") != null);
+    const summary = try f.c.read("summary.md");
+    try std.testing.expect(std.mem.find(u8, summary, "| `src/root.zig` | 3 | 1 | 1 | 0 |") != null);
 }
 
 test "a file that cannot be read fails the run with the cause, never a pass" {

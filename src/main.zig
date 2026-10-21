@@ -378,7 +378,6 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
         c.fail("{s}: invalid Zig source", .{s.path});
     };
     if (c.errors != 0) return;
-    try checks.quality.summary(c, sources, c.summary_path);
     try checks.fuzz.summary(c, sources, config, c.summary_path);
     var timer = stage(c, "glint");
     try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build });

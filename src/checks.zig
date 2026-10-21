@@ -7,7 +7,6 @@ pub const workflow = @import("checks/workflow.zig");
 pub const matrix = @import("checks/matrix.zig");
 pub const cache = @import("checks/cache.zig");
 pub const glint = @import("checks/glint.zig");
-pub const quality = @import("checks/quality.zig");
 pub const fuzz = @import("checks/fuzz.zig");
 pub const campaign = @import("checks/campaign.zig");
 pub const integration = @import("checks/integration.zig");
@@ -51,7 +50,6 @@ test {
     _ = workflow;
     _ = cache;
     _ = glint;
-    _ = quality;
     _ = fuzz;
     _ = integration;
     _ = profile;

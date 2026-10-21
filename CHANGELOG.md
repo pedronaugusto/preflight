@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The default policy reports glint's D001, a private declaration its file never names: dead code, or a use that went missing. It never fails a run; a package gates it in `glint.rules`.
+- The assertion count is glint's: each call counted by the declaration it resolves to (std's `debug.assert`, aegis's `assert` contracts), and calls spelled like one whose callee does not resolve counted apart (`preflight: assertions: N in F functions, A of them with one; U calls spelled like one unresolved`). preflight's own count of the spelling `assert(` goes, and with it the per-function table; a hosted job's summary gets glint's per-file table.
+
 ## [0.12.1] - 2026-10-21
 
 ### Changed

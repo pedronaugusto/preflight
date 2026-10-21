@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- glint 0.4.3: comptime path conditions and generic copies decided at the binding (A002), a choice of types per build in the aegis pack, Z006 accepting a declaration a generic reads on its type parameter.
+
 ## [0.12.0] - 2026-10-20
 
 ### Breaking

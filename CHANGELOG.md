@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-21
+
 ### Changed
 
 - The default policy reports glint's D001, a private declaration its file never names: dead code, or a use that went missing. It never fails a run; a package gates it in `glint.rules`.

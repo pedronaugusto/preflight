@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-10-21
+
 ### Added
 
 - `deprecations` follows the language's changes as it follows std's: the release's table holds the forms the language dropped, each checked against the parser that built preflight, which must refuse it. A file that does not parse is repaired over its tokens first. 0.17's entry is array repetition: `[_]T{e} ** n` becomes `@as([n]T, @splat(e))`, and a repetition of anything else is listed by hand (`a ** n`), line by line. The summary counts them as `dropped forms`.

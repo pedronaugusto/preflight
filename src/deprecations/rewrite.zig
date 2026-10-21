@@ -6,6 +6,7 @@ const std = @import("std");
 const Ast = std.zig.Ast;
 const library = @import("library.zig");
 const table = @import("table.zig");
+const syntax = @import("syntax.zig");
 const Path = library.Path;
 const Allocator = std.mem.Allocator;
 
@@ -20,6 +21,8 @@ pub const Kind = enum {
     forward,
     /// An alias the rewrites left unused.
     unused,
+    /// A form the language dropped, rewritten over its tokens.
+    syntax,
 };
 
 pub const Change = struct { line: usize, kind: Kind, old: []const u8, new: []const u8 };
@@ -45,8 +48,22 @@ pub fn file(a: Allocator, lib: *library.Library, entries: []const table.Entry, s
     var text: [:0]const u8 = try a.dupeSentinel(u8, source, 0);
     var changes: std.ArrayList(Change) = .empty;
     var leftovers: std.ArrayList(Leftover) = .empty;
-    const original = try Ast.parse(a, text, .{});
-    if (original.errors.len > 0) return error.Unparsable;
+    var original = try Ast.parse(a, text, .{});
+    // A file in a form the language dropped does not parse: its sites are
+    // repaired over the tokens first, and one still in such a form is left
+    // to a person.
+    if (original.errors.len > 0) {
+        var forms: std.ArrayList(syntax.Form) = .empty;
+        for (entries) |entry| if (entry == .syntax) try forms.append(a, entry.syntax);
+        if (forms.items.len == 0) return error.Unparsable;
+        const repaired = try syntax.repair(a, text, forms.items);
+        for (repaired.rewritten) |site| try changes.append(a, .{ .line = site.line, .kind = .syntax, .old = try compact(a, site.old), .new = site.new });
+        for (repaired.by_hand) |site| try leftovers.append(a, .{ .line = site.line, .name = site.name, .doc = site.doc });
+        if (changes.items.len == 0 and leftovers.items.len == 0) return error.Unparsable;
+        text = repaired.text;
+        original = try Ast.parse(a, text, .{});
+        if (original.errors.len > 0) return .{ .text = text, .changes = changes.items, .leftovers = leftovers.items };
+    }
     const first_names = try Names.collect(a, lib, &original);
     var passes: usize = 0;
     while (true) : (passes += 1) {

@@ -15,7 +15,7 @@ test "sum of each fixture case" {
 }
 
 test "the riscv64 machine has the Alpine package the sample's build declares" {
-    if (builtin.cpu.arch != .riscv64 or builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.target.cpu.arch != .riscv64 or builtin.target.os.tag != .linux) return error.SkipZigTest;
     // Only preflight's machine: an Alpine system made for the tests.
     std.Io.Dir.cwd().access(std.testing.io, "/etc/alpine-release", .{}) catch return error.SkipZigTest;
     const result = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{ "tree", "--version" } });

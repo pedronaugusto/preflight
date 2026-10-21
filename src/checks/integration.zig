@@ -629,7 +629,7 @@ test "the watchdog names the Io teardown of a test that leaves a task running" {
 }
 
 test "a process a test leaves holding the tests' output is named at once, and a crash's report still reaches the build" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -670,7 +670,7 @@ test "a process a test leaves holding the tests' output is named at once, and a 
 }
 
 test "a test the watchdog ends leaves no process it started running" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -716,7 +716,7 @@ fn expectEnded(pid: std.posix.pid_t) !void {
 }
 
 test "the tests' process ends with the runner the build kills" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

@@ -642,3 +642,76 @@ test "builtin: a name bound to a deprecated field moves with its declaration and
         \\
     );
 }
+
+test "dropped forms: a one-element repetition becomes a splat, and the file is read on" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    const outcome = try f.expect(
+        \\const std = @import("std");
+        \\const zeros = [_]u8{0} ** 4;
+        \\const rows = [_][4]u8{.{ 1, 2, 3, 4 }} ** rows_len;
+        \\const rows_len = 3;
+        \\pub fn f(s: []const u8, p: **u8) ?usize {
+        \\    _ = p;
+        \\    var spaces = [1]u8{' ',} ** (2 + 2);
+        \\    _ = &spaces;
+        \\    return std.mem.indexOf(u8, s, &zeros);
+        \\}
+        \\
+    ,
+        \\const std = @import("std");
+        \\const zeros = @as([4]u8, @splat(0));
+        \\const rows = @as([rows_len][4]u8, @splat(.{ 1, 2, 3, 4 }));
+        \\const rows_len = 3;
+        \\pub fn f(s: []const u8, p: **u8) ?usize {
+        \\    _ = p;
+        \\    var spaces = @as([(2 + 2)]u8, @splat(' '));
+        \\    _ = &spaces;
+        \\    return std.mem.find(u8, s, &zeros);
+        \\}
+        \\
+    );
+    try std.testing.expectEqual(0, outcome.leftovers.len);
+    var syntax_changes: usize = 0;
+    for (outcome.changes) |change| {
+        if (change.kind == .syntax) syntax_changes += 1;
+    }
+    try std.testing.expectEqual(3, syntax_changes);
+    try std.testing.expectEqualStrings("[_]u8{0} ** 4", outcome.changes[0].old);
+}
+
+test "dropped forms: a repetition of more than one element is left to a person, line by line" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    const source =
+        \\const pattern = [_]u8{ 1, 2 } ** 3;
+        \\const named = base ** 2;
+        \\const base = [_]u8{7};
+        \\const one = [_]u8{9} ** 2;
+        \\
+    ;
+    const outcome = try rewrite.file(f.arena.allocator(), &f.lib, f.entries, source);
+    try std.testing.expectEqual(2, outcome.leftovers.len);
+    try std.testing.expectEqual(1, outcome.leftovers[0].line);
+    try std.testing.expectEqual(2, outcome.leftovers[1].line);
+    try std.testing.expectEqualStrings("a ** n", outcome.leftovers[0].name);
+    // What could be rewritten was, though the file does not parse yet.
+    try std.testing.expectEqual(1, outcome.changes.len);
+    try std.testing.expect(std.mem.find(u8, outcome.text, "const one = @as([2]u8, @splat(9));") != null);
+}
+
+test "dropped forms: a file that does not parse for another reason is still unparsable" {
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    try std.testing.expectError(error.Unparsable, rewrite.file(f.arena.allocator(), &f.lib, f.entries, "pub fn broken( {\n"));
+}
+
+test "dropped forms: the table's entry holds only while this parser refuses the old form" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var lib: library.Library = .{ .a = arena.allocator(), .io = std.testing.io, .dir = undefined };
+    try std.testing.expectEqual(table.Status.active, try table.check(&lib, .{ .syntax = .array_repeat }));
+}

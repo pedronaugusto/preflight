@@ -1,9 +1,11 @@
 //! What each Zig release deprecated that std's own aliases do not say how to
-//! follow. A deprecated `pub const old = new;` needs no entry: the library
-//! resolves it to `new`. Each entry is checked against the std it runs on.
+//! follow, and the forms it took out of the language. A deprecated
+//! `pub const old = new;` needs no entry: the library resolves it to `new`.
+//! Each entry is checked against the std and the parser it runs on.
 const std = @import("std");
 const builtin = @import("builtin");
 const library = @import("library.zig");
+const syntax = @import("syntax.zig");
 
 pub const Entry = union(enum) {
     /// Every reference to `old` becomes `new`: the same declaration, or a
@@ -24,11 +26,15 @@ pub const Entry = union(enum) {
     /// `builtin.old` becomes `builtin.new` for `@import("builtin")`. The
     /// compiler writes that module, so the check reads the compiler's own.
     builtin: struct { old: []const u8, new: []const u8 },
+    /// A form the language dropped, which this release's parser refuses:
+    /// rewritten over the tokens of a file that does not parse.
+    syntax: syntax.Form,
 };
 
 pub const Release = struct { version: std.SemanticVersion, entries: []const Entry };
 
 pub const releases = [_]Release{.{ .version = .{ .major = 0, .minor = 17, .patch = 0 }, .entries = &.{
+    .{ .syntax = .array_repeat },
     .{ .rename = .{ .old = "std.fs.path", .new = "std.Io.Dir.path" } },
     .{ .rename = .{ .old = "std.fmt.bufPrint", .new = "std.mem.print" } },
     .{ .rename = .{ .old = "std.fmt.bufPrintSentinel", .new = "std.mem.printSentinel" } },
@@ -120,6 +126,14 @@ pub fn check(lib: *library.Library, entry: Entry) !Status {
             const old = try lib.lookup(try library.split(a, name)) orelse return .absent;
             if (library.deprecation(a, old) == null) return mismatch("{s} is not deprecated", a, .{name});
             if (try lib.forward(old) == null) return mismatch("{s} does more than call its replacement on its receiver", a, .{name});
+            return .active;
+        },
+        .syntax => |form| {
+            const sample = form.sample();
+            const old = try std.zig.Ast.parse(a, sample.old, .{});
+            if (old.errors.len == 0) return mismatch("this parser still takes the dropped form {t}", a, .{form});
+            const new = try std.zig.Ast.parse(a, sample.new, .{});
+            if (new.errors.len != 0) return mismatch("this parser refuses the rewrite of {t}", a, .{form});
             return .active;
         },
         .builtin => |r| {

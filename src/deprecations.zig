@@ -59,13 +59,13 @@ pub fn run(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, options: Options,
         if (options.write) try root.writeFile(io, .{ .sub_path = path, .data = outcome.text });
     }
     const count = summary.changes;
-    try out.print("deprecations: {d} changes in {d} files ({d} paths, {d} receivers, {d} memmoves, {d} orelse to catch, {d} forwards, {d} unused aliases removed); {d} by hand; {d} files do not parse{s}\n", .{
-        total(summary),                                                          summary.files,
-        count[@backingInt(rewrite.Kind.path)],                                   count[@backingInt(rewrite.Kind.receiver)],
-        count[@backingInt(rewrite.Kind.memmove)],                                count[@backingInt(rewrite.Kind.orelse_to_catch)],
-        count[@backingInt(rewrite.Kind.forward)],                                count[@backingInt(rewrite.Kind.unused)],
-        summary.leftovers,                                                       summary.unparsed,
-        if (options.write) "" else "; nothing written: -- --write applies them",
+    try out.print("deprecations: {d} changes in {d} files ({d} paths, {d} receivers, {d} memmoves, {d} orelse to catch, {d} forwards, {d} dropped forms, {d} unused aliases removed); {d} by hand; {d} files do not parse{s}\n", .{
+        total(summary),                           summary.files,
+        count[@backingInt(rewrite.Kind.path)],    count[@backingInt(rewrite.Kind.receiver)],
+        count[@backingInt(rewrite.Kind.memmove)], count[@backingInt(rewrite.Kind.orelse_to_catch)],
+        count[@backingInt(rewrite.Kind.forward)], count[@backingInt(rewrite.Kind.syntax)],
+        count[@backingInt(rewrite.Kind.unused)],  summary.leftovers,
+        summary.unparsed,                         if (options.write) "" else "; nothing written: -- --write applies them",
     });
     return summary;
 }

@@ -471,8 +471,8 @@ const Supervisor = struct {
                 .argv = argv,
                 .stderr = .pipe,
                 .inherit_files = &.{lifeline.read},
-                .pgid = if (builtin.os.tag == .windows) null else 0,
-                .start_suspended = builtin.os.tag == .windows,
+                .pgid = if (builtin.target.os.tag == .windows) null else 0,
+                .start_suspended = builtin.target.os.tag == .windows,
             });
         };
         // Ends what is left of the tests' processes when this returns: after
@@ -512,13 +512,13 @@ const Supervisor = struct {
     /// Windows: a job that ends its processes when its last handle closes,
     /// which a process leaves only when started to break away from it.
     const Tree = struct {
-        job: if (builtin.os.tag == .windows) std.os.windows.HANDLE else void,
-        group: if (builtin.os.tag == .windows) void else std.posix.pid_t,
+        job: if (builtin.target.os.tag == .windows) std.os.windows.HANDLE else void,
+        group: if (builtin.target.os.tag == .windows) void else std.posix.pid_t,
 
         /// The child was started suspended on Windows, so nothing it starts
         /// can be outside the job; elsewhere it leads a new process group.
         fn hold(child: *std.process.Child) !Tree {
-            if (builtin.os.tag != .windows) return .{ .job = {}, .group = child.id.? };
+            if (builtin.target.os.tag != .windows) return .{ .job = {}, .group = child.id.? };
             const windows = std.os.windows;
             errdefer _ = TerminateProcess(child.id.?, 1);
             const job = CreateJobObjectW(null, null) orelse return error.JobUncreated;
@@ -534,7 +534,7 @@ const Supervisor = struct {
         /// Kills every process left in the tree. The group's leader has ended
         /// and been waited for, so an empty group is no process at all.
         fn end(tree: Tree, sio: std.Io) void {
-            if (builtin.os.tag == .windows) {
+            if (builtin.target.os.tag == .windows) {
                 _ = TerminateJobObject(tree.job, 1);
                 std.os.windows.CloseHandle(tree.job);
                 return;
@@ -591,7 +591,7 @@ const Supervisor = struct {
         /// Both ends close on exec and are not inherited; the spawn passes the
         /// read end alone.
         fn open() !Lifeline {
-            if (builtin.os.tag == .windows) {
+            if (builtin.target.os.tag == .windows) {
                 var read: std.os.windows.HANDLE = undefined;
                 var write: std.os.windows.HANDLE = undefined;
                 if (CreatePipe(&read, &write, null, 0) == .FALSE) return error.LifelineUnopened;
@@ -606,7 +606,7 @@ const Supervisor = struct {
         }
 
         fn number(end: std.Io.File) usize {
-            return if (builtin.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle); // safe: a descriptor is never negative
+            return if (builtin.target.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle); // safe: a descriptor is never negative
         }
 
         extern "kernel32" fn CreatePipe(read: *std.os.windows.HANDLE, write: *std.os.windows.HANDLE, security: ?*std.os.windows.SECURITY_ATTRIBUTES, size: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
@@ -616,11 +616,11 @@ const Supervisor = struct {
     /// and ends this process when the lifeline ends, the supervisor gone.
     fn follow(text: []const u8) !void {
         const value = std.fmt.parseUnsigned(usize, text, 10) catch return error.InvalidLifeline;
-        const end: std.Io.File = if (builtin.os.tag == .windows)
+        const end: std.Io.File = if (builtin.target.os.tag == .windows)
             Lifeline.file(@ptrFromInt(value))
         else
             Lifeline.file(std.math.cast(std.posix.fd_t, value) orelse return error.InvalidLifeline);
-        if (builtin.os.tag == .windows) {
+        if (builtin.target.os.tag == .windows) {
             if (Protocol.SetHandleInformation(end.handle, Protocol.handle_flag_inherit, 0) == .FALSE) return error.InvalidLifeline;
         } else if (std.posix.errno(std.posix.system.fcntl(end.handle, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC))) != .SUCCESS) return error.InvalidLifeline;
         const watch = try std.Thread.spawn(.{}, awaitEnd, .{end});
@@ -635,7 +635,7 @@ const Supervisor = struct {
         // The supervisor is gone and cannot end the tree: this process leads
         // its group, and ends with every process in it. On Windows the job
         // did when the supervisor's handle to it closed.
-        if (builtin.os.tag != .windows) _ = std.posix.system.kill(0, .KILL);
+        if (builtin.target.os.tag != .windows) _ = std.posix.system.kill(0, .KILL);
         std.process.exit(1);
     }
 
@@ -681,7 +681,7 @@ const Supervisor = struct {
         var writer = to.writerStreaming(sio, &buffer);
         const w = &writer.interface;
         try w.print("\npreflight: the tests' process ended, and processes it started still hold its output {d} ms later:\n", .{release.toMilliseconds()});
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .linux => try listHolders(sio, output, w),
             .macos => try Darwin.listHolders(output, w),
             else => try w.writeAll("  (this system does not say which)\n"),
@@ -797,7 +797,7 @@ const Supervisor = struct {
     /// Windows' exit status whole, read before `wait` closes the process
     /// handle; elsewhere the status is all in the term.
     fn waitStatus(child: *std.process.Child) u32 {
-        if (builtin.os.tag != .windows) return 0;
+        if (builtin.target.os.tag != .windows) return 0;
         const windows = std.os.windows;
         const process = child.id.?;
         _ = WaitForSingleObject(process, std.math.maxInt(windows.DWORD)); // INFINITE
@@ -810,7 +810,7 @@ const Supervisor = struct {
     /// or by its signal, so the build reads the tests' ending as its own.
     /// Held output fails a run that would have passed.
     fn exitAs(ending: Ending) noreturn {
-        if (builtin.os.tag == .windows) {
+        if (builtin.target.os.tag == .windows) {
             const status: u32 = if (ending.status == 0 and ending.held) 1 else ending.status;
             std.os.windows.ntdll.RtlExitUserProcess(status);
         }
@@ -849,7 +849,7 @@ const Protocol = struct {
     out: std.Io.File,
 
     fn claim() !Protocol {
-        if (builtin.os.tag == .windows) return claimWindows();
+        if (builtin.target.os.tag == .windows) return claimWindows();
         const in = try private(std.posix.STDIN_FILENO);
         const out = try private(std.posix.STDOUT_FILENO);
         const empty = try std.Io.Dir.cwd().openFile(io, "/dev/null", .{});
@@ -861,7 +861,7 @@ const Protocol = struct {
 
     /// A copy of `fd` above the standard streams that closes on exec.
     fn private(fd: std.posix.fd_t) !std.posix.fd_t {
-        const rc = if (builtin.os.tag == .linux)
+        const rc = if (builtin.target.os.tag == .linux)
             std.os.linux.fcntl(fd, std.os.linux.F.DUPFD_CLOEXEC, 3)
         else
             std.c.fcntl(fd, std.c.F.DUPFD_CLOEXEC, @as(c_int, 3));

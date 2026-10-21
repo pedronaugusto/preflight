@@ -794,6 +794,13 @@ before anything is rewritten:
   `target.os`, `target.cpu`, `target.abi` and `target.ofmt`, and `mode`
   becomes `optimize`. The compiler writes that module, so these are checked
   against the compiler that built preflight.
+- A form the language dropped is in the table too, and is checked against the
+  parser that built preflight, which must refuse it. A file in such a form
+  does not parse, so it is repaired over its tokens before anything else is
+  read: `[_]T{e} ** n`, array repetition, which 0.17 took out, becomes
+  `@as([n]T, @splat(e))`. A repetition of anything but a one-element array
+  literal is listed for a person, line by line, and what could be rewritten
+  still is.
 
 Names resolve through the file's own aliases (`const mem = std.mem;`) and
 through the types of values: a parameter or variable declared with a std type,

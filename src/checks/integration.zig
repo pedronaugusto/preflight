@@ -137,10 +137,10 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
     try tmp.dir.createDir(io, "examples", .default_dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\n" });
-    // A cast without its reason is reported by default, not gated.
+    // A pointer conversion is a danger site (A019): without the aegis escape it fails the gate.
     const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
-    try std.testing.expect(cast.term == .exited and cast.term.exited == 0);
-    try std.testing.expect(std.mem.find(u8, cast.stderr, "P001: examples/value.zig:2:") != null);
+    try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, cast.stderr, "A019: examples/value.zig:2:") != null);
 }
 
 test "portable replay records timings and still rejects failed tests and leaked memory" {
@@ -323,16 +323,16 @@ fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
     if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
 }
 
-test "the default policy gates P004: an error made unreachable" {
-    try lintSample("fn foo() !void {}\npub fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n", "P004", true);
+test "the default policy fails a danger site: an error made unreachable (A013)" {
+    try lintSample("fn foo() !void {}\npub fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n", "A013", true);
 }
 
 test "the default policy gates P005: a debug print left in" {
     try lintSample("const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n", "P005", true);
 }
 
-test "the default policy gates P002: runtime safety switched off" {
-    try lintSample("pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n", "P002", true);
+test "the default policy fails a danger site: runtime safety switched off (A019)" {
+    try lintSample("pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n", "A019", true);
 }
 
 test "the default policy gates Z011: a deprecated std function" {
@@ -343,8 +343,8 @@ test "a style rule is reported with its site and does not fail the gate" {
     try lintSample("pub const BadName = 1;\ntest {}\n", "Z006", false);
 }
 
-test "a house style the package has not gated is reported and does not fail: a cast without its reason" {
-    try lintSample("pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\ntest {}\n", "P001", false);
+test "a danger site with the aegis escape passes, and the escape is listed with its rule" {
+    try lintSample("pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: the kernel wrote a u32 there\n}\ntest {}\n", "escape: src/sample.zig:2", false);
 }
 
 test "the sample's clean code passes the gate" {

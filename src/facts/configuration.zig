@@ -129,11 +129,11 @@ const Guard = struct {
                 },
                 .@"extern" => b: {
                     const words = try g.span(i, @sizeOf(T) / 4);
-                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // safe: bounded native u32 storage; Zig configuration's extern structs have u32 alignment.
+                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // aegis: no-danger: bounded native u32 storage; Zig configuration's extern structs have u32 alignment.
                 },
                 .auto => if (T == std.Target.Cpu.Feature.Set) b: {
                     const words = try g.span(i, @sizeOf(T) / 4);
-                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // safe: feature set copied by value from a bounds-checked u32 slice, retaining its native layout.
+                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // aegis: no-danger: feature set copied by value from a bounds-checked u32 slice, retaining its native layout.
                 } else try g.storage(T, i, parent),
             },
             else => @compileError("unsupported configuration field " ++ @typeName(T)),
@@ -155,7 +155,7 @@ const Guard = struct {
                 if (T.storage == .flag_length_prefixed_list and !@field(@field(parent, @tagName(T.flags)), @tagName(T.flag))) return .{ .slice = &.{} };
                 const count: usize = if (T.storage == .flag_list) @field(@field(parent, @tagName(T.flags)), @tagName(T.flag)) else (try g.span(i, 1))[0];
                 const words = try g.span(i, std.math.mul(usize, count, @sizeOf(T.Elem) / 4) catch return error.MalformedConfiguration);
-                const slice: []const T.Elem = @ptrCast(words); // safe: serialized elements have u32 native layout and the entire list was checked above.
+                const slice: []const T.Elem = @ptrCast(words); // aegis: no-danger: serialized elements have u32 native layout and the entire list was checked above.
                 for (slice) |elem| try g.value(T.Elem, elem);
                 return .{ .slice = slice };
             },
@@ -164,7 +164,7 @@ const Guard = struct {
                 const names = @typeInfo(T.Elem).@"struct";
                 const words = try g.span(i, std.math.mul(usize, count, names.field_names.len) catch return error.MalformedConfiguration);
                 inline for (names.field_types, 0..) |F, n| for (words[n * count ..][0..count]) |raw| try g.value(F, @fromBackingInt(raw));
-                return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // safe: Zig's multi-list decoder borrows native u32 columns validated above.
+                return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // aegis: no-danger: Zig's multi-list decoder borrows native u32 columns validated above.
             },
             .union_list => {
                 if (!@field(@field(parent, @tagName(T.flags)), @tagName(T.flag))) return .{ .data = null, .len = 0 };
@@ -190,7 +190,7 @@ const Guard = struct {
                         inline else => |tag| try g.value(@FieldType(T.Union, @tagName(tag)), @fromBackingInt(raw)),
                     }
                 }
-                return .{ .data = @ptrFromInt(payload_start), .len = count }; // safe: Zig represents deserialized union-list storage by an extra-array index, never dereferenced as a pointer.
+                return .{ .data = @ptrFromInt(payload_start), .len = count }; // aegis: no-danger: Zig represents deserialized union-list storage by an extra-array index, never dereferenced as a pointer.
             },
             else => @compileError("unsupported configuration storage"),
         }

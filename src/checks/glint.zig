@@ -154,7 +154,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     var unfinished: usize = 0;
     var unresolved: usize = 0;
     // A finding rule's undecided sites, by rule, against the repository's ceiling for it.
-    var undecided: std.AutoArrayHashMapUnmanaged(glint.Rule, usize) = .empty;
+    var undecided: std.array_hash_map.Auto(glint.Rule, usize) = .empty;
     // Every incomplete site, where the run prints the first `printed`.
     var sites: std.Io.Writer.Allocating = .init(c.a);
     for (report.coverage) |note| {
@@ -207,7 +207,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
 }
 
 /// Each rule's findings and undecided sites, counted: the line a sizing or a review reads.
-fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.AutoArrayHashMapUnmanaged(glint.Rule, usize)) void {
+fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
     var line: std.Io.Writer.Allocating = .init(c.a);
     for (policy.project_rules) |rule| {
         const id = rule.definition.id;
@@ -226,7 +226,7 @@ fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUn
 /// A finding rule's undecided sites against the repository's ceiling (`glint.unresolved`, none
 /// by default): above it fails, since the count the reviews read may not grow; below it asks
 /// for the ceiling to come down to what is left.
-fn ceilings(c: *src.Context, chosen: policy.Policy, report: *const glint.Report, undecided: std.AutoArrayHashMapUnmanaged(glint.Rule, usize)) void {
+fn ceilings(c: *src.Context, chosen: policy.Policy, report: *const glint.Report, undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
     for (chosen.findings) |rule| {
         if (!policy.inPack(rule)) continue;
         const count = undecided.get(rule) orelse 0;
@@ -257,7 +257,7 @@ fn ruleName(rule: glint.Rule) []const u8 {
 fn escapes(c: *src.Context, project: *const glint.Project, report: *const glint.Report) void {
     if (report.escapes.len == 0) return;
     var text: std.Io.Writer.Allocating = .init(c.a);
-    var counts: std.StringArrayHashMapUnmanaged([5]usize) = .empty;
+    var counts: std.array_hash_map.String([5]usize) = .empty;
     const reasons = [_][]const u8{ "no-danger", "design", "hot-loop", "internal", "boundary" };
     for (report.escapes) |escape| {
         text.writer.print("glint: escape: {s}:{d}:{d}: {s}: {s} (", .{ project.inputs[escape.span.file.raw()].name, escape.span.line, escape.span.column, escape.reason, escape.why }) catch @panic("OOM");

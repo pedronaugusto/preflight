@@ -478,6 +478,7 @@ pub const Revision = struct {
 
 /// `YYYY-MM-DD` of the current UTC day.
 pub fn today(a: std.mem.Allocator, io: std.Io) ![]const u8 {
+    // aegis: no-danger: the wall clock read once for a release's date
     const seconds: u64 = @intCast(@max(0, std.Io.Clock.real.now(io).toSeconds()));
     const day = (std.time.epoch.EpochSeconds{ .secs = seconds }).getEpochDay().calculateYearDay();
     const month_day = day.calculateMonthDay();

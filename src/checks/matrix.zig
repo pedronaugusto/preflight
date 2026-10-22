@@ -20,7 +20,8 @@ const obsolete_sanitizer = [_][]const u8{ "sanitizer", "sanitizer_job_timeout" }
 
 /// What the last refused configuration got wrong, for the command to print beside the error: the
 /// planner is a library, and a test that expects the refusal must not see it logged as a failure.
-pub var problem: []const u8 = "";
+/// It is the planning thread's own, as the refusal is.
+pub threadlocal var problem: []const u8 = "";
 
 /// A job's time limit in minutes: `name` in the configuration, or 20. GitHub ends any job at 360.
 fn minutes(config: src.Value, name: []const u8) !usize {

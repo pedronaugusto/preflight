@@ -15,6 +15,11 @@
     "src/bench_driver.zig"
   ],
   "glint": {
+    "unresolved": {
+      "A001": 1,
+      "A007": 2,
+      "A011": 1
+    },
     "rules": [
       {
         "id": "A004",

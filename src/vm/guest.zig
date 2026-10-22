@@ -105,7 +105,7 @@ fn mountSystem() !void {
     };
     for (mounts) |m| {
         _ = linux.mkdirat(linux.AT.FDCWD, m.target, 0o755); // safe: an existing directory serves
-        const data: usize = if (m.data) |d| @intFromPtr(d) else 0; // safe: the kernel takes mount data by address
+        const data: usize = if (m.data) |d| @intFromPtr(d) else 0; // aegis: no-danger: the kernel takes mount data by address
         const rc = linux.mount(m.source, m.target, m.fstype, 0, data);
         switch (linux.errno(rc)) {
             .SUCCESS => {},
@@ -139,7 +139,7 @@ fn loopbackUp() !void {
     var request: linux.ifreq = std.mem.zeroes(linux.ifreq);
     @memcpy(request.ifrn.name[0..2], "lo");
     request.ifru.flags = .{ .UP = true, .LOOPBACK = true, .RUNNING = true };
-    try check(linux.ioctl(fd, linux.SIOCSIFFLAGS, @intFromPtr(&request)), error.LoopbackUp); // safe: ioctl takes the request by address
+    try check(linux.ioctl(fd, linux.SIOCSIFFLAGS, @intFromPtr(&request)), error.LoopbackUp); // aegis: no-danger: ioctl takes the request by address
 }
 
 /// QEMU's user network on the first Ethernet device: the machine at 10.0.2.15/24,
@@ -155,7 +155,7 @@ fn networkUp(io: Io) !void {
     // The device registers as its driver probes it; wait for it as for a device node.
     var tries: usize = 0;
     while (true) : (tries += 1) {
-        const set = linux.ioctl(fd, linux.SIOCSIFADDR, @intFromPtr(&request)); // safe: ioctl takes the request by address
+        const set = linux.ioctl(fd, linux.SIOCSIFADDR, @intFromPtr(&request)); // aegis: no-danger: ioctl takes the request by address
         switch (linux.errno(set)) {
             .SUCCESS => break,
             .NODEV => if (tries == 1000) return error.NetworkMissing,
@@ -167,11 +167,11 @@ fn networkUp(io: Io) !void {
         try io.sleep(.fromMilliseconds(10), .awake);
     }
     request.ifru.netmask = inet(.{ 255, 255, 255, 0 });
-    try check(linux.ioctl(fd, linux.SIOCSIFNETMASK, @intFromPtr(&request)), error.NetworkMask); // safe: ioctl takes the request by address
+    try check(linux.ioctl(fd, linux.SIOCSIFNETMASK, @intFromPtr(&request)), error.NetworkMask); // aegis: no-danger: ioctl takes the request by address
     request.ifru.flags = .{ .UP = true, .RUNNING = true };
-    try check(linux.ioctl(fd, linux.SIOCSIFFLAGS, @intFromPtr(&request)), error.NetworkUp); // safe: ioctl takes the request by address
+    try check(linux.ioctl(fd, linux.SIOCSIFFLAGS, @intFromPtr(&request)), error.NetworkUp); // aegis: no-danger: ioctl takes the request by address
     var route: Route = .{ .gateway = inet(.{ 10, 0, 2, 2 }), .flags = route_up | route_gateway };
-    try check(linux.ioctl(fd, linux.SIOCADDRT, @intFromPtr(&route)), error.NetworkRoute); // safe: ioctl takes the route by address
+    try check(linux.ioctl(fd, linux.SIOCADDRT, @intFromPtr(&route)), error.NetworkRoute); // aegis: no-danger: ioctl takes the route by address
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = "/etc/resolv.conf", .data = "nameserver 10.0.2.3\n" });
 }
 
@@ -255,7 +255,7 @@ fn insertModule(io: Io, gpa: std.mem.Allocator, tree: []const u8, relative: []co
     const path = try std.Io.Dir.path.join(gpa, &.{ tree, relative });
     const file = try readFile(io, path, gpa, .limited(64 * 1024 * 1024));
     const image = if (std.mem.endsWith(u8, relative, ".gz")) try gunzip(gpa, file) else file;
-    const rc = linux.syscall3(.init_module, @intFromPtr(image.ptr), image.len, @intFromPtr("")); // safe: init_module takes the image and its parameters by address
+    const rc = linux.syscall3(.init_module, @intFromPtr(image.ptr), image.len, @intFromPtr("")); // aegis: no-danger: init_module takes the image and its parameters by address
     switch (linux.errno(rc)) {
         .SUCCESS, .EXIST => {},
         else => |e| {
@@ -308,7 +308,7 @@ fn findModuleTree(io: Io, gpa: std.mem.Allocator, release: []const u8) ![]const 
 fn mount9p(tag: [*:0]const u8, target: [*:0]const u8) !void {
     _ = linux.mkdirat(linux.AT.FDCWD, target, 0o755); // safe: an existing directory serves
     const options = "trans=virtio,version=9p2000.L,msize=524288,cache=mmap";
-    try check(linux.mount(tag, target, "9p", 0, @intFromPtr(options.ptr)), error.Mount9p); // safe: the kernel takes mount data by address
+    try check(linux.mount(tag, target, "9p", 0, @intFromPtr(options.ptr)), error.Mount9p); // aegis: no-danger: the kernel takes mount data by address
 }
 
 /// The host's directory `resolved`, at `path` in the machine: the path the program
@@ -325,7 +325,7 @@ fn bind(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) 
 fn mountScratch(io: Io, gpa: std.mem.Allocator, path: []const u8) !void {
     try Io.Dir.cwd().createDirPath(io, path);
     const target = try gpa.dupeSentinel(u8, path, 0);
-    try check(linux.mount("tmpfs", target, "tmpfs", 0, @intFromPtr("mode=1777")), error.Scratch); // safe: the kernel takes mount data by address
+    try check(linux.mount("tmpfs", target, "tmpfs", 0, @intFromPtr("mode=1777")), error.Scratch); // aegis: no-danger: the kernel takes mount data by address
 }
 
 const Ports = struct { io: linux.fd_t, err: linux.fd_t, status: linux.fd_t };
@@ -368,6 +368,7 @@ fn findPorts(io: Io, gpa: std.mem.Allocator) !?Ports {
     return ports;
 }
 
+// aegis: design: the test machine's first process, one thread and std alone, as its kernel runs it
 var status_port: linux.fd_t = -1;
 
 /// Runs the program with pipes for its standard streams, as a build gives a program

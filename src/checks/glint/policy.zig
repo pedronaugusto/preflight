@@ -213,7 +213,7 @@ pub const Policy = struct {
         for (policy.exceptions) |entry| if (std.mem.eql(u8, entry.path, path)) {
             try exceptions.append(a, .{ .function = entry.function, .lines = entry.lines, .reason = entry.reason });
         };
-        config.function_exceptions = exceptions.items;
+        config.function_exceptions = try exceptions.toOwnedSlice(a);
         if (policy.isVendored(path)) config = try withLevel(a, config, .P003, .off);
         return config;
     }
@@ -306,7 +306,7 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
         for (chosen.items) |amendment| named = named or amendment.rule == .P006;
         if (!named) try all.append(a, .{ .rule = .P006, .level = .gate });
     }
-    base.selections = all.items;
+    base.selections = try all.toOwnedSlice(a);
     base.validate() catch {
         c.fail("glint: the `glint` setting is not valid: a rule is listed twice, or a disallowed declaration lacks its reason or replacement, or names a symbol with dots", .{});
         return null;
@@ -403,7 +403,7 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
         };
         try list.append(a, .{ .source = if (source == .string) source.string else null, .declaration = fields[0], .reason = fields[1], .replacement = fields[2], .scope = chosen });
     }
-    base.disallowed = list.items;
+    base.disallowed = try list.toOwnedSlice(a);
 }
 
 /// `peer_writers`: the functions this package owns whose result writes to a peer (A018's sinks),

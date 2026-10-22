@@ -3,6 +3,7 @@
 const std = @import("std");
 
 pub const Recorder = struct {
+    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     file: ?std.Io.File = null,
     /// The `ci/durations.json` column these records refresh.
     key: []const u8,
@@ -40,6 +41,7 @@ pub const Recorder = struct {
         const file = recorder.file orelse return;
         const json = try std.json.Stringify.valueAlloc(std.heap.page_allocator, .{
             .name = name,
+            // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
             .seconds = @as(f64, @floatFromInt(nanoseconds)) / std.time.ns_per_s,
             .status = status,
             .key = recorder.key,

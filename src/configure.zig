@@ -86,11 +86,12 @@ pub fn rerun(b: *std.Build, package: *std.Build) []const []const u8 {
     return b.allocator.dupe([]const u8, &.{ b.graph.zig_exe, "build" }) catch @panic("OOM");
 }
 
-/// The names of preflight's steps the build already had, for `refuseTaken`.
-var taken: std.ArrayList([]const u8) = .empty;
+/// The names of preflight's steps the build already had, for `refuseTaken`: the configuring
+/// thread's own, as the build graph it configures is.
+threadlocal var taken: std.ArrayList([]const u8) = .empty;
 /// Every name preflight claimed, which the package's own build must not have
 /// either: bay runs a step of the package's build before one of its development build.
-var claimed: std.ArrayList([]const u8) = .empty;
+threadlocal var claimed: std.ArrayList([]const u8) = .empty;
 
 /// A top-level step of preflight's, `name`, or, when the package already has a step
 /// by that name, one under no name: the package's own step keeps the name, nothing

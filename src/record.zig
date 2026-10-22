@@ -38,6 +38,7 @@ pub const TestTimeout = union(enum) {
             .default => default_limit,
             .bound => |custom| bound: {
                 if (std.mem.trim(u8, custom.reason, " ").len == 0) break :bound null;
+                // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
                 const ns = @max(custom.limit.toNanoseconds(), 1);
                 if (ns > std.math.maxInt(u64)) break :bound null;
                 break :bound .fromNanoseconds(ns);
@@ -142,7 +143,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         const runner = b.addOptions();
         // The generated options schema is raw u64, validated by TestTimeout.duration and
         // wrapped by the runner.
-        runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds())); // safe: validated export range
+        runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds())); // aegis: no-danger: validated export range
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         const name = recordName(b, artifact, &state.names);
         state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");
@@ -166,6 +167,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         // Another run of an artifact given the runner already: it takes it as the first did.
     } else if (artifact.test_runner != null) {
         // That runner neither arms the watchdog nor reads the shard.
+        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         if (options.test_timeout.toNanoseconds() != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
         const unsharded = context.checker.run(b);
         unsharded.addArgs(&.{ "unsharded", artifact.name });
@@ -188,6 +190,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; this needs .zig_test
         if (run.stdio != .zig_test) run.enableTestRunnerMode();
     }
+    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     if (options.test_timeout.toNanoseconds() != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
 }
 

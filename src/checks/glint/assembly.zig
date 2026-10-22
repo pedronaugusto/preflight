@@ -309,7 +309,7 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
             }) orelse continue;
             try imports.append(c.a, .{ .from = .fromRaw(@intCast(cursor)), .spelling = name, .target = .fromRaw(found) });
         }
-        loader.inputs.items[cursor].absent = absent.items;
+        loader.inputs.items[cursor].absent = try absent.toOwnedSlice(c.a);
     }
     const project = glint.Project.init(gpa, loader.inputs.items, imports.items, .{}) catch |err| switch (err) {
         error.ProjectBudgetExceeded => return budget(c),

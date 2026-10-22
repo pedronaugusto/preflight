@@ -35,6 +35,7 @@ pub const Timer = struct {
 
     /// Seconds since `begin`.
     pub fn seconds(timer: Timer, c: src.Context) f64 {
+        // aegis: no-danger: a duration shown to a person, in seconds
         return @as(f64, @floatFromInt(timer.start.untilNow(c.io).raw.nanoseconds)) / std.time.ns_per_s;
     }
 

@@ -114,8 +114,8 @@ pub fn generate(c: src.Context, config: src.Value, manifest: []const u8, directo
 /// The jobs of an earlier caller that its generator wrote, and so may go.
 const generated_jobs = [_][]const u8{ "gate", "land", "checks", "skip" };
 
-/// The last job `keepsEveryJob` refused to drop, for the command to name.
-pub var undeclared: []const u8 = "";
+/// The last job `keepsEveryJob` refused to drop, for the command to name: the refusing thread's own.
+pub threadlocal var undeclared: []const u8 = "";
 
 /// Refuses to replace `existing` while it holds a job `generated` does not, unless
 /// `drops` names it, as `--drop` does for one the configuration now declares: the

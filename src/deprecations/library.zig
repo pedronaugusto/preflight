@@ -319,7 +319,7 @@ pub const Library = struct {
                     return t.lastToken(x) - t.firstToken(x) < t.lastToken(y) - t.firstToken(y);
                 }
             }.less);
-            file.scopes = scopes.items;
+            file.scopes = try scopes.toOwnedSlice(lib.a);
         }
         for (file.scopes.?) |scope| {
             if (token < tree.firstToken(scope) or token > tree.lastToken(scope)) continue;

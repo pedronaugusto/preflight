@@ -69,7 +69,7 @@ pub fn conflicts(a: std.mem.Allocator, links: []const Link, root_name: []const u
             const puller = if (link.puller.len == 0) root_name else link.puller;
             if (!has(pullers.items[index].items, puller)) try pullers.items[index].append(a, puller);
         }
-        for (revisions.items, pullers.items) |*revision, list| revision.pullers = list.items;
+        for (revisions.items, pullers.items) |*revision, *list| revision.pullers = try list.toOwnedSlice(a);
         if (revisions.items.len > 1) try found.append(a, .{ .name = name, .revisions = revisions.items });
     }
     return found.items;

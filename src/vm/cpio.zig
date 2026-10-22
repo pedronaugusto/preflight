@@ -90,7 +90,7 @@ pub const Reader = struct {
             0o120000 => .symlink,
             else => return error.UnknownKind,
         };
-        return .{ .name = name, .kind = kind, .mode = @intCast(mode & 0o7777), .data = r.bytes[data_start..data_end] }; // safe: masked to twelve bits
+        return .{ .name = name, .kind = kind, .mode = @intCast(mode & 0o7777), .data = r.bytes[data_start..data_end] }; // aegis: no-danger: masked to twelve bits
     }
 };
 

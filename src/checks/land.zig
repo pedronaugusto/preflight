@@ -534,10 +534,12 @@ fn nothing(c: *src.Context, landing: Landing, prepared: Prepared) !Outcome {
 const Scratch = struct {
     top: []const u8,
     /// The package's directory in it.
+    // aegis: no-danger: Scratch is the worktree's one owner, and its remove closes the directory once
     dir: std.Io.Dir,
 
     fn add(c: *src.Context, start: []const u8, directory: []const u8) !Scratch {
         const common = try must(c, &.{ "rev-parse", "--path-format=absolute", "--git-common-dir" });
+        // aegis: no-danger: a timestamp spelled into a scratch worktree's unique name
         const now = std.Io.Clock.real.now(c.io).toNanoseconds();
         const top = try std.Io.Dir.path.join(c.a, &.{ common, "preflight", try c.a.print("land-{s}-{d}", .{ start[0..12], now }) });
         _ = try must(c, &.{ "worktree", "add", "-q", "--detach", top, start });

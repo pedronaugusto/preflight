@@ -58,6 +58,7 @@ pub const Context = struct {
         return false;
     }
 
+    // aegis: no-danger: lends the context's directory; the command that opened it closes it
     pub fn directory(c: Context) std.Io.Dir {
         return c.dir orelse .cwd();
     }

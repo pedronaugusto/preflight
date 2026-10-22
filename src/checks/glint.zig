@@ -18,6 +18,8 @@ pub const Inputs = struct {
     /// `ci/preflight.json`.
     config: src.Value,
     build: assembly.Build = .{},
+    /// Apply the findings' fixes to the package's sources (`zig build fix`).
+    fix: bool = false,
 };
 
 /// How many lines of one kind a run prints before it counts the rest.
@@ -28,7 +30,8 @@ const printed = 25;
 /// budget for, a site a gating rule could not decide, a suppression that
 /// suppresses nothing.
 pub fn check(c: *src.Context, inputs: Inputs) !void {
-    const chosen = (try policy.parse(c, inputs.config)) orelse return;
+    var chosen = (try policy.parse(c, inputs.config)) orelse return;
+    chosen.base.peer_writers = try peerWriters(c, chosen.base.peer_writers, inputs.build.modules);
     const paths = (try assembly.select(c, chosen, inputs.config)) orelse return;
     var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
     defer assembled.deinit();
@@ -47,8 +50,53 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
         },
     };
     defer report.deinit();
+    if (inputs.fix) try applyFixes(c, &assembled.project, &report);
     judge(c, chosen, &assembled.project, &report);
     assertions(c, &assembled.project, &report);
+}
+
+/// The peer writers A018 reads: the package's own, then those each package it depends on
+/// declares in its `ci/preflight.json` (found beside the `build.zig.zon` above a dependency
+/// module's root).
+fn peerWriters(c: *src.Context, own: []const glint.Config.PeerWriter, modules: []const src.BuildModule) ![]const glint.Config.PeerWriter {
+    var out: std.ArrayList(glint.Config.PeerWriter) = .empty;
+    try out.appendSlice(c.a, own);
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    for (modules) |module| {
+        const root = module.root orelse continue;
+        if (!std.fs.path.isAbsolute(root)) continue;
+        var dir = std.fs.path.dirname(root);
+        const package = while (dir) |at| : (dir = std.fs.path.dirname(at)) {
+            const manifest = try std.fs.path.join(c.a, &.{ at, "build.zig.zon" });
+            if (std.Io.Dir.cwd().access(c.io, manifest, .{})) |_| break at else |_| {}
+        } else continue;
+        if ((try seen.getOrPut(c.a, package)).found_existing) continue;
+        const path = try std.fs.path.join(c.a, &.{ package, "ci", "preflight.json" });
+        // A dependency without the file declares no writers.
+        const bytes = std.Io.Dir.cwd().readFileAlloc(c.io, path, c.a, .limited(1 << 20)) catch continue;
+        const config = std.json.parseFromSliceLeaky(src.Value, c.a, bytes, .{}) catch {
+            c.fail("glint: {s}: not JSON, so its peer writers cannot be read", .{path});
+            continue;
+        };
+        try out.appendSlice(c.a, try policy.parsePeerWriters(c, src.get(config, "glint")));
+    }
+    return out.items;
+}
+
+/// Writes each source glint's fixes change (`zig build fix`): the deterministic answers, the
+/// escape for a reason written the older way, an unused escape gone. The run's report is the
+/// one before them; the next lint reads what is left.
+fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const glint.Report) !void {
+    const changed = try glint.Fix.apply(c.a, project, report);
+    var made: usize = 0;
+    for (changed) |file| {
+        c.directory().writeFile(c.io, .{ .sub_path = project.inputs[file.file.raw()].name, .data = file.bytes }) catch |err| {
+            c.fail("glint: {s}: the fixed source was not written ({t})", .{ project.inputs[file.file.raw()].name, err });
+            continue;
+        };
+        made += file.edits;
+    }
+    c.report("preflight: glint: fixed {d} sites in {d} files; what follows is the run before them\n", .{ made, changed.len });
 }
 
 /// glint's assertion counts, each call by the declaration it resolves to
@@ -124,7 +172,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             unfinished += 1;
         } else if (note.reason == .unresolved) {
             unresolved += 1;
-            if (note.rule) |rule| if (chosen.fails(rule)) {
+            if (note.rule) |rule| if (chosen.fails(rule) and policy.inPack(rule)) {
                 const count = undecided.getOrPutValue(c.a, rule, 0) catch @panic("OOM");
                 count.value_ptr.* += 1;
                 const start = sites.written().len;
@@ -180,6 +228,7 @@ fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUn
 /// for the ceiling to come down to what is left.
 fn ceilings(c: *src.Context, chosen: policy.Policy, report: *const glint.Report, undecided: std.AutoArrayHashMapUnmanaged(glint.Rule, usize)) void {
     for (chosen.findings) |rule| {
+        if (!policy.inPack(rule)) continue;
         const count = undecided.get(rule) orelse 0;
         var ceiling: usize = 0;
         var name: []const u8 = "";
@@ -323,10 +372,10 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     defer f.deinit();
     try f.file("src/root.zig", "pub fn answer() u32 {\n    return 42;\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
-    // An unreachable catch is a danger site: it carries the aegis escape.
-    try f.file("src/root.zig", "pub fn run(f: anytype) void {\n    f() catch unreachable;\n}\n");
+    // A pointer conversion is a danger site: it carries the aegis escape.
+    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try f.file("src/root.zig", "pub fn run(f: anytype) void {\n    f() catch unreachable; // aegis: no-danger: f has no error path\n}\n");
+    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger: the same type\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
     // A discarded error fails unless its reason is written at the site; a repository may only report it.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
@@ -406,7 +455,9 @@ test "a debug print and a deprecated call are findings the standard library's de
     defer f.deinit();
     // The stub standard library holds none of the durability door's declarations, which a real
     // one does: the door is off here, or its missing declarations leave every run incomplete.
-    const door = ",\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}";
+    // So are the danger rules that name std's declarations: each would leave its sites undecided.
+    const danger = "{\"id\":\"A007\",\"level\":\"off\"},{\"id\":\"A008\",\"level\":\"off\"},{\"id\":\"A011\",\"level\":\"off\"},{\"id\":\"A014\",\"level\":\"off\"},{\"id\":\"A015\",\"level\":\"off\"}";
+    const door = ",\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}," ++ danger ++ "]}";
     try f.file("stdlib/std.zig", "pub const debug = @import(\"debug.zig\");\npub const mem = @import(\"mem.zig\");\n");
     try f.file("stdlib/debug.zig", "pub fn print(comptime fmt: []const u8, args: anytype) void {\n    _ = fmt;\n    _ = args;\n}\n");
     try f.file("stdlib/mem.zig", "/// Deprecated: use `find`.\npub fn indexOf(haystack: []const u8, needle: u8) ?usize {\n    _ = haystack;\n    _ = needle;\n    return null;\n}\npub fn find(haystack: []const u8, needle: u8) ?usize {\n    _ = haystack;\n    _ = needle;\n    return null;\n}\n");
@@ -415,8 +466,8 @@ test "a debug print and a deprecated call are findings the standard library's de
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{});\n}\n");
     try std.testing.expect(try f.run("{" ++ paths ++ door ++ "}", build) != 0);
     // The same code without the standard library's declarations is unresolved, not a finding.
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", .{}));
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"},{\"id\":\"P006\",\"level\":\"off\"}]}}", build));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[" ++ danger ++ "]}}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"},{\"id\":\"P006\",\"level\":\"off\"}," ++ danger ++ "]}}", build));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{}); // glint-ignore: P005 -- the tool's one line of output\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ door ++ "}", build));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOf(text, 'x');\n}\n");

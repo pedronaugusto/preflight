@@ -355,6 +355,15 @@ const Steps = struct {
         checks.setCwd(package.path("."));
         checks.step.dependOn(&lint_structure.step);
         steps.lint.dependOn(&checks.step);
+        // `fix`: glint's deterministic fixes written into the sources, then the lint's report.
+        const fixing = executable.run(b);
+        fixing.addArgs(&.{ "lint", "--fix", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
+        fixing.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+        for (test_steps) |name| fixing.addArgs(&.{ "--test-step", name });
+        configurationOptions(b, fixing);
+        fixing.setCwd(package.path("."));
+        fixing.has_side_effects = true;
+        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (std's assert as aegis's, older written reasons as escapes, unused escapes gone), then report what is left").dependOn(&fixing.step);
         if (steps.lint_enabled) {
             orderTests(config.tests, steps.lint);
             steps.ci.dependOn(steps.lint);

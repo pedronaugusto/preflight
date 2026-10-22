@@ -55,8 +55,10 @@ const Entry = struct { rule: glint.Rule, weight: Weight };
 /// (designs/aegis.md §7) weigh as findings in every package: each finds a site where a danger
 /// exists, and the site uses aegis's type or carries `// aegis: <reason>: <why>`; a site a rule
 /// cannot decide is counted against the repository's `unresolved` ceiling for it, which may
-/// not grow. A001-A005, which check aegis's types used wrongly, weigh the same. A006 (recursion
-/// on untrusted input) and A020 (cancellation) are reported until their hits are read. The
+/// not grow. A001-A005, which check aegis's types used wrongly, weigh the same. The rules that
+/// read the input or peer fact (A006 recursion on input, A009 input, A010 integers, A012
+/// bounded work, A013 contracts input reaches, A018 diagnostics, A020 cancellation) are
+/// reported until a fresh sample of each shows its noise near zero (designs/aegis.md §7). The
 /// function reading budget (P003) is a house style, reported until a package gates it in its
 /// `glint.rules`. A discarded error (Z026, an empty `catch` with no reason written at it) is a
 /// result nobody read, and gates: a best-effort cleanup is a fine reason, silence is not. The
@@ -82,15 +84,29 @@ const defaults = [_]Entry{
     .{ .rule = .D001, .weight = .report },
 } ++ pack;
 
-/// The aegis pack in the default policy: every rule a finding, but for the two reported.
+/// The aegis pack in the default policy: every rule a finding, but for those that read a flow
+/// fact, reported.
 const pack = blk: {
     var out: [glint.AegisPack.rules.len]Entry = undefined;
     for (glint.AegisPack.rules, &out) |rule, *entry| {
-        const reported = rule.definition.id == glint.AegisPack.recursion or rule.definition.id == glint.AegisPack.cancellation;
-        entry.* = .{ .rule = rule.definition.id, .weight = if (reported) .report else .finding };
+        entry.* = .{ .rule = rule.definition.id, .weight = if (flowRule(rule.definition.id)) .report else .finding };
     }
     break :blk out;
 };
+
+/// The pack's rules that read the input or peer fact.
+const flow_rules = [_]glint.Rule{ glint.AegisPack.recursion, glint.AegisPack.untrusted_input, glint.AegisPack.integers, glint.AegisPack.bounded_work, glint.AegisPack.contracts, glint.AegisPack.diagnostics, glint.AegisPack.cancellation };
+
+/// Whether a rule is the aegis pack's: those whose undecided sites count against a ceiling.
+pub fn inPack(id: glint.Rule) bool {
+    for (glint.AegisPack.rules) |rule| if (rule.definition.id == id) return true;
+    return false;
+}
+
+fn flowRule(id: glint.Rule) bool {
+    for (flow_rules) |flow| if (flow == id) return true;
+    return false;
+}
 
 /// Keys that were ziglint's or a ledger's. A repository still naming one
 /// would lose the gate it believes it has, so each fails by name.
@@ -102,7 +118,7 @@ const retired = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "glint_config", .instead = "move its fields into the `glint` object" },
 };
 
-const glint_keys = [_][]const u8{ "rules", "strict_suppressions", "fact_budget", "max_line_length", "disallowed", "unresolved" };
+const glint_keys = [_][]const u8{ "rules", "strict_suppressions", "fact_budget", "max_line_length", "disallowed", "unresolved", "peer_writers" };
 
 /// The rules glint folded into the aegis pack's danger rules (designs/aegis.md §7): a repository
 /// still naming one is told where its sites went.
@@ -318,6 +334,7 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
     policy.vendored = try parseVendored(c, src.get(config, "vendored"));
     policy.paths = try parsePaths(c, src.get(config, "glint_paths"));
     policy.ceilings = try parseCeilings(c, src.get(block, "unresolved"), findings.items);
+    policy.base.peer_writers = try parsePeerWriters(c, block);
     return if (c.errors == before) policy else null;
 }
 
@@ -389,6 +406,29 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
     base.disallowed = list.items;
 }
 
+/// `peer_writers`: the functions this package owns whose result writes to a peer (A018's sinks),
+/// each `{"module": "uplink", "declaration": "server.Response.writer"}`. A package's lint reads
+/// its own and those of the packages it depends on.
+pub fn parsePeerWriters(c: *src.Context, block: src.Value) ![]const glint.Config.PeerWriter {
+    const list = src.get(block, "peer_writers");
+    if (list == .null) return &.{};
+    var out: std.ArrayList(glint.Config.PeerWriter) = .empty;
+    if (list != .array) {
+        c.fail("glint: `peer_writers` lists the functions whose result writes to a peer, each a `module` and a `declaration`", .{});
+        return &.{};
+    }
+    for (list.array.items) |item| {
+        const module = src.get(item, "module");
+        const declaration = src.get(item, "declaration");
+        if (item != .object or module != .string or declaration != .string or item.object.count() != 2) {
+            c.fail("glint: peer_writers: each entry is `{{\"module\": NAME, \"declaration\": PATH}}`", .{});
+            continue;
+        }
+        try out.append(c.a, .{ .module = module.string, .declaration = declaration.string });
+    }
+    return out.items;
+}
+
 /// `unresolved`: each finding rule's ceiling of undecided sites, by its name.
 fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule) ![]const Ceiling {
     if (value == .null) return &.{};
@@ -408,8 +448,8 @@ fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule
         };
         var finding = false;
         for (findings) |named| finding = finding or named == rule;
-        if (!finding) {
-            c.fail("glint: unresolved: {s} is not weighed as findings, so its undecided sites are not counted against a ceiling", .{name});
+        if (!finding or !inPack(rule)) {
+            c.fail("glint: unresolved: {s} is not one of the aegis pack's findings, so its undecided sites are not counted against a ceiling", .{name});
             continue;
         }
         if (sites != .integer or sites.integer < 1) {
@@ -524,12 +564,27 @@ test "the default policy gates correctness, weighs the danger rules as findings,
     try std.testing.expectEqual(durability.len, policy.base.disallowed.len);
     try std.testing.expect(policy.fails(.Z011) and policy.fails(.P005));
     try std.testing.expect(!policy.fails(.Z012) and !policy.fails(.Z001));
-    // Every pack rule runs; all but the two reported ones fail the run on a finding.
+    // Every pack rule runs; all but those that read a flow fact fail the run on a finding.
     for (glint.AegisPack.rules) |rule| {
         const id = rule.definition.id;
         try std.testing.expectEqual(.report, policy.base.level(id));
-        try std.testing.expectEqual(id != glint.AegisPack.recursion and id != glint.AegisPack.cancellation, policy.fails(id));
+        try std.testing.expectEqual(!flowRule(id), policy.fails(id));
     }
+}
+
+test "a package declares the peer writers it owns, each a module and a declaration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
+    const declared = (try parse(&c, try parsed(c.a,
+        \\{"glint":{"peer_writers":[{"module":"uplink","declaration":"server.Response.writer"}]}}
+    ))).?;
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    try std.testing.expectEqualStrings("server.Response.writer", declared.base.peer_writers[0].declaration);
+    _ = try parse(&c, try parsed(c.a,
+        \\{"glint":{"peer_writers":[{"module":"uplink"}]}}
+    ));
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 
 test "a repository amends the policy by rule and cannot swap it for another profile" {

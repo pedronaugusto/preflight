@@ -253,11 +253,13 @@ aegis's type or carries the one escape, `// aegis: <reason>: <why>`, whose reaso
 `no-danger`, `design`, `hot-loop`, `internal` or `boundary`. The run prints every escape
 with the rules it covers (all of them in `.zig-cache/preflight-lint/escapes.txt`), the
 first 25 findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when
-there are more) and a line of findings, escapes and undecided sites by rule. A danger rule's undecided sites
+there are more) and a line of findings, escapes and undecided sites by rule. `zig build fix` (`bay dev fix`) writes glint's deterministic fixes into the sources first: std's `assert` as aegis's `assert.invariant`, a reason written the older way (`// safe:`, `// unreachable:`) as the escape, an escape that covers nothing gone. What is left is the sites whose answer is a design choice. A danger rule's undecided sites
 count against `glint.unresolved`, a ceiling per rule (none by default): above it fails,
 since the count the reviews read may not grow, and below it the run asks for it to come
 down. Tests and test support are not shipped, so the danger rules leave them out; a
 `vendored` file ships, and is held to them.
+
+The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A018, A020) are reported until a fresh sample of each shows its noise near zero; the rest of the pack are findings. A package that owns a writer to a peer (a server's response, a protocol's transport) names it in `glint.peer_writers`, each `{"module": "uplink", "declaration": "server.Response.writer"}`; A018 reads a package's own and those of the packages it depends on.
 
 **A repository amends the policy** in the `glint` object of `ci/preflight.json`:
 

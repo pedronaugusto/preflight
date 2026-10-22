@@ -944,6 +944,8 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
         "Cross compile",                      "test (ubuntu-24.04-arm, Debug)",        "test (ubuntu-24.04-arm, ReleaseSafe)",
         "test (windows-11-arm, Debug)",       "test (windows-11-arm, ReleaseSafe)",    "test (riscv64-linux on its kernel under QEMU, Debug)",
+        // The hardened profile is every package's.
+        "hardened",                           "hardened-fuzz",                         "hardened-tsan",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {

@@ -105,6 +105,7 @@ const Lint = struct {
     zig_std: ?[]const u8 = null,
     build_option: []const []const u8 = &.{},
     test_step: []const []const u8 = &.{},
+    fix: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
@@ -113,6 +114,7 @@ const Lint = struct {
             .zig_std = .{ .value_name = "DIR", .hint = .directory, .help = "The standard library the package builds with, for the lint's types" },
             .build_option = build_option,
             .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
+            .fix = .{ .negatable = false, .help = "Apply glint's deterministic fixes to the sources first (zig build fix): the report is the run before them" },
         },
     };
 };

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-22
+
 ### Breaking
 
 - glint 0.5.1 runs the lint, of glint's new 0.5 line: a package that pins glint itself moves to that line, or names it in `.coexist` (gantry 0.2.10 is on 0.5.0). Its aegis pack decides more sites (`anytype` copies where bound, what a generic passes on of its parameter read at each binding, an owner's address given to a function that releases it, whole allocations through callers and returns, types built by `@Struct`/`@Union`/`@Tuple`, function types reflected), so a package gating A001-A005 may now see a finding its sites hid.

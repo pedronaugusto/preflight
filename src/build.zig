@@ -31,8 +31,13 @@ pub const Config = struct {
     /// `zig build test` runs each once with `--smoke`. A repository with a `bench/`
     /// directory and none given fails its tests.
     bench: ?Bench = null,
-    /// Opt-in native safety checks; release artifacts keep their chosen mode.
-    hardened: ?Hardened = null,
+    /// The hardened profile, which every package runs (aegis's design §7): its tests with
+    /// runtime safety on, a fuzz campaign and ThreadSanitizer.
+    hardened: Hardened = .{},
+    /// Installed artifacts the build makes ReleaseFast or ReleaseSmall although the caller
+    /// chose no mode, each with the measurement that says why: any other one fails the lint,
+    /// since what the family ships is ReleaseSafe.
+    release_fast: []const ReleaseFast = &.{},
     /// Continuous fuzzing: the step `zig build fuzz` fuzzes, one whose every
     /// test binary has a `check` property or a fuzz test, since the fuzzer
     /// refuses a binary with none. It runs the package's own shakedown, whose
@@ -50,6 +55,7 @@ pub const Config = struct {
 
 pub const Bench = bench.Bench;
 pub const Hardened = hardened.Profile;
+pub const ReleaseFast = struct { artifact: []const u8, reason: []const u8 };
 
 pub const TestTimeout = record.TestTimeout;
 
@@ -210,7 +216,7 @@ const Steps = struct {
         // One way to fuzz, in every package: its properties, by the step it names, else
         // the one its hardened run fuzzes, else its tests. Its tests take the runner as
         // the tests do: a fuzzing build is the runner's to serve (`runner.zig`).
-        const fuzzed = config.fuzz_step orelse if (config.hardened) |profile| profile.fuzz_step else "test";
+        const fuzzed = config.fuzz_step orelse config.hardened.fuzz_step orelse "test";
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
@@ -289,11 +295,12 @@ const Steps = struct {
         // tests, and the fuzzer and the hardened profile run the steps they name.
         var test_steps: std.ArrayList([]const u8) = .empty;
         test_steps.append(b.allocator, "ci") catch @panic("OOM");
-        const named: []const []const u8 = if (config.hardened) |profile| &.{ fuzzed, profile.fuzz_step, profile.tsan_step } else &.{fuzzed};
+        const named: []const []const u8 = &.{ fuzzed, config.hardened.fuzz_step orelse fuzzed, config.hardened.tsan_step };
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
         steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, test_steps.items);
+        releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
         if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
@@ -391,5 +398,34 @@ fn exported(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
             .src_path => |path| if (path.owner == package) run.addArgs(&.{ "--module", b.fmt("{s}={s}", .{ name, path.sub_path }) }),
             else => {},
         }
+    }
+}
+
+/// Each installed artifact the build makes ReleaseFast or ReleaseSmall while the caller chose no
+/// mode fails the lint, unless `Config.release_fast` names it with its measurement; a name that
+/// matches no such artifact fails too, so an exception cannot outlive its artifact.
+fn releaseModes(b: *std.Build, config: Config) void {
+    if (b.user_input_options.contains("optimize") or b.user_input_options.contains("release")) return;
+    const lint = b.top_level_steps.get("lint") orelse return;
+    var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+    var used: std.StringHashMapUnmanaged(void) = .empty;
+    var stack: std.ArrayList(*std.Build.Step) = .empty;
+    stack.append(b.allocator, b.getInstallStep()) catch @panic("OOM");
+    while (stack.pop()) |step| {
+        if ((seen.getOrPut(b.allocator, step) catch @panic("OOM")).found_existing) continue;
+        for (step.dependencies.items) |next| stack.append(b.allocator, next) catch @panic("OOM");
+        const artifact = step.cast(std.Build.Step.Compile) orelse continue;
+        const mode = artifact.root_module.optimize orelse continue;
+        if (mode != .fast and mode != .small) continue;
+        const named = for (config.release_fast) |entry| {
+            if (std.mem.eql(u8, entry.artifact, artifact.name)) break true;
+        } else false;
+        if (named) {
+            used.put(b.allocator, artifact.name, {}) catch @panic("OOM");
+        } else lint.step.dependOn(&b.addFail(b.fmt("release: {s} is installed {t} although no mode was chosen; the family ships ReleaseSafe, or Config.release_fast names it with its measurement", .{ artifact.name, mode })).step);
+    }
+    for (config.release_fast) |entry| {
+        if (entry.reason.len == 0) lint.step.dependOn(&b.addFail(b.fmt("release: {s}: Config.release_fast needs the measurement that says why", .{entry.artifact})).step);
+        if (!used.contains(entry.artifact)) lint.step.dependOn(&b.addFail(b.fmt("release: Config.release_fast names {s}, which no installed ReleaseFast or ReleaseSmall artifact is", .{entry.artifact})).step);
     }
 }

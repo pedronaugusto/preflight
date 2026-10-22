@@ -104,6 +104,15 @@ const retired = [_]struct { key: []const u8, instead: []const u8 }{
 
 const glint_keys = [_][]const u8{ "rules", "strict_suppressions", "fact_budget", "max_line_length", "disallowed", "unresolved" };
 
+/// The rules glint folded into the aegis pack's danger rules (designs/aegis.md §7): a repository
+/// still naming one is told where its sites went.
+const folded = [_]struct { id: []const u8, instead: []const u8 }{
+    .{ .id = "P001", .instead = "its integer conversions are A010's and its pointer conversions A019's" },
+    .{ .id = "P002", .instead = "runtime safety switched off is A019's" },
+    .{ .id = "P004", .instead = "`catch unreachable` is A013's, with every `unreachable`" },
+    .{ .id = "E001", .instead = "a pointer into a function's frame is A014's" },
+};
+
 /// glint settings that went with the rules they set: P001's cast reasons are the danger rules'
 /// now (A010's integer conversions, A019's pointer conversions), whose sites carry the pack's
 /// escape.
@@ -179,6 +188,11 @@ pub const Policy = struct {
         // build script or an example is long for reasons of its own: a
         // repository that wants a ceiling there names the path.
         if (!named and !policy.inSources(path)) config = try withLevel(a, config, .P003, .off);
+        // The danger rules hold what the package ships: its sources. Its build script, CI
+        // programs, benchmarks and the baselines they compare against are its own tools.
+        if (!policy.inSources(path)) for (glint.AegisPack.danger) |rule| {
+            config = try withLevel(a, config, rule, .off);
+        };
         var exceptions: std.ArrayList(glint.Config.FunctionException) = .empty;
         for (policy.exceptions) |entry| if (std.mem.eql(u8, entry.path, path)) {
             try exceptions.append(a, .{ .function = entry.function, .lines = entry.lines, .reason = entry.reason });
@@ -328,6 +342,13 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
             c.fail("glint: {s}: level `{s}` is not off, report or gate", .{ id.string, named.string });
             continue;
         };
+        const gone = for (folded) |rule| {
+            if (std.mem.eql(u8, id.string, rule.id)) break rule;
+        } else null;
+        if (gone) |rule| {
+            c.fail("glint: {s} is retired: {s}; write `// aegis: <reason>: <why>` where its sites stand raw", .{ rule.id, rule.instead });
+            continue;
+        }
         const rule = glint.parseRule(id.string, &definitions) orelse {
             c.fail("glint: `{s}` is not a rule glint has (a removed rule is not an alias of anything)", .{id.string});
             continue;
@@ -588,6 +609,9 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     // it ships.
     try std.testing.expectEqual(.gate, forked.level(.Z026));
     try std.testing.expectEqual(.report, forked.level(glint.AegisPack.integers));
+    // A tool the package develops with ships nowhere: the danger rules leave it out.
+    try std.testing.expectEqual(.off, (try policy.forFile(a, "build.zig")).level(glint.AegisPack.shared_state));
+    try std.testing.expectEqual(.off, (try policy.forFile(a, "bench/main.zig")).level(glint.AegisPack.integers));
     try std.testing.expectEqual(Policy.Kind.test_file, policy.kind("src/deep/x_test.zig"));
     try std.testing.expectEqual(Policy.Kind.test_file, policy.kind("src/tests.zig"));
     try std.testing.expectEqual(Policy.Kind.support, policy.kind("src/testing/lfs/harness.zig"));

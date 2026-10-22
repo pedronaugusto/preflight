@@ -1,4 +1,6 @@
-//! Opt-in build/test orchestration; source-site safety rules belong to glint.
+//! The hardened profile every package runs: its tests with runtime safety on over the
+//! quarantine allocator, a bounded fuzz campaign and ThreadSanitizer; source-site safety rules
+//! belong to glint.
 const std = @import("std");
 const configure = @import("configure.zig");
 const builtin = @import("builtin");
@@ -6,8 +8,9 @@ const zig_version = @import("zig_version.zig");
 const Tool = @import("tool.zig").Tool;
 
 pub const Profile = struct {
-    /// A step containing real std.testing.fuzz targets.
-    fuzz_step: []const u8 = "test",
+    /// A step containing real std.testing.fuzz targets; null for a package with nothing to
+    /// fuzz, which says so here.
+    fuzz_step: ?[]const u8 = "test",
     fuzz_iterations: u64 = 10000,
     /// A step executing concurrent tests, not a compile-only step.
     tsan_step: []const u8 = "test",
@@ -22,11 +25,7 @@ pub fn declare(b: *std.Build) Options {
 }
 
 /// `tool` is preflight's program, which judges the fuzz campaign.
-pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Options, tool: Tool) void {
-    const given = profile orelse {
-        if (options.active or options.tsan) tests.dependOn(&b.addFail("hardened: this package has not opted in via Config.hardened").step);
-        return;
-    };
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, given: Profile, options: Options, tool: Tool) void {
     _ = zig_version.require() catch {
         tests.dependOn(&b.addFail(b.fmt("hardened: supported only with {s}, not Zig {s}", .{ zig_version.supported, builtin.zig_version_string })).step);
         return;
@@ -35,7 +34,8 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
         var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
         var modules: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty;
         apply(b, tests, options, &seen, &modules);
-        for ([_][]const u8{ given.fuzz_step, given.tsan_step }) |name| {
+        for ([_]?[]const u8{ given.fuzz_step, given.tsan_step }) |chosen| {
+            const name = chosen orelse continue;
             const selected = b.top_level_steps.get(name) orelse {
                 tests.dependOn(&b.addFail(b.fmt("hardened: configured step {s} is absent", .{name})).step);
                 continue;
@@ -43,11 +43,11 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
             apply(b, &selected.step, options, &seen, &modules);
         }
     }
-    for ([_][]const u8{ given.fuzz_step, given.tsan_step }) |name| {
-        const selected = b.top_level_steps.get(name) orelse continue;
+    for ([_]?[]const u8{ given.fuzz_step, given.tsan_step }) |chosen| {
+        const selected = b.top_level_steps.get(chosen orelse continue) orelse continue;
         var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
         if (!executesTests(b, &selected.step, &seen)) {
-            tests.dependOn(&b.addFail(b.fmt("hardened: {s} must execute native tests, not compile only", .{name})).step);
+            tests.dependOn(&b.addFail(b.fmt("hardened: {s} must execute native tests, not compile only", .{chosen.?})).step);
         }
     }
     const normal = again(b, package, &.{ "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
@@ -64,11 +64,13 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     fuzz.addDirectoryArg2(package.path("."), .{});
     fuzz.addArg("--");
     fuzz.addArgs(configure.rerun(b, package));
-    fuzz.addArgs(&.{ given.fuzz_step, "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
+    fuzz.addArgs(&.{ given.fuzz_step orelse "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
     forward(b, fuzz);
     fuzz.has_side_effects = true;
     const fuzz_step = configure.claim(b, "hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
-    if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
+    if (given.fuzz_step == null) {
+        // Nothing to fuzz, as the package's profile says: the campaign has nothing to run.
+    } else if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
         fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support").step);
     } else fuzz_step.dependOn(&fuzz.step);
     const tsan = again(b, package, &.{ given.tsan_step, "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });

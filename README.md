@@ -5,7 +5,7 @@ runs format, gantry structure rules, [glint](https://github.com/pedronaugusto/gl
 code rules, namespace layout, documented snippets and test imports, then the package's tests.
 It is a build dependency; a consumer's module never imports it.
 
-**WIP:** hardened checks are opt-in and the configured-build adapter supports Zig 0.17.0 and Zig 0.18.0-dev master builds. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
+**WIP:** the configured-build adapter supports Zig 0.17.0 and Zig 0.18.0-dev master builds. Neither test campaigns nor sanitizer runs prove raw-pointer lifetimes.
 
 ## Install
 
@@ -173,8 +173,7 @@ file. The structure check compiles each pattern once.
 regions and extra repository checks. A `vendored` exemption must name its upstream
 and how the fork is verified. Function exceptions name an exact file and function,
 a reason and the current line ceiling; growth fails once P003 is gated. The normal limit
-is 120, with lower per-path `function_limits` for shared folds. P001 asks each cast for a
-nonempty `// safe:` comment on its own line. Strings cannot supply that comment.
+is 120, with lower per-path `function_limits` for shared folds.
 
 A namespace containing two or more implementation files has one adjacent entry:
 `src/parser.zig` beside `src/parser/`. Case-insensitive matching accommodates
@@ -233,33 +232,46 @@ it, at any revision that keeps its public names.
 
 | Rule | Weight |
 |---|---|
-| Z003 syntax, Z013 dead import, Z026 discarded error, P002 safety-off reasons, P004 `catch unreachable` | gate |
+| Z003 syntax, Z013 dead import, Z026 discarded error | gate |
 | Z011 deprecated call, P005 debug print | finding: any finding fails, and a call glint cannot resolve is counted, not a verdict |
-| P001 cast reasons, P003 function length, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
-| Z024 line length, P006 disallowed declarations, D001 dead declarations | off (P006 gates once `disallowed` names something) |
+| the aegis pack: A001-A005 (aegis's types used as their contracts say) and the danger rules A007-A019 | finding, with a ceiling on undecided sites |
+| A006 recursion on input, A020 cancellation | report, until their hits are read |
+| P003 function length, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
+| Z024 line length, D001 dead declarations | off or report |
+| P006 disallowed declarations | gate: the durability door (airlock's) in every repository, and what `disallowed` adds |
 
 `gate` is glint's: a finding fails the run, and so does any site the rule could
 not decide. A *finding* rule fails on what glint finds and does not fail on the
 calls it could not resolve: a call through a receiver of unknown type is not a
-verdict either way. Casts are the four pointer casts in production code
-(`@constCast`, `@ptrCast`, `@alignCast`, `@intFromPtr`), each with a nonempty
-`// safe: <reason>` on its line; test support (`test_support`) is code the package
-writes, so its casts need the reason as well. A `vendored` file is exempt from the
-cast and length rules and names its upstream and how the fork is verified.
+verdict either way.
+
+**The danger rules** (glint's aegis pack, aegis's design §7) find every site where a danger
+exists: shared state, secrets, input, integer conversions and overflow, units of time,
+work sized by input, contracts, lifetimes, ownership, identity, state machines,
+diagnostics to peers, the operations Zig leaves unchecked, cancellation. A site uses
+aegis's type or carries the one escape, `// aegis: <reason>: <why>`, whose reason is
+`no-danger`, `design`, `hot-loop`, `internal` or `boundary`. The run prints every escape
+with the rules it covers (all of them in `.zig-cache/preflight-lint/escapes.txt`) and a
+line of findings, escapes and undecided sites by rule. A danger rule's undecided sites
+count against `glint.unresolved`, a ceiling per rule (none by default): above it fails,
+since the count the reviews read may not grow, and below it the run asks for it to come
+down. Tests and test support are not shipped, so the danger rules leave them out; a
+`vendored` file ships, and is held to them.
 
 **A repository amends the policy** in the `glint` object of `ci/preflight.json`:
 
 ```json
 "glint": {
   "rules": [{"id": "A004", "level": "gate"}, {"id": "Z006", "level": "gate"}],
-  "casts": "pointer", "cast_scope": "production",
+  "unresolved": {"A009": 3},
   "strict_suppressions": true, "fact_budget": 4000000, "max_line_length": 100,
   "disallowed": [{"source": "src/io.zig", "declaration": "write", "reason": "...", "replacement": "..."}]
 }
 ```
 
-`rules` sets a rule to `off`, `report` or `gate` (the aegis rules A001 to A005 are off
-until a repository names them); an unknown or removed id fails. There is no profile:
+`rules` sets a rule to `off`, `report` or `gate`; a finding rule asked to report stays a
+finding. An unknown or removed id fails, and P001, P002, P004 and E001, folded into the
+danger rules, say where their sites went. There is no profile:
 the default policy is preflight's, and a deviation is a visible line. `function_limit`
 (120), `function_limits` (a lower ceiling by path) and `function_exceptions` (an exact
 `path:function`, a ceiling and a reason; growth fails, and one that names no function
@@ -274,8 +286,10 @@ never hides one of these.
 **Suppression** is glint's: one real comment, one site, a reason,
 `// glint-ignore: Z026 -- cleanup after a failure the caller already gets`. There are
 no ledgers: `ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`,
-`ziglint_paths` and `glint_config` are retired, and a repository that still names one
-fails by name, so that no gate is believed that is not there.
+`ziglint_paths` and `glint_config` are retired, as are `glint.casts` and
+`glint.cast_scope`, and a repository that still names one fails by name, so that no gate
+is believed that is not there. A malformed suppression or escape is named where it is and
+leaves the run incomplete.
 
 Assertion counts per function and package appear in the run summary as a report,
 without affecting the gate.
@@ -322,7 +336,9 @@ with the reason: `"fuzz": { "trusted": { "parseCache": "the package's own cache 
 
 ### Hardened profile
 
-Opt in with `Config.hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, and `"hardened": true` in `ci/workflow.json`, then regenerate the caller. Dedicated steps must execute tests. Defaults select `test`, so a package without fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign. The fuzz step's tests run on preflight's runner, as `tests` do. A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build (one that skips when `builtin.fuzz` is set) fails the campaign by name: the build found it a fuzz test in the unfuzzed build, and the fuzzer would select it forever. A property that is not the fuzzer's says so where it is written (shakedown's `.fuzz = false`).
+Every package runs the hardened profile; there is no opting out (aegis's design §7). `Config.hardened` chooses its steps: `.{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, by default `test` for both. A package with nothing to fuzz says so, `.fuzz_step = null`, and its campaign has nothing to run. The planner schedules the hardened jobs in the release tier for every package; `"hardened"` in `ci/workflow.json` may only be `true`. Dedicated steps must execute tests. A package whose fuzz step finds no fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign. The fuzz step's tests run on preflight's runner, as `tests` do. A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build (one that skips when `builtin.fuzz` is set) fails the campaign by name: the build found it a fuzz test in the unfuzzed build, and the fuzzer would select it forever. A property that is not the fuzzer's says so where it is written (shakedown's `.fuzz = false`).
+
+**What ships is ReleaseSafe.** `bay install` builds a package's programs ReleaseSafe. An installed artifact the build itself makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with the measurement that says why (`.{ .artifact = "decoder", .reason = "..." }`). A name that matches no such artifact fails too.
 
 `zig build hardened` runs the ordinary suite with `-Dci-hardened=true`; its test modules use Debug or ReleaseSafe with the LLVM backend selected explicitly for native sanitizer and fuzz instrumentation. Its `std.testing.allocator` takes its memory from the package's shakedown's quarantine (`shakedown.alloc.Quarantine`, a mapping per block with an inaccessible page after it, no address handed out twice), so a read or write after free of a block std's allocator takes whole faults at the line, in every run; a package with a hardened run declares shakedown. Normal build modes remain caller-selected. A measured source loop can explicitly disable safety at its boundary, with its reason and matched measurements; this batch adds no such exceptions. Source-site rules belong to glint, architectural rules to gantry. No startup-allocation policy is forced on a consumer.
 

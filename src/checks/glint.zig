@@ -128,6 +128,12 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     }
     ceilings(c, chosen, report, undecided);
     escapes(c, project, report);
+    for (report.malformed) |entry| {
+        const start = sites.written().len;
+        sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ project.inputs[entry.span.file.raw()].name, entry.span.line, entry.why }) catch @panic("OOM");
+        if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
+        unfinished += 1;
+    }
     for (report.stale) |stale| {
         const start = sites.written().len;
         sites.writer.print("glint: incomplete: {s}:{d}: {s} suppression suppresses nothing\n", .{ project.inputs[stale.span.file.raw()].name, stale.span.line, stale.name }) catch @panic("OOM");

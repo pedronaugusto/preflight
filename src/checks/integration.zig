@@ -137,10 +137,14 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
     try tmp.dir.createDir(io, "examples", .default_dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\n" });
-    // A pointer conversion is a danger site (A019): without the aegis escape it fails the gate.
+    // An example ships nowhere: the danger rules hold the sources.
+    const example = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(example.term == .exited and example.term.exited == 0);
+    // In the sources a pointer conversion is a danger site (A019): without the aegis escape it fails the gate.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\ntest {}\n" });
     const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
-    try std.testing.expect(std.mem.find(u8, cast.stderr, "A019: examples/value.zig:2:") != null);
+    try std.testing.expect(std.mem.find(u8, cast.stderr, "A019: src/sample.zig:2:") != null);
 }
 
 test "portable replay records timings and still rejects failed tests and leaked memory" {

@@ -120,9 +120,11 @@ pub const Tier = enum {
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.appendSlice(a, try basePlan(a, config, tier));
+    // The hardened profile is every package's (aegis's design §7): there is no opting out,
+    // and a package with nothing to fuzz says so in its build's profile.
     const hardened = src.get(config, "hardened");
-    if (hardened != .null and hardened != .bool) return error.InvalidHardenedProfile;
-    if (hardened == .bool and hardened.bool and tier == .release) {
+    if (hardened != .null and !(hardened == .bool and hardened.bool)) return error.InvalidHardenedProfile;
+    if (tier == .release) {
         for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }) |step| {
             var job: Job = .{ .os = hosts[0], .name = step, .step = step, .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}), .setup = true };
             job.cache_key = try key(a, job);

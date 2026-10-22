@@ -94,8 +94,9 @@ const pack = blk: {
     break :blk out;
 };
 
-/// The pack's rules that read the input or peer fact.
-const flow_rules = [_]glint.Rule{ glint.AegisPack.recursion, glint.AegisPack.untrusted_input, glint.AegisPack.integers, glint.AegisPack.bounded_work, glint.AegisPack.contracts, glint.AegisPack.diagnostics, glint.AegisPack.cancellation };
+/// The pack's rules that read the input or peer fact, and A021 (lock order), new: each reports
+/// until a sample of its hits is read.
+const flow_rules = [_]glint.Rule{ glint.AegisPack.recursion, glint.AegisPack.untrusted_input, glint.AegisPack.integers, glint.AegisPack.bounded_work, glint.AegisPack.contracts, glint.AegisPack.diagnostics, glint.AegisPack.cancellation, glint.AegisPack.lock_order };
 
 /// Whether a rule is the aegis pack's: those whose undecided sites count against a ceiling.
 pub fn inPack(id: glint.Rule) bool {

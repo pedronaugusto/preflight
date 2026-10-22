@@ -259,7 +259,7 @@ since the count the reviews read may not grow, and below it the run asks for it 
 down. Tests and test support are not shipped, so the danger rules leave them out; a
 `vendored` file ships, and is held to them.
 
-The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A018, A020) are reported until a fresh sample of each shows its noise near zero; the rest of the pack are findings. A package that owns a writer to a peer (a server's response, a protocol's transport) names it in `glint.peer_writers`, each `{"module": "uplink", "declaration": "server.Response.writer"}`; A018 reads a package's own and those of the packages it depends on.
+The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A018, A020), and the new A021 (lock order), are reported until a fresh sample of each shows its noise near zero; the rest of the pack are findings. A package that owns a writer to a peer (a server's response, a protocol's transport) names it in `glint.peer_writers`, each `{"module": "uplink", "declaration": "server.Response.writer"}`; A018 reads a package's own and those of the packages it depends on.
 
 **A repository amends the policy** in the `glint` object of `ci/preflight.json`:
 

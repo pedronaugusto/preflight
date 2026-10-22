@@ -21,6 +21,7 @@ pub const land = @import("checks/land.zig");
 pub const local = @import("checks/local.zig");
 pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
+pub const counts = @import("checks/counts.zig");
 
 test {
     _ = @import("cli.zig");
@@ -30,6 +31,7 @@ test {
     _ = @import("nested.zig");
     _ = @import("plain.zig");
     _ = @import("record.zig");
+    _ = @import("checks/counts.zig");
     _ = @import("vm.zig");
     _ = @import("vm/cpio.zig");
     _ = @import("vm/host.zig");

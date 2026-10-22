@@ -27,6 +27,7 @@ pub const Cli = struct {
         profile: Profile,
         fuzz_campaign: Campaign,
         unsharded: Unsharded,
+        counts: Counts,
         executable: Executable,
         cache: Cache,
         docs: Docs,
@@ -103,6 +104,7 @@ const Lint = struct {
     zig_exe: ?[]const u8 = null,
     zig_std: ?[]const u8 = null,
     build_option: []const []const u8 = &.{},
+    test_step: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
@@ -110,6 +112,7 @@ const Lint = struct {
             .zig_exe = zig_exe,
             .zig_std = .{ .value_name = "DIR", .hint = .directory, .help = "The standard library the package builds with, for the lint's types" },
             .build_option = build_option,
+            .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
         },
     };
 };
@@ -233,6 +236,18 @@ const Unsharded = struct {
     };
 };
 
+const Counts = struct {
+    records: []const u8 = ".zig-cache/preflight-counts",
+    expect: []const []const u8 = &.{},
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Count the tests per root after the tests' runs, from the records preflight's runner wrote; fail a run with no record or a binary with no test",
+        .options = .{
+            .records = .{ .value_name = "DIR", .hint = .directory, .help = "Where the runner wrote the records" },
+            .expect = .{ .value_name = "NAME", .help = "The record of a root module the tests ran, repeated" },
+        },
+    };
+};
+
 const Executable = struct {
     paths: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
@@ -311,8 +326,9 @@ test "facts and lint take the build's configuration, the options keeping their d
     try std.testing.expectEqualStrings("-Dci-timings=true", facts.build_option[0]);
     try std.testing.expectEqualStrings("-Dx", facts.build_option[1]);
     try std.testing.expectEqualStrings("-Dtarget=x86_64-linux", facts.options[0]);
-    const lint = (try parsed(arena.allocator(), &.{ "lint", "--config", "ci/preflight.json", "--zig-exe", "/z/zig", "--zig-std", "/z/lib/std", "--build-option", "-Doptimize=Debug" })).command.lint;
+    const lint = (try parsed(arena.allocator(), &.{ "lint", "--config", "ci/preflight.json", "--zig-exe", "/z/zig", "--zig-std", "/z/lib/std", "--test-step", "ci", "--test-step", "profile-tests", "--build-option", "-Doptimize=Debug" })).command.lint;
     try std.testing.expectEqualStrings("/z/lib/std", lint.zig_std.?);
+    try std.testing.expectEqualStrings("profile-tests", lint.test_step[1]);
     try std.testing.expectEqualStrings("-Doptimize=Debug", lint.build_option[0]);
 }
 
@@ -351,6 +367,9 @@ test "the build's helper commands" {
     try std.testing.expectEqual(5, campaign.build.len);
     try std.testing.expectEqualStrings("--fuzz=1000", campaign.build[4]);
     try std.testing.expectEqualStrings("tests", (try parsed(a, &.{ "unsharded", "tests" })).command.unsharded.name);
+    const counts = (try parsed(a, &.{ "counts", "--records=.zig-cache/preflight-counts", "--expect", "test-macos-Debug", "--expect", "test-macos-Debug-2" })).command.counts;
+    try std.testing.expectEqualStrings(".zig-cache/preflight-counts", counts.records);
+    try std.testing.expectEqualStrings("test-macos-Debug-2", counts.expect[1]);
     try std.testing.expectEqual(2, (try parsed(a, &.{ "executable", "zig-out/a", "zig-out/b" })).command.executable.paths.len);
     try std.testing.expectEqual(1 << 20, (try parsed(a, &.{ "cache", "--path", ".zig-cache" })).command.cache.cap);
     try std.testing.expectEqualStrings("api", (try parsed(a, &.{ "docs", "--config", "ci/preflight.json", "--zig-exe", "/z/zig", "api" })).command.docs.region);

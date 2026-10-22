@@ -49,14 +49,18 @@ pub const TestTimeout = union(enum) {
 
 /// `roots`: the test step and the step the package fuzzes, whose test runs
 /// all take the runner, one way. `checker` is preflight's command program,
-/// which refuses a shard at run time for a test runner that cannot honour one.
-pub fn add(b: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) void {
-    var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
-    var names = std.StringHashMap(void).init(b.allocator);
+/// which refuses a shard at run time for a test runner that cannot honour one,
+/// and counts the tests step's tests per root after its runs (`counts`).
+pub fn add(b: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) Counted {
     const durations = configure.read(b, options.durations, .limited(64 * 1024 * 1024)) orelse "";
-    const context: Context = .{ .pkg = pkg, .checker = checker, .options = options, .durations = durations };
-    for (roots) |root| visit(b, root, context, &seen, &names);
+    var state: State = .{ .context = .{ .pkg = pkg, .checker = checker, .options = options, .durations = durations } };
+    for (roots, 0..) |root, index| visit(b, root, &state, index == 0);
+    return .{ .names = state.counted.keys(), .runs = state.runs.items };
 }
+
+/// The runs of the tests step that take preflight's runner, and the names of the records of
+/// their roots' tests the runner writes, one per root module: what `counts` reads.
+pub const Counted = struct { names: []const []const u8, runs: []const *std.Build.Step };
 
 const Context = struct {
     pkg: *std.Build,
@@ -66,22 +70,60 @@ const Context = struct {
     durations: []const u8,
 };
 
-fn visit(b: *std.Build, step: *std.Build.Step, context: Context, seen: *std.AutoHashMap(*std.Build.Step, void), names: *std.StringHashMap(void)) void {
-    const entry = seen.getOrPut(step) catch @panic("OOM");
+const State = struct {
+    context: Context,
+    seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty,
+    /// The record names given out, timing and count alike.
+    names: std.StringHashMapUnmanaged(void) = .empty,
+    /// Each root module's record name: artifacts that share it share its options.
+    records: std.AutoHashMapUnmanaged(*std.Build.Module, []const u8) = .empty,
+    /// The artifacts given preflight's runner.
+    ours: std.AutoHashMapUnmanaged(*std.Build.Step.Compile, void) = .empty,
+    counted: std.array_hash_map.String(void) = .empty,
+    runs: std.ArrayList(*std.Build.Step) = .empty,
+};
+
+fn visit(b: *std.Build, step: *std.Build.Step, state: *State, tests: bool) void {
+    const entry = state.seen.getOrPut(b.allocator, step) catch @panic("OOM");
     if (entry.found_existing) return;
     if (step.cast(std.Build.Step.Run)) |run| {
         if (run.argv.items.len == 0 or run.argv.items[0] != .artifact) return;
-        if (run.argv.items[0].artifact.artifact.kind != .@"test") return;
-        instrument(b, run, context, names);
+        const artifact = run.argv.items[0].artifact.artifact;
+        if (artifact.kind != .@"test") return;
+        instrument(b, run, state);
+        if (tests and state.ours.contains(artifact)) {
+            state.counted.put(b.allocator, state.records.get(artifact.root_module).?, {}) catch @panic("OOM");
+            state.runs.append(b.allocator, &run.step) catch @panic("OOM");
+        }
         return;
     }
-    for (step.dependencies.items) |child| visit(b, child, context, seen, names);
+    for (step.dependencies.items) |child| visit(b, child, state, tests);
 }
 
+/// The tests counted per root after `counted`'s runs, a step `holder` waits for: a run whose
+/// record is missing never reached preflight's runner, and a binary that holds no test,
+/// unfiltered, has its tests in modules it imports, which Zig never runs, or none. The counts
+/// go where the gate prints them. The count is preflight's program, no test: it joins the
+/// tests step after every walk of that step (the compile checks, the hardened profile,
+/// portable tests) has read it.
+pub fn counts(b: *std.Build, holder: *std.Build.Step, checker: Tool, counted: Counted) void {
+    if (counted.names.len == 0) return;
+    const count = checker.run(b);
+    count.addArg("counts");
+    count.addDirectoryArg2(std.Build.LazyPath.cache_root.join(b.allocator, records_dir) catch @panic("OOM"), .{ .prefix = "--records=" });
+    for (counted.names) |name| count.addArgs(&.{ "--expect", name });
+    count.has_side_effects = true;
+    for (counted.runs) |run| count.step.dependOn(run);
+    holder.dependOn(&count.step);
+}
+
+/// Where the runner writes the count records, in the build's cache.
+pub const records_dir = "preflight-counts";
+
 /// Gives the test artifact `run` runs preflight's runner and its modules,
-/// and the run its watchdog, durations and timing record. `names` holds the
-/// timing record names already given out.
-fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: *std.StringHashMap(void)) void {
+/// and the run its watchdog, durations, timing record and count record.
+fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
+    const context = state.context;
     const options = context.options;
     const artifact = run.argv.items[0].artifact.artifact;
     // `setEnvironmentVariable` clones the whole environment into the run, and
@@ -102,13 +144,24 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         // wrapped by the runner.
         runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds())); // safe: validated export range
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
-        runner.addOption(?[]const u8, "timings", if (options.timing) timings(b, artifact, names) else null);
+        const name = recordName(b, artifact, &state.names);
+        state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");
+        runner.addOption(?[]const u8, "timings", if (options.timing) b.fmt(".zig-cache/preflight-timings/{s}", .{name}) else null);
+        runner.addOption([]const u8, "counts", b.fmt("{s}/{s}", .{ records_dir, name }));
+        runner.addOption([]const u8, "root", switch (artifact.root_module.root_source_file.?) {
+            .src_path => |path| path.sub_path,
+            else => artifact.name,
+        });
+        runner.addOption([]const u8, "artifact", artifact.name);
+        runner.addOption(bool, "filtered", artifact.filters.len != 0);
         runner.addOption([]const u8, "durations", context.durations);
         runner.addOption(bool, "quarantine", options.quarantine);
         if (options.quarantine) quarantine(b, run, artifact);
         artifact.root_module.addOptions("preflight_runner_options", runner);
     }
-    if (artifact.test_runner != null) {
+    if (state.ours.contains(artifact)) {
+        // Another run of an artifact given the runner already: it takes it as the first did.
+    } else if (artifact.test_runner != null) {
         // That runner neither arms the watchdog nor reads the shard.
         if (options.test_timeout.toNanoseconds() != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
         const unsharded = context.checker.run(b);
@@ -116,12 +169,15 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
         unsharded.has_side_effects = true;
         run.step.dependOn(&unsharded.step);
     } else {
+        state.ours.put(b.allocator, artifact, {}) catch @panic("OOM");
         const path = context.pkg.path("src/runner.zig");
         artifact.test_runner = .{ .path = path, .mode = .server };
         path.addStepDependencies(&artifact.step);
         artifact.root_module.addAnonymousImport("preflight_default_test_runner", .{
             .root_source_file = b.graph.path(.zig_lib, "compiler/test_runner.zig"),
         });
+    }
+    if (state.ours.contains(artifact)) {
         // Not `enableProtocolMode`, though 0.17 deprecates this for it:
         // Zig 0.17's test runner reads its cache directory and seed from
         // argv, which only `.zig_test` passes, and a `.protocol` run cannot
@@ -132,9 +188,9 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, context: Context, names: 
     if (options.test_timeout.toNanoseconds() != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
 }
 
-/// The run's timing record, without its shard: the runner appends the shard
-/// it runs, `-2of5.ndjson`, or `-all.ndjson`.
-fn timings(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringHashMap(void)) []const u8 {
+/// The name of a root module's records, without their shard: the runner appends the shard
+/// it runs, `-2of5`, or `-all`.
+fn recordName(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringHashMapUnmanaged(void)) []const u8 {
     const target = artifact.root_module.resolved_target.?.result;
     const stem = b.fmt("{s}-{s}-{s}", .{ artifact.name, @tagName(target.os.tag), @tagName(artifact.root_module.optimize.?) });
     // Two runs that share a name would truncate each other's records.
@@ -142,8 +198,8 @@ fn timings(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringH
     // One build owns this name suffix; it is not an ID or an externally supplied count and
     // never meets another number domain.
     var count: usize = 2;
-    while ((names.getOrPut(name) catch @panic("OOM")).found_existing) : (count += 1) name = b.fmt("{s}-{d}", .{ stem, count });
-    return b.fmt(".zig-cache/preflight-timings/{s}", .{name});
+    while ((names.getOrPut(b.allocator, name) catch @panic("OOM")).found_existing) : (count += 1) name = b.fmt("{s}-{d}", .{ stem, count });
+    return name;
 }
 
 /// Fails `run`, when the build gets to it, with a message naming why.

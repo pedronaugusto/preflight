@@ -322,6 +322,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     var lifeline: ?[]const u8 = null;
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--listen=-")) listen = true;
+        if (std.mem.startsWith(u8, arg, "--cache-dir=")) build_cache = arg["--cache-dir=".len..];
         if (std.mem.startsWith(u8, arg, Supervisor.flag)) lifeline = arg[Supervisor.flag.len..];
     }
     if (Supervisor.possible) if (lifeline) |handle| Supervisor.follow(handle) catch |err| std.debug.panic("preflight test runner: the supervisor's lifeline: {t}", .{err});
@@ -406,7 +407,10 @@ fn serve(init: std.process.Init.Minimal) !void {
         const header = try server.receiveMessage();
         switch (header.tag) {
             .exit => return,
-            .query_test_metadata => try metadata(&server),
+            .query_test_metadata => {
+                try metadata(&server);
+                try counted(init);
+            },
             .run_test => try runTest(&server, recorder, init),
             else => return error.UnexpectedRunnerMessage,
         }
@@ -925,6 +929,19 @@ fn metadata(server: *std.zig.Server) !void {
     try server.serveTestMetadata(.{ .names = names, .expected_panic_msgs = panics, .string_bytes = bytes.items });
 }
 
+/// The build's cache, which the build names to a run of the tests (`--cache-dir`), where it
+/// replays them too; null for a binary run by hand.
+var build_cache: ?[]const u8 = null;
+
+/// The count of this binary's tests, for the build's count of its tests per root: written
+/// when the build asks which tests there are, so a run that starts writes it.
+fn counted(init: std.process.Init.Minimal) !void {
+    const cache = build_cache orelse return;
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const stem = std.mem.print(&buffer, "{s}/{s}", .{ cache, options.counts }) catch return error.NameTooLong;
+    try timings.count(io, init.environ, stem, .{ .root = options.root, .artifact = options.artifact, .filtered = options.filtered, .tests = builtin.test_functions.len, .selected = order.len });
+}
+
 fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.process.Init.Minimal) !void {
     const index = try server.receiveBody_u32();
     const test_fn = builtin.test_functions[order[index]];
@@ -974,6 +991,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
 }
 
 fn terminal(init: std.process.Init.Minimal) !void {
+    try counted(init);
     const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
     defer recorder.deinit(io);
     var failures: usize = 0;

@@ -183,7 +183,21 @@ Every file with tests is named by a test block a configured root reaches: the
 alias itself (`_ = corpus;`), a whole `@import("corpus.zig")`, or
 `refAllDecls(@This())` over a public alias. A member a test happens to use
 (`corpus.seed()`) does not name the file: its tests would last only as long as that
-use.
+use. A root is the root file of a test artifact some run runs under a step CI runs:
+`ci`, which holds the tests, the steps the fuzzer and the hardened profile run, the
+steps of the release tier's own jobs and those `extra_checks` run. Zig runs a binary's
+tests only when a run runs it, so a test artifact only compiled (for `check`, say) is
+no root, and the lint names it: its tests never run. One compiled again beside a run
+of the same root file, for another target or with libc, is the run's.
+
+After its runs the tests step counts the tests of each root: preflight's runner
+records, when the build asks a binary which tests it holds, how many it holds and how
+many its shard selects (`preflight-counts/` in the build's cache), and a run whose
+binary holds no test fails by name, unless a filter left it none: its tests are in
+modules it imports, which Zig never runs, or it has none. A passing run prints
+nothing; the gate and a hosted job print the counts per root
+(`preflight: tests per root: src/tests.zig 412 (test)`). Portable tests are counted
+the same way where they replay.
 
 `build.zig.zon`'s `.paths` ships exactly what a fetched package needs: `build.zig`,
 `build.zig.zon`, the source roots, `LICENSE`, `README.md` and `CHANGELOG.md`.
@@ -358,7 +372,8 @@ shard's tests and orders them, and `preflight_timings` to record durations;
 `preflight_runner_options` carries the recorded durations and the record's name.
 Test runs carry no environment from the build: Zig keeps a run's environment in
 its cached configuration, so the runner reads the shard and seed when it runs.
-Test artifacts that share a root module share its runner options and timing record.
+Test artifacts that share a root module share its runner options, timing record and
+count record.
 
 `-Dci-vm` runs what a build makes for riscv64 Linux, which no hosted runner is, on a
 riscv64 Linux kernel under QEMU's system emulation (`qemu-system-riscv64` on the PATH),
@@ -844,6 +859,10 @@ mode. `TestTimeout.duration()` returns a checked `std.Io.Duration`; a custom bou
 above `u64` nanoseconds fails configuration. Public waits keep std's Io vocabulary. `preflight_timings.Recorder.init(io,
 environ, stem, key)` opens the timing record, `record(io, name, nanoseconds, status)`
 appends one test and `deinit(io)` closes it; the recorder keeps no `Io`.
+`preflight_timings.count(io, environ, stem, record)` writes the count of a binary's
+tests the tests step reads after its runs (`stem` under the build's `--cache-dir`,
+`preflight_runner_options.counts`); a runner of its own that writes none is not
+counted.
 
 ## Scope
 

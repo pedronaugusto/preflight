@@ -63,6 +63,10 @@ fn resolve(a: std.mem.Allocator, path: []const u8, target: []const u8) ![]const 
 }
 
 pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+    // A root only compiled is no root: Zig runs a binary's tests only when a run runs it.
+    for (src.items(src.get(config, "unrun_test_roots"))) |unrun| {
+        c.fail("{s}: its tests are compiled ({s}) and never run: no run under {s} runs a test binary of it; run it with the tests, or drop it", .{ src.string(src.get(unrun, "root"), ""), src.string(src.get(unrun, "artifacts"), ""), src.string(src.get(unrun, "steps"), "") });
+    }
     const roots = src.items(src.get(config, "test_roots"));
     if (roots.len == 0) {
         c.fail("test imports: configure test_roots in ci/preflight.json", .{});
@@ -153,4 +157,16 @@ test "a file only a member of reaches from a test is not named, so its tests are
     );
     try check(&c, &.{ everything, corpus, event }, config);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
+}
+
+test "a root only compiled is named, and reaches no file's tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_roots\":[\"src/root.zig\"],\"unrun_test_roots\":[{\"root\":\"src/json.zig\",\"artifacts\":\"json-tests\",\"steps\":\"ci\"}]}", .{})).value;
+    const root = try src.Source.parse(a, "src/root.zig", "test \"root\" {}\n");
+    const json = try src.Source.parse(a, "src/json.zig", "test \"json\" {}\n");
+    var c: src.Context = .{ .a = a, .io = std.testing.io };
+    try check(&c, &.{ root, json }, config);
+    try std.testing.expectEqual(@as(usize, 2), c.errors);
 }

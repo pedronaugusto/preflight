@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
         .publish => |args| try publishCommand(&c, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
         .executable => |args| for (args.paths) |path| try executable(c, path),
+        .counts => |args| try checks.counts.check(&c, args.records, args.expect, environment(init.environ_map, "PREFLIGHT_SHARD") orelse ""),
         .unsharded => |args| if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
             c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{args.name});
         },
@@ -306,19 +307,52 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     var config = try c.options(args.config);
     if (args.zig_exe) |zig| c.zig = zig;
     const snapshot = try facts.read(c.*, c.zig, args.build_option);
-    const roots = try facts.testRoots(a, snapshot);
+    const steps = try testSteps(c, config, args.test_step);
+    const roots = try facts.testRoots(a, snapshot, steps);
     var root_values: std.ArrayList(src.Value) = .empty;
     const sources = try std.mem.concat(a, src.Source, &.{ try src.collect(c.*, config), try facts.generatedSources(a, snapshot) });
-    for (roots) |root| for (sources) |source| if (src.samePath(root, source.path)) {
+    for (roots.run) |root| for (sources) |source| if (src.samePath(root, source.path)) {
         try root_values.append(a, .{ .string = source.path });
         break;
     };
     try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
+    var unrun_values: std.ArrayList(src.Value) = .empty;
+    for (roots.unrun) |unrun| {
+        var entry: std.json.ObjectMap = .empty;
+        try entry.put(a, "root", .{ .string = unrun.root });
+        try entry.put(a, "artifacts", .{ .string = try std.mem.join(a, ", ", unrun.artifacts) });
+        try entry.put(a, "steps", .{ .string = try std.mem.join(a, ", ", steps) });
+        try unrun_values.append(a, .{ .object = entry });
+    }
+    try config.object.put(a, "unrun_test_roots", .{ .array = unrun_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
     try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std, .package = try checks.manifest.name(c) }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
+}
+
+/// The top-level steps CI runs tests under, whose runs make a file a test root: `ci`, which
+/// holds the tests step; those the build names (the steps the fuzzer and the hardened profile
+/// run); the steps of the package's own build that its release tier's jobs run; and the
+/// steps the lint's `extra_checks` run.
+fn testSteps(c: *src.Context, config: src.Value, named: []const []const u8) ![]const []const u8 {
+    var steps: std.array_hash_map.String(void) = .empty;
+    try steps.put(c.a, "ci", {});
+    for (named) |name| try steps.put(c.a, name, {});
+    for (try checks.matrix.plan(c.a, try checks.workflow.configuration(c.*, "ci/workflow.json"), .release)) |job| {
+        // A job in a directory of its own runs another build's steps.
+        if (job.directory.len == 0) try steps.put(c.a, job.step, {});
+    }
+    for (src.items(src.get(config, "extra_checks"))) |command| {
+        var building = false;
+        for (src.items(command)) |word| {
+            const text = src.string(word, "");
+            if (building and !std.mem.startsWith(u8, text, "-")) try steps.put(c.a, text, {});
+            if (std.mem.eql(u8, text, "build")) building = true;
+        }
+    }
+    return steps.keys();
 }
 
 /// `facts`: the configured build's modules, steps and test roots, as JSON.
@@ -538,10 +572,26 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             }
         }
     }
-    // PREFLIGHT_SHARD reaches the test runners through the environment.
-    const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
-    defer timer.end(c, log);
-    try checks.command.execute(c, argv.items);
+    // The tests the step runs, counted per root by the build after its runs: this run's,
+    // so an earlier run's count is gone first.
+    const counted = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
+    c.directory().deleteFile(c.io, counted) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    {
+        // PREFLIGHT_SHARD reaches the test runners through the environment.
+        const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
+        defer timer.end(c, log);
+        try checks.command.execute(c, argv.items);
+    }
+    // A step that runs no tests counts none.
+    const counts = c.read(counted) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    c.report("{s}", .{counts});
+    if (env.get("GITHUB_STEP_SUMMARY")) |summary| try append(c, summary, try c.a.print("```\n{s}```\n", .{counts}));
 }
 
 /// Compiles the targets this job covers, `PREFLIGHT_TARGETS` by name, to

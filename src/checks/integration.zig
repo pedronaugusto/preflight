@@ -1681,6 +1681,138 @@ test "toolchain hosted runner refuses a test that joined the tests after addCi r
     try std.testing.expect(std.mem.find(u8, result.stderr, "late-tests: `ci` runs it without preflight's runner") != null);
 }
 
+/// The sample fixture with `build` as its build script and `files` beside it, its layers
+/// naming every root file of `src/`.
+fn rootsFixture(a: std.mem.Allocator, dir: std.Io.Dir, build: []const u8, files: []const [2][]const u8) !void {
+    try fixture(a, dir);
+    try dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = build });
+    for (files) |file| try dir.writeFile(std.testing.io, .{ .sub_path = file[0], .data = file[1] });
+    const input = try std.Io.Dir.path.join(a, &.{ root, "sample/ci/layers.zig" });
+    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, input, a, .limited(1024 * 1024));
+    const layered = try std.mem.replaceOwned(u8, a, text, ".patterns = &.{\"src/sample.zig\"}", ".patterns = &.{\"src/*.zig\"}");
+    try std.testing.expect(!std.mem.eql(u8, text, layered));
+    try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = layered });
+}
+
+/// A build whose tests step runs the sample's tests and the tests of `run_root`, and whose
+/// `check` compiles the tests of `compiled_root` without running them.
+fn rootsBuild(a: std.mem.Allocator, run_root: ?[]const u8, compiled_root: ?[]const u8) ![]const u8 {
+    var text: std.Io.Writer.Allocating = .init(a);
+    try text.writer.writeAll(
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
+        \\
+    );
+    if (run_root) |path| try text.writer.print("    test_step.dependOn(&b.addRunArtifact(b.addTest(.{{ .name = \"run-tests\", .root_module = b.createModule(.{{ .root_source_file = b.path(\"{s}\"), .target = target, .optimize = optimize }}) }})).step);\n", .{path});
+    if (compiled_root) |path| try text.writer.print("    b.step(\"check\", \"compile\").dependOn(&b.addTest(.{{ .name = \"compiled-tests\", .root_module = b.createModule(.{{ .root_source_file = b.path(\"{s}\"), .target = target, .optimize = optimize }}) }}).step);\n", .{path});
+    try text.writer.writeAll(
+        \\    preflight.addCi(b, b, .{ .tests = test_step });
+        \\}
+        \\
+    );
+    return text.written();
+}
+
+test "lint fails a test artifact compiled and never run, and the files only it reaches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try rootsFixture(a, tmp.dir, try rootsBuild(a, null, "src/compiled.zig"), &.{
+        .{ "src/compiled.zig", "const reached = @import(\"reached.zig\");\ntest \"compiled\" {\n    _ = reached;\n}\n" },
+        .{ "src/reached.zig", "test \"reached\" {}\n" },
+    });
+    const result = try lintFixture(a, tmp.dir);
+    if (std.mem.find(u8, result.stderr, "src/compiled.zig: its tests are compiled (compiled-tests) and never run") == null) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "src/compiled.zig: its tests are compiled (compiled-tests) and never run") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "src/reached.zig: tests are unreachable") != null);
+}
+
+test "lint passes a test root compiled again beside the run that runs it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try rootsFixture(a, tmp.dir, try rootsBuild(a, "src/both.zig", "src/both.zig"), &.{.{ "src/both.zig", "test \"both\" {}\n" }});
+    const result = try lintFixture(a, tmp.dir);
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
+test "the tests step fails a run root that holds no test" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try rootsFixture(a, tmp.dir, try rootsBuild(a, "src/empty.zig", null), &.{.{ "src/empty.zig", "pub const value = 1;\n" }});
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (std.mem.find(u8, result.stderr, "src/empty.zig") == null) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "src/empty.zig (run-tests): the binary holds no test") != null);
+}
+
+test "a test artifact two runs run takes preflight's runner in both" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try rootsFixture(a, tmp.dir,
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
+        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
+        \\    preflight.addCi(b, b, .{ .tests = test_step });
+        \\}
+        \\
+    , &.{});
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
+test "toolchain hosted runner prints the tests counted per root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try rootsFixture(a, tmp.dir, try rootsBuild(a, "src/two.zig", null), &.{.{ "src/two.zig", "test \"one\" {}\ntest \"two\" {}\n" }});
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = "{}" });
+    const fixture_root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
+    const owner = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, root, a);
+    const build = try std.Io.Dir.path.join(a, &.{ owner, "build.zig" });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("STEP", "test");
+    try env.put("BUILD_ARGS", "-Dci-lint=false");
+    try env.put("PREFLIGHT_SETUP", "false");
+    _ = env.swapRemove("GITHUB_STEP_SUMMARY");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+    const output = try std.mem.concat(a, u8, &.{ result.stdout, result.stderr });
+    if (std.mem.find(u8, output, "preflight: tests per root: ") == null) std.debug.print("{s}", .{output});
+    try std.testing.expect(std.mem.find(u8, output, "src/sample.zig ") != null);
+    try std.testing.expect(std.mem.find(u8, output, "src/two.zig 2") != null);
+}
+
 test "toolchain canonical sample declares its benchmark artifacts" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -430,27 +430,66 @@ fn runsPreflight(c: *const C, compiled: C.Step.Compile) bool {
     return false;
 }
 
-/// Source roots of configured root-package test artifacts. Compiler module IDs supply roots;
-/// generated roots remain explicit rather than being guessed from path spelling.
-pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot) ![]const []const u8 {
+/// The test roots of the configured build: the root files of the package's test artifacts that
+/// a run under one of `steps` (top-level steps CI runs) runs, and those of the ones none runs,
+/// each with the artifacts that compile it. Zig runs a test binary's tests only when a run runs
+/// it, so a root only compiled holds tests that never run, and reaches no file's tests.
+/// Compiler module IDs supply roots; generated roots remain explicit rather than being guessed
+/// from path spelling.
+pub const TestRoots = struct { run: []const []const u8, unrun: []const Unrun };
+pub const Unrun = struct { root: []const u8, artifacts: []const []const u8 };
+
+pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot, steps: []const []const u8) !TestRoots {
     const c = &snapshot.config;
-    var roots: std.array_hash_map.String(void) = .empty;
+    var ran: std.array_hash_map.String(void) = .empty;
+    var pending: std.ArrayList(C.Step.Index) = .empty;
+    for (c.steps, 0..) |step, index| {
+        if (step.owner != .root or step.extended.cast(c, C.Step.TopLevel) == null) continue;
+        for (steps) |name| if (std.mem.eql(u8, step.name.slice(c), name)) try pending.append(a, @fromBackingInt(@intCast(index)));
+    }
+    var seen: std.AutoHashMapUnmanaged(C.Step.Index, void) = .empty;
+    while (pending.pop()) |index| {
+        if ((try seen.getOrPut(a, index)).found_existing) continue;
+        const step = index.ptr(c);
+        try pending.appendSlice(a, step.deps.slice(c));
+        const run = step.extended.cast(c, C.Step.Run) orelse continue;
+        const producer = run.producer.value orelse continue;
+        const compiled = producer.ptr(c).extended.cast(c, C.Step.Compile) orelse continue;
+        if (!isTest(compiled)) continue;
+        if (try testRoot(a, snapshot, compiled)) |root| try ran.put(a, root, {});
+    }
+    var unrun: std.array_hash_map.String(std.array_hash_map.String(void)) = .empty;
+    var any = false;
     for (c.steps) |step| {
         if (step.owner != .root and step.owner != snapshot.package) continue;
-        if (step.extended.cast(c, C.Step.Compile)) |artifact| {
-            if (artifact.flags3.kind != .@"test" and artifact.flags3.kind != .test_obj) continue;
-            const module = artifact.root_module.get(c);
-            if (module.owner != .root and module.owner != snapshot.package) continue;
-            const source = (module.root_source_file.unwrap() orelse return error.MissingConfiguredTestRoot).get(c);
-            switch (source) {
-                .source_path => |p| if (p.owner == snapshot.package) try roots.put(a, p.sub_path.slice(c), {}),
-                .generated => |generated| try roots.put(a, try generatedName(a, c, generated), {}),
-                .relative => |p| if (p.flags.base == .cwd) try roots.put(a, p.sub_path.slice(c), {}) else return error.UnsupportedTestRootBase,
-            }
-        }
+        const compiled = step.extended.cast(c, C.Step.Compile) orelse continue;
+        if (!isTest(compiled)) continue;
+        const root = try testRoot(a, snapshot, compiled) orelse continue;
+        any = true;
+        if (ran.contains(root)) continue;
+        const entry = try unrun.getOrPut(a, root);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        // A test compiled again for another target or as an object keeps its name.
+        try entry.value_ptr.put(a, compiled.root_name.slice(c), {});
     }
-    if (roots.count() == 0) return error.MissingConfiguredTestRoot;
-    return a.dupe([]const u8, roots.keys());
+    if (!any) return error.MissingConfiguredTestRoot;
+    const out = try a.alloc(Unrun, unrun.count());
+    for (unrun.keys(), unrun.values(), out) |root, artifacts, *item| item.* = .{ .root = root, .artifacts = artifacts.keys() };
+    return .{ .run = ran.keys(), .unrun = out };
+}
+
+/// The root file of a test artifact of the checked package, as lint names it, or null for
+/// one of another package's.
+fn testRoot(a: std.mem.Allocator, snapshot: Snapshot, compiled: C.Step.Compile) !?[]const u8 {
+    const c = &snapshot.config;
+    const module = compiled.root_module.get(c);
+    if (module.owner != .root and module.owner != snapshot.package) return null;
+    const source = (module.root_source_file.unwrap() orelse return error.MissingConfiguredTestRoot).get(c);
+    return switch (source) {
+        .source_path => |p| if (p.owner == snapshot.package) p.sub_path.slice(c) else null,
+        .generated => |generated| try generatedName(a, c, generated),
+        .relative => |p| if (p.flags.base == .cwd) p.sub_path.slice(c) else error.UnsupportedTestRootBase,
+    };
 }
 
 fn generatedName(a: std.mem.Allocator, c: *const C, generated: C.LazyPath.Generated) ![]const u8 {

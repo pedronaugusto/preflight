@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- The lint fails a test artifact compiled and never run: a root file whose test artifacts no run under a step CI runs (`ci`, the fuzz and hardened steps, the release tier's own jobs, `extra_checks`) runs, named with its artifacts. Such a root no longer counts as one, so a file only it reaches has unreachable tests too. strand's json and jsonl tests were compiled under `check` and stopped running, 29 of them, while the lint took their roots as reaching them. `lint` takes `--test-step`, which `addCi` passes.
+- The tests step counts the tests per root after its runs, and fails a run whose binary holds no test, unfiltered: its tests are in modules it imports, which Zig never runs, or it has none. preflight's runner writes the count when the build asks a binary which tests it holds (`preflight-counts/` in the build's cache, under its `--cache-dir`); a run with no record fails by name. `ci-run` counts the tests it replays the same way.
+
+### Added
+
+- The gate and a hosted job print the counts per root after a step that ran tests (`preflight: tests per root: ...`), into the job's summary too; `counts` is the command the tests step runs.
+- `preflight_timings.count` and `preflight_timings.Shard`: the count record a custom runner can write, and the shard part of a record's name.
+
+### Fixed
+
+- A test artifact run by two runs took the second as one of a runner of its own (refused with the watchdog on, and checked for shards): the second run now takes preflight's runner as the first did.
+
 ## [0.14.0] - 2026-10-22
 
 ### Breaking

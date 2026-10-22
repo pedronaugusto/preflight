@@ -213,12 +213,12 @@ const Steps = struct {
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
-        record.add(b, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
+        const counted = record.add(b, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build });
-        if (config.portable_tests) portable.add(b, package, config.tests, executable);
+        if (config.portable_tests) portable.add(b, package, config.tests, executable, counted.names);
         const plan = executable.run(b);
         plan.addArg("plan");
         plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
@@ -284,12 +284,21 @@ const Steps = struct {
         deprecations.addPassthruArgs();
         deprecations.setCwd(package.path("."));
         configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
-        steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig);
+        // The steps CI runs tests under, whose runs make a file a test root: `ci` holds the
+        // tests, and the fuzzer and the hardened profile run the steps they name.
+        var test_steps: std.ArrayList([]const u8) = .empty;
+        test_steps.append(b.allocator, "ci") catch @panic("OOM");
+        const named: []const []const u8 = if (config.hardened) |profile| &.{ fuzzed, profile.fuzz_step, profile.tsan_step } else &.{fuzzed};
+        for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
+            if (std.mem.eql(u8, kept, name)) break;
+        } else test_steps.append(b.allocator, name) catch @panic("OOM");
+        steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, test_steps.items);
+        record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
         if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module) void {
+    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, test_steps: []const []const u8) void {
         const host = ciTarget(b);
         // A package that declares no structure is held to none.
         const layers = b.createModule(.{
@@ -331,6 +340,7 @@ const Steps = struct {
         const checks = executable.run(b);
         checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+        for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
         configurationOptions(b, checks);
         checks.setCwd(package.path("."));
         checks.step.dependOn(&lint_structure.step);

@@ -1,6 +1,7 @@
 //! Export relocatable test executables for Linux compilation and native execution.
 const std = @import("std");
 const configure = @import("configure.zig");
+const record = @import("record.zig");
 const Tool = @import("tool.zig").Tool;
 
 pub const Command = struct {
@@ -30,8 +31,9 @@ pub fn addProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const
 }
 
 /// `checker` is preflight's command program, which restores the executables'
-/// permission to run that an artifact upload drops.
-pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: Tool) void {
+/// permission to run that an artifact upload drops, and counts the replayed tests per root
+/// as the tests step counts its own: `counted` names their records.
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: Tool, counted: []const []const u8) void {
     const compile = configure.claim(b, "ci-build", "Compile test executables for execution on another runner");
     var commands: std.ArrayList(Command) = .empty;
     var seen = std.AutoHashMap(*std.Build.Step, void).init(b.allocator);
@@ -50,6 +52,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
     executable.addArg("executable");
     executable.setCwd(package.path("."));
     executable.has_side_effects = true;
+    var replayed: std.ArrayList(*std.Build.Step) = .empty;
     for (stored.value) |command| {
         executable.addArg(command.argv[0]);
         for (command.programs) |program| executable.addArg(program);
@@ -61,7 +64,9 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
         if (command.test_runner) run.enableTestRunnerMode();
         run.step.dependOn(&executable.step);
         execute.dependOn(&run.step);
+        if (command.test_runner) replayed.append(b.allocator, &run.step) catch @panic("OOM");
     }
+    record.counts(b, execute, checker, .{ .names = counted, .runs = replayed.items });
 }
 
 /// A replayed program runs on another runner than the one that built it, whose CPU may be

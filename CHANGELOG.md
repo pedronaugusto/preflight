@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-22
+
 ### Fixed
 
 - A test's bound scales under ThreadSanitizer however the tests are built with it: a package's own option that sets a test module's `sanitize_thread` too, where only `-Dci-tsan` did, so such a run held its heavy tests to the unscaled bound (`hardened.sanitizesThreads`).

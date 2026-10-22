@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The riscv64 job installs QEMU's system emulation without its recommended packages (`--no-install-recommends`): the GUI, SPICE, OpenGL and network-boot extras made the download 87 MB, which a slow mirror took past the step's five minutes (relic's nightly, 4 min 47 s at 303 kB/s). The OpenSBI firmware `-bios default` boots comes with `qemu-system-data`, a dependency.
+
 ## [0.15.1] - 2026-10-22
 
 ### Fixed

@@ -32,8 +32,9 @@ pub const Config = struct {
     /// directory and none given fails its tests.
     bench: ?Bench = null,
     /// The hardened profile, which every package runs (aegis's design §7): its tests with
-    /// runtime safety on, a fuzz campaign and ThreadSanitizer.
-    hardened: Hardened = .{},
+    /// runtime safety on, a fuzz campaign and ThreadSanitizer. Null only in a configuration
+    /// that runs no native tests (a freestanding target), and visibly so.
+    hardened: ?Hardened = .{},
     /// Installed artifacts the build makes ReleaseFast or ReleaseSmall although the caller
     /// chose no mode, each with the measurement that says why: any other one fails the lint,
     /// since what the family ships is ReleaseSafe.
@@ -216,7 +217,8 @@ const Steps = struct {
         // One way to fuzz, in every package: its properties, by the step it names, else
         // the one its hardened run fuzzes, else its tests. Its tests take the runner as
         // the tests do: a fuzzing build is the runner's to serve (`runner.zig`).
-        const fuzzed = config.fuzz_step orelse config.hardened.fuzz_step orelse "test";
+        const profile: Hardened = config.hardened orelse .{ .fuzz_step = null };
+        const fuzzed = config.fuzz_step orelse profile.fuzz_step orelse "test";
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
@@ -295,7 +297,7 @@ const Steps = struct {
         // tests, and the fuzzer and the hardened profile run the steps they name.
         var test_steps: std.ArrayList([]const u8) = .empty;
         test_steps.append(b.allocator, "ci") catch @panic("OOM");
-        const named: []const []const u8 = &.{ fuzzed, config.hardened.fuzz_step orelse fuzzed, config.hardened.tsan_step };
+        const named: []const []const u8 = if (config.hardened) |given| &.{ fuzzed, given.fuzz_step orelse fuzzed, given.tsan_step } else &.{fuzzed};
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");

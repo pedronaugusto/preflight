@@ -25,7 +25,11 @@ pub fn declare(b: *std.Build) Options {
 }
 
 /// `tool` is preflight's program, which judges the fuzz campaign.
-pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, given: Profile, options: Options, tool: Tool) void {
+pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: ?Profile, options: Options, tool: Tool) void {
+    const given = profile orelse {
+        if (options.active or options.tsan) tests.dependOn(&b.addFail("hardened: this configuration runs no native tests (Config.hardened is null)").step);
+        return;
+    };
     _ = zig_version.require() catch {
         tests.dependOn(&b.addFail(b.fmt("hardened: supported only with {s}, not Zig {s}", .{ zig_version.supported, builtin.zig_version_string })).step);
         return;

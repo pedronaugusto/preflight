@@ -246,13 +246,14 @@ calls it could not resolve: a call through a receiver of unknown type is not a
 verdict either way.
 
 **The danger rules** (glint's aegis pack, aegis's design §7) find every site where a danger
-exists: shared state, secrets, input, integer conversions and overflow, units of time,
+exists: shared state, secrets, input, integer conversions and arithmetic on input, units of time,
 work sized by input, contracts, lifetimes, ownership, identity, state machines,
 diagnostics to peers, the operations Zig leaves unchecked, cancellation. A site uses
 aegis's type or carries the one escape, `// aegis: <reason>: <why>`, whose reason is
 `no-danger`, `design`, `hot-loop`, `internal` or `boundary`. The run prints every escape
-with the rules it covers (all of them in `.zig-cache/preflight-lint/escapes.txt`) and a
-line of findings, escapes and undecided sites by rule. A danger rule's undecided sites
+with the rules it covers (all of them in `.zig-cache/preflight-lint/escapes.txt`), the
+first 25 findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when
+there are more) and a line of findings, escapes and undecided sites by rule. A danger rule's undecided sites
 count against `glint.unresolved`, a ceiling per rule (none by default): above it fails,
 since the count the reviews read may not grow, and below it the run asks for it to come
 down. Tests and test support are not shipped, so the danger rules leave them out; a

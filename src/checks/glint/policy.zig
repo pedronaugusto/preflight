@@ -107,7 +107,7 @@ const glint_keys = [_][]const u8{ "rules", "strict_suppressions", "fact_budget",
 /// The rules glint folded into the aegis pack's danger rules (designs/aegis.md §7): a repository
 /// still naming one is told where its sites went.
 const folded = [_]struct { id: []const u8, instead: []const u8 }{
-    .{ .id = "P001", .instead = "its integer conversions are A010's and its pointer conversions A019's" },
+    .{ .id = "P001", .instead = "a conversion of input is A010's, a pointer conversion A019's; the safe build checks the rest" },
     .{ .id = "P002", .instead = "runtime safety switched off is A019's" },
     .{ .id = "P004", .instead = "`catch unreachable` is A013's, with every `unreachable`" },
     .{ .id = "E001", .instead = "a pointer into a function's frame is A014's" },

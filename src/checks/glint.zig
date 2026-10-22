@@ -75,13 +75,18 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     var failing: usize = 0;
     var warned: usize = 0;
     var shown: std.AutoHashMapUnmanaged(glint.Rule, usize) = .empty;
+    // Every finding, where the run prints the first `printed` of a rule.
+    var all: std.Io.Writer.Allocating = .init(c.a);
+    var held = false;
     for (report.diagnostics) |d| {
         const file = project.inputs[d.span.file.raw()].name;
+        all.writer.print("{s}: {s}:{d}:{d}: {s}\n", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
         const fails = d.level == .gate or chosen.fails(d.rule);
         const seen = shown.getOrPutValue(c.a, d.rule, 0) catch null;
         if (seen) |count| {
             count.value_ptr.* += 1;
             if (count.value_ptr.* == printed + 1) c.report("glint: more {s} follow\n", .{d.name});
+            held = held or count.value_ptr.* > printed;
         }
         const quiet = if (seen) |count| count.value_ptr.* > printed else false;
         if (fails) {
@@ -95,6 +100,8 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             warned += 1;
         }
     }
+
+    if (held) c.report("glint: every finding: {s}\n", .{writeList(c, findings_path, all.written())});
 
     var unfinished: usize = 0;
     var unresolved: usize = 0;
@@ -233,13 +240,7 @@ fn escapes(c: *src.Context, project: *const glint.Project, report: *const glint.
         };
         summary.writer.writeByte(')') catch @panic("OOM");
     }
-    const dir = c.directory();
-    const where: []const u8 = blk: {
-        dir.createDirPath(c.io, std.Io.Dir.path.dirname(escapes_path).?) catch |err| break :blk c.a.print("not written ({t})", .{err}) catch @panic("OOM");
-        dir.writeFile(c.io, .{ .sub_path = escapes_path, .data = text.written() }) catch |err| break :blk c.a.print("not written ({t})", .{err}) catch @panic("OOM");
-        break :blk escapes_path;
-    };
-    c.report("preflight: escapes: {d}: {s}; all of them: {s}\n", .{ report.escapes.len, summary.written(), where });
+    c.report("preflight: escapes: {d}: {s}; all of them: {s}\n", .{ report.escapes.len, summary.written(), writeList(c, escapes_path, text.written()) });
 }
 
 /// Every aegis escape of a lint, relative to the package.
@@ -252,13 +253,22 @@ fn listSites(c: *src.Context, sites: []const u8) []const u8 {
     const dir = c.directory();
     // glint-ignore: Z026 -- a summary that cannot be written leaves the file, named below
     if (c.summary_path) |path| appendTo(c.*, dir, path, c.a.print("<details><summary>glint: every incomplete site</summary>\n\n```\n{s}```\n</details>\n", .{sites}) catch @panic("OOM")) catch {};
-    dir.createDirPath(c.io, std.Io.Dir.path.dirname(sites_path).?) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
-    dir.writeFile(c.io, .{ .sub_path = sites_path, .data = sites }) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
-    return sites_path;
+    return writeList(c, sites_path, sites);
+}
+
+/// Writes a list in the package's cache: its path, or why it was not written.
+fn writeList(c: *src.Context, path: []const u8, text: []const u8) []const u8 {
+    const dir = c.directory();
+    dir.createDirPath(c.io, std.Io.Dir.path.dirname(path).?) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
+    dir.writeFile(c.io, .{ .sub_path = path, .data = text }) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
+    return path;
 }
 
 /// The whole list of a lint's incomplete sites, relative to the package.
 pub const sites_path = ".zig-cache/preflight-lint/incomplete.txt";
+
+/// Every finding of a lint whose rules found more than the run prints, relative to the package.
+pub const findings_path = ".zig-cache/preflight-lint/findings.txt";
 
 fn appendTo(c: src.Context, dir: std.Io.Dir, path: []const u8, text: []const u8) !void {
     const file = try dir.createFile(c.io, path, .{ .truncate = false, .read = true });

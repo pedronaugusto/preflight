@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A test's bound scales under ThreadSanitizer however the tests are built with it: a package's own option that sets a test module's `sanitize_thread` too, where only `-Dci-tsan` did, so such a run held its heavy tests to the unscaled bound (`hardened.sanitizesThreads`).
+- ThreadSanitizer runs on macOS too, x86_64 and aarch64, where Zig 0.17 ships its runtime: `-Dci-tsan`, `hardened-tsan` and the local runner's choice of jobs, where only Linux was taken (`hardened.sanitized`).
+
 ## [0.15.0] - 2026-10-22
 
 ### Breaking

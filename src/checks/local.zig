@@ -39,9 +39,9 @@ pub fn decide(a: std.mem.Allocator, jobs: []const matrix.Job, host: Host) ![]Dec
 }
 
 fn one(job: matrix.Job, host: Host) Decision {
-    // ThreadSanitizer runs on Linux, x86_64 and aarch64.
+    // ThreadSanitizer runs on Linux and macOS, x86_64 and aarch64.
     if (std.mem.eql(u8, job.step, "hardened-tsan")) {
-        return if (host.os == .linux and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux" };
+        return if ((host.os == .linux or host.os == .macos) and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux or macOS" };
     }
     if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-system-riscv64 on the PATH" } else .run;
     if (anywhere(job)) return .run;
@@ -103,7 +103,7 @@ test "a Mac runs its own suites and the hardened runs, and names the rest" {
     };
     const decisions = try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64, .qemu = false });
     defer a.free(decisions);
-    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .elsewhere, .elsewhere, .run, .elsewhere, .elsewhere, .elsewhere };
+    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere };
     for (expected, decisions) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
 }
 

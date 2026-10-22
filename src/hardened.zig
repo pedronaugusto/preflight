@@ -17,7 +17,7 @@ pub const Options = struct { active: bool, tsan: bool };
 pub fn declare(b: *std.Build) Options {
     return .{
         .active = b.option(bool, "ci-hardened", "Runtime safety enabled for this opt-in test configuration") orelse false,
-        .tsan = b.option(bool, "ci-tsan", "Execute native x86_64 or aarch64 Linux tests with ThreadSanitizer") orelse false,
+        .tsan = b.option(bool, "ci-tsan", "Execute native x86_64 or aarch64 Linux or macOS tests with ThreadSanitizer") orelse false,
     };
 }
 
@@ -75,9 +75,9 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     forward(b, tsan);
     tsan.setCwd(package.path("."));
     tsan.has_side_effects = true;
-    const tsan_step = configure.claim(b, "hardened-tsan", "Execute native x86_64 or aarch64 Linux tests with LLVM ThreadSanitizer");
+    const tsan_step = configure.claim(b, "hardened-tsan", "Execute native x86_64 or aarch64 Linux or macOS tests with LLVM ThreadSanitizer");
     if (!sanitized(b.graph.host.result)) {
-        tsan_step.dependOn(&b.addFail("hardened-tsan: unsupported target; requires native x86_64 or aarch64 Linux").step);
+        tsan_step.dependOn(&b.addFail("hardened-tsan: unsupported target; requires native x86_64 or aarch64 Linux or macOS").step);
     } else tsan_step.dependOn(&tsan.step);
 }
 
@@ -86,9 +86,9 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
 /// met the unscaled 120 s bound on a loaded machine.
 pub const tsan_slowdown = 10;
 
-/// Where ThreadSanitizer runs: Linux on x86_64 and aarch64, where Zig ships its runtime.
+/// Where ThreadSanitizer runs: Linux and macOS on x86_64 and aarch64, where Zig ships its runtime.
 pub fn sanitized(target: std.Target) bool {
-    return target.os.tag == .linux and (target.cpu.arch == .x86_64 or target.cpu.arch == .aarch64);
+    return (target.os.tag == .linux or target.os.tag == .macos) and (target.cpu.arch == .x86_64 or target.cpu.arch == .aarch64);
 }
 
 /// This same build run again with `args`: the development build under bay, else zig build.
@@ -121,7 +121,7 @@ fn apply(b: *std.Build, step: *std.Build.Step, options: Options, seen: *std.Auto
             if (options.tsan) {
                 const target = module.resolved_target orelse artifact.root_module.resolved_target.?;
                 if (!sanitized(target.result)) {
-                    step.dependOn(&b.addFail("hardened-tsan: test module is not x86_64 or aarch64 Linux").step);
+                    step.dependOn(&b.addFail("hardened-tsan: test module is not x86_64 or aarch64 Linux or macOS").step);
                     continue;
                 }
                 module.sanitize_thread = true;
@@ -147,6 +147,32 @@ fn forward(b: *std.Build, run: *std.Build.Step.Run) void {
             else => run.step.dependOn(&b.addFail("hardened: unsupported non-CLI configuration option").step),
         }
     }
+}
+
+/// Whether a test that `step` builds is built with ThreadSanitizer, whoever
+/// asked for it: this profile's `-Dci-tsan`, or a package's own option that
+/// sets a module's `sanitize_thread`. What a test's bound scales by.
+pub fn sanitizesThreads(b: *std.Build, step: *std.Build.Step, seen: *std.AutoHashMapUnmanaged(*std.Build.Step, void)) bool {
+    const entry = seen.getOrPut(b.allocator, step) catch @panic("OOM");
+    if (entry.found_existing) return false;
+    if (step.cast(std.Build.Step.Compile)) |artifact| if (artifact.kind.isTest()) {
+        var modules: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty;
+        if (modulesSanitize(b, artifact.root_module, &modules)) return true;
+    };
+    for (step.dependencies.items) |dep| if (sanitizesThreads(b, dep, seen)) return true;
+    return false;
+}
+
+/// Whether `module` or one it imports sets `sanitize_thread`. Walked by
+/// hand: `Module.getGraph` keeps the graph it makes, and asked this early,
+/// before preflight's runner imports are added, it would keep one without
+/// them.
+fn modulesSanitize(b: *std.Build, module: *std.Build.Module, seen: *std.AutoHashMapUnmanaged(*std.Build.Module, void)) bool {
+    const entry = seen.getOrPut(b.allocator, module) catch @panic("OOM");
+    if (entry.found_existing) return false;
+    if (module.sanitize_thread orelse false) return true;
+    for (module.import_table.values()) |imported| if (modulesSanitize(b, imported, seen)) return true;
+    return false;
 }
 
 fn executesTests(b: *std.Build, step: *std.Build.Step, seen: *std.AutoHashMapUnmanaged(*std.Build.Step, void)) bool {

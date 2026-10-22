@@ -202,7 +202,8 @@ const Steps = struct {
         // ThreadSanitizer, and a machine QEMU emulates instruction by instruction, run a
         // test several times slower: the bound a test is held to scales with them, so a
         // heavy test there is not taken for a hang.
-        const sanitizer: i96 = if (steps.profile_options.tsan) hardened.tsan_slowdown else 1;
+        var visited: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+        const sanitizer: i96 = if (steps.profile_options.tsan or hardened.sanitizesThreads(b, config.tests, &visited)) hardened.tsan_slowdown else 1;
         const emulation: i96 = if (steps.vm) vm.slowdown else 1;
         const slowdown = sanitizer * emulation;
         const bounded: std.Io.Duration = .fromNanoseconds(timeout.toNanoseconds() *| slowdown);

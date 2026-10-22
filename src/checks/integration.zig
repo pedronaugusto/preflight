@@ -1563,7 +1563,7 @@ test "toolchain facts come from the configured build including options and gener
 }
 
 test "toolchain TSan executes a native consumer and detects an intentional race" {
-    if (builtin.target.os.tag != .linux or (builtin.target.cpu.arch != .x86_64 and builtin.target.cpu.arch != .aarch64)) return error.SkipZigTest;
+    if ((builtin.target.os.tag != .linux and builtin.target.os.tag != .macos) or (builtin.target.cpu.arch != .x86_64 and builtin.target.cpu.arch != .aarch64)) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

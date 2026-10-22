@@ -58,16 +58,14 @@ pub const Job = struct {
 /// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
 /// cannot quietly change nothing.
 const workflow_options = [_][]const u8{
-    "land",               "attest",             "nightly",          "jobs",
-    "release",            "targets",            "build_args",       "shards",
-    "fast_shards",        "cross_jobs",         "cross_seconds",    "compile_once",
-    "portable_hosts",     "hardened",           "compile_step",     "setup_step",
-    "before_tests_step",  "windows_git_latest", "test_job_timeout", "windows_job_timeout",
-    "source_job_timeout", "cross_job_timeout",  "programs_step",
+    "attest",           "nightly",             "jobs",               "targets",
+    "build_args",       "shards",              "fast_shards",        "cross_jobs",
+    "cross_seconds",    "compile_once",        "portable_hosts",     "hardened",
+    "compile_step",     "setup_step",          "before_tests_step",  "windows_git_latest",
+    "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout",
     // `ci/costs.json`, which the planner reads beside the configuration, and the macOS
-    // targets whose build links a framework, which `plan` and `land` read from the build.
-       "measured",
-    "sdk_targets",
+    // targets whose build links a framework, which `plan` and `gate` read from the build.
+    "measured",         "sdk_targets",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -109,7 +107,7 @@ pub const Tier = enum {
     /// The source checks, Linux Debug and an object compile of every target; every other host compiles only.
     fast,
     /// The gate a landing passes, and the only one: the source checks and the Debug suite executed on Linux, macOS and
-    /// Windows. A package that passes it moves main (`land`), so it holds what a change can break and no more.
+    /// Windows. A change that passes it lands on main, so it holds what a change can break and no more.
     merge,
     /// The full matrix, nightly and before a cut: every mode on every host, the ReleaseFast benchmarks and every cross
     /// target, the SDK links, ThreadSanitizer and the opt-in hardened checks; the run on Zig master joins it.
@@ -539,7 +537,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         }
     }
     for ([_][]const u8{ "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout" }) |name| _ = try minutes(config, name);
-    for ([_][]const u8{ "compile_step", "setup_step", "before_tests_step", "programs_step" }) |name| {
+    for ([_][]const u8{ "compile_step", "setup_step", "before_tests_step" }) |name| {
         const value = src.get(config, name);
         if (value != .null and (value != .string or value.string.len == 0 or std.mem.findAny(u8, value.string, " \t\r\n") != null)) return error.InvalidWorkflowStep;
     }
@@ -550,7 +548,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
     for (host_names ++ arm_host_names ++ .{emulated_host_name}) |host| _ = try shardCount(src.get(shards, host));
-    for ([_][]const u8{ "compile_once", "windows_git_latest", "land", "attest", "release" }) |name| {
+    for ([_][]const u8{ "compile_once", "windows_git_latest", "attest" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
     }

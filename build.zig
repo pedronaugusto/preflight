@@ -58,24 +58,25 @@ pub fn dev(b: *std.Build, _: type) void {
     const ensign = (package.dependencyLazy("ensign", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("ensign");
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .debug }).module("shakedown");
     const test_step = b.step("test", "Run the shared check regression suite");
+    // The integration tests run fixture packages the way their authors do: through bay; and
+    // the checks read CHANGELOG.md with bay's reader of it.
+    const bay = package.dependencyLazy("bay", .{ .optimize = .safe }) catch return pending(b);
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "changelog", .module = bay.module("changelog") } },
     }), .filters = test_filters });
     const options = b.addOptions();
     options.addOptionPathUntracked("root", package.path("."));
     options.addOptionPathUntracked("zig_std", b.graph.path(.zig_lib, "std"));
-    // The integration tests run fixture packages the way their authors do: through bay.
-    const bay = package.dependencyLazy("bay", .{ .optimize = .safe }) catch return pending(b);
     options.addOptionPath("bay", bay.artifact("bay").getEmittedBin());
-    // The landing's tests run the preflight program as its user does, with a stand-in for
-    // the GitHub CLI and for bay's tidy on PATH.
+    // The gate's tests run the preflight program as its user does, and the facts' tests a
+    // stand-in for a bay that cannot locate the development build.
     const executable = program(b, package, target) orelse return;
     options.addOptionPath("preflight", executable.getEmittedBin());
-    const fake = b.addExecutable(.{ .name = "gh", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/gh.zig"), .target = target, .optimize = .debug }) });
-    options.addOptionPath("gh", fake.getEmittedBin());
+    const fake = b.addExecutable(.{ .name = "bay", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/bay.zig"), .target = target, .optimize = .debug }) });
+    options.addOptionPath("fake_bay", fake.getEmittedBin());
     tests.root_module.addOptions("test_options", options);
     // The gate below gives every test here preflight's runner, as it does a
     // consumer's tests: the order module's and the watchdog's tests import
@@ -168,7 +169,7 @@ fn addToolchain(b: *std.Build) bool {
 
 /// The steps that run one of the installed command's subcommands in `root`.
 fn addCommands(b: *std.Build, executable: *std.Build.Step.Compile, root: []const u8) void {
-    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip", "release", "land" }) |name| {
+    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip" }) |name| {
         if (b.top_level_steps.contains(name)) continue;
         const command = b.addRunArtifact(executable);
         command.addArg(name);
@@ -185,7 +186,8 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const gantry_dep = package.dependencyLazy("gantry", .{ .target = target, .optimize = optimize, .zig = true }) catch unreachable; // unreachable: dev returns before addCi if gantry is not available
     const gantry = gantry_dep.module("gantry");
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: dev returns before addCi if glint is not available
-    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint } };
+    const changelog = (package.dependencyLazy("bay", .{ .target = target, .optimize = optimize }) catch unreachable).module("changelog"); // unreachable: dev returns before addCi if bay is not available
+    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog } };
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = package.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },

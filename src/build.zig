@@ -71,11 +71,13 @@ pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedT
     const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return null;
     const glint = pkg.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch return null;
     const ensign = pkg.dependencyLazy("ensign", .{ .target = target, .optimize = .safe }) catch return null;
+    // CHANGELOG.md read as bay, which releases from it, reads it.
+    const bay = pkg.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch return null;
     return b.createModule(.{
         .root_source_file = pkg.path("src/main.zig"),
         .target = target,
         .optimize = .safe,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") } },
     });
 }
 
@@ -233,13 +235,6 @@ const Steps = struct {
         facts.setCwd(package.path("."));
         facts.has_side_effects = true;
         configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
-        const release = executable.run(b);
-        release.addArg("release");
-        exported(b, package, release);
-        release.addPassthruArgs();
-        release.setCwd(package.path("."));
-        release.has_side_effects = true;
-        configure.claim(b, "release", "Give a changed package its next version in build.zig.zon and CHANGELOG.md, or say it needs none").dependOn(&release.step);
         const surface = executable.run(b);
         surface.addArg("surface");
         exported(b, package, surface);
@@ -247,29 +242,15 @@ const Steps = struct {
         surface.setCwd(package.path("."));
         surface.has_side_effects = true;
         configure.claim(b, "surface", "List the public declarations of the modules the package exports; -- --since <tag> lists what changed").dependOn(&surface.step);
-        const land = executable.run(b);
-        land.addArg("land");
-        land.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
-        exported(b, package, land);
-        land.addPassthruArgs();
-        land.setCwd(package.path("."));
-        land.has_side_effects = true;
-        configure.claim(b, "land", "Release the branch on a land branch, run the merge tier with land, and on green follow main").dependOn(&land.step);
-        // A landing gated by hand on the machines at hand: ready, gate on each, publish.
-        for ([_]struct { name: []const u8, description: []const u8 }{
-            .{ .name = "ready", .description = "Make the landing commit on the branch: rebased on main, tidied, the caller refreshed, the release cut" },
-            .{ .name = "gate", .description = "Run the release tier's jobs this machine runs, and name the ones it cannot" },
-            .{ .name = "publish", .description = "Push the gated commit onto main, with its release's tag, never forced" },
-        }) |command| {
-            const run = executable.run(b);
-            run.addArg(command.name);
-            run.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
-            if (std.mem.eql(u8, command.name, "ready")) exported(b, package, run);
-            run.addPassthruArgs();
-            run.setCwd(package.path("."));
-            run.has_side_effects = true;
-            configure.claim(b, command.name, command.description).dependOn(&run.step);
-        }
+        // The gate a release runs (`bay release`): what a release needs, then the release
+        // tier's jobs this machine runs. Releasing is bay's; preflight verifies.
+        const gate = executable.run(b);
+        gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
+        exported(b, package, gate);
+        gate.addPassthruArgs();
+        gate.setCwd(package.path("."));
+        gate.has_side_effects = true;
+        configure.claim(b, "gate", "What a release needs, then the release tier's jobs this machine runs; what it cannot run is named").dependOn(&gate.step);
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(package.path("."));
@@ -342,6 +323,8 @@ const Steps = struct {
         checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
+        // What the CHANGELOG must name of the public API since the last tag.
+        exported(b, package, checks);
         configurationOptions(b, checks);
         checks.setCwd(package.path("."));
         checks.step.dependOn(&lint_structure.step);

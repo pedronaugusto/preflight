@@ -36,6 +36,7 @@ const package_references = [_]gantry.rules.ReferenceRule{.{ .name = "named depen
     "gantry.zig",
     "glint",
     "ensign",
+    "changelog",
     "layers",
     "test_options",
     "preflight_default_test_runner",

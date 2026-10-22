@@ -1,0 +1,135 @@
+//! The package's caller: the workflow under `.github/workflows` that `plan -- --workflow`
+//! generated for it, found from the package's directory, and checked to be what `plan`
+//! generates now for the package's pins and configuration. The gate checks it before it
+//! runs anything, so the hosted runs check the package with the preflight it pins and the
+//! jobs `ci/workflow.json` declares.
+const std = @import("std");
+const src = @import("source.zig");
+const workflow = @import("workflow.zig");
+
+/// Adds `sdk_targets` to a gate configuration, read from the build in the gate's directory.
+pub const Sdk = *const fn (*src.Context, *src.Value, []const u8) anyerror!void;
+
+/// A git command's outcome, its output trimmed.
+const Ran = struct { ok: bool, out: []const u8, err: []const u8 };
+
+fn git(c: *src.Context, args: []const []const u8) !Ran {
+    const argv = try std.mem.concat(c.a, []const u8, &.{ &.{"git"}, args });
+    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
+    return .{ .ok = result.term == .exited and result.term.exited == 0, .out = std.mem.trim(u8, result.stdout, " \t\r\n"), .err = std.mem.trim(u8, result.stderr, " \t\r\n") };
+}
+
+/// `git <args>`, which must succeed; a failure is reported with what git said.
+fn must(c: *src.Context, args: []const []const u8) ![]const u8 {
+    const ran = try git(c, args);
+    if (ran.ok) return ran.out;
+    c.fail("gate: git {s}: {s}", .{ try std.mem.join(c.a, " ", args), ran.err });
+    return error.CallerRefused;
+}
+
+/// The caller generated for this package: its file under the repository's
+/// `.github/workflows`, the repository's top, the package's directory in it, the directory
+/// its gate runs in and the configuration it was planned from.
+const Caller = struct { name: []const u8, top: []const u8, directory: []const u8, gate: []const u8 = ".", config: []const u8 = "ci/workflow.json" };
+
+/// The workflow file under the repository's `.github/workflows` that is this package's
+/// caller: the one whose gate runs in `working_directory`, given; else the one whose gate
+/// runs in the package's directory; else the one generated workflow planned to run in a
+/// directory inside the package, as preflight's own runs in its sample. Null when no
+/// workflow is one; more than one fails, naming them.
+fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
+    const top = try must(c, &.{ "rev-parse", "--show-toplevel" });
+    const prefix = std.mem.trimEnd(u8, try must(c, &.{ "rev-parse", "--show-prefix" }), "/");
+    const directory = if (prefix.len == 0) "." else prefix;
+    const Found = struct { name: []const u8, planned: workflow.Planned, gate: []const u8 };
+    var generated: std.ArrayList(Found) = .empty;
+    const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github", "workflows" });
+    if (std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true })) |opened| {
+        var dir = opened;
+        defer dir.close(c.io);
+        var entries = dir.iterate();
+        while (try entries.next(c.io)) |entry| {
+            if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml"))) continue;
+            const text = try dir.readFileAlloc(c.io, entry.name, c.a, .limited(16 * 1024 * 1024));
+            const planned = workflow.planned(text) orelse continue;
+            try generated.append(c.a, .{ .name = try c.a.dupe(u8, entry.name), .planned = planned, .gate = gateOf(text) orelse continue });
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    var found: std.ArrayList(Found) = .empty;
+    for (generated.items) |each| if (std.mem.eql(u8, each.gate, working_directory orelse directory)) try found.append(c.a, each);
+    // A package whose gate runs in a directory of its own, planned so from the package.
+    if (found.items.len == 0 and working_directory == null) for (generated.items) |each| {
+        const elsewhere = each.planned.working_directory orelse continue;
+        if (std.mem.eql(u8, directory, ".") or std.mem.startsWith(u8, elsewhere, try c.a.print("{s}/", .{directory}))) try found.append(c.a, each);
+    };
+    if (found.items.len == 1) {
+        const one = found.items[0];
+        return .{ .name = one.name, .top = top, .directory = directory, .gate = one.gate, .config = one.planned.config };
+    }
+    if (found.items.len == 0) return null;
+    var callers: std.ArrayList([]const u8) = .empty;
+    for (found.items) |each| try callers.append(c.a, each.name);
+    c.fail("gate: {s} are each a caller of this package; keep one, or name its directory with --working-directory", .{try std.mem.join(c.a, ", ", callers.items)});
+    return error.CallerRefused;
+}
+
+/// The directory a generated caller's gate runs in, as its `working-directory:` line says.
+fn gateOf(text: []const u8) ?[]const u8 {
+    const key = "      working-directory: \"";
+    const at = std.mem.find(u8, text, key) orelse return null;
+    const start = at + key.len;
+    const end = std.mem.findScalarPos(u8, text, start, '"') orelse return null;
+    return text[start..end];
+}
+
+/// What preflight's own caller names as the preflight it runs: the commit under test.
+const own_ref = "preflight-ref: ${{ github.sha }}\n";
+
+/// The caller at `path`, `existing`, as `plan -- --workflow <caller>` generates it now for the
+/// package's pins and configuration, planned as its first line says it was.
+fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: []const u8) ![]const u8 {
+    // The label the caller was generated with, so that only what it was planned from changes.
+    const label = if (std.mem.startsWith(u8, existing, workflow.header)) existing[workflow.header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
+    var config = try workflow.configuration(c.*, found.config);
+    if (sdk) |add| try add(c, &config, found.gate);
+    const own = std.mem.find(u8, existing, own_ref) != null;
+    return workflow.generate(c.*, config, "build.zig.zon", found.gate, own, label, existing, &.{}) catch |err| {
+        if (err == error.UndeclaredCallerJob) {
+            c.fail("gate: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs", .{ path, workflow.undeclared });
+        } else c.fail("gate: {s} cannot be generated again: {t}", .{ path, err });
+        return error.CallerRefused;
+    };
+}
+
+/// Refuses a caller that is not what `plan -- --workflow <caller>` generates for the package's
+/// pins and configuration: a release that left it so would have the hosted runs check the
+/// package with another preflight than it pins, or other jobs than ci/workflow.json declares.
+fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
+    var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
+    defer top.close(c.io);
+    var at_top = c.*;
+    at_top.dir = top;
+    const path = try c.a.print(".github/workflows/{s}", .{found.name});
+    const existing = try at_top.read(path);
+    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing))) return;
+    const line = existing[0 .. std.mem.findScalar(u8, existing, '\n') orelse existing.len];
+    const planned_with = if (std.mem.find(u8, line, ": zig build plan -- ")) |at| line[at + 2 ..] else "zig build plan -- --workflow .github/workflows/ci.yml";
+    c.fail("{s} is not what plan generates for this package's pins and {s}: generate it again (`{s}`, `bay dev plan -- ...` under bay) and commit it", .{ path, found.config, planned_with });
+    return error.CallerRefused;
+}
+
+/// `gate`'s look at the caller: the package's caller, if it has one, is what `plan` generates
+/// for its pins and configuration. `config` overrides the configuration its first line names.
+/// Returns where the caller's gate runs, from the package's directory: the directory the gate
+/// runs the planned jobs in when it is given none (preflight's own runs in its sample).
+pub fn currentCaller(c: *src.Context, working_directory: ?[]const u8, config: ?[]const u8, sdk: ?Sdk) !?[]const u8 {
+    var found = (try findCaller(c, working_directory)) orelse return null;
+    if (config) |given| found.config = given;
+    try requireCurrentCaller(c, found, sdk);
+    if (std.mem.eql(u8, found.directory, ".") or std.mem.eql(u8, found.gate, found.directory)) return if (std.mem.eql(u8, found.directory, ".")) found.gate else ".";
+    if (std.mem.startsWith(u8, found.gate, found.directory) and found.gate.len > found.directory.len and found.gate[found.directory.len] == '/') return found.gate[found.directory.len + 1 ..];
+    return null;
+}

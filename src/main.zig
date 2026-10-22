@@ -20,13 +20,8 @@ pub fn main(init: std.process.Init) !void {
     switch (cli.command) {
         .facts => |args| try exportFacts(&c, args),
         .plan => |args| try planCommand(&c, init, args),
-        .version => try stdout(c, try a.print("{f}\n", .{try checks.release.declared(&c)})),
-        .release => |args| try releaseCommand(&c, args),
         .surface => |args| try surfaceCommand(&c, args),
-        .land => |args| try landCommand(&c, args),
-        .ready => |args| try readyCommand(&c, args),
         .gate => |args| try gateCommand(&c, init.environ_map, args),
-        .publish => |args| try publishCommand(&c, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
         .executable => |args| for (args.paths) |path| try executable(c, path),
         .counts => |args| try checks.counts.check(&c, args.records, args.expect, environment(init.environ_map, "PREFLIGHT_SHARD") orelse ""),
@@ -103,21 +98,6 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(
     }
 }
 
-/// `release`: the version the commit about to be tested carries, written to `build.zig.zon` and `CHANGELOG.md`.
-fn releaseCommand(c: *src.Context, args: @FieldType(Command, "release")) !void {
-    const date = args.date orelse try checks.release.today(c.a, c.io);
-    const outcome = checks.release.run(c, date, try modules(c.a, args.module)) catch |err| switch (err) {
-        // Each of these named its fix.
-        error.InvalidVersion, error.InvalidManifest, error.NoChangelog, error.NoUnreleasedSection, error.EmptyUnreleased, error.TagExists, error.UndeclaredBreaking => return error.CheckFailed,
-        else => return err,
-    };
-    switch (outcome) {
-        .unchanged => |tag| try stdout(c.*, try c.a.print("no release: nothing the package ships changed since {s}\n", .{tag})),
-        .prepared => |version| try stdout(c.*, try c.a.print("{f} is released in build.zig.zon and CHANGELOG.md and waits for its tag\n", .{version})),
-        .released => |made| try stdout(c.*, try c.a.print("released {f} -> {f}{s}\n", .{ made.from, made.to, if (made.breaking) " (breaking)" else "" })),
-    }
-}
-
 /// The macOS targets of `config` whose build links a framework, as `sdk_targets`: only their
 /// links need a Mac, with Apple's SDK; Zig links any other macOS target on Linux. Each is read
 /// from the build in `directory`, where the gate runs, configured for that target, so a
@@ -141,68 +121,30 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
 }
 
-/// `land`: the branch checked out, released, through the merge tier and onto main.
-fn landCommand(c: *src.Context, args: @FieldType(Command, "land")) !void {
-    if (args.zig_exe) |zig| c.zig = zig;
-    // `--config` and `--working-directory` as `plan` takes them; by default what the caller's first line says it was planned with.
-    var options: checks.land.Options = .{
-        .date = args.date orelse try checks.release.today(c.a, c.io),
-        .config = args.config,
-        .working_directory = args.working_directory,
-        .sdk = sdkTargets,
-        .modules = try modules(c.a, args.module),
-    };
-    // `--poll <seconds>`: between two looks at GitHub, for the run and at it.
-    if (args.poll) |seconds| {
-        const every: std.Io.Duration = .fromSeconds(seconds);
-        options.find_every = every;
-        options.wait_every = every;
-    }
-    const outcome = checks.land.run(c, options) catch |err| switch (err) {
-        // Reported where it failed.
-        error.LandFailed => return error.CheckFailed,
-        else => return err,
-    };
-    switch (outcome) {
-        .nothing => |why| try stdout(c.*, try c.a.print("nothing to land: {s}\n", .{why})),
-        .landed => |landed| try stdout(c.*, try c.a.print("landed {s} on {s} at {s}{s}\n", .{ landed.name, landed.onto, landed.sha[0..12], if (landed.followed) "" else ", and the branch stays where it was" })),
-    }
-}
-
-/// `ready`: the landing commit made on the branch checked out, for a landing gated by hand.
-fn readyCommand(c: *src.Context, args: @FieldType(Command, "ready")) !void {
-    if (args.zig_exe) |zig| c.zig = zig;
-    const readied = checks.land.ready(c, .{
-        .date = args.date orelse try checks.release.today(c.a, c.io),
-        .config = args.config,
-        .working_directory = args.working_directory,
-        .sdk = sdkTargets,
-        .modules = try modules(c.a, args.module),
-    }) catch |err| switch (err) {
-        // Reported where it failed.
-        error.LandFailed => return error.CheckFailed,
-        else => return err,
-    };
-    const what = if (readied.version) |version| try c.a.print("v{f}", .{version}) else "no release";
-    try stdout(c.*, try c.a.print("ready: {s} at {s}; gate it on each machine (gate), then publish\n", .{ what, readied.sha[0..12] }));
-}
-
 /// `gate`: the release tier's jobs this machine runs, each as the hosted job runs it, all of
 /// them, so a red names every job that failed here; what it cannot run is named.
 ///
+/// Before any job, what a release needs beside them: the caller as `plan` generates it, the
+/// manifest's version as the CHANGELOG's newest release, and the CHANGELOG naming what the
+/// public API changed since the last tag. Each refusal names its fix, and no job runs.
+///
 /// `--working-directory <dir>` gates a package whose planned jobs run in `dir` while its
 /// declared jobs' directories are the repository's, as the hosted caller runs them
-/// (preflight's own gate runs its sample there); `--config` defaults to `dir`'s.
+/// (preflight's own gate runs its sample there); by default the directory the package's
+/// caller runs its gate in. `--config` defaults to `dir`'s.
 fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @FieldType(Command, "gate")) !void {
     if (args.zig_exe) |zig| c.zig = zig;
-    // A caller other than plan generates would have the hosted runs check another landing
+    // A caller other than plan generates would have the hosted runs check another release
     // than the one gated here.
-    checks.land.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
+    const planned = checks.caller.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
         // Reported where it failed.
-        error.LandFailed => return error.CheckFailed,
+        error.CallerRefused => return error.CheckFailed,
         else => return err,
     };
-    const working = args.working_directory orelse ".";
+    try checks.release.versionAgrees(c);
+    try checks.release.changelogNamesChanges(c, try modules(c.a, args.module));
+    if (c.errors != 0) return error.CheckFailed;
+    const working = args.working_directory orelse planned orelse ".";
     const config_path = args.config orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
     const config = try checks.workflow.configuration(c.*, config_path);
     const jobs = try checks.matrix.plan(c.a, config, .release);
@@ -289,18 +231,6 @@ fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     } else try stdout(c.*, value);
 }
 
-/// `publish`: the gated commit onto origin's default branch, with its release's tag.
-fn publishCommand(c: *src.Context, args: @FieldType(Command, "publish")) !void {
-    if (args.zig_exe) |zig| c.zig = zig;
-    const published = checks.land.publish(c) catch |err| switch (err) {
-        // Reported where it failed.
-        error.LandFailed => return error.CheckFailed,
-        else => return err,
-    };
-    const programs = if (published.programs != 0) try c.a.print(", its GitHub release carrying {d} programs", .{published.programs}) else "";
-    try stdout(c.*, try c.a.print("published {s} on {s}{s}{s}{s}\n", .{ published.sha[0..12], published.onto, if (published.tag != null) " as " else "", published.tag orelse "", programs }));
-}
-
 /// `lint`: the source checks over the repository's files, then the check on the configured build's revisions.
 fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command, "lint")) !void {
     const a = c.a;
@@ -326,7 +256,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     }
     try config.object.put(a, "unrun_test_roots", .{ .array = unrun_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std, .package = try checks.manifest.name(c) }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std, .package = try checks.manifest.name(c) }, try modules(a, args.module), try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -407,7 +337,7 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, build: checks.glint.assembly.Build, log: checks.phases.Log) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
@@ -435,6 +365,10 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     if (c.errors != 0) return;
     timer = stage(c, "release version");
     try checks.release.versionAgrees(c);
+    timer.end(c.*, log);
+    if (c.errors != 0) return;
+    timer = stage(c, "changelog");
+    try checks.release.changelogNamesChanges(c, exported);
     timer.end(c.*, log);
     if (c.errors != 0) return;
     for (src.items(src.get(config, "extra_checks"))) |command| {

@@ -1,6 +1,4 @@
 {
-  "land": true,
-  "release": true,
   "attest": true,
   "windows_git_latest": true,
   "compile_once": true,

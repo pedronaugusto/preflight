@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- Releasing is bay's (`bay release`, bay 0.1.16): preflight verifies and neither versions, tags nor pushes. `release`, `land`, `ready`, `publish` and `version` are gone, with their steps, the caller's `land` job and dispatch input, `.github/actions/land`, and `zig.yml`'s `package-directory` input and `version` output. `ci/workflow.json`'s `land`, `release` and `programs_step` are refused as unknown keys: drop them, and generate the caller again (`plan -- --workflow`), which drops its `land` job.
+- The gate checks, before any job, what a release needs beside the jobs: the caller as `plan` generates it (as before), the manifest's version as the CHANGELOG's newest release, and the CHANGELOG against the API diff since the last `v*` tag: a change to the public surface needs an entry in `[Unreleased]` or in a release made since, a removed or changed public declaration a breaking one (`### Breaking` or `### Removed`). The lint checks the last two on every commit. CHANGELOG.md is read with bay's `changelog` module, so an entry under no group is refused with its line.
+
+### Changed
+
+- The gate runs the planned jobs in the directory the package's caller runs its gate in when given no `--working-directory`, so preflight's own gate needs none.
+- Pins bay 0.1.16, whose `changelog` module the checks read CHANGELOG.md with.
+
 ## [0.15.2] - 2026-10-22
 
 ### Fixed

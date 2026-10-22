@@ -11,13 +11,8 @@ pub const Cli = struct {
         plan: Plan,
         facts: Facts,
         lint: Lint,
-        version,
-        release: Release,
         surface: Surface,
-        land: Land,
-        ready: Ready,
         gate: Gate,
-        publish: Publish,
         setup,
         prepare,
         fetch,
@@ -36,10 +31,9 @@ pub const Cli = struct {
 
     pub const spec: ensign.Spec(@This()) = .{
         .name = "preflight",
-        .about = "CI and checks for Zig packages: the hosted jobs, the landing and the releases",
+        .about = "CI and checks for Zig packages: the hosted jobs and what a release must pass",
         .description = "A package runs these through its build (zig build plan, bay dev gate, ...), which passes the Zig and the modules it exports; the hosted workflows call the rest.",
         .commands = .{
-            .version = .{ .help = "The version the package's build.zig.zon declares" },
             .setup = .{ .help = "A hosted job's setup: the macOS SDK and Zig's global cache, written to the job's environment" },
             .prepare = .{ .help = "Run the step that installs the job's external tools, when it has one" },
             .fetch = .{ .help = "Fetch the package's dependencies, retried, for the build arguments in BUILD_ARGS" },
@@ -53,7 +47,6 @@ pub const Cli = struct {
 const zig_exe: ensign.Option = .{ .value_name = "PATH", .hint = .command, .help = "The Zig the package builds with; zig on the path by default" };
 /// A module the package exports, as the build passes them, and its `build.zig`.
 const module: ensign.Option = .{ .value_name = "NAME=ROOT", .help = "A module the package exports and its root file, repeated: the public surface a release must not break unannounced" };
-const date: ensign.Option = .{ .value_name = "YYYY-MM-DD", .help = "The release's date in CHANGELOG.md; today by default" };
 const working_directory: ensign.Option = .{ .value_name = "DIR", .hint = .directory, .help = "Where the planned jobs run, when not the repository's root (preflight's own gate runs its sample there)" };
 const workflow_config: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json of the working directory by default" };
 const build_option: ensign.Option = .{ .value_name = "-DNAME=VALUE", .help = "An option the build was configured with, repeated, so the configured graph is the build's" };
@@ -105,6 +98,7 @@ const Lint = struct {
     zig_std: ?[]const u8 = null,
     build_option: []const []const u8 = &.{},
     test_step: []const []const u8 = &.{},
+    module: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
@@ -112,17 +106,9 @@ const Lint = struct {
             .zig_exe = zig_exe,
             .zig_std = .{ .value_name = "DIR", .hint = .directory, .help = "The standard library the package builds with, for the lint's types" },
             .build_option = build_option,
+            .module = module,
             .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
         },
-    };
-};
-
-const Release = struct {
-    date: ?[]const u8 = null,
-    module: []const []const u8 = &.{},
-    pub const spec: ensign.Spec(@This()) = .{
-        .about = "The next version of a changed package, written to build.zig.zon and CHANGELOG.md, or why it needs none",
-        .options = .{ .date = date, .module = module },
     };
 };
 
@@ -138,53 +124,14 @@ const Surface = struct {
     };
 };
 
-const Land = struct {
-    zig_exe: ?[]const u8 = null,
-    date: ?[]const u8 = null,
-    poll: ?u32 = null,
-    config: ?[]const u8 = null,
-    working_directory: ?[]const u8 = null,
-    module: []const []const u8 = &.{},
-    pub const spec: ensign.Spec(@This()) = .{
-        .about = "The branch released, through the hosted merge tier and onto main",
-        .options = .{
-            .zig_exe = zig_exe,
-            .date = date,
-            .poll = .{ .value_name = "SECONDS", .help = "Between two looks at GitHub, for the run and at it" },
-            .config = workflow_config,
-            .working_directory = working_directory,
-            .module = module,
-        },
-    };
-};
-
-const Ready = struct {
-    zig_exe: ?[]const u8 = null,
-    date: ?[]const u8 = null,
-    config: ?[]const u8 = null,
-    working_directory: ?[]const u8 = null,
-    module: []const []const u8 = &.{},
-    pub const spec: ensign.Spec(@This()) = .{
-        .about = "The landing commit made on the branch checked out: rebased on main, tidied, the caller refreshed, the release cut",
-        .options = .{ .zig_exe = zig_exe, .date = date, .config = workflow_config, .working_directory = working_directory, .module = module },
-    };
-};
-
 const Gate = struct {
     zig_exe: ?[]const u8 = null,
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
+    module: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "The release tier's jobs this machine runs, each as the hosted job runs it; what it cannot run is named",
-        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory },
-    };
-};
-
-const Publish = struct {
-    zig_exe: ?[]const u8 = null,
-    pub const spec: ensign.Spec(@This()) = .{
-        .about = "The gated commit pushed onto main with its release's tag, never forced",
-        .options = .{ .zig_exe = zig_exe },
+        .about = "What a release needs, then the release tier's jobs this machine runs, each as the hosted job runs it; what it cannot run is named",
+        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module },
     };
 };
 
@@ -332,27 +279,24 @@ test "facts and lint take the build's configuration, the options keeping their d
     try std.testing.expectEqualStrings("-Doptimize=Debug", lint.build_option[0]);
 }
 
-test "the landing's commands take the build's modules before what the user passes" {
+test "gate, lint and surface take the build's modules before what the user passes" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const ready = (try parsed(a, &.{ "ready", "--zig-exe", "/z/zig", "--module", "build.zig=build.zig", "--module", "pkg=src/root.zig", "--working-directory", "sample", "--date", "2026-10-18" })).command.ready;
-    try std.testing.expectEqual(2, ready.module.len);
-    try std.testing.expectEqualStrings("2026-10-18", ready.date.?);
-    const land = (try parsed(a, &.{ "land", "--date", "2026-10-18", "--poll", "0", "--zig-exe", "/z/zig" })).command.land;
-    try std.testing.expectEqual(0, land.poll.?);
-    try std.testing.expectEqualStrings("sample", (try parsed(a, &.{ "gate", "--zig-exe", "/z/zig", "--working-directory", "sample" })).command.gate.working_directory.?);
-    _ = (try parsed(a, &.{ "publish", "--zig-exe", "/z/zig" })).command.publish;
+    const gate = (try parsed(a, &.{ "gate", "--zig-exe", "/z/zig", "--module", "build.zig=build.zig", "--module", "pkg=src/root.zig", "--working-directory", "sample" })).command.gate;
+    try std.testing.expectEqual(2, gate.module.len);
+    try std.testing.expectEqualStrings("sample", gate.working_directory.?);
+    try std.testing.expectEqual(1, (try parsed(a, &.{ "lint", "--zig-exe", "/z/zig", "--module", "build.zig=build.zig" })).command.lint.module.len);
     try std.testing.expectEqualStrings("v0.1.0", (try parsed(a, &.{ "surface", "--module", "build.zig=build.zig", "--since", "v0.1.0" })).command.surface.since.?);
-    try std.testing.expectEqual(1, (try parsed(a, &.{ "release", "--module", "build.zig=build.zig", "--date", "2026-10-18" })).command.release.module.len);
-    try std.testing.expectError(error.UnknownOption, parsed(a, &.{ "gate", "--module", "build.zig=build.zig" }));
+    // Releasing is bay's: preflight only verifies.
+    for ([_][]const u8{ "release", "land", "ready", "publish", "version" }) |gone| try std.testing.expectError(error.UnknownCommand, parsed(a, &.{gone}));
 }
 
 test "the hosted workflows' commands" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    for ([_][]const u8{ "version", "skip", "attest", "prepare", "run", "fetch", "setup" }) |name| _ = try parsed(a, &.{name});
+    for ([_][]const u8{ "skip", "attest", "prepare", "run", "fetch", "setup" }) |name| _ = try parsed(a, &.{name});
     const profile = (try parsed(a, &.{ "profile", "--durations", "pkg/ci/durations.json", "--output", ".preflight-timings/durations.json", "--costs", "pkg/ci/costs.json", "--costs-output", ".preflight-timings/costs.json" })).command.profile;
     try std.testing.expectEqualStrings(".preflight-timings", profile.input);
     try std.testing.expectEqualStrings(".preflight-timings/costs.json", profile.costs_output.?);

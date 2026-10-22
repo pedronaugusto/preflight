@@ -4,11 +4,11 @@ on:
 @PUSH@@SCHEDULE@  workflow_dispatch:
     inputs:
       tier:
-        description: fast, merge (the gate a landing passes) or release (the full matrix, nightly and before a cut)
+        description: fast, merge (the gate a change passes to reach main) or release (the full matrix, nightly and before a cut)
         type: choice
         options: [fast, merge, release]
         default: fast
-@LANDINPUT@      status-only:
+      status-only:
         description: Verify the recorded merge or release tier for this exact commit
         type: boolean
         default: false
@@ -28,8 +28,7 @@ jobs:
     with:
       tier: ${{ github.event_name == 'workflow_dispatch' && inputs.tier || github.event_name == 'schedule' && '@NIGHTLY@' || 'merge' }}
       working-directory: @DIRECTORY@
-@PACKAGE@      preflight-ref: @PIN@
+      preflight-ref: @PIN@
       attest: ${{ github.event_name == 'push' || inputs.status-only == true }}
 @MATRICES@      windows-git-latest: @WINDOWS_GIT@
       compile-once: @COMPILE_ONCE@
-@LAND@

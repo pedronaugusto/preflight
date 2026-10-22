@@ -148,8 +148,11 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");
         runner.addOption(?[]const u8, "timings", if (options.timing) b.fmt(".zig-cache/preflight-timings/{s}", .{name}) else null);
         runner.addOption([]const u8, "counts", b.fmt("{s}/{s}", .{ records_dir, name }));
+        // The root as the package names it: its own file, or one a development build takes
+        // from the package as a dependency (`package.path`); a generated one by its artifact.
         runner.addOption([]const u8, "root", switch (artifact.root_module.root_source_file.?) {
             .src_path => |path| path.sub_path,
+            .dependency => |path| path.sub_path,
             else => artifact.name,
         });
         runner.addOption([]const u8, "artifact", artifact.name);

@@ -142,6 +142,24 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} of them suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
     }
     c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.inputs.len, failing, warned, report.suppressed, unfinished, unresolved });
+    byRule(c, report, shown, undecided);
+}
+
+/// Each rule's findings and undecided sites, counted: the line a sizing or a review reads.
+fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.AutoArrayHashMapUnmanaged(glint.Rule, usize)) void {
+    var line: std.Io.Writer.Allocating = .init(c.a);
+    for (policy.project_rules) |rule| {
+        const id = rule.definition.id;
+        const found = shown.get(id) orelse 0;
+        const open = undecided.get(id) orelse 0;
+        var escaped: usize = 0;
+        for (report.escapes) |escape| for (escape.covered) |covered| if (std.mem.eql(u8, covered.name, rule.definition.name)) {
+            escaped += 1;
+        };
+        if (found == 0 and open == 0 and escaped == 0) continue;
+        line.writer.print("{s}{s} {d}/{d}/{d}", .{ if (line.written().len == 0) "" else ", ", rule.definition.name, found, escaped, open }) catch @panic("OOM");
+    }
+    if (line.written().len != 0) c.report("preflight: glint: by rule (findings/escaped/undecided): {s}\n", .{line.written()});
 }
 
 /// A finding rule's undecided sites against the repository's ceiling (`glint.unresolved`, none

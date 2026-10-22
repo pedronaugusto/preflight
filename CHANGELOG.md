@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-22
+
 ### Breaking
 
 - Releasing is bay's (`bay release`, bay 0.1.16): preflight verifies and neither versions, tags nor pushes. `release`, `land`, `ready`, `publish` and `version` are gone, with their steps, the caller's `land` job and dispatch input, `.github/actions/land`, and `zig.yml`'s `package-directory` input and `version` output. `ci/workflow.json`'s `land`, `release` and `programs_step` are refused as unknown keys: drop them, and generate the caller again (`plan -- --workflow`), which drops its `land` job.

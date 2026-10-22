@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-22
+
 ### Breaking
 
 - The lint fails a test artifact compiled and never run: a root file whose test artifacts no run under a step CI runs (`ci`, the fuzz and hardened steps, the release tier's own jobs, `extra_checks`) runs, named with its artifacts. Such a root no longer counts as one, so a file only it reaches has unreachable tests too. strand's json and jsonl tests were compiled under `check` and stopped running, 29 of them, while the lint took their roots as reaching them. `lint` takes `--test-step`, which `addCi` passes.

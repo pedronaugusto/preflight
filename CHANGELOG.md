@@ -21,6 +21,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The run prints every aegis escape with the rules it covers, a count by rule and reason, and all of them in `.zig-cache/preflight-lint/escapes.txt`. A line of findings, escapes and undecided sites by rule follows the glint summary. Where a rule finds more than the 25 printed, every finding is in `.zig-cache/preflight-lint/findings.txt`.
 - A malformed suppression or escape is an incomplete site at its comment.
 
+## [0.16.0] - 2026-10-22
+
+### Breaking
+
+- Releasing is bay's (`bay release`, bay 0.1.16): preflight verifies and neither versions, tags nor pushes. `release`, `land`, `ready`, `publish` and `version` are gone, with their steps, the caller's `land` job and dispatch input, `.github/actions/land`, and `zig.yml`'s `package-directory` input and `version` output. `ci/workflow.json`'s `land`, `release` and `programs_step` are refused as unknown keys: drop them, and generate the caller again (`plan -- --workflow`), which drops its `land` job.
+- The gate checks, before any job, what a release needs beside the jobs: the caller as `plan` generates it (as before), the manifest's version as the CHANGELOG's newest release, and the CHANGELOG against the API diff since the last `v*` tag: a change to the public surface needs an entry in `[Unreleased]` or in a release made since, a removed or changed public declaration a breaking one (`### Breaking` or `### Removed`). The lint checks the last two on every commit. CHANGELOG.md is read with bay's `changelog` module, so an entry under no group is refused with its line.
+
+### Changed
+
+- The gate runs the planned jobs in the directory the package's caller runs its gate in when given no `--working-directory`, so preflight's own gate needs none.
+- Pins bay 0.1.16, whose `changelog` module the checks read CHANGELOG.md with.
+
+## [0.15.2] - 2026-10-22
+
+### Fixed
+
+- The riscv64 job installs QEMU's system emulation without its recommended packages (`--no-install-recommends`): the GUI, SPICE, OpenGL and network-boot extras made the download 87 MB, which a slow mirror took past the step's five minutes (relic's nightly, 4 min 47 s at 303 kB/s). The OpenSBI firmware `-bios default` boots comes with `qemu-system-data`, a dependency.
+
 ## [0.15.1] - 2026-10-22
 
 ### Fixed

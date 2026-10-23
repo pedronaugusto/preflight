@@ -65,14 +65,10 @@ test "a bay that cannot locate the development build fails the read by name, wit
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const state = try tmp.dir.realPathFileAlloc(std.testing.io, ".", a);
     var env: std.process.Environ.Map = .init(a);
-    try env.put("FAKE_GH_STATE", state);
     var held: std.Io.Writer.Allocating = .init(a);
     const c: src.Context = .{ .a = a, .io = std.testing.io, .environ_map = &env, .held = &held };
-    const bay = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.gh, a);
+    const bay = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.fake_bay, a);
     try std.testing.expectError(error.BayLocateFailed, facts.developmentRoot(c, bay));
     try std.testing.expect(std.mem.find(u8, held.written(), "bay: no command or step named locate") != null);
     try std.testing.expect(std.mem.find(u8, held.written(), "a bay with `locate`") != null);

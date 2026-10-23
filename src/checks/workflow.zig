@@ -111,7 +111,8 @@ pub fn generate(c: src.Context, config: src.Value, manifest: []const u8, directo
     return text;
 }
 
-/// The jobs of an earlier caller that its generator wrote, and so may go.
+/// The jobs of an earlier caller that its generator wrote, and so may go: `land` is the one a
+/// caller generated before releases moved to bay held, which goes when it is generated again.
 const generated_jobs = [_][]const u8{ "gate", "land", "checks", "skip" };
 
 /// The last job `keepsEveryJob` refused to drop, for the command to name: the refusing thread's own.
@@ -219,35 +220,8 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
     const when = try triggers(a, config);
-    const lands = std.mem.eql(u8, try boolean(config, "land"), "true");
-    const releases = std.mem.eql(u8, try boolean(config, "release"), "true");
-    // The tag is made by the landing job, after it moves main.
-    if (releases and !lands) return error.ReleaseWithoutLand;
-    const release_inputs = if (releases) "\n        with:\n          version: ${{ needs.gate.outputs.version }}" else "";
-    // preflight's own gate runs its sample; the package it releases is the repository's root.
-    const package = if (own and releases) "      package-directory: .\n" else "";
-    // Only the job that lands writes, and only to move main; it waits for the whole gate.
-    const land_input =
-        \\      land:
-        \\        description: Fast-forward main to this commit when the merge tier passes
-        \\        type: boolean
-        \\        default: true
-        \\
-    ;
-    const land_job = try a.print(
-        \\  land:
-        \\    needs: gate
-        \\    if: github.event_name == 'workflow_dispatch' && inputs.land && inputs.tier == 'merge' && needs.gate.result == 'success'
-        \\    runs-on: ubuntu-latest
-        \\    timeout-minutes: 5
-        \\    permissions:
-        \\      contents: write
-        \\    steps:
-        \\{s}{s}
-        \\
-    , .{ if (own) "      - uses: actions/checkout@v4\n      - uses: ./.github/actions/land" else try a.print("      - uses: pedronaugusto/preflight/.github/actions/land@{s}", .{pin}), release_inputs });
-    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@PUSH@", "@SCHEDULE@", "@NIGHTLY@", "@LANDINPUT@", "@LAND@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@", "@PACKAGE@" };
-    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), when.push, when.schedule, when.nightly_tier, if (lands) land_input else "", if (lands) land_job else "", matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once"), package };
+    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@PUSH@", "@SCHEDULE@", "@NIGHTLY@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
+    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), when.push, when.schedule, when.nightly_tier, matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -427,7 +401,7 @@ test "regeneration refuses to drop a job the configuration does not declare, and
     defer arena.deinit();
     const a = arena.allocator();
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
-    const base = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true}", .{})).value, pin, ".", false, "ci.yml");
+    const base = try render(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, pin, ".", false, "ci.yml");
     try keepsEveryJob("", base, &.{});
     try keepsEveryJob(base, base, &.{});
     // What an earlier generator wrote goes with it.
@@ -435,7 +409,7 @@ test "regeneration refuses to drop a job the configuration does not declare, and
     const own = try std.mem.concat(a, u8, &.{ base, "  sizes:  # kept\n    needs: gate\n    runs-on: ubuntu-latest\n" });
     try std.testing.expectError(error.UndeclaredCallerJob, keepsEveryJob(own, base, &.{}));
     // Declared, the job is a gate job: in the matrices, with no job of its own to keep.
-    const declared = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"jobs\":[{\"name\":\"sizes\",\"step\":\"check-sizes\"}]}", .{})).value, pin, ".", false, "ci.yml");
+    const declared = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"jobs\":[{\"name\":\"sizes\",\"step\":\"check-sizes\"}]}", .{})).value, pin, ".", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, declared, "\"step\":\"check-sizes\"") != null);
     try std.testing.expectError(error.UndeclaredCallerJob, keepsEveryJob(own, declared, &.{}));
     // Named to go, it goes.
@@ -443,7 +417,7 @@ test "regeneration refuses to drop a job the configuration does not declare, and
     try keepsEveryJob(declared, declared, &.{});
 }
 
-test "a project with nothing set gets pull requests, dispatch and a nightly release run, and no landing or main status run" {
+test "a project with nothing set gets pull requests, dispatch and a nightly release run, and nothing that writes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -453,43 +427,17 @@ test "a project with nothing set gets pull requests, dispatch and a nightly rele
     try std.testing.expect(std.mem.find(u8, plain, "  push:\n") == null);
     try std.testing.expect(std.mem.find(u8, plain, "- cron: '23 3 * * *'") != null);
     try std.testing.expect(std.mem.find(u8, plain, "&& 'release' || 'merge'") != null);
-    // No landing: no input for it, and nothing in the caller may write.
-    try std.testing.expect(std.mem.find(u8, plain, "      land:") == null);
-    try std.testing.expect(std.mem.find(u8, plain, "  land:") == null);
+    // Releasing is bay's: no caller lands, tags or writes.
+    try std.testing.expect(std.mem.find(u8, plain, "land") == null);
     try std.testing.expect(std.mem.find(u8, plain, "contents: write") == null);
-    const set = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"attest\":true,\"nightly\":{\"cron\":\"5 1 * * 0\",\"tier\":\"merge\"}}", .{})).value, pin, ".", false, "ci.yml");
+    const set = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"attest\":true,\"nightly\":{\"cron\":\"5 1 * * 0\",\"tier\":\"merge\"}}", .{})).value, pin, ".", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, set, "  push:\n    branches: [main]\n") != null);
     try std.testing.expect(std.mem.find(u8, set, "- cron: '5 1 * * 0'") != null);
     try std.testing.expect(std.mem.find(u8, set, "&& 'merge' || 'merge'") != null);
-    try std.testing.expect(std.mem.find(u8, set, "contents: write") != null);
-    try std.testing.expect(std.mem.find(u8, set, "  land:\n    needs: gate\n") != null);
-    try std.testing.expect(std.mem.find(u8, set, "uses: pedronaugusto/preflight/.github/actions/land@" ++ pin) != null);
-    // The gate itself never writes: the reusable workflow asks for no more than read.
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, set, "contents: write"));
-    try std.testing.expect(std.mem.find(u8, set, "description: Fast-forward main to this commit when the merge tier passes\n        type: boolean\n        default: true") != null);
+    try std.testing.expect(std.mem.find(u8, set, "contents: write") == null);
     const off = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"nightly\":false}", .{})).value, pin, ".", false, "ci.yml");
     try std.testing.expect(std.mem.find(u8, off, "schedule:") == null);
-    for ([_][]const u8{ "{\"nightly\":{\"cron\":\"daily\"}}", "{\"nightly\":{\"tier\":\"all\"}}", "{\"nightly\":{\"when\":1}}", "{\"nightly\":3}", "{\"land\":\"yes\"}" }) |text| {
-        try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml")));
-    }
-}
-
-test "release asks the landing job to tag, and needs a landing" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
-    const released = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"release\":true}", .{})).value, pin, "pkg", false, "ci.yml");
-    try std.testing.expect(std.mem.find(u8, released, "actions/land@" ++ pin ++ "\n        with:\n          version: ${{ needs.gate.outputs.version }}\n") != null);
-    try std.testing.expect(std.mem.find(u8, released, "package-directory") == null);
-    // preflight's own caller releases the repository's root, not the sample its gate runs.
-    const own = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true,\"release\":true}", .{})).value, pin, "sample", true, "ci.yml");
-    try std.testing.expect(std.mem.find(u8, own, "working-directory: \"sample\"\n      package-directory: .\n") != null);
-    try std.testing.expect(std.mem.find(u8, own, "uses: ./.github/actions/land\n        with:\n          version: ${{ needs.gate.outputs.version }}\n") != null);
-    const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{\"land\":true}", .{})).value, pin, ".", false, "ci.yml");
-    try std.testing.expect(std.mem.find(u8, plain, "version:") == null);
-    try std.testing.expect(std.mem.find(u8, plain, "package-directory") == null);
-    for ([_][]const u8{ "{\"release\":true}", "{\"land\":true,\"release\":\"yes\"}" }) |text| {
+    for ([_][]const u8{ "{\"nightly\":{\"cron\":\"daily\"}}", "{\"nightly\":{\"tier\":\"all\"}}", "{\"nightly\":{\"when\":1}}", "{\"nightly\":3}" }) |text| {
         try std.testing.expect(std.meta.isError(render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml")));
     }
 }

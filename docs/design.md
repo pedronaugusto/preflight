@@ -42,7 +42,7 @@ Every package runs it (aegis's design §7); `Config.hardened` chooses its steps,
 
 ## Canonical orchestration and costs
 
-One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. A macOS target's link runs on a Mac only when the build configured for that target links a framework, which only Apple's SDK holds; `plan` and `land` read that from the build (`sdk_targets` beside the configuration, as `measured` is), and Zig links any other macOS program on Linux with the libSystem it ships. CI controls have one declaration owner, including early root lazy-discovery returns. A caller-provided `Config.timings_enabled` retains its existing option ownership: preflight uses that value without declaring a second `ci-timings` option. Declarative repository facts stay with the caller. The hardened profile adds three native jobs to every package's release tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
+One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. A macOS target's link runs on a Mac only when the build configured for that target links a framework, which only Apple's SDK holds; `plan` and `gate` read that from the build (`sdk_targets` beside the configuration, as `measured` is), and Zig links any other macOS program on Linux with the libSystem it ships. CI controls have one declaration owner, including early root lazy-discovery returns. A caller-provided `Config.timings_enabled` retains its existing option ownership: preflight uses that value without declaring a second `ci-timings` option. Declarative repository facts stay with the caller. The hardened profile adds three native jobs to every package's release tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
 
 Runner protocol, timeout, test ordering, allocation ownership and portable shard records remain separate from benchmark measurement. The runtime build dependency closure remains unchanged; shakedown is lazy test/benchmark support. Configuration and driver fault tests use deterministic child/input/output failures, rather than timing thresholds.
 
@@ -67,7 +67,7 @@ package's tools and not counted. The check reads Zig's configuration of the buil
 hash and module import table, not manifests, so a revision that an injected module or a
 dependency's pin brings is seen where it is linked. A family of packages whose tools check each
 other stays a DAG to every consumer this way, and its moves are a release train: re-pin in
-dependency order, each landing on its own green run.
+dependency order, each released on its own green gate (`bay --workspace release`).
 
 What preflight adds to an artifact obeys the same rule. The test runner, its shard order and its
 watchdog link std alone; benchmarks and fuzzing measure through the package's own shakedown,
@@ -82,31 +82,26 @@ root's dependency cannot drift at all: `addConsumerCheck` writes its project und
 from the root's own pins when the build is configured, and runs it there: the tree holds no output.
 The lint check stays as the backstop for a manifest kept by hand.
 
-## Versions on landing
+## Releases are verified, not made
 
-A package's version is decided by what its changelog says changed, and made on the commit the gate
-tests, so the landed commit, the manifest's version and the tag are one. `preflight release` reads
-the last `v*` tag, asks git whether anything under the manifest's `.paths` differs from it (the
-files a consumer fetches, so a benchmark or a CI file does not release), and reads the headings of
-`## [Unreleased]`: an entry under `### Breaking` bumps the minor below 1.0 and the major from it, any
-other entry the patch. It does not guess a bump from the diff: a change with nothing written is an
-error that names the fix, because a changelog that can be skipped is not the record of what
-changed. The command writes `build.zig.zon` and `CHANGELOG.md` and leaves the commit to the landing
-script, since only the script knows which branch it is on. The tag is made by the caller's `land` job,
-which alone writes, after the fast-forward, when the manifest's version has none. The gate's first job reads that version with `preflight version` and exposes it as an output, so the manifest is parsed in Zig only and the land action just creates the tag from the value it is given; an existing tag is
-left where it is. A release made and waiting for its tag is recognised and not made twice. The
-choice is opt-in (`release` in `ci/workflow.json`) and general: nothing in it knows a family.
+A package releases with bay (`bay release`): bay owns versions, pins and the release train, so it
+writes the release from the changelog, commits it, and tags and pushes it once a gate passed on
+that commit. preflight verifies. Its gate checks, before any job, what a release needs beside the
+jobs: the caller as `plan` generates it, the manifest's version as the changelog's newest release,
+and the changelog against the API diff since the last `v*` tag, so a removed or changed public
+declaration that the changelog does not call breaking is refused, never bumped silently. The lint
+checks the last two on every commit. The changelog is read with bay's own reader of it, so the
+checker reads what the writer writes. preflight is run through the package's development build,
+not linked into bay: the preflight that judges a package is the one its manifest pins.
 
 ## Generated caller
 
 The caller is generated whole from `ci/workflow.json`: the gate call with every tier's matrices,
-the package's declared jobs among them, the triggers, the concurrency groups and, with `land`,
-the landing job. A package's own job is a build step with hosts, tiers, a directory and a setup
-step, run by the gate's job with its setup and caches, so its refs, inputs and `needs` cannot go
-stale and a landing waits for it like any job of the gate. The generator refuses to replace a
-caller holding a job the configuration does not declare. Landing is one caller job that needs the
-gate and alone holds write permission; without `land` the caller asks for none, since a reusable
-workflow cannot be granted more than its caller holds whatever its jobs' conditions say.
+the package's declared jobs among them, the triggers and the concurrency groups. A package's own
+job is a build step with hosts, tiers, a directory and a setup step, run by the gate's job with
+its setup and caches, so its refs, inputs and `needs` cannot go stale and a change waits for it
+like any job of the gate. The generator refuses to replace a caller holding a job the
+configuration does not declare. Nothing in a caller writes: it asks for read alone.
 
 ## The runner's streams
 

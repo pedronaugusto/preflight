@@ -69,7 +69,7 @@ project, and preflight's own gate runs it on every host.
 
 `addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
-`check-imports`, `release`, `surface`, `land`, `ready`, `gate`, `publish`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
+`check-imports`, `surface`, `gate`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
@@ -428,7 +428,7 @@ The gate has four tiers, each holding everything the one before it checks:
 - **merge**: the gate a change passes to reach main: the source checks, the Debug suite
   on Linux, macOS and Windows (sharded as configured), and an object compile of every
   configured cross target (macOS and Windows run natively instead). It is the required
-  status check of a pull request, and with `land` it moves main.
+  status check of a pull request.
 - **release**: the full matrix, nightly and before a cut: every mode on every host
   (Debug and ReleaseSafe everywhere, ARM Linux and Windows included, ReleaseFast on
   Linux), the Debug suite on a riscv64 Linux kernel under QEMU, ReleaseSmall, every cross
@@ -462,38 +462,6 @@ repository shows the trigger and concurrency policy:
 The options of `ci/workflow.json`, all off or defaulted in a new project. Any other key is
 refused, so a misspelt option fails the plan instead of quietly changing nothing.
 
-- `land` (default `false`): the caller gains a `land` job and a `land` dispatch input. A
-  merge-tier dispatch whose gate is green fast-forwards the repository's default branch (main
-  here) to the commit it tested, with the run's own token and never forced; a main that moved
-  since fails the job and says so. That job
-  alone may write, and only to move main; without `land` nothing in the caller asks for more than
-  read. The token's push starts no run, so a landing is tested once. Dispatch with
-  `-f land=false` to test without landing.
-- `release` (default `false`, needs `land`): versions on landing. `zig build release` (the step
-  `addCi` adds) looks at the commit about to be tested. A package that changed since its last `v*`
-  tag, meaning any file under the manifest's `.paths`, gets its next version: a `### Breaking`
-  entry under `## [Unreleased]` in `CHANGELOG.md` bumps the minor below 1.0 and the major from
-  1.0, anything else the patch. The command writes the version into `build.zig.zon` and turns
-  `[Unreleased]` into `## [X.Y.Z] - date` under a fresh empty one, with the link references
-  following. A package that did not change gets no release and the command says so; one that
-  changed with nothing under `[Unreleased]` fails naming the fix; a version whose tag exists
-  fails, since a tag is never moved. A release with no `### Breaking` entry that removes or
-  changes a public declaration of a module the package exports (`b.addModule`), or of its
-  `build.zig`, which a build depending on it imports, is refused, and
-  the refusal names each one: the surface is read with glint's project model from the modules'
-  root files, following their relative imports, the aliases they are spelled with and the types
-  a function returning `type` makes, at the last tag and now. A line per declaration: a
-  function's parameter and return types, a field's type, the fields a struct literal must name,
-  what a public constant aliases; layout, comments, parameter names and the values of literal
-  constants are not part of it, and an addition is no break. `zig build surface` lists the
-  surface, `zig build surface -- --since <tag>` what changed (`-` removed or changed, `+`
-  added). What it cannot see: a module the package stopped exporting, and the members of what
-  another package's module declares. `land` below commits the result before the gate tests it.
-  The caller's `land` job, after it moves main, tags that commit `vX.Y.Z` when the
-  manifest's version has no tag yet, with the same token. The version comes from the gate
-  (`preflight version`, an output of `zig.yml`), so no workflow parses the manifest.
-
-  `zig build land` (`bay land` under bay) lands a branch through this gate; see Landing below.
 - `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
   merge or release run left for its exact SHA, and fails without one. For repositories that push
   to main by hand.
@@ -521,8 +489,6 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 - `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
   `compile_once`, `portable_hosts`, `hardened`: what the tiers build and run, described below.
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
-- `programs_step`: the step of the package's own build that installs the programs a release
-  carries, one per host; `publish` builds it and attaches what it installs to the release.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
   with three attempts of five minutes; `before_tests_step`: a step run before the tests.
 - `windows_git_latest`: upgrade Git for Windows first.
@@ -531,7 +497,7 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 
 `ci/workflow.json` is the declarative input, and the caller is wholly generated from it:
 both reusable-workflow references, the checkout pin, triggers, concurrency policy, the
-seven tier matrices with the declared jobs, and the landing. Regenerate it with:
+seven tier matrices with the declared jobs. Regenerate it with:
 
 ```sh
 zig build plan -- --workflow .github/workflows/ci.yml
@@ -560,92 +526,43 @@ single-file workflow replacement. `--workflow` renders every tier and cannot
 be combined with `--output`. Consumer repositories keep only declarative inputs
 and their generated caller, never copied planner code or consumer plan dumps.
 
-### Landing
+### Releasing
 
-`zig build land` (`bay land` under bay), a step `addCi` adds, takes the branch checked out
-through the merge tier and onto origin's default branch, main below. A gate configured and run
-in another directory than the package's lands as its caller was planned: the caller's first line
-is the `plan` command that wrote it, `--config` and `--working-directory` included, and `land`
-reads them there, so a landing takes no flags (preflight's own gate runs in its sample). It needs `land` and
-`release` in `ci/workflow.json`, a clean tree with the branch checked out, and the GitHub CLI
-signed in; preflight never reads the token. Every `gh` call names the repository origin's
-configured URL names (`https://github.com/owner/name.git`, `git@github.com:owner/name.git`, or
-the same on another GitHub host), so no other remote or gh default decides it. The default
-branch is the one `refs/remotes/origin/HEAD` names; a clone that has not recorded it asks
-origin (`git remote set-head origin --auto`), and one origin cannot answer for is refused
-with the command that sets it.
+preflight verifies; it neither versions, tags nor pushes. A package releases with bay
+(`bay release`), which writes the release from `CHANGELOG.md`'s `[Unreleased]` section,
+commits it, runs this gate on that commit, and pushes the branch and the tag only when it is
+green. The gate (`zig build gate`, `bay gate` under bay), a step `addCi` adds, first checks
+what a release needs beside the jobs, each refusal naming its fix:
 
-A landing never touches the branch, its checkout or its tree. It fetches origin's branches
-and tags (pruning nothing) and makes the landing commit in a worktree of its own, detached at
-the branch, under the repository's git directory, which it removes however the landing ends.
-There it:
+1. the caller is what `plan -- --workflow` generates for the package's pins and
+   configuration, so the hosted runs check the package with the preflight it pins;
+2. the manifest's `.version` is the CHANGELOG's newest release;
+3. the CHANGELOG says what the public API changed since the last `v*` tag: a change to the
+   surface needs an entry in `[Unreleased]` or in a release made since, and a removed or
+   changed public declaration of a module the package exports (`b.addModule`), or of its
+   `build.zig`, which a build depending on it imports, a breaking one (`### Breaking` or
+   `### Removed`), each declaration named. The surface is read with glint's project model from
+   the modules' root files, following their relative imports, the aliases they are spelled
+   with and the types a function returning `type` makes, at the last tag and now. A line per
+   declaration: a function's parameter and return types, a field's type, the fields a struct
+   literal must name, what a public constant aliases; layout, comments, parameter names and
+   the values of literal constants are not part of it, and an addition is no break. `zig build
+   surface` lists the surface, `zig build surface -- --since <tag>` what changed (`-` removed
+   or changed, `+` added). What it cannot see: a module the package stopped exporting, and the
+   members of what another package's module declares. A change of behaviour it cannot see at
+   all: its author names it. CHANGELOG.md is read as bay reads it (bay's `changelog` module):
+   an entry is a line under one of Keep a Changelog's groups or `### Breaking`.
 
-1. rebases the branch on origin's main, moving no other branch whatever
-   `rebase.updateRefs` says; a conflict stops the landing and names the files;
-2. runs `bay tidy` under bay, so that pins name released revisions;
-3. generates the caller again, as `plan -- --workflow` does, when it names another
-   preflight than the manifest now pins;
-4. adds `- Pins gantry 0.1.4.` under `### Changed` when the manifest pins a dependency at
-   another revision than the last `v*` tag did and `[Unreleased]` names none of them. When
-   `[Unreleased]` lists nothing, the line is written only if the manifest is the one shipped
-   file that changed: a change to anything else with nothing said about it is refused, as
-   `release` refuses it;
-5. makes the release (see `release` above) and commits it as `Release vX.Y.Z`.
-
-The commit goes to a branch of its own, `land/vX.Y.Z-<commit>`, or `land/<branch>-<commit>`
-when nothing the package ships changed, so no push replaces anything. A branch main already
-holds, with nothing to release, lands nothing and says so. `land` dispatches the caller on
-its branch with `-f tier=merge -f land=true`, prints the run's URL as soon as GitHub lists
-it, and waits. A `gh` call that fails while it looks for the run or at it is made again;
-ten failures in a row end the wait, saying the run goes on and may still land.
-
-- Green: the caller's `land` job moved main and tagged the commit. `land` checks that main
-  holds the commit (another landing may have gone on top meanwhile) and that the tag is on
-  it, moves the branch to the commit when it is still checked out where the landing began
-  (fast-forward, or `reset --keep` for the rebased commits), and deletes the attempts at the
-  version that no landing needs: one whose commit main holds, or whose runs have all ended.
-  Another landing's attempt with a run going, or none yet, stays. The run landed whatever
-  happens next: a branch that moved meanwhile, a tree whose edits git will not carry, an
-  origin that cannot be fetched or a branch that cannot be deleted is reported, and the
-  landing still succeeds.
-- Red: the failed jobs are named, the attempt's branch stays to be looked at, and nothing
-  else moves, so landing again makes the same version.
-
-### Landing by hand
-
-A package gated on the machines at hand rather than by a hosted run lands in three steps, each
-a step `addCi` adds (`bay ready`, `bay gate`, `bay publish` under bay):
-
-1. `ready` makes the landing commit on the branch itself, as `land` makes it in its worktree:
-   rebased on origin's main, tidied, the nested manifests aligned and the builds that take the
-   package by path tidied, the caller generated again when its preflight moved, the changelog
-   told of re-pins, the release cut and committed as `Release vX.Y.Z`. Under bay the tidy is
-   bay's where it runs, so a landing is readied where no `bay.work` is in effect.
-2. `gate` runs, on this machine, the release tier's jobs it can: the suites of its own system
-   (a Linux machine of either architecture runs the Linux ones, once each, with the source
-   checks and every target's compile, which the hosted gate runs on Linux), and on every
-   machine the hardened runs; each as the hosted job runs it, every one of them, so a red names all that failed. It names what it
-   did not run and why: another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux and macOS, riscv64
-   with no `qemu-system-riscv64` on the PATH. Run it on a machine of each system the landing asks for.
-   `--working-directory <dir>` gates a package whose caller runs its planned jobs there and its
-   declared jobs in their own directories, as preflight's own caller runs its sample.
-3. `publish` pushes the commit checked out onto origin's main, as a fast-forward and never
-   forced, with the tag of the version the manifest declares when the changelog released it
-   and no tag names it yet, both in one atomic push. A HEAD that does not hold origin's main,
-   a tree with changes, or a tag that already names another commit is refused. A package that
-   ships programs names the step of its own build that installs them, one per host, as
-   `"programs_step"` in `ci/workflow.json` (bay's `"dist"`): `publish` builds it first, into
-   `.zig-cache/preflight-programs/vX.Y.Z`, so a release whose programs do not build moves
-   nothing, and after the push makes the tag's GitHub release with every file the step
-   installed, its notes the changelog's entry for the version. A failure there names the `gh`
-   command that finishes the release.
-- A landing whose end this clone did not see (an origin it could not fetch, a wait it gave
-  up on) is finished by landing again: there is nothing left to land, the version's
-  attempts no landing needs go, and the branch moves to main.
-
-`--poll <seconds>` sets the time between two looks at GitHub (5 while finding the run, 20
-while it runs), and `--date YYYY-MM-DD` the release's date (today in UTC). It exits 0 when
-it landed or had nothing to land, 1 otherwise.
+The lint checks 2 and 3 on every commit too. Then the gate runs, on this machine, the release
+tier's jobs it can: the suites of its own system (a Linux machine of either architecture runs
+the Linux ones, once each, with the source checks and every target's compile, which the hosted
+gate runs on Linux), and on every machine the hardened runs; each as the hosted job runs it,
+every one of them, so a red names all that failed. It names what it did not run and why:
+another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux and macOS, riscv64 with
+no `qemu-system-riscv64` on the PATH. bay runs it on each machine a release is gated on.
+It runs the planned jobs in the directory the package's caller runs its gate in (preflight's
+own runs its sample), or the one `--working-directory <dir>` names, and the declared jobs in
+their own directories.
 
 ### The linked graph
 

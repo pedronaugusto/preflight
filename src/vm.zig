@@ -21,15 +21,18 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Bui
     // Fetched on first use: a build that asks for the machine configures again once they land.
     const alpine = pkg.dependencyLazy("alpine_riscv64", .{}) catch return;
     const rootfs = pkg.dependencyLazy("alpine_riscv64_rootfs", .{}) catch return;
+    const riscv64 = b.resolveTargetQuery(.{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .none });
     const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = b.createModule(.{
         .root_source_file = pkg.path("src/vm/guest.zig"),
-        .target = b.resolveTargetQuery(.{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .none }),
+        .target = riscv64,
         .optimize = .safe,
+        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = riscv64, .optimize = .safe }).module("aegis") }},
     }) });
     const runner = b.addExecutable(.{ .name = "preflight-vm", .root_module = b.createModule(.{
         .root_source_file = pkg.path("src/vm/host.zig"),
         .target = host,
         .optimize = .safe,
+        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = host, .optimize = .safe }).module("aegis") }},
     }) });
     const boot = b.addRunArtifact(runner);
     boot.addArg("image");

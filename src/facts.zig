@@ -1,5 +1,6 @@
 //! Zig's build-system protocol and the actual configured artifact graph, on the Zig versions `zig_version.zig` lists.
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const src = @import("checks/source.zig");
 const zig_version = @import("zig_version.zig");
@@ -103,7 +104,7 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         const config_path = try notification(c.a, &reader);
         // A poisoned configuration is deleted at clean exit. Read it while
         // the server is alive; never race a path notification against exit.
-        const bytes = try c.directory().readFileAlloc(c.io, config_path, c.a, .limited(limit));
+        const bytes = try aegis.own.readFile(c.io, c.directory(), config_path, c.a, .fromRaw(limit));
         const config = try configuration.load(c.a, bytes);
         var buffer: [16]u8 = undefined;
         var writer = child.stdin.?.writerStreaming(c.io, &buffer);

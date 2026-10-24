@@ -11,6 +11,7 @@
 //! `preflight-vm run <kernel> <initrd> <program> [args...]` runs one program on
 //! it: the build puts it in front of each run of a riscv64 test or program.
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const Io = std.Io;
 const cpio = @import("cpio.zig");
@@ -52,9 +53,9 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     const cwd = Io.Dir.cwd();
     var alpine = try cwd.openDir(io, paths.alpine, .{});
     defer alpine.close(io);
-    const limit: Io.Limit = .limited(512 * 1024 * 1024);
+    const limit: u64 = 512 * 1024 * 1024;
 
-    const kernel = try alpine.readFileAlloc(io, "boot/vmlinuz-lts", gpa, limit);
+    const kernel = try aegis.own.readFile(io, alpine, "boot/vmlinuz-lts", gpa, .fromRaw(limit));
     const raw_kernel = if (std.mem.startsWith(u8, kernel, "\x1f\x8b")) try gunzip(gpa, kernel) else kernel;
     try cwd.writeFile(io, .{ .sub_path = paths.kernel, .data = raw_kernel });
 
@@ -68,7 +69,7 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     defer rootfs.close(io);
     try addTree(io, gpa, &archive, rootfs, &.{}, null);
 
-    const initramfs = try gunzip(gpa, try alpine.readFileAlloc(io, "boot/initramfs-lts", gpa, limit));
+    const initramfs = try gunzip(gpa, try aegis.own.readFile(io, alpine, "boot/initramfs-lts", gpa, .fromRaw(limit)));
     var modules: cpio.Reader = .{ .bytes = initramfs };
     while (try modules.next()) |entry| {
         const name = std.mem.trimStart(u8, entry.name, "./");
@@ -77,8 +78,8 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     }
 
     try archive.add(.{ .name = "preflight", .kind = .directory, .mode = 0o755 });
-    try archive.add(.{ .name = "preflight/modules.squashfs", .kind = .file, .mode = 0o644, .data = try alpine.readFileAlloc(io, "boot/modloop-lts", gpa, limit) });
-    try archive.add(.{ .name = "init", .kind = .file, .mode = 0o755, .data = try cwd.readFileAlloc(io, paths.init, gpa, limit) });
+    try archive.add(.{ .name = "preflight/modules.squashfs", .kind = .file, .mode = 0o644, .data = try aegis.own.readFile(io, alpine, "boot/modloop-lts", gpa, .fromRaw(limit)) });
+    try archive.add(.{ .name = "init", .kind = .file, .mode = 0o755, .data = try aegis.own.readFile(io, cwd, paths.init, gpa, .fromRaw(limit)) });
     try archive.finish();
     try file_writer.interface.flush();
 }
@@ -114,7 +115,7 @@ fn addTree(io: Io, gpa: std.mem.Allocator, archive: *cpio.Writer, root: Io.Dir, 
             .file => {
                 const stat = try root.statFile(io, entry.path, .{});
                 const executable = stat.permissions.toMode() & 0o111 != 0;
-                const data = try root.readFileAlloc(io, entry.path, gpa, .limited(512 * 1024 * 1024));
+                const data = try aegis.own.readFile(io, root, entry.path, gpa, .fromRaw(512 * 1024 * 1024));
                 try archive.add(.{ .name = entry.path, .kind = .file, .mode = if (executable) 0o755 else 0o644, .data = data });
             },
             else => return error.UnsupportedRootMember,
@@ -211,10 +212,10 @@ fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []cons
     var key_files = keys.iterate();
     while (try key_files.next(io)) |key| {
         if (key.kind != .file) continue;
-        const data = try keys.readFileAlloc(io, key.name, gpa, .limited(64 * 1024));
+        const data = try aegis.own.readFile(io, keys, key.name, gpa, .fromRaw(64 * 1024));
         try run_dir.writeFile(io, .{ .sub_path = try gpa.print("root/etc/apk/keys/{s}", .{key.name}), .data = data });
     }
-    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = try rootfs.readFileAlloc(io, "etc/apk/repositories", gpa, .limited(64 * 1024)) });
+    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = try aegis.own.readFile(io, rootfs, "etc/apk/repositories", gpa, .fromRaw(64 * 1024)) });
 
     var guest_argv: std.ArrayList(u8) = .empty;
     for ([_][]const u8{ "/sbin/apk", "add", "--root", install_root, "--initdb", "--usermode", "--no-scripts", "--no-cache", "--no-progress" }) |arg| try appendEntry(gpa, &guest_argv, arg);
@@ -238,7 +239,7 @@ fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []cons
     defer out.close(io);
     var buffer: [64 * 1024]u8 = undefined;
     var file_writer = out.writer(io, &buffer);
-    try file_writer.interface.writeAll(try cwd.readFileAlloc(io, paths.initrd, gpa, .limited(1024 * 1024 * 1024)));
+    try file_writer.interface.writeAll(try aegis.own.readFile(io, cwd, paths.initrd, gpa, .fromRaw(1024 * 1024 * 1024)));
     var archive: cpio.Writer = .{ .out = &file_writer.interface };
     var root = try run_dir.openDir(io, "root", .{ .iterate = true });
     defer root.close(io);
@@ -301,10 +302,10 @@ fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, initrd: []const u8, 
     forward.detach();
     const term = try child.wait(io);
 
-    const status = cwd.readFileAlloc(io, status_path, gpa, .limited(256)) catch "";
+    const status = aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(256)) catch "";
     if (parseStatus(status)) |ending| return ending;
     try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: the machine ended ({any}) without its program's status \"{s}\"; its console:\n", .{ term, std.mem.trimEnd(u8, status, "\n") }));
-    const log = cwd.readFileAlloc(io, try gpa.print("{s}/console", .{run_path}), gpa, .limited(16 * 1024 * 1024)) catch "";
+    const log = aegis.own.readFile(io, cwd, try gpa.print("{s}/console", .{run_path}), gpa, .fromRaw(16 * 1024 * 1024)) catch "";
     try Io.File.stderr().writeStreamingAll(io, log[log.len -| 8192..]);
     return error.MachineFailed;
 }

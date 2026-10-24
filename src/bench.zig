@@ -1,5 +1,6 @@
 //! Build and execution wiring. Measuring and comparison belong to shakedown.
 const std = @import("std");
+const aegis = @import("aegis");
 const configure = @import("configure.zig");
 
 /// A repository's benchmark programs and their package modules.
@@ -84,7 +85,7 @@ fn provenance(b: *std.Build) []const u8 {
     const common = lines.next() orelse return "source-archive";
     const head_path = b.fmt("{s}/HEAD", .{directory});
     b.dependOnFileContents(.{ .cwd_relative = head_path });
-    const head = std.Io.Dir.cwd().readFileAlloc(b.graph.io, head_path, b.allocator, .limited(32768)) catch return "source-archive";
+    const head = aegis.own.readFile(b.graph.io, std.Io.Dir.cwd(), head_path, b.allocator, .fromRaw(32768)) catch return "source-archive";
     // A nested package still records its repository's real commit. Both loose
     // and packed refs are configuration inputs, rather than cached git guesses.
     if (std.mem.startsWith(u8, head, "ref: ")) {

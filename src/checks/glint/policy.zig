@@ -39,6 +39,20 @@ pub const durability = blk: {
     break :blk out;
 };
 
+/// The family's whole-file read: std 0.17's `Dir.readFileAlloc` and `readFileAllocOptions` lose a
+/// cancel that lands on the file's length (its writer takes the failed length as a guess and
+/// reads on), so production code reads a whole file through `aegis.own.readFile`, which returns
+/// it, bounded by a limit the caller gives. aegis owns the entry, as airlock owns durability's.
+pub const whole_reads = blk: {
+    const reason = "std's whole-file read loses a cancel that lands on the file's length";
+    const replacement = "aegis.own.readFile, with the limit the caller gives";
+    const owners: []const []const u8 = &.{"aegis"};
+    const std_paths = [_][]const u8{ "Io.Dir.readFileAlloc", "Io.Dir.readFileAllocOptions" };
+    var out: [std_paths.len]glint.Config.Disallowed = undefined;
+    for (std_paths, &out) |path, *entry| entry.* = .{ .source = "std", .declaration = path, .reason = reason, .replacement = replacement, .scope = .production, .owners = owners };
+    break :blk out;
+};
+
 /// How a rule weighs on the gate.
 ///
 /// `gate` is glint's: its findings fail the run, and so does any site it
@@ -300,8 +314,9 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
         for (defaults) |entry| named = named or entry.rule == amendment.rule;
         if (!named) try all.append(a, amendment);
     }
-    // The family's durability door holds in every repository, before what it disallows itself.
-    base.disallowed = try std.mem.concat(a, glint.Config.Disallowed, &.{ &durability, base.disallowed });
+    // The family's durability door and its whole-file read hold in every repository, before what
+    // it disallows itself.
+    base.disallowed = try std.mem.concat(a, glint.Config.Disallowed, &.{ &durability, &whole_reads, base.disallowed });
     {
         var named = false;
         for (chosen.items) |amendment| named = named or amendment.rule == .P006;
@@ -560,9 +575,9 @@ test "the default policy gates correctness, weighs the danger rules as findings,
     for ([_]glint.Rule{ .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032, .D001 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
     try std.testing.expectEqual(.off, policy.base.level(.Z024));
     try std.testing.expect(policy.base.metrics);
-    // The durability door gates in every repository.
+    // The durability door and the whole-file read gate in every repository.
     try std.testing.expectEqual(.gate, policy.base.level(.P006));
-    try std.testing.expectEqual(durability.len, policy.base.disallowed.len);
+    try std.testing.expectEqual(durability.len + whole_reads.len, policy.base.disallowed.len);
     try std.testing.expect(policy.fails(.Z011) and policy.fails(.P005));
     try std.testing.expect(!policy.fails(.Z012) and !policy.fails(.Z001));
     // Every pack rule runs; all but those that read a flow fact fail the run on a finding.

@@ -4,6 +4,7 @@
 //! written, so two packages that pin a third at two revisions link both, and a
 //! package that builds under bay breaks for a consumer that builds without it.
 const std = @import("std");
+const aegis = @import("aegis");
 const nested = @import("nested.zig");
 
 /// One revision of a package in the graph, and the package that pins it.
@@ -59,7 +60,7 @@ pub fn conflicts(a: std.mem.Allocator, io: std.Io, root: []const u8, name: []con
 /// the pin is not lazy; null when it is not there.
 fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.Pin) !?[]const u8 {
     const path = try std.Io.Dir.path.join(a, &.{ "p", pin.hash, "build.zig.zon" });
-    if (packages.global.readFileAlloc(io, path, a, .limited(1024 * 1024))) |text| return text else |err| switch (err) {
+    if (aegis.own.readFile(io, packages.global, path, a, .fromRaw(1024 * 1024))) |text| return text else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
@@ -67,7 +68,7 @@ fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.P
     if (pin.lazy) return null;
     const fetched = try std.process.run(a, io, .{ .argv = &.{ zig, "fetch", pin.url } });
     if (fetched.term != .exited or fetched.term.exited != 0) return error.FetchFailed;
-    return packages.global.readFileAlloc(io, path, a, .limited(1024 * 1024)) catch |err| switch (err) {
+    return aegis.own.readFile(io, packages.global, path, a, .fromRaw(1024 * 1024)) catch |err| switch (err) {
         // A package with no manifest pins nothing.
         error.FileNotFound => null,
         else => err,

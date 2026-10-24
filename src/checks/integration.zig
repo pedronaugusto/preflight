@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const root = @import("test_options").root;
 const command = @import("command.zig");
@@ -11,7 +12,7 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "src/testing/hardened.zig", "ci/layers.zig", "ci/preflight.json", "ci/consumer.zig", "LICENSE", "README.md", "CHANGELOG.md" }) |path| {
         const input = try std.Io.Dir.path.join(a, &.{ root, "sample", path });
         defer a.free(input);
-        const text = try std.Io.Dir.cwd().readFileAlloc(io, input, a, .limited(1024 * 1024));
+        const text = try aegis.own.readFile(io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024));
         defer a.free(text);
         const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", "") else text;
         try dir.writeFile(io, .{ .sub_path = path, .data = copied });
@@ -35,7 +36,7 @@ const Pin = struct { url: []const u8, hash: []const u8 };
 /// The shakedown preflight's own manifest pins as a dev dependency.
 fn shakedownPin(a: std.mem.Allocator) !Pin {
     const path = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, a, .limited(1024 * 1024));
+    const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), path, a, .fromRaw(1024 * 1024));
     const Manifest = struct { dev_dependencies: struct { shakedown: Pin } };
     var diagnostics: std.zon.parse.Diagnostics = undefined;
     const manifest = try std.zon.parse.fromSlice(Manifest, .{ .gpa = a, .arena = a, .source = try a.dupeSentinel(u8, text, 0), .diagnostics = &diagnostics, .ignore_unknown_fields = true });
@@ -102,7 +103,7 @@ test "structure runner walks every configured source root" {
 
 fn fixtureLayers(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const input = try std.Io.Dir.path.join(a, &.{ root, "sample/ci/layers.zig" });
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, input, a, .limited(1024 * 1024));
+    const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024));
     const changed = try std.mem.replaceOwned(u8, a, text, ".{ .name = \"sample\", .patterns = &.{\"src/sample.zig\"} }", ".{ .name = \"sample\", .patterns = &.{\"src/sample.zig\"} }, .{ .name = \"again\", .patterns = &.{\"src/*.zig\"} }");
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = changed });
 }
@@ -235,7 +236,7 @@ fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
     var iterator = timings.iterate();
     var names: std.ArrayList(u8) = .empty;
     while (try iterator.next(std.testing.io)) |entry| {
-        const text = try timings.readFileAlloc(std.testing.io, entry.name, a, .limited(1024 * 1024));
+        const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
@@ -481,7 +482,7 @@ fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]c
     var names: std.ArrayList([]const u8) = .empty;
     while (try iterator.next(std.testing.io)) |entry| {
         if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
-        const text = try timings.readFileAlloc(std.testing.io, entry.name, a, .limited(1024 * 1024));
+        const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
@@ -503,7 +504,7 @@ fn recordedKey(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]con
     var iterator = timings.iterate();
     while (try iterator.next(std.testing.io)) |entry| {
         if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
-        const text = try timings.readFileAlloc(std.testing.io, entry.name, a, .limited(1024 * 1024));
+        const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
         const line = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
         const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
         return a.dupe(u8, src.string(src.get(row, "key"), ""));
@@ -793,7 +794,7 @@ test "the consumer check builds the package as a dependency with nothing fetched
 
 fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u8, to: []const u8) !void {
     const io = std.testing.io;
-    const text = try dir.readFileAlloc(io, path, a, .limited(1024 * 1024));
+    const text = try aegis.own.readFile(io, dir, path, a, .fromRaw(1024 * 1024));
     const changed = try std.mem.replaceOwned(u8, a, text, from, to);
     try std.testing.expect(!std.mem.eql(u8, text, changed));
     try dir.writeFile(io, .{ .sub_path = path, .data = changed });
@@ -1694,7 +1695,7 @@ fn rootsFixture(a: std.mem.Allocator, dir: std.Io.Dir, build: []const u8, files:
     try dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = build });
     for (files) |file| try dir.writeFile(std.testing.io, .{ .sub_path = file[0], .data = file[1] });
     const input = try std.Io.Dir.path.join(a, &.{ root, "sample/ci/layers.zig" });
-    const text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, input, a, .limited(1024 * 1024));
+    const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024));
     const layered = try std.mem.replaceOwned(u8, a, text, ".patterns = &.{\"src/sample.zig\"}", ".patterns = &.{\"src/*.zig\"}");
     try std.testing.expect(!std.mem.eql(u8, text, layered));
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = layered });

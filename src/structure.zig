@@ -1,5 +1,6 @@
 //! Source boundaries. Layer data belongs to this package; graph rules belong to gantry.
 const std = @import("std");
+const aegis = @import("aegis");
 const gantry = @import("gantry");
 const declared = @import("layers");
 const source = @import("checks/source.zig");
@@ -44,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
         } else return error.UnknownArgument;
     }
     // Every option has a default: a package needs no file to start.
-    const text = std.Io.Dir.cwd().readFileAlloc(init.io, config_path, a, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+    const text = aegis.own.readFile(init.io, std.Io.Dir.cwd(), config_path, a, .fromRaw(64 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => "{}",
         else => return err,
     };

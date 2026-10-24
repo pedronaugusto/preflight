@@ -1,6 +1,7 @@
 //! Zig's standard library read as source: what a path names, whether std
 //! deprecates it, and what a deprecated alias stands for.
 const std = @import("std");
+const aegis = @import("aegis");
 const Ast = std.zig.Ast;
 const Allocator = std.mem.Allocator;
 
@@ -77,7 +78,7 @@ pub const Library = struct {
 
     fn load(lib: *Library, path: []const u8) !?*File {
         if (lib.files.get(path)) |file| return file;
-        const text = lib.dir.readFileAlloc(lib.io, path, lib.a, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+        const text = aegis.own.readFile(lib.io, lib.dir, path, lib.a, .fromRaw(64 * 1024 * 1024)) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
         };

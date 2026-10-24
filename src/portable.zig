@@ -42,7 +42,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
     const manifest = b.addWriteFiles().add("tests.json", json);
     compile.dependOn(&b.addInstallFile(manifest, "preflight/tests.json").step);
     const execute = configure.claim(b, "ci-run", "Run the previously compiled test executables");
-    const bytes = configure.read(package, manifest_path, .limited(1024 * 1024)) orelse {
+    const bytes = configure.read(package, manifest_path, 1024 * 1024) orelse {
         execute.dependOn(&b.addFail("portable test manifest missing; run ci-build or download its artifact first").step);
         return;
     };

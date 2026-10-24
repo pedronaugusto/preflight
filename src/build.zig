@@ -80,11 +80,13 @@ pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedT
     const ensign = pkg.dependencyLazy("ensign", .{ .target = target, .optimize = .safe }) catch return null;
     // CHANGELOG.md read as bay, which releases from it, reads it.
     const bay = pkg.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch return null;
+    // aegis as glint is built with it (its whole-file read): one aegis in the program.
+    const aegis = glint.module("glint").import_table.get("aegis") orelse @panic("glint imports aegis");
     return b.createModule(.{
         .root_source_file = pkg.path("src/main.zig"),
         .target = target,
         .optimize = .safe,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis } },
     });
 }
 
@@ -203,6 +205,9 @@ const Steps = struct {
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
         const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
+        // The structure program reads its configuration through aegis, as glint is built with it.
+        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .debug }) catch return;
+        const aegis = glint_dep.module("glint").import_table.get("aegis") orelse @panic("glint imports aegis");
         const executable = steps.checksTool(b, pkg, host) orelse return;
         const timeout = config.test_timeout.duration() orelse fail: {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
@@ -290,14 +295,14 @@ const Steps = struct {
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
-        steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, test_steps.items);
+        steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
         releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
         if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, test_steps: []const []const u8) void {
+    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) void {
         const host = ciTarget(b);
         // A package that declares no structure is held to none.
         const layers = b.createModule(.{
@@ -311,7 +316,7 @@ const Steps = struct {
                 .root_source_file = pkg.path("src/structure.zig"),
                 .target = host,
                 .optimize = .debug,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "layers", .module = layers } },
+                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "layers", .module = layers }, .{ .name = "aegis", .module = aegis } },
             }),
         });
         var format_paths: std.ArrayList([]const u8) = .empty;

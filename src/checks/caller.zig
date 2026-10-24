@@ -4,6 +4,7 @@
 //! hosted runs check the package with the preflight it pins and the jobs `ci/workflow.json`
 //! declares; `generate` makes it again after a pin moves.
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
 const workflow = @import("workflow.zig");
 
@@ -51,7 +52,7 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
         var entries = dir.iterate();
         while (try entries.next(c.io)) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml"))) continue;
-            const text = try dir.readFileAlloc(c.io, entry.name, c.a, .limited(16 * 1024 * 1024));
+            const text = try aegis.own.readFile(c.io, dir, entry.name, c.a, .fromRaw(16 * 1024 * 1024));
             const planned = workflow.planned(text) orelse continue;
             try generated.append(c.a, .{ .name = try c.a.dupe(u8, entry.name), .planned = planned, .gate = gateOf(text) orelse continue });
         }

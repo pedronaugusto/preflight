@@ -57,6 +57,8 @@ pub fn dev(b: *std.Build, _: type) void {
     // The command line's tests hold the forms the build and the workflows call it with.
     const ensign = (package.dependencyLazy("ensign", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("ensign");
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .debug }).module("shakedown");
+    // aegis as glint is built with it: one aegis in the program.
+    const aegis = glint.import_table.get("aegis") orelse @panic("glint imports aegis");
     const test_step = b.step("test", "Run the shared check regression suite");
     // The integration tests run fixture packages the way their authors do: through bay; and
     // the checks read CHANGELOG.md with bay's reader of it.
@@ -65,7 +67,7 @@ pub fn dev(b: *std.Build, _: type) void {
         .root_source_file = package.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "changelog", .module = bay.module("changelog") } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis } },
     }), .filters = test_filters });
     const options = b.addOptions();
     options.addOptionPathUntracked("root", package.path("."));
@@ -98,7 +100,7 @@ pub fn dev(b: *std.Build, _: type) void {
         .root_source_file = package.path("src/profile_test.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "shakedown", .module = shakedown } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "aegis", .module = aegis } },
     }) });
     b.step("profile-tests", "Native protocol fuzzer and concurrent tests").dependOn(&b.addRunArtifact(profile).step);
     // preflight gates its own sources with the checks it ships: the preflight
@@ -187,7 +189,8 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const gantry = gantry_dep.module("gantry");
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: dev returns before addCi if glint is not available
     const changelog = (package.dependencyLazy("bay", .{ .target = target, .optimize = optimize }) catch unreachable).module("changelog"); // unreachable: dev returns before addCi if bay is not available
-    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog } };
+    const aegis = glint.import_table.get("aegis") orelse @panic("glint imports aegis");
+    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis } };
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = package.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },

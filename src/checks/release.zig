@@ -4,6 +4,7 @@
 //! says so. bay releases (`bay release`); preflight only verifies, reading CHANGELOG.md with
 //! bay's own reader of it.
 const std = @import("std");
+const aegis = @import("aegis");
 const changelog = @import("changelog");
 const src = @import("source.zig");
 const zon = @import("../zon.zig");
@@ -217,7 +218,7 @@ const Fixture = struct {
     }
 
     fn read(f: *Fixture, path: []const u8) ![]const u8 {
-        return f.tmp.dir.readFileAlloc(std.testing.io, path, f.arena.allocator(), .limited(1 << 20));
+        return aegis.own.readFile(std.testing.io, f.tmp.dir, path, f.arena.allocator(), .fromRaw(1 << 20));
     }
 
     fn unreleased(f: *Fixture, body: []const u8) !void {

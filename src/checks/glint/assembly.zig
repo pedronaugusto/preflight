@@ -3,6 +3,7 @@
 //! the build's own configuration, so that a name means what the compiler
 //! will take it to mean.
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const glint = @import("glint");
 const configure = @import("../../configure.zig");
@@ -133,7 +134,7 @@ const Loader = struct {
     fn read(self: *Loader, path: []const u8) !?[]const u8 {
         const entry = try self.bytes.getOrPut(self.c.a, path);
         if (entry.found_existing) return entry.value_ptr.*;
-        entry.value_ptr.* = self.c.directory().readFileAlloc(self.c.io, path, self.c.a, .limited(max_file)) catch |err| switch (err) {
+        entry.value_ptr.* = aegis.own.readFile(self.c.io, self.c.directory(), path, self.c.a, .fromRaw(max_file)) catch |err| switch (err) {
             error.FileNotFound => null,
             else => {
                 _ = self.bytes.remove(path);

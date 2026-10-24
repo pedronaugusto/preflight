@@ -11,10 +11,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The default policy weighs glint's aegis pack in every repository (aegis's design §7). A001-A005 and the danger rules A007, A008, A011, A014-A017 and A019 are findings. The rules that read the input or peer fact (A006, A009, A010, A012, A013, A018, A020) and A021 (lock order) are reported until a fresh sample of each shows its noise near zero. A danger site uses aegis's type or carries `// aegis: <reason>: <why>`.
 - The hardened profile is every package's: `Config.hardened` defaults to it (null only in a configuration that runs no native tests), and the planner schedules the hardened jobs in the release tier whatever `ci/workflow.json` says (`"hardened"` may only be `true`). A package with nothing to fuzz writes `.fuzz_step = null`.
 - An installed artifact the build makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with its measurement.
+- The default policy holds every package's production code to aegis's whole-file read (P006, beside the durability door): std 0.17's `Dir.readFileAlloc` and `readFileAllocOptions` lose a cancel that lands on the file's length, so `aegis.own.readFile` (or `readFileSentinel`) reads a file whole, with a limit the caller gives.
 - P001, P002 and P004 leave the default policy with glint 0.7.0, folded into A010 (a conversion of input; the safe build every package ships checks the program's own), A019 and A013. A repository naming one in `glint.rules` is told where its sites went. `glint.casts` and `glint.cast_scope` are retired.
 
 ### Added
 
+- preflight depends on aegis, and reads every file whole through `aegis.own.readFile`: its checks and the programs it builds (consumer, nested, structure, the test machine's guest and host) take aegis as a module, and its build helpers reach the read through aegis's `build.zig`, which a build runner compiles only as far as it is used.
 - `glint.peer_writers`: the functions a package owns whose result writes to a peer, A018's sinks; a lint reads its own and its dependencies'.
 - A `fix` step (`preflight lint --fix`): glint's deterministic fixes written into the package's sources, then the lint's report of the run before them.
 - `glint.unresolved`: a finding rule's ceiling of undecided sites, none by default. Above it the run fails, and below it the run asks for the ceiling to come down.

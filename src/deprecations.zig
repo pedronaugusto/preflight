@@ -2,6 +2,7 @@
 //! release deprecated, by std's own aliases and the release's table, and
 //! lists what needs a person.
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const library = @import("deprecations/library.zig");
 const table = @import("deprecations/table.zig");
@@ -36,7 +37,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, options: Options,
     const entries = try prepare(&lib, release, out);
     var summary: Summary = .{};
     for (try files(a, io, root, options.paths)) |path| {
-        const source = try root.readFileAlloc(io, path, a, .limited(64 * 1024 * 1024));
+        const source = try aegis.own.readFile(io, root, path, a, .fromRaw(64 * 1024 * 1024));
         const outcome = rewrite.file(a, &lib, entries, source) catch |err| switch (err) {
             error.Unparsable => {
                 try out.print("{s}: does not parse; skipped\n", .{path});

@@ -15,6 +15,7 @@
 //! `network` file asks for QEMU's user network, which only an install has. The program's stdin and stdout are the `io` port, its
 //! stderr the `err` port, and `status` takes `exited N` or `signal N`.
 const std = @import("std");
+const aegis = @import("aegis");
 const linux = std.os.linux;
 const Io = std.Io;
 
@@ -71,8 +72,8 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     const environ = try readList(io, gpa, run_mount ++ "/environ");
     const binds = try readList(io, gpa, run_mount ++ "/binds");
     const scratch = try readList(io, gpa, run_mount ++ "/scratch");
-    const cwd = try readFile(io, run_mount ++ "/cwd", gpa, .limited(4096));
-    const user = try parseUser(try readFile(io, run_mount ++ "/user", gpa, .limited(64)));
+    const cwd = try readFile(io, run_mount ++ "/cwd", gpa, 4096);
+    const user = try parseUser(try readFile(io, run_mount ++ "/user", gpa, 64));
     if (argv.len == 0) return error.NoProgram;
 
     // Made before the host's directories are bound, so that it is the machine's own
@@ -211,7 +212,7 @@ fn exists(io: Io, path: []const u8) bool {
 /// a module built in or loaded already is passed over.
 fn loadModules(io: Io, gpa: std.mem.Allocator, tree: []const u8, names: []const []const u8) !void {
     const dep_path = try std.Io.Dir.path.join(gpa, &.{ tree, "modules.dep" });
-    const deps = try readFile(io, dep_path, gpa, .limited(16 * 1024 * 1024));
+    const deps = try readFile(io, dep_path, gpa, 16 * 1024 * 1024);
     for (names) |name| {
         const line = findModule(deps, name) orelse {
             say("no module {s} in {s}", .{ name, tree });
@@ -253,7 +254,7 @@ fn findModule(deps: []const u8, name: []const u8) ?[]const u8 {
 
 fn insertModule(io: Io, gpa: std.mem.Allocator, tree: []const u8, relative: []const u8) !void {
     const path = try std.Io.Dir.path.join(gpa, &.{ tree, relative });
-    const file = try readFile(io, path, gpa, .limited(64 * 1024 * 1024));
+    const file = try readFile(io, path, gpa, 64 * 1024 * 1024);
     const image = if (std.mem.endsWith(u8, relative, ".gz")) try gunzip(gpa, file) else file;
     const rc = linux.syscall3(.init_module, @intFromPtr(image.ptr), image.len, @intFromPtr("")); // aegis: no-danger: init_module takes the image and its parameters by address
     switch (linux.errno(rc)) {
@@ -353,7 +354,7 @@ fn findPorts(io: Io, gpa: std.mem.Allocator) !?Ports {
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         const name_path = try gpa.print("{s}/name", .{entry.name});
-        const raw = try dir.readFileAlloc(io, name_path, gpa, .limited(256));
+        const raw = try aegis.own.readFile(io, dir, name_path, gpa, .fromRaw(256));
         const name = std.mem.trimEnd(u8, raw, "\n");
         const device = try gpa.printSentinel("/dev/{s}", .{entry.name}, 0);
         const slot: *linux.fd_t = if (std.mem.eql(u8, name, "io")) &ports.io else if (std.mem.eql(u8, name, "err")) &ports.err else if (std.mem.eql(u8, name, "status")) &ports.status else continue;
@@ -635,7 +636,7 @@ fn powerOff() noreturn {
 }
 
 fn readList(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]const [:0]const u8 {
-    const bytes = try readFile(io, path, gpa, .limited(16 * 1024 * 1024));
+    const bytes = try readFile(io, path, gpa, 16 * 1024 * 1024);
     var list: std.ArrayList([:0]const u8) = .empty;
     var start: usize = 0;
     for (bytes, 0..) |byte, index| {
@@ -655,8 +656,8 @@ fn say(comptime format: []const u8, args: anytype) void {
     writeAll(2, text) catch return;
 }
 
-fn readFile(io: Io, path: []const u8, gpa: std.mem.Allocator, limit: Io.Limit) ![]u8 {
-    return Io.Dir.cwd().readFileAlloc(io, path, gpa, limit) catch |err| {
+fn readFile(io: Io, path: []const u8, gpa: std.mem.Allocator, limit: u64) ![]u8 {
+    return aegis.own.readFile(io, Io.Dir.cwd(), path, gpa, .fromRaw(limit)) catch |err| {
         say("reading {s}: {t}", .{ path, err });
         return err;
     };

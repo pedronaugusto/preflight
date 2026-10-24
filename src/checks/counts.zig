@@ -2,6 +2,7 @@
 //! preflight's runner writes when the build asks its binary which tests it holds
 //! (`timings.zig`), read after the runs (`record.zig`).
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
 
 /// The counts of the last run, beside the records, which the gate prints.
@@ -23,7 +24,7 @@ pub fn check(c: *src.Context, records: []const u8, names: []const []const u8, sh
     var line: std.Io.Writer.Allocating = .init(c.a);
     try line.writer.writeAll("preflight: tests per root:");
     for (names, 0..) |name, i| {
-        const text = dir.readFileAlloc(c.io, try c.a.print("{s}-{s}.json", .{ name, part }), c.a, .limited(1 << 20)) catch |err| switch (err) {
+        const text = aegis.own.readFile(c.io, dir, try c.a.print("{s}-{s}.json", .{ name, part }), c.a, .fromRaw(1 << 20)) catch |err| switch (err) {
             error.FileNotFound => {
                 c.fail("{s}: no count of its tests: its run never reached preflight's runner", .{name});
                 continue;

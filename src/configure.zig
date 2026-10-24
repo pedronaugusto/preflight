@@ -1,6 +1,7 @@
 //! Repository files the build script reads, declared to Zig's configuration
 //! cache so that creating, changing or deleting one configures the build again.
 const std = @import("std");
+const aegis = @import("aegis");
 
 /// Whether `sub_path`, relative to the build root, exists. The root and each
 /// directory on the way are declared, so the answer cannot go stale.
@@ -17,13 +18,14 @@ pub fn exists(b: *std.Build, sub_path: []const u8) bool {
     return true;
 }
 
-/// The contents of the file at `sub_path`, relative to the build root, or
-/// null when it does not exist.
-pub fn read(b: *std.Build, sub_path: []const u8, limit: std.Io.Limit) ?[]const u8 {
+/// The contents of the file at `sub_path`, relative to the build root, at most `limit` bytes, or
+/// null when it does not exist. Read through aegis's whole-file read, which aegis's build.zig
+/// gives a build script.
+pub fn read(b: *std.Build, sub_path: []const u8, limit: u64) ?[]const u8 {
     if (!exists(b, sub_path)) return null;
     b.dependOnFileContents(b.path(sub_path));
     const path = b.root.join(b.allocator, sub_path) catch @panic("OOM");
-    return path.root_dir.handle.readFileAlloc(b.graph.io, path.sub_path, b.allocator, limit) catch |err|
+    return aegis.own.readFile(b.graph.io, path.root_dir.handle, path.sub_path, b.allocator, .fromRaw(limit)) catch |err|
         std.debug.panic("{s}: {t}", .{ sub_path, err });
 }
 

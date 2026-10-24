@@ -2,6 +2,7 @@
 //! only the packages the package itself needs: the build a consumer gets.
 //! The build runs this file as a program to write the project.
 const std = @import("std");
+const aegis = @import("aegis");
 const configure = @import("configure.zig");
 const plain = @import("plain.zig");
 
@@ -42,6 +43,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         .root_source_file = pkg.path("src/consumer.zig"),
         .target = b.graph.host,
         .optimize = .debug,
+        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = b.graph.host, .optimize = .debug }).module("aegis") }},
     }) });
     const packages = b.addWriteFiles();
     _ = packages.add("README", "No packages.\n");
@@ -109,7 +111,7 @@ pub fn main(init: std.process.Init) !void {
     const root = try cwd.realPathFileAlloc(io, args[4], a);
     const relative = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
     std.mem.replaceScalar(u8, relative, '\\', '/');
-    const text = try cwd.readFileAlloc(io, args[5], a, .limited(16 * 1024 * 1024));
+    const text = try aegis.own.readFile(io, cwd, args[5], a, .fromRaw(16 * 1024 * 1024));
     var modules: std.ArrayList([]const u8) = .empty;
     var dependency_options: std.ArrayList(Option) = .empty;
     for (args[8..]) |arg| {
@@ -121,7 +123,7 @@ pub fn main(init: std.process.Init) !void {
     var global = try cwd.openDir(io, args[7], .{});
     defer global.close(io);
     const package_manifest = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
-    const found = try plain.conflicts(a, io, try cwd.readFileAlloc(io, package_manifest, a, .limited(1024 * 1024)), shape.package, .{ .global = global, .zig = args[1] });
+    const found = try plain.conflicts(a, io, try aegis.own.readFile(io, cwd, package_manifest, a, .fromRaw(1024 * 1024)), shape.package, .{ .global = global, .zig = args[1] });
     if (found.len != 0) {
         var buffer: [1024]u8 = undefined;
         var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);

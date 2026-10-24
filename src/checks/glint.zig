@@ -3,6 +3,7 @@
 //! project glint holds in memory, so that nothing stands between a finding
 //! and the gate, and a run that did not finish is not a run that passed.
 const std = @import("std");
+const aegis = @import("aegis");
 const glint = @import("glint");
 const src = @import("source.zig");
 pub const policy = @import("glint/policy.zig");
@@ -73,7 +74,7 @@ fn peerWriters(c: *src.Context, own: []const glint.Config.PeerWriter, modules: [
         if ((try seen.getOrPut(c.a, package)).found_existing) continue;
         const path = try std.fs.path.join(c.a, &.{ package, "ci", "preflight.json" });
         // A dependency without the file declares no writers.
-        const bytes = std.Io.Dir.cwd().readFileAlloc(c.io, path, c.a, .limited(1 << 20)) catch continue;
+        const bytes = aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, c.a, .fromRaw(1 << 20)) catch continue;
         const config = std.json.parseFromSliceLeaky(src.Value, c.a, bytes, .{}) catch {
             c.fail("glint: {s}: not JSON, so its peer writers cannot be read", .{path});
             continue;

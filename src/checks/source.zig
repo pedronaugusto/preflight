@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const gantry = @import("gantry");
 const configure = @import("../configure.zig");
 
@@ -86,7 +87,7 @@ pub const Context = struct {
     }
 
     pub fn read(c: Context, path: []const u8) ![]const u8 {
-        return c.directory().readFileAlloc(c.io, path, c.a, .limited(64 * 1024 * 1024));
+        return aegis.own.readFile(c.io, c.directory(), path, c.a, .fromRaw(64 * 1024 * 1024));
     }
 
     /// The configuration at `path`, or an empty one when the file does not exist:

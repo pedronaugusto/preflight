@@ -5,6 +5,7 @@
 //! nested build's sources, and the package may be the root or a dependency, as in a development
 //! build. The build runs this file as a program to assemble and run the nested build.
 const std = @import("std");
+const aegis = @import("aegis");
 const configure = @import("configure.zig");
 const zon = @import("zon.zig");
 
@@ -41,7 +42,7 @@ pub const Options = struct {
 /// nested graph is resolved as the package's is: one version of each package, a shared
 /// package's own pins included.
 pub fn add(b: *std.Build, package: *std.Build, options: Options) *std.Build.Step {
-    const root = configure.read(package, "build.zig.zon", .limited(1024 * 1024)) orelse std.debug.panic("addNestedBuild: {s} has no build.zig.zon to share pins from", .{options.directory});
+    const root = configure.read(package, "build.zig.zon", 1024 * 1024) orelse std.debug.panic("addNestedBuild: {s} has no build.zig.zon to share pins from", .{options.directory});
     const text = generate(b.allocator, root, options) catch |err| std.debug.panic("addNestedBuild: {s}: {t}", .{ options.directory, err });
     const manifest = b.addWriteFiles().add("build.zig.zon", text);
     // Fetched lazily: until it is, this configure pass ends and the step is never run.
@@ -50,6 +51,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) *std.Build.Step
         .root_source_file = pkg.builder.path("src/nested.zig"),
         .target = b.graph.host,
         .optimize = .debug,
+        .imports = &.{.{ .name = "aegis", .module = pkg.builder.dependency("aegis", .{ .target = b.graph.host, .optimize = .debug }).module("aegis") }},
     }) });
     const run = b.addRunArtifact(program);
     run.addArg(configure.bay(b, package) orelse b.graph.zig_exe);
@@ -82,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
     var next: usize = 5;
     while (next < args.len and !std.mem.eql(u8, args[next], "--")) : (next += 1) try copy(io, a, source, target, args[next]);
     if (next == args.len) return error.MissingNestedArguments;
-    const text = try cwd.readFileAlloc(io, args[4], a, .limited(1024 * 1024));
+    const text = try aegis.own.readFile(io, cwd, args[4], a, .fromRaw(1024 * 1024));
     try target.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try relocate(a, text, nested, out) });
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ args[1], "build" });

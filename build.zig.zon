@@ -6,14 +6,14 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.5.1#a3103feddaee6eb1046ab90cf2d81782c1858a6e",
-            .hash = "glint-0.5.1-3jcpof7kDgBWU4JXkdc6aHbLx7HMc11VbR4Kcc3JP7M_",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.5.2#94f29c8110dbd5ebdee3d980a2e36029e7d3beca",
+            .hash = "glint-0.5.2-3jcpoVDlDgA9NHtV98JQKuSXvr-G_JBDYFm8CvXlrt0e",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.10#3d6c7f91990e7289556ca12ae7e10a286b173b15",
-            .hash = "gantry-0.2.10-1iNrkWHEDAAFLazbYIYsMlpJfe1B_r-1vmd_haLcvme_",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.11#6fa72e69d5bcd1361ec47b4938cee7bcc51a8eee",
+            .hash = "gantry-0.2.11-1iNrkb3EDADxo8PBuvEZ2oQ1j4ehQ9wCt4kVYNLCphA6",
             .lazy = true,
         },
 
@@ -32,20 +32,21 @@
         },
 
         .bay = .{
-            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.16#a3abace04db96be47b4def796a3bf7edb05a3c55",
-            .hash = "bay-0.1.16-uwJ5Z7wPBgBI_X5PY7JCN1_hVXWtiPNWVXUOWVR70Lg5",
+            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.19#a98d87ac696e4b38a76beaa0e4eb960294ec574e",
+            .hash = "bay-0.1.19-uwJ5Z4U8BgCInkyuoOLS3D73igaIjfrpZLnXZiRc_NeV",
             .lazy = true,
         },
+
         .ensign = .{
-            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.2.3#4637655dfb128aee48ea1ef9146c911523075cef",
-            .hash = "ensign-0.2.3-6eMTDycrBACbFVaH6ffvt5cPJNAkyBxEsGMgeXC3_ARP",
+            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.2.4#319a6011bfe9bc5b37eb37eb328d00037459c98c",
+            .hash = "ensign-0.2.4-6eMTD9wrBACniFWhMFcocW85LFtEZpvTFXfwFpBjNLSU",
             .lazy = true,
         },
     },
     .dev_dependencies = .{
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.4.1#1fd9fd619b105a65c7478525dfd83f24004e1b8a",
-            .hash = "shakedown-0.4.1-BR8U4z_qFQBovSS7wrfzvzZO0Vb8tTGeXEXcEUBXzxQE",
+            .url = "git+https://github.com/pedronaugusto/shakedown?ref=v0.4.17#b96c548a2fed2a4cc8b9d790fdbf29332b056f9d",
+            .hash = "shakedown-0.4.17-BR8U41SzFgBFNel0aa2pn9ELQvUHoVDmnXOWslP0wHV7",
         },
     },
 }

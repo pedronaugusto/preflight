@@ -253,10 +253,34 @@ const Shares = struct {
     }
 };
 
-/// The gate's jobs at once, `slots` shares of the machine at a time (`weight`), the heavy
-/// ones started first, since they take longest. Each job's output goes to a file of its
-/// own and is written whole when it ends, as a job run alone reads; the records are reset
-/// once, for all of them, in each directory they run in.
+/// The seconds `job` took at the last gate here, or null when it has none.
+fn lastSeconds(c: src.Context, job: GateJob) ?f64 {
+    const path = c.a.print("{s}/{s}.seconds", .{ gate_logs, job.key }) catch return null;
+    const text = c.directory().readFileAlloc(c.io, path, c.a, .limited(64)) catch return null;
+    return std.fmt.parseFloat(f64, std.mem.trim(u8, text, " \n")) catch null;
+}
+
+/// The order the gate starts its jobs in: the longest first, by what each took at the
+/// last gate here, so the one that takes longest is not started last; a job with no
+/// record first of all, since it may be the longest.
+fn startOrder(c: src.Context, jobs: []const GateJob) ![]usize {
+    const Entry = struct { index: usize, seconds: f64 };
+    const entries = try c.a.alloc(Entry, jobs.len);
+    for (entries, jobs, 0..) |*entry, job, index| entry.* = .{ .index = index, .seconds = lastSeconds(c, job) orelse std.math.inf(f64) };
+    std.mem.sort(Entry, entries, {}, struct {
+        fn longer(_: void, left: Entry, right: Entry) bool {
+            return left.seconds > right.seconds;
+        }
+    }.longer);
+    const order = try c.a.alloc(usize, jobs.len);
+    for (order, entries) |*index, entry| index.* = entry.index;
+    return order;
+}
+
+/// The gate's jobs at once, `slots` shares of the machine at a time (`weight`), started
+/// longest first (`startOrder`). Each job's output goes to a file of its own and is
+/// written whole when it ends, as a job run alone reads; the records are reset once, for
+/// all of them, in each directory they run in.
 fn runGateJobs(c: src.Context, environ: *const std.process.Environ.Map, jobs: []GateJob, slots: u32) !void {
     var directories: std.array_hash_map.String(void) = .empty;
     for (jobs) |job| if (!(try directories.getOrPut(c.a, job.directory)).found_existing) {
@@ -267,12 +291,10 @@ fn runGateJobs(c: src.Context, environ: *const std.process.Environ.Map, jobs: []
         try checks.profile.reset(place, ".zig-cache/preflight-timings");
     };
     try c.directory().createDirPath(c.io, gate_logs);
-    var order: std.ArrayList(usize) = .empty;
-    for (jobs, 0..) |job, index| if (checks.local.weight(job.job) > 1) try order.append(c.a, index);
-    for (jobs, 0..) |job, index| if (checks.local.weight(job.job) == 1) try order.append(c.a, index);
+    const order = try startOrder(c, jobs);
     var shares: Shares = .{ .free = slots };
     var group: std.Io.Group = .init;
-    for (order.items) |index| {
+    for (order) |index| {
         const share = @min(checks.local.weight(jobs[index].job), slots);
         shares.take(c.io, share);
         group.concurrent(c.io, runShare, .{ c, environ, &jobs[index], &shares, share }) catch {
@@ -302,6 +324,13 @@ fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJ
         break :run runGateJob(c, environ, job, .{ .a = a, .output = file });
     };
     const seconds = timer.seconds(c);
+    // What it took, for the next gate's order; a record that cannot be written costs only that.
+    if (a.print("{s}/{s}.seconds", .{ gate_logs, job.key })) |record| {
+        if (a.print("{d:.1}\n", .{seconds})) |text| {
+            // glint-ignore: Z026 -- the record only orders the next gate's jobs; without it that job starts first
+            c.directory().writeFile(c.io, .{ .sub_path = record, .data = text }) catch {};
+        } else |_| {}
+    } else |_| {}
     shares.output.lockUncancelable(c.io);
     defer shares.output.unlock(c.io);
     // glint-ignore: Z026 -- the job's line is for the reader; its outcome stands, and the gate names a red job again at its end

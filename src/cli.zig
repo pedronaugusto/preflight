@@ -139,9 +139,10 @@ const Gate = struct {
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
     module: []const []const u8 = &.{},
+    jobs: ?u16 = null,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "What a release needs, then the release tier's jobs this machine runs, each as the hosted job runs it; what it cannot run is named",
-        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module },
+        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module, .jobs = .{ .short = 'j', .value_name = "N", .help = "Run at most N of the machine's shares of jobs at once, a job under QEMU or ThreadSanitizer taking two; one runs them one after another, streaming each. By default one a core, no more than one for each 4 GiB of memory" } },
     };
 };
 

@@ -143,6 +143,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux on its own kernel under QEMU's system emulation (qemu-system-riscv64 on PATH)") orelse false,
+        .job = b.option([]const u8, "ci-job", "The gate job this build runs as, beside others in one package directory: its records and the programs its tests run keep places of their own"),
     };
 }
 /// Controls accepted during a root script's lazy-discovery pass.
@@ -154,6 +155,8 @@ pub const CiOptions = struct {
     timing: bool,
     checks: ?[]const u8,
     vm: bool,
+    /// Read where it is used, through `configure.job`; declared here so the build knows it.
+    job: ?[]const u8,
 };
 
 const Steps = struct {

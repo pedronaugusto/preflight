@@ -3,9 +3,11 @@
 const std = @import("std");
 const src = @import("source.zig");
 
-/// Runs `argv` in the context's directory and fails unless it exits 0.
+/// Runs `argv` in the context's directory and fails unless it exits 0. Its output goes
+/// where the context's reports go: a gate job's own file, or this process's streams.
 pub fn execute(c: src.Context, argv: []const []const u8) !void {
-    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
+    const output: std.process.SpawnOptions.StdIo = if (c.output) |file| .{ .file = file } else .inherit;
+    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = output, .stderr = output });
     const term = try child.wait(c.io);
     if (term != .exited or term.exited != 0) return error.CommandFailed;
 }

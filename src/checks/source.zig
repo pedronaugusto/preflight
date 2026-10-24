@@ -23,6 +23,9 @@ pub const Context = struct {
     held: ?*std.Io.Writer.Allocating = null,
     /// Findings a check reports without failing: a run with any shows what it held.
     notes: usize = 0,
+    /// Where a gate job's reports and its commands' output go, both streams in the order
+    /// written, so jobs that run at once do not interleave; null is this process's own.
+    output: ?std.Io.File = null,
 
     /// The command that runs the package's steps: under bay, `bay dev`, the
     /// development build that holds the package and the gate. Never bare `bay
@@ -74,7 +77,7 @@ pub const Context = struct {
             return;
         }
         var buffer: [1024]u8 = undefined;
-        var writer = std.Io.File.stderr().writerStreaming(c.io, &buffer);
+        var writer = (c.output orelse std.Io.File.stderr()).writerStreaming(c.io, &buffer);
         writer.interface.print(fmt, args) catch return;
         writer.interface.flush() catch return;
     }

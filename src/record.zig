@@ -110,7 +110,7 @@ pub fn counts(b: *std.Build, holder: *std.Build.Step, checker: Tool, counted: Co
     if (counted.names.len == 0) return;
     const count = checker.run(b);
     count.addArg("counts");
-    count.addDirectoryArg2(std.Build.LazyPath.cache_root.join(b.allocator, records_dir) catch @panic("OOM"), .{ .prefix = "--records=" });
+    count.addDirectoryArg2(std.Build.LazyPath.cache_root.join(b.allocator, configure.jobPlace(b, records_dir)) catch @panic("OOM"), .{ .prefix = "--records=" });
     for (counted.names) |name| count.addArgs(&.{ "--expect", name });
     count.has_side_effects = true;
     for (counted.runs) |run| count.step.dependOn(run);
@@ -146,8 +146,9 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         const name = recordName(b, artifact, &state.names);
         state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");
-        runner.addOption(?[]const u8, "timings", if (options.timing) b.fmt(".zig-cache/preflight-timings/{s}", .{name}) else null);
-        runner.addOption([]const u8, "counts", b.fmt("{s}/{s}", .{ records_dir, name }));
+        // A gate job beside others keeps its records apart (`configure.jobPlace`).
+        runner.addOption(?[]const u8, "timings", if (options.timing) b.fmt(".zig-cache/{s}/{s}", .{ configure.jobPlace(b, "preflight-timings"), name }) else null);
+        runner.addOption([]const u8, "counts", b.fmt("{s}/{s}", .{ configure.jobPlace(b, records_dir), name }));
         // The root as the package names it: its own file, or one a development build takes
         // from the package as a dependency (`package.path`); a generated one by its artifact.
         runner.addOption([]const u8, "root", switch (artifact.root_module.root_source_file.?) {

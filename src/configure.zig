@@ -92,6 +92,23 @@ var taken: std.ArrayList([]const u8) = .empty;
 /// either: bay runs a step of the package's build before one of its development build.
 var claimed: std.ArrayList([]const u8) = .empty;
 
+/// The gate job this build runs as (`-Dci-job`), or null. The gate names each job it
+/// runs at once beside others, in one package directory, so that their records and the
+/// programs their tests run keep places of their own. Read, not declared: a package's
+/// build may install a test program before `addCi` declares the option.
+pub fn job(b: *std.Build) ?[]const u8 {
+    const value = b.user_input_options.get("ci-job") orelse return null;
+    return switch (value) {
+        .scalar => |name| if (name.len == 0) null else name,
+        else => null,
+    };
+}
+
+/// `place`, or the job's own place under it when the build runs as a gate job.
+pub fn jobPlace(b: *std.Build, place: []const u8) []const u8 {
+    return if (job(b)) |name| b.fmt("{s}/{s}", .{ place, name }) else place;
+}
+
 /// A top-level step of preflight's, `name`, or, when the package already has a step
 /// by that name, one under no name: the package's own step keeps the name, nothing
 /// is overwritten and the build does not crash, and `refuseTaken` says what to do.

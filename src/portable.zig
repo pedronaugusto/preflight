@@ -18,15 +18,17 @@ pub const Command = struct {
 
 const manifest_path = "zig-out/preflight/tests.json";
 /// Where `addProgram` installs, under the install prefix: inside what a
-/// replaying runner downloads.
+/// replaying runner downloads. A gate job beside others has its own place
+/// under it (`configure.jobPlace`), where its build's mode of each program is.
 const programs_dir = "preflight/programs";
 
 /// A program the tests run, named to them as `name` in `options` by its path
 /// from the package root: every test run's working directory, here and where
 /// portable tests replay, and the path is the same on both runners.
 pub fn addProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const u8, program: *std.Build.Step.Compile) void {
-    const install = b.addInstallArtifact(program, .{ .dest_dir = .{ .override = .{ .custom = programs_dir } }, .pdb_dir = .disabled, .implib_dir = .disabled });
-    options.addOption([]const u8, name, b.fmt("zig-out/{s}/{s}", .{ programs_dir, program.out_filename }));
+    const place = configure.jobPlace(b, programs_dir);
+    const install = b.addInstallArtifact(program, .{ .dest_dir = .{ .override = .{ .custom = place } }, .pdb_dir = .disabled, .implib_dir = .disabled });
+    options.addOption([]const u8, name, b.fmt("zig-out/{s}/{s}", .{ place, program.out_filename }));
     options.step.dependOn(&install.step);
 }
 
@@ -152,7 +154,7 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) []const []const u8 {
             @panic("portable tests must not be given a path by addOptionPath: it is the building runner's own, which the runner replaying them has not; name a program the tests run with preflight.addTestProgram");
         for (options.step.dependencies.items) |installing| {
             const install = installing.cast(std.Build.Step.InstallArtifact) orelse continue;
-            programs.append(b.allocator, b.fmt("zig-out/{s}/{s}", .{ programs_dir, install.dest_sub_path orelse install.artifact.out_filename })) catch @panic("OOM");
+            programs.append(b.allocator, b.fmt("zig-out/{s}/{s}", .{ configure.jobPlace(b, programs_dir), install.dest_sub_path orelse install.artifact.out_filename })) catch @panic("OOM");
         }
     }
     return programs.items;

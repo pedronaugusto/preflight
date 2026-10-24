@@ -1,6 +1,6 @@
 //! `preflight gate` end to end, before its jobs: a package in a git repository of its own,
 //! the preflight program run as `bay gate` runs it, refusing what a release must not carry
-//! (a caller other than `plan` generates, a manifest and a CHANGELOG at different releases,
+//! (a caller other than `generate` makes, a manifest and a CHANGELOG at different releases,
 //! a public declaration changed with no breaking entry) before any job runs. The program
 //! gets PATH and what the test sets, nothing else of the user's.
 const std = @import("std");
@@ -36,7 +36,7 @@ const Package = struct {
         const config = "{}\n";
         try p.write("ci/workflow.json", config);
         const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
-        try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, "ci/workflow.json: zig build plan -- --workflow .github/workflows/ci.yml"));
+        try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, "ci/workflow.json: bay generate"));
         try p.git(&.{ "add", "-A" });
         try p.git(&.{ "commit", "-q", "-m", "First" });
         try p.git(&.{ "tag", "v0.1.0" });
@@ -95,10 +95,10 @@ test "the gate refuses a manifest and a CHANGELOG at different releases, before 
     try refusedBeforeJobs(try p.gate(), ".version is 0.1.0 and CHANGELOG.md's newest release is 0.1.1");
 }
 
-test "the gate refuses a caller that is not what plan generates for the package's configuration, before any job" {
+test "the gate refuses a caller that is not what generate makes for the package's configuration, before any job" {
     const p = try Package.init();
     defer p.deinit();
     try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
     try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
-    try refusedBeforeJobs(try p.gate(), ".github/workflows/ci.yml is not what plan generates");
+    try refusedBeforeJobs(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `bay generate`");
 }

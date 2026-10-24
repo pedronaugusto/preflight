@@ -9,6 +9,7 @@ const matrix = @import("checks/matrix.zig");
 pub const Cli = struct {
     command: union(enum) {
         plan: Plan,
+        generate: Generate,
         facts: Facts,
         lint: Lint,
         surface: Surface,
@@ -32,7 +33,7 @@ pub const Cli = struct {
     pub const spec: ensign.Spec(@This()) = .{
         .name = "preflight",
         .about = "CI and checks for Zig packages: the hosted jobs and what a release must pass",
-        .description = "A package runs these through its build (zig build plan, bay dev gate, ...), which passes the Zig and the modules it exports; the hosted workflows call the rest.",
+        .description = "A package runs these through its build (bay generate, bay gate, ...), which passes the Zig and the modules it exports; the hosted workflows call the rest.",
         .commands = .{
             .setup = .{ .help = "A hosted job's setup: the macOS SDK and Zig's global cache, written to the job's environment" },
             .prepare = .{ .help = "Run the step that installs the job's external tools, when it has one" },
@@ -56,25 +57,34 @@ const Plan = struct {
     config: ?[]const u8 = null,
     tier: matrix.Tier = .fast,
     output: ?[]const u8 = null,
-    workflow: ?[]const u8 = null,
-    manifest: []const u8 = "build.zig.zon",
-    working_directory: ?[]const u8 = null,
-    self: bool = false,
-    drop: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "The jobs of a tier as the hosted caller's matrices, or with --workflow the caller generated again",
+        .about = "The jobs of a tier as the hosted caller's matrices",
         .options = .{
             .zig_exe = zig_exe,
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json by default" },
             .tier = .{ .help = "The tier whose jobs are planned" },
             .output = .{ .value_name = "FILE", .hint = .file, .help = "Append the matrices to this file; GITHUB_OUTPUT, else standard output, by default" },
-            .workflow = .{ .value_name = "FILE", .hint = .file, .help = "Generate the caller workflow into this file" },
-            .manifest = .{ .value_name = "FILE", .hint = .file, .help = "With --workflow, the manifest whose preflight pin the caller names" },
-            .working_directory = working_directory,
-            .self = .{ .negatable = false, .help = "With --workflow, preflight's own caller: pinned to the commit under test" },
-            .drop = .{ .value_name = "JOB", .help = "With --workflow, a job of the old caller to let go, repeated" },
         },
-        .conflicts = &.{&.{ .workflow, .output }},
+    };
+};
+
+const Generate = struct {
+    zig_exe: ?[]const u8 = null,
+    config: ?[]const u8 = null,
+    manifest: []const u8 = "build.zig.zon",
+    working_directory: ?[]const u8 = null,
+    self: bool = false,
+    drop: []const []const u8 = &.{},
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "The caller workflow made again for the package's pins and configuration, where it is; .github/workflows/ci.yml when there is none",
+        .options = .{
+            .zig_exe = zig_exe,
+            .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; the caller's, else ci/workflow.json, by default" },
+            .manifest = .{ .value_name = "FILE", .hint = .file, .help = "The manifest whose preflight pin the caller names" },
+            .working_directory = working_directory,
+            .self = .{ .negatable = false, .help = "preflight's own caller: pinned to the commit under test" },
+            .drop = .{ .value_name = "JOB", .help = "A job of the old caller to let go, repeated" },
+        },
     };
 };
 
@@ -254,18 +264,17 @@ fn parsed(arena: std.mem.Allocator, args: []const []const u8) !Cli {
 }
 
 // Each form the build's steps and the generated workflows call, as they call it.
-test "plan as zig build plan calls it, with what a caller is generated with" {
+test "plan and generate as the build's steps call them" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const cli = try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--self", "--workflow", ".github/workflows/ci.yml", "--config", "sample/ci/workflow.json", "--working-directory", "sample", "--drop", "a", "--drop", "b" });
-    const plan = cli.command.plan;
-    try std.testing.expectEqualStrings("/z/zig", plan.zig_exe.?);
-    try std.testing.expect(plan.self);
-    try std.testing.expectEqualStrings(".github/workflows/ci.yml", plan.workflow.?);
-    try std.testing.expectEqualStrings("sample", plan.working_directory.?);
-    try std.testing.expectEqual(2, plan.drop.len);
+    const generate = (try parsed(arena.allocator(), &.{ "generate", "--zig-exe", "/z/zig", "--self", "--config", "sample/ci/workflow.json", "--working-directory", "sample", "--drop", "a", "--drop", "b" })).command.generate;
+    try std.testing.expectEqualStrings("/z/zig", generate.zig_exe.?);
+    try std.testing.expect(generate.self);
+    try std.testing.expectEqualStrings("sample", generate.working_directory.?);
+    try std.testing.expectEqual(2, generate.drop.len);
     try std.testing.expectEqual(.merge, (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "merge" })).command.plan.tier);
-    try std.testing.expectError(error.Conflict, parsed(arena.allocator(), &.{ "plan", "--workflow", "a", "--output", "b" }));
+    // The caller is generate's alone.
+    try std.testing.expectError(error.UnknownOption, parsed(arena.allocator(), &.{ "plan", "--workflow", ".github/workflows/ci.yml" }));
 }
 
 test "facts and lint take the build's configuration, the options keeping their dashes" {

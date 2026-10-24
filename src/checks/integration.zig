@@ -1345,8 +1345,10 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     // reads the declared publication pin, as it does after a consumer's repin.
     try tmp.dir.writeFile(io, .{ .sub_path = "pin.zon", .data = ".{ .dependencies = .{ .preflight = .{ .url = \"git+https://github.com/pedronaugusto/preflight#" ++ pin ++ "\" } } }" });
     try tmp.dir.writeFile(io, .{ .sub_path = ".github/workflows/ci.yml", .data = "old stale pin\n" });
+    try fixtureGit(a, tmp.dir, &.{ "init", "--quiet" });
+    // Made where no generated caller is, then found and made again, the same.
     for (0..2) |index| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "plan", "--", "--workflow", ".github/workflows/ci.yml", "--manifest", "pin.zon" }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "generate", "--", "--manifest", "pin.zon" }, .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
         const text = try tmp.dir.readFileAlloc(io, ".github/workflows/ci.yml", a, .limited(1024 * 1024));

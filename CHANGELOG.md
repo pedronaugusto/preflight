@@ -20,6 +20,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `glint.unresolved`: a finding rule's ceiling of undecided sites, none by default. Above it the run fails, and below it the run asks for the ceiling to come down.
 - The run prints every aegis escape with the rules it covers, a count by rule and reason, and all of them in `.zig-cache/preflight-lint/escapes.txt`. A line of findings, escapes and undecided sites by rule follows the glint summary. Where a rule finds more than the 25 printed, every finding is in `.zig-cache/preflight-lint/findings.txt`.
 - A malformed suppression or escape is an incomplete site at its comment.
+## [0.17.0] - 2026-10-24
+
+### Breaking
+
+- `generate` makes the caller, in place of `plan -- --workflow <path>`: it finds the package's caller under `.github/workflows` and writes it again where it is, or writes `.github/workflows/ci.yml` at the repository's top when there is none, and leaves a current one as it is (`bay generate`, `zig build generate` without bay; `--self`, `--config`, `--working-directory`, `--manifest` and `--drop` as `plan` took them). The caller's first line records it as `<config>: bay generate`, with what it was given beyond the defaults, so generating it again needs no flags; a caller `plan` generated is still found, and the gate refuses it until it is generated again. `plan` keeps the tier matrices (`--tier`, `--output`). A train (`bay --workspace release`, bay 0.1.18) runs `generate` after moving a member's pins, so the caller follows the preflight the member pins.
 
 ## [0.16.0] - 2026-10-22
 

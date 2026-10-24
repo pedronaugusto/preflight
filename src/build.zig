@@ -236,7 +236,14 @@ const Steps = struct {
         plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
         plan.addPassthruArgs();
         plan.setCwd(package.path("."));
-        configure.claim(b, "plan", "Plan matrices or regenerate the pinned caller workflow").dependOn(&plan.step);
+        configure.claim(b, "plan", "Plan a tier's matrices for the hosted caller").dependOn(&plan.step);
+        // The caller made again for the pins: bay runs it after a train moves them.
+        const generate = executable.run(b);
+        generate.addArgs(&.{ "generate", "--zig-exe", b.graph.zig_exe });
+        generate.addPassthruArgs();
+        generate.setCwd(package.path("."));
+        generate.has_side_effects = true;
+        configure.claim(b, "generate", "Make the caller workflow again for the package's pins and ci/workflow.json, where it is (.github/workflows/ci.yml when there is none)").dependOn(&generate.step);
         const facts = executable.run(b);
         facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
         configurationOptions(b, facts);

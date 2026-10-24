@@ -35,7 +35,7 @@ and no configuration file:
    }
    ```
 
-3. Generate the hosted workflow: `mkdir -p .github/workflows && bay plan -- --workflow .github/workflows/ci.yml`.
+3. Generate the hosted workflow: `bay generate`.
 
 `bay ci` runs the gate locally. The hosted gate builds bay beside the checks and runs
 every step of a package that declares `.dev_dependencies` as `bay dev <step>`, so a
@@ -48,7 +48,7 @@ Without bay, preflight is a lazy dependency, and `build` adds the gate over its 
 pin it with `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
 add `.lazy = true` to the entry, then
 `@setEvalBranchQuota(100_000); if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });`
-after creating the test step, and `zig build plan -- --workflow .github/workflows/ci.yml`. A
+after creating the test step, and `zig build generate`. A
 package preflight is built from (aegis, sweep, glint, gantry, shakedown) uses bay: as a
 dependency it would make a cycle with preflight.
 
@@ -497,34 +497,38 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 
 `ci/workflow.json` is the declarative input, and the caller is wholly generated from it:
 both reusable-workflow references, the checkout pin, triggers, concurrency policy, the
-seven tier matrices with the declared jobs. Regenerate it with:
+seven tier matrices with the declared jobs. Make it, and make it again after a pin moves,
+with:
 
 ```sh
-zig build plan -- --workflow .github/workflows/ci.yml
+bay generate
 ```
 
-First refresh preflight in `build.zig.zon` to the intended published commit.
-The generator reads that manifest's full immutable preflight URL pin; it never
-uses an old workflow's pin. It refuses to replace a caller holding a job the
-configuration does not declare, naming it, so nothing is dropped unseen; `--drop <job>`,
-repeated, lets go of a job the configuration now declares under `jobs`. It replaces one relative `.yml` or `.yaml` file,
-refuses traversal and symlinks, and renders/validates all inputs before opening
-it. Its parent directories must already exist. Repeated generation is byte
-identical. There is no package-local planner or Python dependency. This is an
-offline regeneration write, not a crash-atomic or durable publication API.
-`--working-directory <relative-directory>` supports a nested package, and
-`--manifest <file>` selects its manifest. Preflight alone uses `--self` to call
-its own reusable workflows at `github.sha`. Its self-caller gates the sample:
+(`zig build generate` without bay.) It finds the package's caller under the repository's
+`.github/workflows` and writes it again where it is, or writes `.github/workflows/ci.yml` at
+the repository's top when there is none; a caller that is current is left as it is. A train
+(`bay --workspace release`) runs it after moving a member's pins.
+
+The generator reads the manifest's full immutable preflight URL pin; it never uses an old
+workflow's pin. It refuses to replace a caller holding a job the configuration does not
+declare, naming it, so nothing is dropped unseen; `--drop <job>`, repeated, lets go of a job
+the configuration now declares under `jobs`. It refuses traversal and symlinks and renders
+and validates all inputs before writing. Repeated generation is byte identical. There is no
+package-local planner or Python dependency. This is an offline regeneration write, not a
+crash-atomic or durable publication API. `--working-directory <relative-directory>` makes
+a caller whose jobs run in another directory, `--config <file>` names its configuration and
+`--manifest <file>` the manifest whose pin it names; the caller's first line records them,
+so generating it again needs none of them. Preflight alone uses `--self` to call its own
+reusable workflows at `github.sha`. Its self-caller gates the sample, made once with:
 
 ```sh
-zig build plan -- --self --workflow .github/workflows/ci.yml --config sample/ci/workflow.json --working-directory sample
+zig build generate -- --self --config sample/ci/workflow.json --working-directory sample
 ```
 
-`zig build plan -- --tier <tier> --output <file>` still emits the matrix records
-for inspecting a plan; it appends hosted-output records and is separate from
-single-file workflow replacement. `--workflow` renders every tier and cannot
-be combined with `--output`. Consumer repositories keep only declarative inputs
-and their generated caller, never copied planner code or consumer plan dumps.
+`zig build plan -- --tier <tier> --output <file>` emits a tier's matrix records for
+inspecting a plan; it appends hosted-output records. Consumer repositories keep only
+declarative inputs and their generated caller, never copied planner code or consumer plan
+dumps.
 
 ### Releasing
 
@@ -534,7 +538,7 @@ commits it, runs this gate on that commit, and pushes the branch and the tag onl
 green. The gate (`zig build gate`, `bay gate` under bay), a step `addCi` adds, first checks
 what a release needs beside the jobs, each refusal naming its fix:
 
-1. the caller is what `plan -- --workflow` generates for the package's pins and
+1. the caller is what `generate` makes for the package's pins and
    configuration, so the hosted runs check the package with the preflight it pins;
 2. the manifest's `.version` is the CHANGELOG's newest release;
 3. the CHANGELOG says what the public API changed since the last `v*` tag: a change to the

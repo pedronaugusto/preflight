@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-24
+
 ### Breaking
 
 - `generate` makes the caller, in place of `plan -- --workflow <path>`: it finds the package's caller under `.github/workflows` and writes it again where it is, or writes `.github/workflows/ci.yml` at the repository's top when there is none, and leaves a current one as it is (`bay generate`, `zig build generate` without bay; `--self`, `--config`, `--working-directory`, `--manifest` and `--drop` as `plan` took them). The caller's first line records it as `<config>: bay generate`, with what it was given beyond the defaults, so generating it again needs no flags; a caller `plan` generated is still found, and the gate refuses it until it is generated again. `plan` keeps the tier matrices (`--tier`, `--output`). A train (`bay --workspace release`, bay 0.1.18) runs `generate` after moving a member's pins, so the caller follows the preflight the member pins.

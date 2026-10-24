@@ -12,7 +12,7 @@ pub const grouped = builtin.target.os.tag != .windows;
 const Pid = if (grouped) std.posix.pid_t else i32;
 
 /// The leaders running now; 0 is a free place. Read by the signal handler, so only atomics.
-var leaders: [256]std.atomic.Value(Pid) = @splat(.init(0));
+pub var leaders: [256]std.atomic.Value(Pid) = @splat(.init(0));
 
 /// Holds `pid`, a command a job started at the head of its own group, until `release`.
 /// With every place taken it is not held, and a stopped gate leaves it running.
@@ -33,11 +33,17 @@ pub fn endWithGate() void {
     for ([_]std.posix.SIG{ .INT, .TERM, .HUP }) |sig| std.posix.sigaction(sig, &action, null);
 }
 
-fn stopped(sig: std.posix.SIG) callconv(.c) void {
+/// Ends the group of every command held now, with what each started.
+pub fn endAll() void {
+    if (!grouped) return;
     for (&leaders) |*place| {
         const pid = place.load(.acquire);
         if (pid != 0) _ = std.posix.system.kill(-pid, .TERM);
     }
+}
+
+fn stopped(sig: std.posix.SIG) callconv(.c) void {
+    endAll();
     // The handler was reset as it ran (`RESETHAND`): the signal again ends the gate.
     // glint-ignore: Z026 -- a signal this process cannot raise leaves the gate to end with its jobs ended
     std.posix.raise(sig) catch {};

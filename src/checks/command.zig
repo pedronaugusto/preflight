@@ -101,3 +101,34 @@ test "the fetch configures the job's build, first with no options, then with its
     try std.testing.expectEqualStrings("-Dci-lint=false", passes[1][4]);
     try std.testing.expectEqual(@as(usize, 1), (try fetches(arena.allocator(), &.{ "zig", "build" }, "")).len);
 }
+
+test "a gate job's command and what it started end when the gate's jobs are ended" {
+    if (!running.grouped) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .grouped = true };
+    const Job = struct {
+        result: anyerror!void = {},
+        fn run(context: src.Context, job: *@This()) void {
+            // A shell holding a child of its own, which a signal to the shell alone would leave.
+            job.result = execute(context, &.{ "sh", "-c", "sleep 300 & wait" });
+        }
+    };
+    var job: Job = .{};
+    const started: std.Io.Clock.Timestamp = .now(std.testing.io, .awake);
+    const thread = try std.Thread.spawn(.{}, Job.run, .{ c, &job });
+    // Ended once it is held, and so running.
+    while (true) {
+        const held = for (&running.leaders) |*place| {
+            if (place.load(.acquire) != 0) break true;
+        } else false;
+        if (held) break;
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake);
+    }
+    try std.Io.sleep(std.testing.io, .fromMilliseconds(200), .awake);
+    running.endAll();
+    thread.join();
+    try std.testing.expectError(error.CommandFailed, job.result);
+    // The shell's wait ends only when its sleep does: well short of 300 s, both ended.
+    try std.testing.expect(started.untilNow(std.testing.io).raw.toSeconds() < 60);
+}

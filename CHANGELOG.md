@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-24
+
 ### Changed
 
 - Pins glint 0.5.2, gantry 0.2.11, bay 0.1.19 and ensign 0.2.4.

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-24
+
 ### Fixed
 
 - The test runner compiles for OpenBSD: it copied its protocol streams with `F_DUPFD_CLOEXEC`, which Zig 0.17's OpenBSD table lacks, so a package whose cross compile builds its tests for x86_64-openbsd failed there (cloak's, in the family's re-pin train). It carries OpenBSD's value, 10, where std has none.

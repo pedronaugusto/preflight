@@ -1,8 +1,8 @@
-//! The package's caller: the workflow under `.github/workflows` that `plan -- --workflow`
-//! generated for it, found from the package's directory, and checked to be what `plan`
-//! generates now for the package's pins and configuration. The gate checks it before it
-//! runs anything, so the hosted runs check the package with the preflight it pins and the
-//! jobs `ci/workflow.json` declares.
+//! The package's caller: the workflow under `.github/workflows` that `generate` made for
+//! it, found from the package's directory, and checked to be what `generate` makes now for
+//! the package's pins and configuration. The gate checks it before it runs anything, so the
+//! hosted runs check the package with the preflight it pins and the jobs `ci/workflow.json`
+//! declares; `generate` makes it again after a pin moves.
 const std = @import("std");
 const src = @import("source.zig");
 const workflow = @import("workflow.zig");
@@ -29,8 +29,9 @@ fn must(c: *src.Context, args: []const []const u8) ![]const u8 {
 
 /// The caller generated for this package: its file under the repository's
 /// `.github/workflows`, the repository's top, the package's directory in it, the directory
-/// its gate runs in and the configuration it was planned from.
-const Caller = struct { name: []const u8, top: []const u8, directory: []const u8, gate: []const u8 = ".", config: []const u8 = "ci/workflow.json" };
+/// its gate runs in, the configuration it was generated from and the directory it was
+/// generated for when not the package's.
+const Caller = struct { name: []const u8, top: []const u8, directory: []const u8, gate: []const u8 = ".", config: []const u8 = "ci/workflow.json", working_directory: ?[]const u8 = null };
 
 /// The workflow file under the repository's `.github/workflows` that is this package's
 /// caller: the one whose gate runs in `working_directory`, given; else the one whose gate
@@ -67,7 +68,7 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
     };
     if (found.items.len == 1) {
         const one = found.items[0];
-        return .{ .name = one.name, .top = top, .directory = directory, .gate = one.gate, .config = one.planned.config };
+        return .{ .name = one.name, .top = top, .directory = directory, .gate = one.gate, .config = one.planned.config, .working_directory = one.planned.working_directory };
     }
     if (found.items.len == 0) return null;
     var callers: std.ArrayList([]const u8) = .empty;
@@ -88,37 +89,70 @@ fn gateOf(text: []const u8) ?[]const u8 {
 /// What preflight's own caller names as the preflight it runs: the commit under test.
 const own_ref = "preflight-ref: ${{ github.sha }}\n";
 
-/// The caller at `path`, `existing`, as `plan -- --workflow <caller>` generates it now for the
-/// package's pins and configuration, planned as its first line says it was.
-fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: []const u8) ![]const u8 {
-    // The label the caller was generated with, so that only what it was planned from changes.
-    const label = if (std.mem.startsWith(u8, existing, workflow.header)) existing[workflow.header.len .. std.mem.findScalar(u8, existing, '\n') orelse existing.len] else path;
+/// The caller at `path` (from the repository's top), `existing` if there is one, as
+/// `generate` makes it now for the package's pins and configuration.
+fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: ?[]const u8, own: bool, manifest: []const u8, drops: []const []const u8) ![]const u8 {
+    const given = if (std.mem.eql(u8, found.config, "ci/workflow.json")) null else found.config;
+    const label = try workflow.heading(c.a, given, path, found.working_directory, own);
     var config = try workflow.configuration(c.*, found.config);
     if (sdk) |add| try add(c, &config, found.gate);
-    const own = std.mem.find(u8, existing, own_ref) != null;
-    return workflow.generate(c.*, config, "build.zig.zon", found.gate, own, label, existing, &.{}) catch |err| {
+    return workflow.generate(c.*, config, manifest, found.gate, own, label, existing, drops) catch |err| {
         if (err == error.UndeclaredCallerJob) {
-            c.fail("gate: {s} holds the job {s}, which ci/workflow.json does not declare; declare it in jobs", .{ path, workflow.undeclared });
-        } else c.fail("gate: {s} cannot be generated again: {t}", .{ path, err });
+            c.fail("generate: {s} holds the job {s}, which {s} does not declare; declare it in jobs, or let it go with `generate -- --drop {s}`", .{ path, workflow.undeclared, found.config, workflow.undeclared });
+        } else c.fail("generate: {s} cannot be generated again: {t}", .{ path, err });
         return error.CallerRefused;
     };
 }
 
-/// Refuses a caller that is not what `plan -- --workflow <caller>` generates for the package's
-/// pins and configuration: a release that left it so would have the hosted runs check the
-/// package with another preflight than it pins, or other jobs than ci/workflow.json declares.
+/// `c` reading and writing from `top`, the repository's top opened.
+fn atTop(c: *src.Context, top: std.Io.Dir) src.Context {
+    var at_top = c.*;
+    at_top.dir = top;
+    return at_top;
+}
+
+/// Refuses a caller that is not what `generate` makes for the package's pins and
+/// configuration: a release that left it so would have the hosted runs check the package
+/// with another preflight than it pins, or other jobs than ci/workflow.json declares.
 fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
     defer top.close(c.io);
-    var at_top = c.*;
-    at_top.dir = top;
+    const at_top = atTop(c, top);
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     const existing = try at_top.read(path);
-    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing))) return;
-    const line = existing[0 .. std.mem.findScalar(u8, existing, '\n') orelse existing.len];
-    const planned_with = if (std.mem.find(u8, line, ": zig build plan -- ")) |at| line[at + 2 ..] else "zig build plan -- --workflow .github/workflows/ci.yml";
-    c.fail("{s} is not what plan generates for this package's pins and {s}: generate it again (`{s}`, `bay dev plan -- ...` under bay) and commit it", .{ path, found.config, planned_with });
+    const own = std.mem.find(u8, existing, own_ref) != null;
+    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}))) return;
+    c.fail("{s} is not what generate makes for this package's pins and {s}: run `bay generate` and commit it", .{ path, found.config });
     return error.CallerRefused;
+}
+
+/// What `generate` is given: where the planned jobs run when not the package's directory,
+/// the configuration when not the caller's, whether it is preflight's own caller, the
+/// manifest whose preflight pin the caller names, and jobs of the old caller to let go.
+pub const Request = struct { working_directory: ?[]const u8 = null, config: ?[]const u8 = null, own: bool = false, manifest: []const u8 = "build.zig.zon", drops: []const []const u8 = &.{} };
+
+/// `generate`: the package's caller made again where it is, or, when it has none, made at
+/// `.github/workflows/ci.yml` at the repository's top, its jobs run in the package's
+/// directory (or the request's). Writes nothing when it is current; returns its path from the top.
+pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
+    var found = (try findCaller(c, request.working_directory)) orelse fresh: {
+        const top = try must(c, &.{ "rev-parse", "--show-toplevel" });
+        const prefix = std.mem.trimEnd(u8, try must(c, &.{ "rev-parse", "--show-prefix" }), "/");
+        const directory = if (prefix.len == 0) "." else prefix;
+        break :fresh Caller{ .name = "ci.yml", .top = top, .directory = directory, .gate = request.working_directory orelse directory, .working_directory = request.working_directory };
+    };
+    if (request.config) |given| found.config = given;
+    var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
+    defer top.close(c.io);
+    const at_top = atTop(c, top);
+    const path = try c.a.print(".github/workflows/{s}", .{found.name});
+    const existing = if (at_top.exists(path)) try at_top.read(path) else null;
+    const own = request.own or (if (existing) |text| std.mem.find(u8, text, own_ref) != null else false);
+    const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops);
+    if (existing) |old| if (std.mem.eql(u8, old, text)) return path;
+    try top.createDirPath(c.io, ".github/workflows");
+    try workflow.write(at_top, path, text);
+    return path;
 }
 
 /// `gate`'s look at the caller: the package's caller, if it has one, is what `plan` generates

@@ -20,6 +20,7 @@ pub fn main(init: std.process.Init) !void {
     switch (cli.command) {
         .facts => |args| try exportFacts(&c, args),
         .plan => |args| try planCommand(&c, init, args),
+        .generate => |args| try generateCommand(&c, args),
         .surface => |args| try surfaceCommand(&c, args),
         .gate => |args| try gateCommand(&c, init.environ_map, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
@@ -197,26 +198,25 @@ fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const
     return false;
 }
 
-/// `plan`: the jobs of a tier as the hosted caller's matrices, or with `--workflow <caller>` the
-/// caller generated again.
+/// `generate`: the caller made again for the package's pins and configuration, where it
+/// is, or at `.github/workflows/ci.yml` when the package has none.
+fn generateCommand(c: *src.Context, args: @FieldType(Command, "generate")) !void {
+    errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
+    if (args.zig_exe) |zig| c.zig = zig;
+    const path = checks.caller.generate(c, .{ .working_directory = args.working_directory, .config = args.config, .own = args.self, .manifest = args.manifest, .drops = args.drop }, sdkTargets) catch |err| switch (err) {
+        error.CallerRefused => return error.CheckFailed,
+        else => return err,
+    };
+    c.report("generate: {s} is current\n", .{path});
+}
+
+/// `plan`: the jobs of a tier as the hosted caller's matrices.
 fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command, "plan")) !void {
     const a = c.a;
     errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
-    errdefer if (checks.workflow.undeclared.len != 0) c.report("the caller's job {s} is not in ci/workflow.json: declare it in jobs (a build step), or move it to a workflow of its own\n", .{checks.workflow.undeclared});
-    if (args.workflow == null and (args.self or args.working_directory != null or args.drop.len != 0)) {
-        c.report("plan: --self, --working-directory and --drop are for the caller --workflow generates\n", .{});
-        return error.CheckFailed;
-    }
     if (args.zig_exe) |zig| c.zig = zig;
     var config = try checks.workflow.configuration(c.*, args.config orelse "ci/workflow.json");
-    try sdkTargets(c, &config, args.working_directory orelse ".");
-    if (args.workflow) |path| {
-        const existing = if (c.exists(path)) try c.read(path) else null;
-        const heading = try checks.workflow.heading(a, args.config, path, args.working_directory, args.self);
-        const text = try checks.workflow.generate(c.*, config, args.manifest, args.working_directory orelse ".", args.self, heading, existing, args.drop);
-        try checks.workflow.write(c.*, path, text);
-        return;
-    }
+    try sdkTargets(c, &config, ".");
     const jobs = try checks.matrix.plan(a, config, args.tier);
     const tiers = try checks.matrix.split(a, config, jobs, args.tier);
     const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});

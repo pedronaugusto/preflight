@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- A ThreadSanitizer build records and reads its test durations in a column of its own (`linux-debug-tsan`, `preflight_order.key`), where it shared the column of the same mode without it and could not record without overwriting that column's times. A declared TSan job balances its shards by its own times once it records them (`-Dci-timings=true` in its `args`).
+
+### Fixed
+
+- A test that crashes no longer erases the timing records of the tests run before it. Zig starts the test process again after a crash, and each new process truncated the shard's record, so a run with crashes or watchdog kills kept only the tests after the last one: relic's windows-11-arm and riscv64 jobs recorded 1 test of 2000. The record is now cleared once per run, when the build asks for the tests (`preflight_timings.Recorder.begin`, which a custom runner calls where its run begins), and a restarted process appends to it.
+
 ## [0.17.0] - 2026-10-24
 
 ### Breaking

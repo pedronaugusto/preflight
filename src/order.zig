@@ -7,8 +7,10 @@ const builtin = @import("builtin");
 
 /// The column of `ci/durations.json` this test binary reads: its system and mode, and
 /// its architecture where the hosted runners of one system have two (Linux and Windows
-/// on ARM beside x86_64), so the two never share a column.
-pub const key = @tagName(builtin.target.os.tag) ++ arch ++ "-" ++ @tagName(builtin.optimize);
+/// on ARM beside x86_64), so the two never share a column. A ThreadSanitizer build
+/// has a column of its own, `-tsan`: it runs some tests many times slower than the
+/// same mode without it, and others hardly so.
+pub const key = @tagName(builtin.target.os.tag) ++ arch ++ "-" ++ @tagName(builtin.optimize) ++ if (builtin.sanitize_thread) "-tsan" else "";
 const arch = switch (builtin.target.cpu.arch) {
     .x86_64 => "",
     .aarch64 => if (builtin.target.os.tag == .macos) "" else "-aarch64",

@@ -49,7 +49,11 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     _ = packages.add("README", "No packages.\n");
     var closure: std.array_hash_map.String(void) = .empty;
     for (options.packages) |dependency| gather(b, &closure, dependency.builder.pkg_hash);
+    // Without bay the package's own build holds preflight, so a consumer fetches preflight and
+    // what it depends on.
+    if (package == b) gather(b, &closure, pkg.pkg_hash);
     for (closure.keys()) |hash| {
+        if (!byHash(hash)) continue;
         const entry = std.Build.package_map.get(hash) orelse unreachable; // gather puts only hashes it found
         _ = packages.addCopyDirectory(.{ .cwd_relative = entry.build_root }, hash, .{});
     }
@@ -80,14 +84,23 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
 }
 
 /// Puts `hash` and every package it depends on, transitively, into `closure`: with
-/// fetching off, a consumer's build needs each of them on disk. A lazy package the
-/// build never fetched is left out; nothing in this configuration asked for it.
+/// fetching off, a consumer's build needs each of them on disk, but for one reached by path,
+/// which it reads where it is. A lazy package the build never fetched is left out; nothing
+/// in this configuration asked for it.
 fn gather(b: *std.Build, closure: *std.array_hash_map.String(void), hash: []const u8) void {
     const entry = std.Build.package_map.get(hash) orelse return;
     if (!entry.available) return;
     const found = closure.getOrPut(b.graph.arena, hash) catch @panic("OOM");
     if (found.found_existing) return;
     for (entry.deps) |dependency| gather(b, closure, dependency[1]);
+}
+
+/// Whether Zig fetched the package `key` names by hash, which a consumer's build looks up among
+/// its packages: `name-version-digest`, the digest 44 characters. A package reached by path is
+/// keyed by the path, or by its digest when the path is long, and read where it is.
+fn byHash(key: []const u8) bool {
+    if (key.len < 44 or std.mem.findAny(u8, key, "/\\") != null) return false;
+    return std.mem.countScalar(u8, key[0 .. key.len - 44], '-') >= 2;
 }
 
 /// Checks the graph plain `zig build` fetches for the package, then writes the
@@ -210,4 +223,12 @@ test "the generated consumer imports each named module from the package" {
     try std.testing.expectError(error.InvalidDependencyOption, parseOption("http=float:1"));
     const zon = try manifest(a, "strand", "../..");
     try std.testing.expect(std.mem.find(u8, zon, ".dependencies = .{ .strand = .{ .path = \"../..\" } }") != null);
+}
+
+test "a package fetched by hash is copied for the consumer, one reached by path is not" {
+    try std.testing.expect(byHash("aegis-0.1.17-rsxouvGhCAD_-g4V2I9sq2lY_uNA5M3zBHIw7uX4WfWt"));
+    try std.testing.expect(byHash("N-V-__8AAK2jSwMxK2QTcDLqXDrakaAa7TS3ShXkjIic0xBt"));
+    try std.testing.expect(!byHash("../../preflight"));
+    try std.testing.expect(!byHash("/p/aegis-0.1.17-rsxouvGhCAD_-g4V2I9sq2lY_uNA5M3zBHIw7uX4WfWt/sub"));
+    try std.testing.expect(!byHash("0f3a8c21d4e5b6a79f0e1d2c3b4a59687f6e5d4c3b2a19087f6e5d4c3b2a1908"));
 }

@@ -328,8 +328,8 @@ fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
     if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
 }
 
-test "the default policy fails a danger site: an error made unreachable (A013)" {
-    try lintSample("fn foo() !void {}\npub fn work() void {\n    foo() catch unreachable;\n}\ntest {}\n", "A013", true);
+test "the default policy reports a flow rule's site and does not fail the gate: an error input makes unreachable (A013)" {
+    try lintSample("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", false);
 }
 
 test "the default policy gates P005: a debug print left in" {

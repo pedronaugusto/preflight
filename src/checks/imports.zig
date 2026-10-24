@@ -64,17 +64,17 @@ fn resolve(a: std.mem.Allocator, path: []const u8, target: []const u8) ![]const 
 
 pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
     // A root only compiled is no root: Zig runs a binary's tests only when a run runs it.
-    for (src.items(src.get(config, "unrun_test_roots"))) |unrun| {
-        c.fail("{s}: its tests are compiled ({s}) and never run: no run under {s} runs a test binary of it; run it with the tests, or drop it", .{ src.string(src.get(unrun, "root"), ""), src.string(src.get(unrun, "artifacts"), ""), src.string(src.get(unrun, "steps"), "") });
+    for (try src.items(src.get(config, "unrun_test_roots"))) |unrun| {
+        c.fail("{s}: its tests are compiled ({s}) and never run: no run under {s} runs a test binary of it; run it with the tests, or drop it", .{ try src.string(src.get(unrun, "root"), ""), try src.string(src.get(unrun, "artifacts"), ""), try src.string(src.get(unrun, "steps"), "") });
     }
-    const roots = src.items(src.get(config, "test_roots"));
+    const roots = try src.items(src.get(config, "test_roots"));
     if (roots.len == 0) {
         c.fail("test imports: configure test_roots in ci/preflight.json", .{});
         return;
     }
     var reached = std.StringHashMap(void).init(c.a);
     var pending: std.ArrayList([]const u8) = .empty;
-    for (roots) |root| try pending.append(c.a, src.string(root, ""));
+    for (roots) |root| try pending.append(c.a, try src.string(root, ""));
     while (pending.pop()) |path| {
         const entry = try reached.getOrPut(path);
         if (entry.found_existing) continue;

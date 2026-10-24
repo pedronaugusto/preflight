@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const gantry = @import("gantry");
 const configure = @import("../configure.zig");
 
@@ -91,7 +92,7 @@ pub const Context = struct {
     /// The configuration at `path`, or an empty one when the file does not exist:
     /// every option has a default, so a package needs no file to start.
     pub fn options(c: Context, path: []const u8) !Value {
-        if (!c.exists(path)) return .{ .object = .empty };
+        if (!try c.exists(path)) return .{ .object = .empty };
         return c.json(path);
     }
 
@@ -99,8 +100,14 @@ pub const Context = struct {
         return (try std.json.parseFromSlice(Value, c.a, try c.read(path), .{ .allocate = .alloc_always })).value;
     }
 
-    pub fn exists(c: Context, path: []const u8) bool {
-        c.directory().access(c.io, path, .{}) catch return false;
+    /// Whether `path` is there. Only its absence is false: a file that is
+    /// there and cannot be reached is the error, never "no file", which
+    /// would read an unreadable configuration as every default.
+    pub fn exists(c: Context, path: []const u8) Io.Dir.AccessError!bool {
+        c.directory().access(c.io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return false,
+            else => |e| return e,
+        };
         return true;
     }
 };
@@ -109,22 +116,42 @@ pub fn get(v: Value, key: []const u8) Value {
     return if (v == .object) v.object.get(key) orelse .null else .null;
 }
 
-pub fn string(v: Value, fallback: []const u8) []const u8 {
-    return if (v == .string) v.string else fallback;
+/// A value of the wrong type where a configuration names one: refused,
+/// never read as the default an absent one gets.
+pub const TypeError = error{InvalidConfiguration};
+
+/// The string `v`, or `fallback` when it is absent (`null`).
+pub fn string(v: Value, fallback: []const u8) TypeError![]const u8 {
+    return switch (v) {
+        .string => |text| text,
+        .null => fallback,
+        else => error.InvalidConfiguration,
+    };
 }
 
-pub fn number(v: Value, fallback: usize) usize {
-    return if (v == .integer and v.integer >= 0) @intCast(v.integer) else fallback;
+/// The count `v`, or `fallback` when it is absent (`null`).
+pub fn number(v: Value, fallback: usize) TypeError!usize {
+    return switch (v) {
+        .integer => |n| std.math.cast(usize, n) orelse error.InvalidConfiguration,
+        .null => fallback,
+        else => error.InvalidConfiguration,
+    };
 }
 
-pub fn items(v: Value) []const Value {
-    return if (v == .array) v.array.items else &.{};
+/// The array `v`, or none when it is absent (`null`).
+pub fn items(v: Value) TypeError![]const Value {
+    return switch (v) {
+        .array => |list| list.items,
+        .null => &.{},
+        else => error.InvalidConfiguration,
+    };
 }
 
 /// The strings of an array; anything else in it is refused.
 pub fn strings(a: std.mem.Allocator, v: Value) ![]const []const u8 {
-    const out = try a.alloc([]const u8, items(v).len);
-    for (items(v), out) |item, *text| text.* = if (item == .string) item.string else return error.ExpectedStrings;
+    const listed = try items(v);
+    const out = try a.alloc([]const u8, listed.len);
+    for (listed, out) |item, *text| text.* = if (item == .string) item.string else return error.ExpectedStrings;
     return out;
 }
 
@@ -162,7 +189,7 @@ pub fn testPaths(a: std.mem.Allocator, config: Value) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     try out.appendSlice(a, &test_files);
     const patterns = get(config, "test_support");
-    if (patterns == .null) try out.appendSlice(a, &default_support) else for (items(patterns)) |pattern| {
+    if (patterns == .null) try out.appendSlice(a, &default_support) else for (try items(patterns)) |pattern| {
         if (pattern != .string) return error.InvalidTestSupport;
         try out.append(a, pattern.string);
     }
@@ -211,8 +238,8 @@ pub const Source = struct {
 pub fn roots(a: std.mem.Allocator, config: Value) ![]const []const u8 {
     const named = get(config, "sources");
     if (named == .null) return &.{"src"};
-    const out = try a.alloc([]const u8, items(named).len);
-    for (items(named), out) |root, *path| path.* = string(root, "src");
+    const out = try a.alloc([]const u8, (try items(named)).len);
+    for (try items(named), out) |root, *path| path.* = try string(root, "src");
     return out;
 }
 
@@ -307,4 +334,38 @@ test "a test root matches its source whichever separator either path uses" {
     try std.testing.expect(samePath("src/zero.zig", "src/zero.zig"));
     try std.testing.expect(!samePath("src/zero.zig", "src/zeros.zig"));
     try std.testing.expect(!samePath("src/a.zig", "src_a.zig"));
+}
+
+test "a configuration value of the wrong type is refused; only an absent one takes the default" {
+    const parsed = try std.json.parseFromSlice(Value, std.testing.allocator,
+        \\{"compile_step": 3, "name": "x", "count": -1, "list": "a", "none": null}
+    , .{});
+    defer parsed.deinit();
+    const config = parsed.value;
+    // Before, `3` ran the default step, `check`.
+    try std.testing.expectError(error.InvalidConfiguration, string(get(config, "compile_step"), "check"));
+    try std.testing.expectEqualStrings("x", try string(get(config, "name"), ""));
+    try std.testing.expectEqualStrings("check", try string(get(config, "absent"), "check"));
+    try std.testing.expectEqualStrings("check", try string(get(config, "none"), "check"));
+    try std.testing.expectError(error.InvalidConfiguration, number(get(config, "count"), 1));
+    try std.testing.expectEqual(@as(usize, 1), try number(get(config, "absent"), 1));
+    try std.testing.expectError(error.InvalidConfiguration, items(get(config, "list")));
+    try std.testing.expectEqual(@as(usize, 0), (try items(get(config, "absent"))).len);
+}
+
+test "a configuration that is there and cannot be read is the error, not every default" {
+    const shakedown = @import("shakedown");
+    const fio = try shakedown.FaultIo.init(std.testing.allocator, std.testing.io, .{});
+    defer fio.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "preflight.json", .data = "{\"compile_step\": \"build\"}" });
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const c: Context = .{ .a = arena.allocator(), .io = fio.io(), .dir = tmp.dir };
+    try std.testing.expect(!try c.exists("absent.json"));
+    try std.testing.expectEqual(@as(usize, 0), (try c.options("absent.json")).object.count());
+    try fio.setPlan(&.{.{ .at = .{ .nth = .{ .call = .dirAccess, .n = 1 } }, .fault = .{ .fail = error.AccessDenied } }});
+    // Before, this was an empty configuration: every option at its default.
+    try std.testing.expectError(error.AccessDenied, c.options("preflight.json"));
 }

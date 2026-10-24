@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A configuration that is there and cannot be read (`ci/preflight.json`, `ci/workflow.json`) is the error, where any failure to reach it read as no file and every option at its default; and a value of the wrong type is `InvalidConfiguration` (`"compile_step": 3` ran `check`), only an absent or `null` one taking the default.
+
 ## [0.17.0] - 2026-10-24
 
 ### Breaking

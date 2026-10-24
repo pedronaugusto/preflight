@@ -57,8 +57,8 @@ pub fn dev(b: *std.Build, _: type) void {
     // The command line's tests hold the forms the build and the workflows call it with.
     const ensign = (package.dependencyLazy("ensign", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("ensign");
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .debug }).module("shakedown");
-    // aegis as glint is built with it: one aegis in the program.
-    const aegis = glint.import_table.get("aegis") orelse @panic("glint imports aegis");
+    // preflight's own aegis: bay selects one for the whole graph.
+    const aegis = package.dependency("aegis", .{ .target = target, .optimize = .debug }).module("aegis");
     const test_step = b.step("test", "Run the shared check regression suite");
     // The integration tests run fixture packages the way their authors do: through bay; and
     // the checks read CHANGELOG.md with bay's reader of it.
@@ -189,7 +189,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const gantry = gantry_dep.module("gantry");
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: dev returns before addCi if glint is not available
     const changelog = (package.dependencyLazy("bay", .{ .target = target, .optimize = optimize }) catch unreachable).module("changelog"); // unreachable: dev returns before addCi if bay is not available
-    const aegis = glint.import_table.get("aegis") orelse @panic("glint imports aegis");
+    const aegis = package.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
     const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis } };
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },

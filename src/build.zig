@@ -80,8 +80,8 @@ pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedT
     const ensign = pkg.dependencyLazy("ensign", .{ .target = target, .optimize = .safe }) catch return null;
     // CHANGELOG.md read as bay, which releases from it, reads it.
     const bay = pkg.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch return null;
-    // aegis as glint is built with it (its whole-file read): one aegis in the program.
-    const aegis = glint.module("glint").import_table.get("aegis") orelse @panic("glint imports aegis");
+    // preflight's own aegis (its whole-file read): bay selects one for the whole graph.
+    const aegis = pkg.dependency("aegis", .{ .target = target, .optimize = .safe }).module("aegis");
     return b.createModule(.{
         .root_source_file = pkg.path("src/main.zig"),
         .target = target,
@@ -205,9 +205,8 @@ const Steps = struct {
         const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
         const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
-        // The structure program reads its configuration through aegis, as glint is built with it.
-        const glint_dep = pkg.dependencyLazy("glint", .{ .target = host, .optimize = .debug }) catch return;
-        const aegis = glint_dep.module("glint").import_table.get("aegis") orelse @panic("glint imports aegis");
+        // The structure program reads its configuration through preflight's own aegis.
+        const aegis = pkg.dependency("aegis", .{ .target = host, .optimize = .debug }).module("aegis");
         const executable = steps.checksTool(b, pkg, host) orelse return;
         const timeout = config.test_timeout.duration() orelse fail: {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);

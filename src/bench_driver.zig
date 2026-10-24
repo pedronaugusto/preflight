@@ -1,27 +1,58 @@
 //! Interleaved A/B process orchestration; no timers or statistical algorithms.
 const std = @import("std");
 const builtin = @import("builtin");
+const ensign = @import("ensign");
 const bench = @import("shakedown").bench;
 const Io = std.Io;
 const limit: Io.Limit = .limited(64 * 1024 * 1024);
 
+/// `zig build bench-ab -- …`: the build gives `--zig`, `--bay`, `--candidate` and
+/// `--comparison`; the rest are the caller's.
+pub const Arguments = struct {
+    zig: []const u8,
+    bay: ?[]const u8 = null,
+    candidate: []const u8,
+    comparison: []const u8,
+    base: []const u8,
+    program: []const u8,
+    pairs: u8 = 5,
+    row: []const u8 = "",
+    output: ?[]const u8 = null,
+
+    pub const spec: ensign.Spec(@This()) = .{
+        .name = "bench-ab",
+        .about = "Interleave a benchmark program built at an immutable base and at the clean candidate, and compare them through shakedown",
+        .options = .{
+            .zig = .{ .value_name = "PATH", .hint = .command, .help = "The Zig that builds both revisions (the build's)" },
+            .bay = .{ .value_name = "PATH", .hint = .command, .help = "The bay that builds both revisions, when the package is built under bay (the build's)" },
+            .candidate = .{ .value_name = "DIR", .hint = .directory, .help = "The package's checkout, which must be clean (the build's)" },
+            .comparison = .{ .value_name = "PATH", .hint = .file, .help = "shakedown's comparison program (the build's)" },
+            .base = .{ .value_name = "COMMIT", .help = "The revision to compare against" },
+            .program = .{ .value_name = "NAME", .help = "The benchmark program, as zig-out/bench names it" },
+            .pairs = .{ .value_name = "N", .help = "How many base and candidate runs, in alternating order; 1 to 100" },
+            .row = .{ .value_name = "PREFIX", .help = "Only the rows whose names start with this" },
+            .output = .{ .value_name = "DIR", .hint = .directory, .help = "Also keep each pair's rows and comparison here" },
+        },
+    };
+};
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
-    const args = try init.minimal.args.toSlice(a);
-    try arguments(args);
-    const zig = try option(args, "--zig");
-    const candidate = try Io.Dir.cwd().realPathFileAlloc(init.io, try option(args, "--candidate"), a);
-    const comparison = try Io.Dir.cwd().realPathFileAlloc(init.io, try option(args, "--comparison"), a);
+    // Help and mistakes are answered here, and the program exits.
+    const args = ensign.parseOrExit(Arguments, init);
+    const zig = args.zig;
+    const candidate = try Io.Dir.cwd().realPathFileAlloc(init.io, args.candidate, a);
+    const comparison = try Io.Dir.cwd().realPathFileAlloc(init.io, args.comparison, a);
     const status = try command(a, init.io, candidate, &.{ "git", "status", "--porcelain", "--untracked-files=normal" });
     if (status.stdout.len != 0) return error.DirtyCandidate;
     const candidate_revision = try command(a, init.io, candidate, &.{ "git", "rev-parse", "HEAD" });
     const candidate_sha = std.mem.trim(u8, candidate_revision.stdout, "\r\n");
-    const base = try option(args, "--base");
-    const program = try option(args, "--program");
+    const base = args.base;
+    const program = args.program;
     if (program.len == 0 or std.mem.findAny(u8, program, "/\\") != null) return error.InvalidProgram;
-    const pairs = try std.fmt.parseInt(usize, optional(args, "--pairs") orelse "5", 10);
+    const pairs = args.pairs;
     if (pairs == 0 or pairs > 100) return error.InvalidPairs;
-    const prefix = optional(args, "--row") orelse "";
+    const prefix = args.row;
     const sha_result = try command(a, init.io, candidate, &.{ "git", "rev-parse", "--verify", "--end-of-options", try a.print("{s}^{{commit}}", .{base}) });
     const sha = std.mem.trim(u8, sha_result.stdout, "\r\n");
     if (sha.len != 40) return error.InvalidBaseCommit;
@@ -37,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
     _ = try command(a, init.io, checkout, &.{ "git", "checkout", "--detach", sha });
     // Each revision configures itself. No guessed executable or graph reconstruction.
     // Under bay, `bay bench-build` finds the step in whichever build each revision has it.
-    const build: []const []const u8 = if (optional(args, "--bay")) |bay| &.{ bay, "bench-build" } else &.{ zig, "build", "bench-build" };
+    const build: []const []const u8 = if (args.bay) |bay| &.{ bay, "bench-build" } else &.{ zig, "build", "bench-build" };
     _ = try command(a, init.io, checkout, build);
     _ = try command(a, init.io, candidate, build);
     const suffix = if (builtin.target.os.tag == .windows) ".exe" else "";
@@ -63,7 +94,7 @@ pub fn main(init: std.process.Init) !void {
         try Io.Dir.cwd().writeFile(init.io, .{ .sub_path = after, .data = texts[1] });
         const result = try command(a, init.io, candidate, &.{ comparison, before, after });
         try emit(&output.interface, result.stdout);
-        if (optional(args, "--output")) |destination| {
+        if (args.output) |destination| {
             try Io.Dir.cwd().createDirPath(init.io, destination);
             for ([_][]const u8{ "base", "candidate", "comparison" }, [_][]const u8{ texts[0], texts[1], result.stdout }) |name, text| {
                 try Io.Dir.cwd().writeFile(init.io, .{ .sub_path = try a.print("{s}/{d}-{s}.jsonl", .{ destination, pair, name }), .data = text });
@@ -96,18 +127,21 @@ fn command(a: std.mem.Allocator, io: Io, cwd: []const u8, argv: []const []const 
     }
     return result;
 }
-fn optional(args: []const []const u8, key: []const u8) ?[]const u8 {
-    for (args, 0..) |arg, i| if (std.mem.eql(u8, arg, key) and i + 1 < args.len) return args[i + 1];
-    return null;
-}
-fn option(args: []const []const u8, key: []const u8) ![]const u8 {
-    return optional(args, key) orelse error.MissingBenchmarkOption;
+fn read(args: []const []const u8) ensign.Error!Arguments {
+    const outcome = try ensign.parse(Arguments, std.testing.allocator, args, .{});
+    return outcome.parsed;
 }
 
-test "benchmark driver rejects unknown missing duplicate and truncated inputs" {
-    try std.testing.expectError(error.UnknownBenchmarkOption, arguments(&.{ "driver", "--typo", "value" }));
-    try std.testing.expectError(error.MissingBenchmarkOption, arguments(&.{ "driver", "--base" }));
-    try std.testing.expectError(error.DuplicateBenchmarkOption, arguments(&.{ "driver", "--base", "a", "--base", "b" }));
+test "benchmark driver reads its arguments and rejects unknown, missing and truncated inputs" {
+    const given = try read(&.{ "--zig", "zig", "--candidate", ".", "--comparison", "compare", "--base", "HEAD~1", "--program", "workflow", "--pairs", "3", "--row", "caller " });
+    try std.testing.expectEqualStrings("HEAD~1", given.base);
+    try std.testing.expectEqual(@as(u8, 3), given.pairs);
+    try std.testing.expectEqualStrings("caller ", given.row);
+    try std.testing.expectEqual(@as(?[]const u8, null), given.bay);
+    try std.testing.expectError(error.UnknownOption, read(&.{"--typo"}));
+    try std.testing.expectError(error.MissingOption, read(&.{ "--zig", "zig", "--candidate", ".", "--comparison", "compare", "--program", "workflow" }));
+    try std.testing.expectError(error.MissingValue, read(&.{ "--zig", "zig", "--base" }));
+    try std.testing.expectError(error.InvalidValue, read(&.{ "--zig", "zig", "--candidate", ".", "--comparison", "compare", "--base", "b", "--program", "p", "--pairs", "many" }));
     try std.testing.expectError(error.TruncatedRun, validate(std.testing.allocator, "{}", null));
     try std.testing.expectError(error.InvalidRun, validate(std.testing.allocator, "{}\n", null));
     try std.testing.expectError(error.BenchmarkDriverFailed, successful(.{ .exited = 7 }));
@@ -116,20 +150,6 @@ test "benchmark driver rejects unknown missing duplicate and truncated inputs" {
     try std.testing.expectError(error.WriteFailed, emit(&writer, "result\n"));
 }
 
-fn arguments(args: []const []const u8) !void {
-    var i: usize = 1;
-    while (i < args.len) : (i += 2) {
-        const flag = args[i];
-        var known = false;
-        for ([_][]const u8{ "--zig", "--bay", "--candidate", "--comparison", "--base", "--program", "--pairs", "--row", "--output" }) |name| if (std.mem.eql(u8, flag, name)) {
-            known = true;
-        };
-        if (!known) return error.UnknownBenchmarkOption;
-        if (i + 1 == args.len or std.mem.startsWith(u8, args[i + 1], "--")) return error.MissingBenchmarkOption;
-        var previous: usize = 1;
-        while (previous < i) : (previous += 2) if (std.mem.eql(u8, args[previous], flag)) return error.DuplicateBenchmarkOption;
-    }
-}
 fn successful(term: std.process.Child.Term) !void {
     if (term != .exited or term.exited != 0) return error.BenchmarkDriverFailed;
 }

@@ -52,11 +52,14 @@ pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Buil
             tests.dependOn(&run.step);
         }
     }
+    // The caller types the driver's arguments after `--`; ensign reads them, as preflight's own.
+    // Configured as shakedown is, so the two share one aegis.
+    const ensign = pkg.dependencyLazy("ensign", .{ .target = b.graph.host, .optimize = .fast }) catch return null;
     const driver = b.addExecutable(.{ .name = "preflight-bench-ab", .root_module = b.createModule(.{
         .root_source_file = pkg.path("src/bench_driver.zig"),
         .target = b.graph.host,
         .optimize = .safe,
-        .imports = &.{.{ .name = "shakedown", .module = dep.module("shakedown") }},
+        .imports = &.{ .{ .name = "shakedown", .module = dep.module("shakedown") }, .{ .name = "ensign", .module = ensign.module("ensign") } },
     }) });
     build.dependOn(&driver.step);
     const ab = b.addRunArtifact(driver);

@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `bench-ab` reads its arguments through ensign, as preflight's own command line does: `zig build bench-ab -- --help` lists them, and a mistake is named with the flag it concerns. A flag given twice takes its last value; it was refused.
+
 ## [0.17.0] - 2026-10-24
 
 ### Breaking

@@ -2,12 +2,19 @@
 //! where the network may fail them.
 const std = @import("std");
 const src = @import("source.zig");
+const running = @import("running.zig");
 
 /// Runs `argv` in the context's directory and fails unless it exits 0. Its output goes
 /// where the context's reports go: a gate job's own file, or this process's streams.
 pub fn execute(c: src.Context, argv: []const []const u8) !void {
     const output: std.process.SpawnOptions.StdIo = if (c.output) |file| .{ .file = file } else .inherit;
-    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = output, .stderr = output });
+    // A gate job's command leads a group of its own, which ends with a stopped gate.
+    const grouped = running.grouped and c.grouped;
+    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = output, .stderr = output, .pgid = if (grouped) 0 else null });
+    // The pid as spawned: `wait` forgets it.
+    const leader = if (grouped) child.id.? else undefined;
+    if (grouped) running.hold(leader);
+    defer if (grouped) running.release(leader);
     const term = try child.wait(c.io);
     if (term != .exited or term.exited != 0) return error.CommandFailed;
 }

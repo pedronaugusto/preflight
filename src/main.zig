@@ -159,6 +159,8 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
         .run => try here.append(c.a, .{ .job = job, .key = try checks.local.jobKey(c.a, jobs, index), .directory = if (job.directory.len != 0) job.directory else working }),
     };
     const slots: u32 = if (args.jobs) |count| @max(count, 1) else defaultSlots();
+    // A gate stopped by a signal ends its jobs' builds with it.
+    checks.running.endWithGate();
     var failed: std.ArrayList([]const u8) = .empty;
     if (slots == 1) {
         // One at a time, each job's output streamed as it comes.
@@ -210,6 +212,7 @@ const Own = struct { a: std.mem.Allocator, output: std.Io.File };
 /// its key and writes to its own file; alone, it streams its output as before.
 fn runGateJob(c: src.Context, environ: *const std.process.Environ.Map, job: *const GateJob, own: ?Own) !void {
     var w = c;
+    w.grouped = true;
     if (own) |parts| {
         w.a = parts.a;
         w.output = parts.output;

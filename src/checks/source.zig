@@ -26,6 +26,9 @@ pub const Context = struct {
     /// Where a gate job's reports and its commands' output go, both streams in the order
     /// written, so jobs that run at once do not interleave; null is this process's own.
     output: ?std.Io.File = null,
+    /// A gate job's: its commands lead process groups of their own, which `running` holds
+    /// and ends with a gate stopped by a signal.
+    grouped: bool = false,
 
     /// The command that runs the package's steps: under bay, `bay dev`, the
     /// development build that holds the package and the gate. Never bare `bay

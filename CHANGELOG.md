@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `gate` runs its jobs at once: `--jobs N` (`-j`) bounds them by shares of the machine, a job under QEMU or ThreadSanitizer taking two, by default one a core and no more than one for each 4 GiB of memory. The longest start first, by what each took at the last gate here. Each job's output, its commands' included, goes to a file of its own and is printed whole when it ends, with its time; `-j 1` runs them one after another and streams each, as before.
+- `-Dci-job`, which the gate gives each job's build: its timing and count records and the programs its tests run (`addTestProgram`) keep places of their own under that name, so jobs in one package directory do not write over each other's. A build without it keeps the places it had.
+
+### Fixed
+
+- A gate stopped by a signal (Ctrl-C, a `kill` of it alone) left its jobs' builds running: each job's command now leads a process group of its own, which the gate ends as it stops.
+- `gate` lost its lines when its standard output was a file: each line was written at the file's start, over the one before.
+
 ## [0.17.0] - 2026-10-24
 
 ### Breaking

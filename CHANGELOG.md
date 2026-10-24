@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `preflight profile` named nothing when a job's timing record was not JSON: it failed with a bare `error: SyntaxError` (chronicle's and morse's nightlies of 2026-10-24, on preflight 0.5, which merged every job's records into one directory and so could interleave two). It now names the file and line, `profile: <dir>/<file>.ndjson:3: not a JSON record (SyntaxError)`, and a record without its seconds the same way; a durations or costs file that is not JSON is named too.
+
 ## [0.17.0] - 2026-10-24
 
 ### Breaking

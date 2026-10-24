@@ -35,13 +35,11 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
     defer walker.deinit();
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ndjson")) continue;
-        const text = try dir.readFileAlloc(c.io, entry.path, c.a, .limited(64 * 1024 * 1024));
-        var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            const value = (try std.json.parseFromSlice(src.Value, c.a, line, .{})).value;
+        var records = try Records.open(c, dir, root, entry.path);
+        while (try records.next()) |value| {
             // A phase of a job is not a test.
             if (src.get(value, "phase") != .null) continue;
-            const seconds = try number(src.get(value, "seconds"));
+            const seconds = try records.seconds(value);
             result.records += 1;
             const column = src.string(src.get(value, "key"), "");
             if (column.len == 0) continue;
@@ -74,6 +72,43 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
     }
     return result;
 }
+
+/// The records of one `.ndjson` file under the root, a JSON object a line. A
+/// line that is not one, or a record without its seconds, stops the profile
+/// with the file and line named: a job's records can arrive cut short or
+/// interleaved with another's, and the error alone names neither.
+const Records = struct {
+    c: src.Context,
+    root: []const u8,
+    path: []const u8,
+    lines: std.mem.SplitIterator(u8, .scalar),
+    line: usize = 0,
+
+    fn open(c: src.Context, dir: std.Io.Dir, root: []const u8, path: []const u8) !Records {
+        const text = try dir.readFileAlloc(c.io, path, c.a, .limited(64 * 1024 * 1024));
+        return .{ .c = c, .root = root, .path = try c.a.dupe(u8, path), .lines = std.mem.splitScalar(u8, text, '\n') };
+    }
+
+    fn next(r: *Records) !?src.Value {
+        while (r.lines.next()) |text| {
+            r.line += 1;
+            if (std.mem.trim(u8, text, " \t\r").len == 0) continue;
+            const parsed = std.json.parseFromSlice(src.Value, r.c.a, text, .{}) catch |err| {
+                if (err != error.OutOfMemory) r.c.report("profile: {s}/{s}:{d}: not a JSON record ({s})\n", .{ r.root, r.path, r.line, @errorName(err) });
+                return err;
+            };
+            return parsed.value;
+        }
+        return null;
+    }
+
+    fn seconds(r: *Records, value: src.Value) !f64 {
+        return number(src.get(value, "seconds")) catch |err| {
+            r.c.report("profile: {s}/{s}:{d}: a record without a duration in seconds\n", .{ r.root, r.path, r.line });
+            return err;
+        };
+    }
+};
 
 fn number(value: src.Value) !f64 {
     const seconds: f64 = switch (value) {
@@ -173,6 +208,26 @@ test "a test recorded on two shards of one column fails the refresh" {
     try std.testing.expectError(error.TestOnTwoShards, summarize(c, ".", .null));
 }
 
+test "a record that is not JSON, or has no seconds, fails the refresh naming its file and line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var held: std.Io.Writer.Allocating = .init(a);
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir, .held = &held };
+    // Two downloads writing one file at once leave a record cut into by another.
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"key\":\"linux-debug\"}\n\n{\"name\":\"sec{\"name\":\"first\",\"seconds\":3}\n" });
+    try std.testing.expectError(error.SyntaxError, summarize(c, ".", .null));
+    try std.testing.expectError(error.SyntaxError, measure(c, ".", .null));
+    const cut = "profile: ./tests-linux-debug-all.ndjson:3: not a JSON record (SyntaxError)\n";
+    try std.testing.expectEqualStrings(cut ++ cut, held.written());
+    held.clearRetainingCapacity();
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"phase\":\"compile\",\"seconds\":\"long\"}\n" });
+    try std.testing.expectError(error.InvalidTestDuration, measure(c, ".", .null));
+    try std.testing.expectEqualStrings("profile: ./tests-linux-debug-all.ndjson:1: a record without a duration in seconds\n", held.written());
+}
+
 /// Seconds per phase of a hosted job (`compile aarch64-macos`), as a run
 /// measured them. A plan balances its jobs by these.
 pub const Costs = struct {
@@ -190,13 +245,11 @@ pub fn measure(c: src.Context, root: []const u8, previous: src.Value) !Costs {
     defer walker.deinit();
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ndjson")) continue;
-        const text = try dir.readFileAlloc(c.io, entry.path, c.a, .limited(64 * 1024 * 1024));
-        var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            const value = (try std.json.parseFromSlice(src.Value, c.a, line, .{})).value;
+        var records = try Records.open(c, dir, root, entry.path);
+        while (try records.next()) |value| {
             const label = src.get(value, "phase");
             if (label != .string) continue;
-            const seconds = try number(src.get(value, "seconds"));
+            const seconds = try records.seconds(value);
             const cell = try result.phases.getOrPut(c.a, try c.a.dupe(u8, label.string));
             cell.value_ptr.* = if (cell.found_existing) @max(cell.value_ptr.*, seconds) else seconds;
         }

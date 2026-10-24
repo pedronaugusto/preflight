@@ -95,8 +95,13 @@ pub const Context = struct {
         return c.json(path);
     }
 
+    /// The JSON in the file at `path`; a file that holds none is named.
     pub fn json(c: Context, path: []const u8) !Value {
-        return (try std.json.parseFromSlice(Value, c.a, try c.read(path), .{ .allocate = .alloc_always })).value;
+        const parsed = std.json.parseFromSlice(Value, c.a, try c.read(path), .{ .allocate = .alloc_always }) catch |err| {
+            if (err != error.OutOfMemory) c.report("{s}: not JSON ({s})\n", .{ path, @errorName(err) });
+            return err;
+        };
+        return parsed.value;
     }
 
     pub fn exists(c: Context, path: []const u8) bool {

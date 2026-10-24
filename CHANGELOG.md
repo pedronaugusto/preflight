@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `vm_packages` takes a package from Alpine's edge, with its build stated exactly (`git@edge=2.56.0-r0`), for a package newer than the release the machine is: edge joins the release's repositories under its tag, signed by the same keys, when an entry names it. An edge entry without `=` and a version, or another tag, is refused by name; when edge has moved on from the build named, apk fails making the machine, naming the package. relic holds its tests to git 2.56.0, which Alpine 3.24 does not have (2.54.0).
+
 ### Changed
 
 - A ThreadSanitizer build records and reads its test durations in a column of its own (`linux-debug-tsan`, `preflight_order.key`), where it shared the column of the same mode without it and could not record without overwriting that column's times. A declared TSan job balances its shards by its own times once it records them (`-Dci-timings=true` in its `args`).

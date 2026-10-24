@@ -44,7 +44,11 @@ pub const Config = struct {
     /// beside its minimal system, by Alpine's names (`git`, `openssl`). Alpine's
     /// `apk` installs them on the machine when the build makes it, from the
     /// release's own repositories, verified by the release's own keys; a build
-    /// that runs nothing on the machine fetches nothing.
+    /// that runs nothing on the machine fetches nothing. A package newer than the
+    /// release has comes from Alpine's edge, with the build it is stated exactly
+    /// (`git@edge=2.56.0-r0`): edge moves on, and when it has another build the
+    /// machine is not made, apk naming the package, where an unstated one would
+    /// drift with it.
     vm_packages: []const []const u8 = &.{},
 };
 

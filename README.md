@@ -393,7 +393,10 @@ The machine is Alpine's minimal system. Tests that need more of it, such as `git
 on the machine, over QEMU's user network, when the build first makes it. They come
 from the release's repositories, verified by its signing keys. Alpine keeps only the
 newest build of a package there, so a fresh cache takes the release's current build,
-as a hosted runner's tools are its image's.
+as a hosted runner's tools are its image's. A package newer than the release has comes
+from Alpine's edge, named with the build it is: `git@edge=2.56.0-r0`. Edge moves on,
+so an entry from it without `=` and a version is refused; when edge has another build,
+the machine is not made and apk names the package, where an unstated one would drift.
 
 ### Hosted gate
 

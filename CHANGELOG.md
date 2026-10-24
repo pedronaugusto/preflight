@@ -11,7 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The default policy weighs glint's aegis pack in every repository (aegis's design §7). A001-A005 and the danger rules A007, A008, A011, A014-A017 and A019 are findings. The rules that read the input or peer fact (A006, A009, A010, A012, A013, A018, A020) and A021 (lock order) are reported until a fresh sample of each shows its noise near zero. A danger site uses aegis's type or carries `// aegis: <reason>: <why>`.
 - The hardened profile is every package's: `Config.hardened` defaults to it (null only in a configuration that runs no native tests), and the planner schedules the hardened jobs in the release tier whatever `ci/workflow.json` says (`"hardened"` may only be `true`). A package with nothing to fuzz writes `.fuzz_step = null`.
 - An installed artifact the build makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with its measurement.
-- P001, P002 and P004 leave the default policy with glint 0.6.0, folded into A010 (a conversion of input; the safe build every package ships checks the program's own), A019 and A013. A repository naming one in `glint.rules` is told where its sites went. `glint.casts` and `glint.cast_scope` are retired.
+- P001, P002 and P004 leave the default policy with glint 0.7.0, folded into A010 (a conversion of input; the safe build every package ships checks the program's own), A019 and A013. A repository naming one in `glint.rules` is told where its sites went. `glint.casts` and `glint.cast_scope` are retired.
 
 ### Added
 

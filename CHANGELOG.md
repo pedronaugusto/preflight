@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A configuration that is there and cannot be read (`ci/preflight.json`, `ci/workflow.json`) is the error, where any failure to reach it read as no file and every option at its default; and a value of the wrong type is `InvalidConfiguration` (`"compile_step": 3` ran `check`), only an absent or `null` one taking the default.
+- The glint check and the API surface give glint the run's `Io` (glint 0.6.0's `Options.io`), so a canceled run ends with `Canceled` at the next file glint builds or lints, where it ran the whole project out; a cancel there was reported as the run not finishing, a failure.
 
 ## [0.17.0] - 2026-10-24
 

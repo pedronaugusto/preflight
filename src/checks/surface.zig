@@ -22,8 +22,9 @@ const max_files = 4096;
 const max_depth = 32;
 
 /// The surface's lines, sorted and without repeats. `reader.read(a, path)` gives a file of the
-/// package by its path from the package's root, or null when it is not there.
-pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, modules: []const Module, reader: anytype) ![]const []const u8 {
+/// package by its path from the package's root, or null when it is not there. `io` is asked for
+/// a cancel before each file glint builds.
+pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: []const Module, reader: anytype) ![]const []const u8 {
     var paths: std.ArrayList([]const u8) = .empty;
     var texts: std.ArrayList([]const u8) = .empty;
     var index: std.StringHashMapUnmanaged(u32) = .empty;
@@ -50,7 +51,7 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, modules: []const Modul
     }
     const inputs = try a.alloc(glint.Project.Input, paths.items.len);
     for (inputs, paths.items, texts.items) |*input, path, text| input.* = .{ .name = path, .bytes = text };
-    var project = try glint.Project.init(gpa, inputs, edges.items, .{ .lowering = false });
+    var project = try glint.Project.init(gpa, inputs, edges.items, .{ .lowering = false, .io = io });
     defer project.deinit();
 
     var walk: Walk = .{ .a = a, .project = &project, .lines = .empty, .open = .empty };
@@ -418,7 +419,22 @@ pub const Files = struct {
 
 fn surfaceOf(a: std.mem.Allocator, entries: []const struct { []const u8, []const u8 }) ![]const []const u8 {
     const files: Files = .{ .entries = entries };
-    return list(a, std.testing.allocator, &.{.{ .name = "pkg", .root = "src/root.zig" }}, files);
+    return list(a, std.testing.allocator, std.testing.io, &.{.{ .name = "pkg", .root = "src/root.zig" }}, files);
+}
+
+test "a cancel while glint builds the surface's project ends the list with Canceled" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const Canceled = @import("shakedown").Layer(u8, .{
+        .checkCancel = struct {
+            fn checkCancel(_: ?*anyopaque) std.Io.Cancelable!void {
+                return error.Canceled;
+            }
+        }.checkCancel,
+    });
+    var canceled: Canceled = .init(std.testing.io, 0);
+    const files: Files = .{ .entries = &.{.{ "src/root.zig", "pub const limit = 64;\n" }} };
+    try std.testing.expectError(error.Canceled, list(arena.allocator(), std.testing.allocator, canceled.io(), &.{.{ .name = "pkg", .root = "src/root.zig" }}, files));
 }
 
 test "the surface lists public declarations through files, aliases and containers, and nothing private" {

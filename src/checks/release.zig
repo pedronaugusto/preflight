@@ -130,11 +130,11 @@ pub fn surfaceAdded(c: *src.Context, tag: []const u8, modules: []const surface.M
 
 /// The working tree's public surface.
 pub fn surfaceOf(c: *src.Context, modules: []const surface.Module) ![]const []const u8 {
-    return surface.list(c.a, c.a, modules, Tree{ .c = c });
+    return surface.list(c.a, c.a, c.io, modules, Tree{ .c = c });
 }
 
 fn surfaceAt(c: *src.Context, revision: []const u8, modules: []const surface.Module) ![]const []const u8 {
-    return surface.list(c.a, c.a, modules, Revision{ .c = c, .name = revision });
+    return surface.list(c.a, c.a, c.io, modules, Revision{ .c = c, .name = revision });
 }
 
 /// The package's files as the working tree holds them.

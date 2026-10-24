@@ -88,6 +88,54 @@ pub fn stepOf(job: matrix.Job) []const u8 {
     return if (job.operation == .replay) "ci" else job.step;
 }
 
+/// The job's name for the places it keeps apart from the jobs a gate runs beside it: its
+/// cache key when no other job of the plan has it and it is a plain name, else its place in
+/// the plan. Stable from one gate to the next, so each job's build and records find what
+/// the last gate left.
+pub fn jobKey(a: std.mem.Allocator, jobs: []const matrix.Job, index: usize) ![]const u8 {
+    const key = jobs[index].cache_key;
+    var holders: usize = 0;
+    for (jobs) |other| holders += @intFromBool(std.mem.eql(u8, other.cache_key, key));
+    const plain = for (key) |char| {
+        if (!std.ascii.isAlphanumeric(char) and char != '-' and char != '_') break false;
+    } else true;
+    if (key.len != 0 and holders == 1 and plain) return key;
+    return a.print("job-{d}", .{index});
+}
+
+/// A job's share of the machine when a gate runs jobs at once: two for one under QEMU's
+/// emulation or ThreadSanitizer, which take about two jobs' worth of cores or memory, else
+/// one.
+pub fn weight(job: matrix.Job) u32 {
+    const tsan = std.mem.find(u8, job.step, "tsan") != null or std.mem.find(u8, job.args, "-Dci-tsan") != null;
+    return if (job.qemu or tsan) 2 else 1;
+}
+
+test "a gate job is named by its cache key, or by its place when the key is shared, empty or no plain name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const jobs = [_]matrix.Job{
+        .{ .os = "ubuntu-latest", .name = "test", .cache_key = "07330bb527abb3d5" },
+        .{ .os = "ubuntu-latest", .name = "cross 1", .cache_key = "shared" },
+        .{ .os = "ubuntu-latest", .name = "cross 2", .cache_key = "shared" },
+        .{ .os = "ubuntu-latest", .name = "lint" },
+        .{ .os = "ubuntu-latest", .name = "odd", .cache_key = "a/b" },
+    };
+    try std.testing.expectEqualStrings("07330bb527abb3d5", try jobKey(a, &jobs, 0));
+    try std.testing.expectEqualStrings("job-1", try jobKey(a, &jobs, 1));
+    try std.testing.expectEqualStrings("job-2", try jobKey(a, &jobs, 2));
+    try std.testing.expectEqualStrings("job-3", try jobKey(a, &jobs, 3));
+    try std.testing.expectEqualStrings("job-4", try jobKey(a, &jobs, 4));
+}
+
+test "a job under QEMU or ThreadSanitizer takes two shares of the machine, any other one" {
+    try std.testing.expectEqual(@as(u32, 1), weight(.{ .os = "ubuntu-latest", .name = "test", .args = "-Doptimize=safe" }));
+    try std.testing.expectEqual(@as(u32, 2), weight(.{ .os = "ubuntu-latest", .name = "riscv64", .qemu = true }));
+    try std.testing.expectEqual(@as(u32, 2), weight(.{ .os = "ubuntu-latest", .name = "hardened-tsan", .step = "hardened-tsan" }));
+    try std.testing.expectEqual(@as(u32, 2), weight(.{ .os = "ubuntu-latest", .name = "contracts", .args = "-Dci-tsan=true" }));
+}
+
 test "a Mac runs its own suites and the hardened runs, and names the rest" {
     const a = std.testing.allocator;
     const jobs = [_]matrix.Job{

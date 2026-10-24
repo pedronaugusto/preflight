@@ -1326,6 +1326,76 @@ test "a program a test runs replays with it, named from the package root; a path
     try std.testing.expect(std.mem.find(u8, refused.stderr, "portable tests must not be given a path by addOptionPath") != null);
 }
 
+test "two gate jobs at once in one directory keep their records and their tests' programs apart" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    const helper = b.addExecutable(.{ .name = "helper", .root_module = b.createModule(.{ .root_source_file = b.path("src/helper.zig"), .target = target, .optimize = optimize }) });
+        \\    const options = b.addOptions();
+        \\    preflight.addTestProgram(b, options, "helper", helper);
+        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    module.addOptions("options", options);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
+        \\    preflight.addCi(b, b, .{ .tests = test_step });
+        \\}
+        \\
+    });
+    // The helper says the mode it was built in; each job's tests must run their own.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/helper.zig", .data = "const std = @import(\"std\");\npub fn main() void {\n    std.process.exit(@intFromEnum(@import(\"builtin\").mode));\n}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\const options = @import("options");
+        \\test "runs the helper its own job built" {
+        \\    const ran = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{options.helper} });
+        \\    defer std.testing.allocator.free(ran.stdout);
+        \\    defer std.testing.allocator.free(ran.stderr);
+        \\    try std.testing.expectEqual(@as(u8, @intFromEnum(@import("builtin").mode)), ran.term.exited);
+        \\}
+        \\
+    });
+    const Job = struct {
+        argv: []const []const u8,
+        result: anyerror!std.process.RunResult = error.NotRun,
+        fn run(job: *@This(), dir: std.Io.Dir) void {
+            job.result = std.process.run(std.heap.page_allocator, std.testing.io, .{ .argv = job.argv, .cwd = .{ .dir = dir } });
+        }
+    };
+    var jobs = [_]Job{
+        .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false", "-Dci-timings=true", "-Doptimize=debug", "-Dci-job=debug-job" } },
+        .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false", "-Dci-timings=true", "-Doptimize=fast", "-Dci-job=fast-job" } },
+    };
+    var threads: [jobs.len]std.Thread = undefined;
+    for (&jobs, &threads) |*job, *thread| thread.* = try std.Thread.spawn(.{}, Job.run, .{ job, tmp.dir });
+    for (threads) |thread| thread.join();
+    for (jobs) |job| {
+        const result = try job.result;
+        if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+        try std.testing.expect(command.succeeded(result));
+    }
+    const exe = if (builtin.target.os.tag == .windows) ".exe" else "";
+    for ([_][]const u8{ "debug-job", "fast-job" }) |name| {
+        try tmp.dir.access(io, try a.print("zig-out/preflight/programs/{s}/helper{s}", .{ name, exe }), .{});
+        var timings = try tmp.dir.openDir(io, try a.print(".zig-cache/preflight-timings/{s}", .{name}), .{ .iterate = true });
+        defer timings.close(io);
+        var iterator = timings.iterate();
+        try std.testing.expect(try iterator.next(io) != null);
+    }
+    // A build that is no gate job keeps the places it always had.
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "zig-out/preflight/programs/helper" ++ exe, .{}));
+}
+
 test "owner caller regeneration replaces stale pin without a consumer planner" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

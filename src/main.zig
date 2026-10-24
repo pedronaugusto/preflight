@@ -156,7 +156,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     for (jobs, decisions, 0..) |job, decision, index| switch (decision) {
         .covered => {},
         .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
-        .run => try here.append(c.a, .{ .job = job, .key = try jobKey(c.a, jobs, index), .directory = if (job.directory.len != 0) job.directory else working }),
+        .run => try here.append(c.a, .{ .job = job, .key = try checks.local.jobKey(c.a, jobs, index), .directory = if (job.directory.len != 0) job.directory else working }),
     };
     const slots: u32 = if (args.jobs) |count| @max(count, 1) else defaultSlots();
     var failed: std.ArrayList([]const u8) = .empty;
@@ -193,27 +193,6 @@ const GateJob = struct {
 
 /// Where the gate keeps each job's output while the jobs run at once.
 const gate_logs = ".zig-cache/preflight-gate";
-
-/// The job's name for its own places: its cache key when no other job of the plan has it,
-/// else its place in the plan. Stable from one gate to the next, so each job's build and
-/// its records find what the last gate left.
-fn jobKey(a: std.mem.Allocator, jobs: []const checks.matrix.Job, index: usize) ![]const u8 {
-    const key = jobs[index].cache_key;
-    var same: usize = 0;
-    for (jobs) |other| same += @intFromBool(std.mem.eql(u8, other.cache_key, key));
-    const plain = for (key) |char| {
-        if (!std.ascii.isAlphanumeric(char) and char != '-' and char != '_') break false;
-    } else true;
-    if (key.len != 0 and same == 1 and plain) return key;
-    return a.print("job-{d}", .{index});
-}
-
-/// A job's share of the machine: two for one under QEMU's emulation or ThreadSanitizer,
-/// which take about two jobs' worth of cores or memory, else one.
-fn weight(job: checks.matrix.Job) u32 {
-    const tsan = std.mem.find(u8, job.step, "tsan") != null or std.mem.find(u8, job.args, "-Dci-tsan") != null;
-    return if (job.qemu or tsan) 2 else 1;
-}
 
 /// The shares the gate's jobs take at once: one a core, and no more than one for each
 /// 4 GiB of memory, which one job's largest compile can take.
@@ -289,12 +268,12 @@ fn runGateJobs(c: src.Context, environ: *const std.process.Environ.Map, jobs: []
     };
     try c.directory().createDirPath(c.io, gate_logs);
     var order: std.ArrayList(usize) = .empty;
-    for (jobs, 0..) |job, index| if (weight(job.job) > 1) try order.append(c.a, index);
-    for (jobs, 0..) |job, index| if (weight(job.job) == 1) try order.append(c.a, index);
+    for (jobs, 0..) |job, index| if (checks.local.weight(job.job) > 1) try order.append(c.a, index);
+    for (jobs, 0..) |job, index| if (checks.local.weight(job.job) == 1) try order.append(c.a, index);
     var shares: Shares = .{ .free = slots };
     var group: std.Io.Group = .init;
     for (order.items) |index| {
-        const share = @min(weight(jobs[index].job), slots);
+        const share = @min(checks.local.weight(jobs[index].job), slots);
         shares.take(c.io, share);
         group.concurrent(c.io, runShare, .{ c, environ, &jobs[index], &shares, share }) catch {
             // No thread to give it: it runs here, before the next is started.
@@ -325,8 +304,9 @@ fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJ
     const seconds = timer.seconds(c);
     shares.output.lockUncancelable(c.io);
     defer shares.output.unlock(c.io);
+    // glint-ignore: Z026 -- the job's line is for the reader; its outcome stands, and the gate names a red job again at its end
     stdout(c, a.print("gate: {s} ({d:.1} s)\n", .{ job.job.name, seconds }) catch return) catch {};
-    // glint-ignore: Z026 -- a job's output that cannot be read back is lost to the reader; its outcome stands
+    // A job's output that cannot be read back is lost to the reader; its outcome stands.
     const text = c.directory().readFileAlloc(c.io, path, a, .limited(256 * 1024 * 1024)) catch "";
     var w = c;
     w.a = a;

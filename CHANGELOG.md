@@ -20,6 +20,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `glint.unresolved`: a finding rule's ceiling of undecided sites, none by default. Above it the run fails, and below it the run asks for the ceiling to come down.
 - The run prints every aegis escape with the rules it covers, a count by rule and reason, and all of them in `.zig-cache/preflight-lint/escapes.txt`. A line of findings, escapes and undecided sites by rule follows the glint summary. Where a rule finds more than the 25 printed, every finding is in `.zig-cache/preflight-lint/findings.txt`.
 - A malformed suppression or escape is an incomplete site at its comment.
+### Fixed
+
+- `preflight profile` named nothing when a job's timing record was not JSON: it failed with a bare `error: SyntaxError` (chronicle's and morse's nightlies of 2026-10-24, on preflight 0.5, which merged every job's records into one directory and so could interleave two). It now names the file and line, `profile: <dir>/<file>.ndjson:3: not a JSON record (SyntaxError)`, and a record without its seconds the same way; a durations or costs file that is not JSON is named too.
+
 ## [0.17.0] - 2026-10-24
 
 ### Breaking

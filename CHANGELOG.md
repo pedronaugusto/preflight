@@ -47,6 +47,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A configuration that is there and cannot be read (`ci/preflight.json`, `ci/workflow.json`) is the error, where any failure to reach it read as no file and every option at its default; and a value of the wrong type is `InvalidConfiguration` (`"compile_step": 3` ran `check`), only an absent or `null` one taking the default.
 - The glint check and the API surface give glint the run's `Io` (glint 0.6.0's `Options.io`), so a canceled run ends with `Canceled` at the next file glint builds or lints, where it ran the whole project out; a cancel there was reported as the run not finishing, a failure.
+## [0.17.3] - 2026-10-25
+
+### Fixed
+
+- Lint takes a test root in a directory the repository keeps beside what it ships (`ci`, `examples`, `conformance`, `bench`, as glint already lints them) and follows its imports there, without that directory joining `sources`. A package whose only Zig is its repository checks, a C library's, failed with "configure test_roots" unless it shipped `ci/`. Only the shipped files' tests must still be reached.
+- Every instance of the checked package in a development build is the package. A build that makes the package once per configuration (`b.dependency(name, args)` with other arguments) gave lint whichever instance came first, and when that was one only built, no test counted and lint failed with `MissingConfiguredTestRoot`.
+- The local gate leaves `hardened-fuzz` to another machine on a host where Zig's fuzzer does not run, Windows or a 32-bit one, and names why, as it does `hardened-tsan`. It ran the job there, where `hardened-fuzz` fails by design, so every local release of a package with `.hardened` on Windows went red.
+- The suite compiles on Windows: two tests named a child killed by `SIGKILL`, which Windows' signal set in Zig 0.17 lacks, so `zig build test` failed to compile there before any test ran. They name `SIGTERM`, which every system has; what they check is unchanged.
+
+## [0.17.2] - 2026-10-24
+
+### Fixed
+
+- The test runner compiles for OpenBSD: it copied its protocol streams with `F_DUPFD_CLOEXEC`, which Zig 0.17's OpenBSD table lacks, so a package whose cross compile builds its tests for x86_64-openbsd failed there (cloak's, in the family's re-pin train). It carries OpenBSD's value, 10, where std has none.
+
+## [0.17.1] - 2026-10-24
+
+### Changed
+
+- Pins glint 0.5.2, gantry 0.2.11, bay 0.1.19 and ensign 0.2.4.
 
 ## [0.17.0] - 2026-10-24
 

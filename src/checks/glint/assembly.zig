@@ -65,7 +65,7 @@ pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []co
         }
     } else {
         for (try src.roots(c.a, config)) |root| try collect(c, root, &found);
-        for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |root| if (try c.exists(root) and !try nested(c, root)) try collect(c, root, &found);
+        for (src.code_directories) |root| if (try c.exists(root) and !try nested(c, root)) try collect(c, root, &found);
         if (try c.exists("build.zig")) try found.put(c.a, "build.zig", {});
     }
     if (c.errors != before) return null;

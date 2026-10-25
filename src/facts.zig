@@ -13,7 +13,29 @@ const limit = 64 * 1024 * 1024;
 /// A configured build, and the package checked in it: the root package, or,
 /// under bay, the root's dependency at the package's own directory, since the
 /// root is then its development build.
-pub const Snapshot = struct { config: C, path: []const u8, options: []const []const u8 = &.{}, bytes: []const u8 = &.{}, package: C.Package.Index = .root };
+pub const Snapshot = struct {
+    config: C,
+    path: []const u8,
+    options: []const []const u8 = &.{},
+    bytes: []const u8 = &.{},
+    /// The checked package: one of its instances, which name its root.
+    package: C.Package.Index = .root,
+    /// Every instance of the checked package. A development build makes one per argument
+    /// set (`b.dependency(name, args)`), each over the same files, as a package built in
+    /// several configurations is; a step of any of them is the package's.
+    instances: []const C.Package.Index = &.{},
+
+    /// Whether `owner` is an instance of the checked package (the root build, read without bay).
+    pub fn instance(snapshot: Snapshot, owner: C.Package.Index) bool {
+        return owner == snapshot.package or std.mem.findScalar(C.Package.Index, snapshot.instances, owner) != null;
+    }
+
+    /// Whether a step or module `owner` owns is the checked package's: the root build's own,
+    /// or one of the package's instances'.
+    pub fn checks(snapshot: Snapshot, owner: C.Package.Index) bool {
+        return owner == .root or snapshot.instance(owner);
+    }
+};
 pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snapshot {
     _ = zig_version.require() catch {
         c.report("preflight: the configured-build reader supports {s}; this one was built with Zig {s}\n", .{ zig_version.supported, builtin.zig_version_string });
@@ -31,12 +53,16 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
     }
     var snapshot = try capture(c, argv.items);
     snapshot.options = try c.a.dupe([]const u8, options);
-    if (c.bay) |bay| snapshot.package = try checkedPackage(c, bay, &snapshot.config);
+    if (c.bay) |bay| {
+        snapshot.instances = try checkedPackage(c, bay, &snapshot.config);
+        snapshot.package = snapshot.instances[0];
+    }
     return snapshot;
 }
 
-/// The package at the checked directory, among the owners of the build's steps, their root modules and those modules' files.
-fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) !C.Package.Index {
+/// Every instance of the package at the checked directory, among the owners of the build's
+/// steps, their root modules and those modules' files, in the order the build makes them.
+fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) ![]const C.Package.Index {
     const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
     // Zig reports a package's root from the directory it runs in, the build's root:
     // under bay the development root, which bay names.
@@ -52,12 +78,14 @@ fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) !C.Package.
         const file = (module.root_source_file.unwrap() orelse continue).get(config);
         if (file == .source_path) try owners.put(c.a, file.source_path.owner, {});
     }
+    var instances: std.ArrayList(C.Package.Index) = .empty;
     for (owners.keys()) |owner| {
         const package = owner.get(config) orelse continue;
         const path = build_root.realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch continue;
-        if (std.mem.eql(u8, path, here)) return owner;
+        if (std.mem.eql(u8, path, here)) try instances.append(c.a, owner);
     }
-    return error.PackageNotInDevelopmentBuild;
+    if (instances.items.len == 0) return error.PackageNotInDevelopmentBuild;
+    return instances.items;
 }
 
 /// The development build's root, as `bay locate --dev` names it. A bay that cannot say,
@@ -462,7 +490,7 @@ pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot, steps: []const []cons
     var unrun: std.array_hash_map.String(std.array_hash_map.String(void)) = .empty;
     var any = false;
     for (c.steps) |step| {
-        if (step.owner != .root and step.owner != snapshot.package) continue;
+        if (!snapshot.checks(step.owner)) continue;
         const compiled = step.extended.cast(c, C.Step.Compile) orelse continue;
         if (!isTest(compiled)) continue;
         const root = try testRoot(a, snapshot, compiled) orelse continue;
@@ -484,10 +512,10 @@ pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot, steps: []const []cons
 fn testRoot(a: std.mem.Allocator, snapshot: Snapshot, compiled: C.Step.Compile) !?[]const u8 {
     const c = &snapshot.config;
     const module = compiled.root_module.get(c);
-    if (module.owner != .root and module.owner != snapshot.package) return null;
+    if (!snapshot.checks(module.owner)) return null;
     const source = (module.root_source_file.unwrap() orelse return error.MissingConfiguredTestRoot).get(c);
     return switch (source) {
-        .source_path => |p| if (p.owner == snapshot.package) p.sub_path.slice(c) else null,
+        .source_path => |p| if (snapshot.instance(p.owner)) p.sub_path.slice(c) else null,
         .generated => |generated| try generatedName(a, c, generated),
         .relative => |p| if (p.flags.base == .cwd) p.sub_path.slice(c) else error.UnsupportedTestRootBase,
     };
@@ -504,7 +532,7 @@ pub fn generatedSources(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.S
     const c = &snapshot.config;
     var out: std.ArrayList(src.Source) = .empty;
     for (c.steps) |step| {
-        if (step.owner != .root and step.owner != snapshot.package) continue;
+        if (!snapshot.checks(step.owner)) continue;
         const artifact = step.extended.cast(c, C.Step.Compile) orelse continue;
         if (artifact.flags3.kind != .@"test" and artifact.flags3.kind != .test_obj) continue;
         const module = artifact.root_module.get(c);
@@ -539,7 +567,7 @@ test "build protocol chunked transport cancellation child status and output faul
     var chunked = std.testing.Reader.init(&buffer, &.{.{ .buffer = bytes.written() }});
     chunked.artificial_limit = .limited(1);
     try std.testing.expectEqualStrings("path", try notification(a, &chunked.interface));
-    try std.testing.expectError(error.BuildProtocolChildSignal, successful(.{ .signal = .KILL }));
+    try std.testing.expectError(error.BuildProtocolChildSignal, successful(.{ .signal = .TERM }));
     try std.testing.expectError(error.BuildProtocolChildFailed, successful(.{ .exited = 3 }));
     const FaultIo = @import("shakedown").FaultIo;
     const faults = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .processSpawn, .n = 1 } }, .fault = .{ .fail = error.Canceled } }} });

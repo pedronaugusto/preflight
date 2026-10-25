@@ -1,6 +1,6 @@
 .{
     .name = .preflight,
-    .version = "0.17.0",
+    .version = "0.17.3",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
@@ -12,8 +12,8 @@
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.10#3d6c7f91990e7289556ca12ae7e10a286b173b15",
-            .hash = "gantry-0.2.10-1iNrkWHEDAAFLazbYIYsMlpJfe1B_r-1vmd_haLcvme_",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.2.11#6fa72e69d5bcd1361ec47b4938cee7bcc51a8eee",
+            .hash = "gantry-0.2.11-1iNrkb3EDADxo8PBuvEZ2oQ1j4ehQ9wCt4kVYNLCphA6",
             .lazy = true,
         },
 
@@ -32,10 +32,11 @@
         },
 
         .bay = .{
-            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.16#a3abace04db96be47b4def796a3bf7edb05a3c55",
-            .hash = "bay-0.1.16-uwJ5Z7wPBgBI_X5PY7JCN1_hVXWtiPNWVXUOWVR70Lg5",
+            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.19#a98d87ac696e4b38a76beaa0e4eb960294ec574e",
+            .hash = "bay-0.1.19-uwJ5Z4U8BgCInkyuoOLS3D73igaIjfrpZLnXZiRc_NeV",
             .lazy = true,
         },
+
         .ensign = .{
             .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.2.4#319a6011bfe9bc5b37eb37eb328d00037459c98c",
             .hash = "ensign-0.2.4-6eMTD9wrBACniFWhMFcocW85LFtEZpvTFXfwFpBjNLSU",

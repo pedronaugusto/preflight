@@ -1776,6 +1776,38 @@ test "lint fails a test artifact compiled and never run, and the files only it r
     try std.testing.expect(std.mem.find(u8, result.stderr, "src/reached.zig: tests are unreachable") != null);
 }
 
+test "lint takes a test root kept beside the package, in ci, without shipping it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A package whose only tests are its repository check's, as a C library's are: the
+    // check runs under the tests step from ci/, which `sources` (what ships) leaves out.
+    try rootsFixture(a, tmp.dir,
+        \\const std = @import("std");
+        \\const preflight = @import("preflight");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const optimize = b.standardOptimizeOption(.{});
+        \\    _ = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
+        \\    const test_step = b.step("test", "tests");
+        \\    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "check-tests", .root_module = b.createModule(.{ .root_source_file = b.path("ci/check.zig"), .target = target, .optimize = optimize }) })).step);
+        \\    preflight.addCi(b, b, .{ .tests = test_step });
+        \\}
+        \\
+    , &.{
+        .{ "src/sample.zig", "pub const value = 1;\n" },
+        .{ "ci/check.zig", "const rule = @import(\"rule.zig\");\ntest \"check\" {\n    _ = rule;\n}\n" },
+        .{ "ci/rule.zig", "test \"rule\" {}\n" },
+    });
+    // The fixture's own test support is reached from its sample's tests, which this package has none of.
+    try tmp.dir.deleteFile(std.testing.io, "src/testing/hardened.zig");
+    const result = try lintFixture(a, tmp.dir);
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 test "lint passes a test root compiled again beside the run that runs it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

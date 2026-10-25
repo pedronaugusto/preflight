@@ -169,8 +169,8 @@ pub fn artifactGraph(a: std.mem.Allocator, config: *const C, package: C.Package.
         const module = id.get(config);
         const puller = try label(a, config, module.owner);
         const from = (try linkOf(a, config, package, module.owner, root_name, "")).name;
-        const imports = module.import_table.get(config).imports.mal;
-        for (imports.items(.module)) |imported| {
+        const imports: []const C.Module.Index = module.import_table.get(config).imports.mal.items(.module);
+        for (imports) |imported| {
             try pending.append(a, imported);
             const owner = imported.get(config).owner;
             if (owner == module.owner) continue;

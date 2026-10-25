@@ -903,12 +903,16 @@ const Protocol = struct {
         return .{ .in = .{ .handle = in, .flags = .{ .nonblocking = false } }, .out = .{ .handle = out, .flags = .{ .nonblocking = false } } };
     }
 
+    /// F_DUPFD_CLOEXEC: Zig 0.17's OpenBSD table has none, and OpenBSD's
+    /// <sys/fcntl.h> defines it as 10.
+    const dupfd_cloexec = if (builtin.target.os.tag == .openbsd and !@hasDecl(std.c.F, "DUPFD_CLOEXEC")) 10 else std.c.F.DUPFD_CLOEXEC;
+
     /// A copy of `fd` above the standard streams that closes on exec.
     fn private(fd: std.posix.fd_t) !std.posix.fd_t {
         const rc = if (builtin.target.os.tag == .linux)
             std.os.linux.fcntl(fd, std.os.linux.F.DUPFD_CLOEXEC, 3)
         else
-            std.c.fcntl(fd, std.c.F.DUPFD_CLOEXEC, @as(c_int, 3));
+            std.c.fcntl(fd, dupfd_cloexec, @as(c_int, 3));
         if (std.posix.errno(rc) != .SUCCESS) return error.ProtocolStream;
         return @intCast(rc); // safe: a successful fcntl(F_DUPFD_CLOEXEC) returns a descriptor
     }

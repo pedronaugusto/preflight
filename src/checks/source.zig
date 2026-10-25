@@ -261,6 +261,28 @@ pub fn collect(c: Context, config: Value) ![]Source {
     return out.items;
 }
 
+/// The directories a repository keeps code in beside what it ships: linted, and followed
+/// from the test roots under them, but never part of `sources`, the shipped roots
+/// `.paths` must list.
+pub const code_directories = [_][]const u8{ "examples", "ci", "conformance", "bench" };
+
+/// Every Zig file under each of `code_directories` that is there, is not a package of its
+/// own (a nested build with its own `build.zig.zon`) and is not a source root already.
+pub fn collectCode(c: Context, config: Value) ![]Source {
+    const shipped = try roots(c.a, config);
+    var out: std.ArrayList(Source) = .empty;
+    for (code_directories) |directory| {
+        if (!try c.exists(directory)) continue;
+        if (try c.exists(try std.Io.Dir.path.join(c.a, &.{ directory, "build.zig.zon" }))) continue;
+        const listed = for (shipped) |root| {
+            if (samePath(root, directory)) break true;
+        } else false;
+        if (listed) continue;
+        try collectRoot(c, directory, &out);
+    }
+    return out.items;
+}
+
 /// Every Zig file under `root`, passing over the directories a build makes.
 pub fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !void {
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });

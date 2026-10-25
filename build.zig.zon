@@ -32,8 +32,8 @@
         },
 
         .bay = .{
-            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.1.19#a98d87ac696e4b38a76beaa0e4eb960294ec574e",
-            .hash = "bay-0.1.19-uwJ5Z4U8BgCInkyuoOLS3D73igaIjfrpZLnXZiRc_NeV",
+            .url = "git+https://github.com/pedronaugusto/bay#9ee75c014c39a0005abd04422cfd7aac243372a2",
+            .hash = "bay-0.1.20-uwJ5ZzdEBgBAOoJGedXfqSdteET-zC10sjPYLmohfJg8",
             .lazy = true,
         },
 

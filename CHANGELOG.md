@@ -66,6 +66,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The glint check and the API surface give glint the run's `Io` (glint 0.6.0's `Options.io`), so a canceled run ends with `Canceled` at the next file glint builds or lints, where it ran the whole project out; a cancel there was reported as the run not finishing, a failure.
 ### Fixed
 
+- Files are named with `/` on Windows too. Zig keeps a module's paths with `\` there (`std.Build.Graph.dupePath`), and lint took them as they came: a Windows package's compiled-never-run artifact was named `src\compiled.zig` beside its `src/compiled.zig` read from disk, so the two never met, the empty-run-root failure named `src\empty.zig`, a file of another package reached through the checked one was named with both separators, and `facts` printed `src\\sample.zig`. Every path the configured build hands over is named once, at the facts adapter, as lint names files.
 - Checkouts keep LF line endings again (`* text=auto eol=lf`): 0.16.0 replaced the line in `.gitattributes` with the CHANGELOG's merge rule, so a Windows checkout of the sample projects had CRLF and failed `zig fmt --check`.
 
 ## [0.17.3] - 2026-10-25

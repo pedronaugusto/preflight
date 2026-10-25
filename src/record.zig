@@ -4,6 +4,7 @@
 //! stale. The runner reads them when it runs, and its options module carries
 //! the rest.
 const std = @import("std");
+const builtin = @import("builtin");
 const configure = @import("configure.zig");
 const Tool = @import("tool.zig").Tool;
 
@@ -152,8 +153,8 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         // The root as the package names it: its own file, or one a development build takes
         // from the package as a dependency (`package.path`); a generated one by its artifact.
         runner.addOption([]const u8, "root", switch (artifact.root_module.root_source_file.?) {
-            .src_path => |path| path.sub_path,
-            .dependency => |path| path.sub_path,
+            .src_path => |path| packageName(b, path.sub_path),
+            .dependency => |path| packageName(b, path.sub_path),
             else => artifact.name,
         });
         runner.addOption([]const u8, "artifact", artifact.name);
@@ -196,6 +197,15 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
 
 /// The name of a root module's records, without their shard: the runner appends the shard
 /// it runs, `-2of5`, or `-all`.
+/// A file of the package as preflight names it: with `/` on every host, as the build
+/// script spells it. Zig keeps a module's paths with `\` on Windows (`Graph.dupePath`).
+fn packageName(b: *std.Build, sub_path: []const u8) []const u8 {
+    if (builtin.target.os.tag != .windows) return sub_path;
+    const name = b.allocator.dupe(u8, sub_path) catch @panic("OOM");
+    std.mem.replaceScalar(u8, name, '\\', '/');
+    return name;
+}
+
 fn recordName(b: *std.Build, artifact: *std.Build.Step.Compile, names: *std.StringHashMapUnmanaged(void)) []const u8 {
     const target = artifact.root_module.resolved_target.?.result;
     const stem = b.fmt("{s}-{s}-{s}", .{ artifact.name, @tagName(target.os.tag), @tagName(artifact.root_module.optimize.?) });

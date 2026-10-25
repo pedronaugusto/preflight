@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
         .gate => |args| try gateCommand(&c, init.environ_map, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
         .executable => |args| for (args.paths) |path| try executable(c, path),
-        .counts => |args| try checks.counts.check(&c, args.records, args.expect, environment(init.environ_map, "PREFLIGHT_SHARD") orelse ""),
+        .counts => |args| try checks.counts.check(&c, args.records, args.expect, environment(init.environ_map, "PREFLIGHT_SHARD") orelse "", environment(init.environ_map, checks.counts.summary_variable)),
         .unsharded => |args| if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
             c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{args.name});
         },
@@ -521,17 +521,23 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         }
     }
     // The tests the step runs, counted per root by the build after its runs: this run's,
-    // so an earlier run's count is gone first.
+    // so an earlier run's count is gone first. The count is told where to write them, in
+    // the package's directory: the build's cache, where its records are, can be anywhere.
     const counted = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
     c.directory().deleteFile(c.io, counted) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
+    try c.directory().createDirPath(c.io, ".zig-cache/preflight-counts");
+    const package = try c.directory().realPathFileAlloc(c.io, ".", c.a);
+    try env.put(checks.counts.summary_variable, try std.Io.Dir.path.join(c.a, &.{ package, counted }));
+    var counting = c;
+    counting.environ_map = env;
     {
         // PREFLIGHT_SHARD reaches the test runners through the environment.
         const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
         defer timer.end(c, log);
-        try checks.command.execute(c, argv.items);
+        try checks.command.execute(counting, argv.items);
     }
     // A step that runs no tests counts none.
     const counts = c.read(counted) catch |err| switch (err) {

@@ -1904,12 +1904,15 @@ test "toolchain hosted runner prints the tests counted per root" {
     try env.put("STEP", "test");
     try env.put("BUILD_ARGS", "-Dci-lint=false");
     try env.put("PREFLIGHT_SETUP", "false");
+    // The fixture's build keeps its cache outside the fixture, as a hosted job's does
+    // (`ZIG_LOCAL_CACHE_DIR` names the workspace's), and the counts are still printed.
+    try env.put("ZIG_LOCAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ owner, ".zig-cache", "fixtures" }));
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const output = try std.mem.concat(a, u8, &.{ result.stdout, result.stderr });
-    if (std.mem.find(u8, output, "preflight: tests per root: ") == null) std.debug.print("{s}", .{output});
+    if (std.mem.find(u8, output, "src/sample.zig ") == null or std.mem.find(u8, output, "src/two.zig 2") == null) std.debug.print("{s}", .{output});
     try std.testing.expect(std.mem.find(u8, output, "src/sample.zig ") != null);
     try std.testing.expect(std.mem.find(u8, output, "src/two.zig 2") != null);
 }

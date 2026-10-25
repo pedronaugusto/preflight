@@ -14,6 +14,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The default policy holds every package's production code to aegis's whole-file read (P006, beside the durability door): std 0.17's `Dir.readFileAlloc` and `readFileAllocOptions` lose a cancel that lands on the file's length, so `aegis.own.readFile` (or `readFileSentinel`) reads a file whole, with a limit the caller gives.
 - P001, P002 and P004 leave the default policy with glint 0.7.0, folded into A010 (a conversion of input; the safe build every package ships checks the program's own), A019 and A013. A repository naming one in `glint.rules` is told where its sites went. `glint.casts` and `glint.cast_scope` are retired.
 
+- A `vendored` entry names the upstream file it keeps: `{"upstream": ..., "verification": ..., "sha256": ...}`, the SHA-256 of the upstream's copy, where it was one string. While the file is that copy, its verification is the reason every danger site in it carries, as an escape's is for its line, and the run counts them by file; an undecided site in it still is one. A changed file fails the run: it is the package's own code, and its sites need their own reasons. It stays exempt from the house style.
+
 ### Added
 
 - preflight depends on aegis, and reads every file whole through `aegis.own.readFile`: its checks and the programs it builds (consumer, nested, structure, the test machine's guest and host) take aegis as a module, and its build helpers reach the read through aegis's `build.zig`, which a build runner compiles only as far as it is used.

@@ -170,8 +170,9 @@ spans components (`src/**` is what lies under `src`), `\` escapes, and a pattern
 file. The structure check compiles each pattern once.
 
 `ci/preflight.json` names source directories, test roots, test support, README
-regions and extra repository checks. A `vendored` exemption must name its upstream
-and how the fork is verified. Function exceptions name an exact file and function,
+regions and extra repository checks. A `vendored` file is an upstream's file kept
+unchanged: its entry names the upstream, how the upstream's copy is verified and that
+copy's SHA-256 (`{"upstream": ..., "verification": ..., "sha256": ...}`). Function exceptions name an exact file and function,
 a reason and the current line ceiling; growth fails once P003 is gated. The normal limit
 is 120, with lower per-path `function_limits` for shared folds.
 
@@ -257,7 +258,8 @@ there are more) and a line of findings, escapes and undecided sites by rule. `zi
 count against `glint.unresolved`, a ceiling per rule (none by default): above it fails,
 since the count the reviews read may not grow, and below it the run asks for it to come
 down. Tests and test support are not shipped, so the danger rules leave them out; a
-`vendored` file ships, and is held to them.
+`vendored` file ships, and is held to them: while it is the copy its SHA-256 names, the
+upstream's verification is the reason its danger sites carry, and changed, it fails the run.
 
 The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A018, A020), and the new A021 (lock order), are reported until a fresh sample of each shows its noise near zero; the rest of the pack are findings. A package that owns a writer to a peer (a server's response, a protocol's transport) names it in `glint.peer_writers`, each `{"module": "uplink", "declaration": "server.Response.writer"}`; A018 reads a package's own and those of the packages it depends on.
 

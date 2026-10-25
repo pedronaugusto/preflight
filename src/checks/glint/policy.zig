@@ -157,6 +157,10 @@ pub const Limit = struct { pattern: *const gantry.rules.Pattern, lines: u32 };
 /// which may not grow.
 pub const Ceiling = struct { rule: glint.Rule, name: []const u8, sites: usize };
 pub const Exception = struct { path: []const u8, function: []const u8, lines: u32, reason: []const u8 };
+/// A file kept as its upstream wrote it: where it comes from, how the upstream's copy is
+/// verified, and the SHA-256 of that copy. While the file is the copy, its verification is the
+/// reason every danger site in it carries, as an escape's is for its line.
+pub const Vendored = struct { path: []const u8, upstream: []const u8, verification: []const u8, sha256: [32]u8 };
 
 pub const Policy = struct {
     /// glint's configuration for a file nothing below sets apart.
@@ -171,7 +175,7 @@ pub const Policy = struct {
     sources: []const []const u8,
     limits: []const Limit,
     exceptions: []const Exception,
-    vendored: []const []const u8,
+    vendored: []const Vendored,
     /// Test code by name and by `test_support`.
     tests: []const *const gantry.rules.Pattern,
     /// The part of `tests` that is a test by its file name alone.
@@ -194,7 +198,7 @@ pub const Policy = struct {
     }
 
     pub fn isVendored(policy: Policy, path: []const u8) bool {
-        for (policy.vendored) |name| if (std.mem.eql(u8, name, path)) return true;
+        for (policy.vendored) |entry| if (std.mem.eql(u8, entry.path, path)) return true;
         return false;
     }
 
@@ -527,18 +531,26 @@ fn parseExceptions(c: *src.Context, value: src.Value) ![]const Exception {
     return out.items;
 }
 
-fn parseVendored(c: *src.Context, value: src.Value) ![]const []const u8 {
+fn parseVendored(c: *src.Context, value: src.Value) ![]const Vendored {
     if (value == .null) return &.{};
     if (value != .object) {
-        c.fail("glint: vendored maps a path to its upstream and how the fork is verified", .{});
+        c.fail("glint: vendored maps a path to its upstream, how it is verified and its SHA-256", .{});
         return &.{};
     }
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(Vendored) = .empty;
     var entries = value.object.iterator();
     while (entries.next()) |entry| {
-        if (std.mem.trim(u8, src.string(entry.value_ptr.*, ""), " \t\r\n").len == 0)
-            c.fail("vendored: {s} needs provenance and verification", .{entry.key_ptr.*});
-        try out.append(c.a, entry.key_ptr.*);
+        const path = entry.key_ptr.*;
+        const upstream = std.mem.trim(u8, src.string(src.get(entry.value_ptr.*, "upstream"), ""), " \t\r\n");
+        const verification = std.mem.trim(u8, src.string(src.get(entry.value_ptr.*, "verification"), ""), " \t\r\n");
+        var sha256: [32]u8 = undefined;
+        const digest = src.string(src.get(entry.value_ptr.*, "sha256"), "");
+        const hex = digest.len == 64 and if (std.fmt.hexToBytes(&sha256, digest)) |_| true else |_| false;
+        if (entry.value_ptr.* != .object or upstream.len == 0 or verification.len == 0 or !hex) {
+            c.fail("vendored: {s} needs its upstream, its verification and the SHA-256 of the upstream file, 64 hex digits", .{path});
+            continue;
+        }
+        try out.append(c.a, .{ .path = path, .upstream = upstream, .verification = verification, .sha256 = sha256 });
     }
     return out.items;
 }
@@ -640,6 +652,11 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"function_exceptions\":{\"nocolon\":{\"lines\":9,\"reason\":\"why\"}}}",
         "{\"function_limit\":0}",
         "{\"vendored\":{\"src/a.zig\":\"\"}}",
+        "{\"vendored\":{\"src/a.zig\":\"upstream, verified\"}}",
+        "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\"v\"}}}",
+        "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\" \",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+        "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\"v\",\"sha256\":\"aaaa\"}}}",
+        "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\"v\",\"sha256\":\"zzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
         "{\"ziglint_exceptions\":\"ci/ziglint-exceptions.json\"}",
         "{\"unreachable_exceptions\":\"ci/u.json\"}",
         "{\"debug_print_exceptions\":\"ci/d.json\"}",
@@ -658,7 +675,7 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
     const policy = (try parse(&c, try parsed(c.a,
         \\{"glint":{"rules":[{"id":"P003","level":"gate"}]},
-        \\ "function_limit":100,"function_limits":{"src/fold/*.zig":60,"src/**":90},"vendored":{"src/tls.zig":"std, verified by check-tls"},
+        \\ "function_limit":100,"function_limits":{"src/fold/*.zig":60,"src/**":90},"vendored":{"src/tls.zig":{"upstream":"std's tls client","verification":"check-tls","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
         \\ "test_support":["src/testing/**"],
         \\ "function_exceptions":{"src/big.zig:compress":{"lines":150,"reason":"one asm block"}}}
     ))).?;
@@ -676,8 +693,8 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     try std.testing.expectEqual(@as(usize, 0), (try policy.forFile(a, "src/other.zig")).function_exceptions.len);
     const forked = try policy.forFile(a, "src/tls.zig");
     try std.testing.expectEqual(.off, forked.level(.P003));
-    // A vendored fork is exempt from the house style, not from correctness or the danger rules:
-    // it ships.
+    // A vendored file is exempt from the house style, not from correctness, and the danger rules
+    // run on it: it ships. Its upstream's verification carries their sites while it is the copy.
     try std.testing.expectEqual(.gate, forked.level(.Z026));
     try std.testing.expectEqual(.report, forked.level(glint.AegisPack.integers));
     // A tool the package develops with ships nowhere: the danger rules leave it out.

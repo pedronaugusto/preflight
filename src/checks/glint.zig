@@ -127,9 +127,19 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     // Every finding, where the run prints the first `printed` of a rule.
     var all: std.Io.Writer.Allocating = .init(c.a);
     var held = false;
+    const kept = upstreamCopies(c, chosen);
+    const carried = c.a.alloc(usize, kept.len) catch @panic("OOM");
+    @memset(carried, 0);
     for (report.diagnostics) |d| {
         const file = project.inputs[d.span.file.raw()].name;
         all.writer.print("{s}: {s}:{d}:{d}: {s}\n", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
+        // A danger site of an upstream's unchanged file carries the upstream's verification.
+        if (policy.inPack(d.rule)) if (for (kept, 0..) |entry, i| {
+            if (std.mem.eql(u8, entry.path, file)) break i;
+        } else null) |at| {
+            carried[at] += 1;
+            continue;
+        };
         const fails = d.level == .gate or chosen.fails(d.rule);
         const seen = shown.getOrPutValue(c.a, d.rule, 0) catch null;
         if (seen) |count| {
@@ -150,6 +160,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         }
     }
 
+    for (kept, carried) |entry, count| c.report("preflight: vendored: {s}: {d} danger sites, their reason {s}'s verification: {s}\n", .{ entry.path, count, entry.upstream, entry.verification });
     if (held) c.report("glint: every finding: {s}\n", .{writeList(c, findings_path, all.written())});
 
     var unfinished: usize = 0;
@@ -205,6 +216,27 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     }
     c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.inputs.len, failing, warned, report.suppressed, unfinished, unresolved });
     byRule(c, report, shown, undecided);
+}
+
+/// The vendored files that are still their upstream's copy, by the SHA-256 their entries record.
+/// One that is not fails the run: changed, it is the package's own code, and its danger sites
+/// need their own reasons.
+fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendored {
+    var out: std.ArrayList(policy.Vendored) = .empty;
+    for (chosen.vendored) |entry| {
+        const bytes = aegis.own.readFile(c.io, c.directory(), entry.path, c.a, .fromRaw(64 << 20)) catch |err| {
+            c.fail("vendored: {s}: not read ({t})", .{ entry.path, err });
+            continue;
+        };
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+        if (!std.mem.eql(u8, &digest, &entry.sha256)) {
+            c.fail("vendored: {s}: its SHA-256 is {x}, not the {x} of {s}'s file its entry records; changed, it is the package's own code", .{ entry.path, &digest, &entry.sha256, entry.upstream });
+            continue;
+        }
+        out.append(c.a, entry) catch @panic("OOM");
+    }
+    return out.items;
 }
 
 /// Each rule's findings and undecided sites, counted: the line a sizing or a review reads.
@@ -395,7 +427,7 @@ test "style is reported and does not fail; a repository may gate it" {
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z006\",\"level\":\"gate\"}]}}", .{}) != 0);
 }
 
-test "a danger site fails in production unless it carries the aegis escape; tests are not shipped, a vendored fork is" {
+test "a danger site fails in production unless it carries the aegis escape; tests are not shipped, a vendored file is" {
     const f = try Fixture.init();
     defer f.deinit();
     const cast = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\n";
@@ -415,8 +447,24 @@ test "a danger site fails in production unless it carries the aegis escape; test
     try std.testing.expectEqual(@as(usize, 0), try f.run(paths, .{}));
     try f.file("src/root_test.zig", "pub const t = 1;\n");
     try f.file("src/testing/harness.zig", "pub const h = 1;\n");
-    try f.file("src/tls.zig", cast);
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"vendored\":{\"src/tls.zig\":\"std's client, verified byte for byte by check-tls\"}}", .{}) != 0);
+    // An upstream's file kept unchanged: its verification is the reason its danger sites carry,
+    // while it is the copy the entry's SHA-256 names, and an undecided site is still undecided.
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(cast, &digest, .{});
+    const entry = "{{\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}";
+    var buffer: [512]u8 = undefined;
+    var vendored: std.Io.Writer = .fixed(&buffer);
+    try vendored.print(entry, .{&digest});
+    try f.file("src/vendor/fiat.zig", cast);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(vendored.buffered(), .{}));
+    try f.file("src/vendor/fiat.zig", cast ++ "pub const edited = 1;\n");
+    try std.testing.expect(try f.run(vendored.buffered(), .{}) != 0);
+    const undecided = "const flags = struct { var checked: bool = true; };\npub fn f() void {\n    @setRuntimeSafety(flags.checked);\n}\n";
+    std.crypto.hash.sha2.Sha256.hash(undecided, &digest, .{});
+    try f.file("src/vendor/fiat.zig", undecided);
+    vendored = .fixed(&buffer);
+    try vendored.print(entry, .{&digest});
+    try std.testing.expect(try f.run(vendored.buffered(), .{}) != 0);
 }
 
 test "a finding rule's undecided sites count against the repository's ceiling, which may not grow" {

@@ -111,7 +111,7 @@ test "benchmark driver rejects unknown missing duplicate and truncated inputs" {
     try std.testing.expectError(error.TruncatedRun, validate(std.testing.allocator, "{}", null));
     try std.testing.expectError(error.InvalidRun, validate(std.testing.allocator, "{}\n", null));
     try std.testing.expectError(error.BenchmarkDriverFailed, successful(.{ .exited = 7 }));
-    try std.testing.expectError(error.BenchmarkDriverFailed, successful(.{ .signal = .KILL }));
+    try std.testing.expectError(error.BenchmarkDriverFailed, successful(.{ .signal = .TERM }));
     var writer = Io.Writer.failing;
     try std.testing.expectError(error.WriteFailed, emit(&writer, "result\n"));
 }

@@ -11,6 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Lint takes a test root in a directory the repository keeps beside what it ships (`ci`, `examples`, `conformance`, `bench`, as glint already lints them) and follows its imports there, without that directory joining `sources`. A package whose only Zig is its repository checks, a C library's, failed with "configure test_roots" unless it shipped `ci/`. Only the shipped files' tests must still be reached.
 - Every instance of the checked package in a development build is the package. A build that makes the package once per configuration (`b.dependency(name, args)` with other arguments) gave lint whichever instance came first, and when that was one only built, no test counted and lint failed with `MissingConfiguredTestRoot`.
 - The local gate leaves `hardened-fuzz` to another machine on a host where Zig's fuzzer does not run, Windows or a 32-bit one, and names why, as it does `hardened-tsan`. It ran the job there, where `hardened-fuzz` fails by design, so every local release of a package with `.hardened` on Windows went red.
+- The suite compiles on Windows: two tests named a child killed by `SIGKILL`, which Windows' signal set in Zig 0.17 lacks, so `zig build test` failed to compile there before any test ran. They name `SIGTERM`, which every system has; what they check is unchanged.
 
 ## [0.17.2] - 2026-10-24
 

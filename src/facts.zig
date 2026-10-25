@@ -566,7 +566,7 @@ test "build protocol chunked transport cancellation child status and output faul
     var chunked = std.testing.Reader.init(&buffer, &.{.{ .buffer = bytes.written() }});
     chunked.artificial_limit = .limited(1);
     try std.testing.expectEqualStrings("path", try notification(a, &chunked.interface));
-    try std.testing.expectError(error.BuildProtocolChildSignal, successful(.{ .signal = .KILL }));
+    try std.testing.expectError(error.BuildProtocolChildSignal, successful(.{ .signal = .TERM }));
     try std.testing.expectError(error.BuildProtocolChildFailed, successful(.{ .exited = 3 }));
     const FaultIo = @import("shakedown").FaultIo;
     const faults = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .processSpawn, .n = 1 } }, .fault = .{ .fail = error.Canceled } }} });

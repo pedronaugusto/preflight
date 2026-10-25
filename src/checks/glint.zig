@@ -43,8 +43,10 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     var report = glint.runConfigured(inputs.gpa, &assembled.project, chosen.base, .{
         .project_rules = &policy.project_rules,
         .files = files.items,
+        .io = c.io,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
+        error.Canceled => return error.Canceled,
         else => {
             c.fail("glint: the run did not finish ({t})", .{err});
             return;
@@ -597,6 +599,28 @@ test "assertions are counted by the declaration a call resolves to, never by its
     try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one; 0 calls spelled like one unresolved") != null);
     const summary = try f.c.read("summary.md");
     try std.testing.expect(std.mem.find(u8, summary, "| `src/root.zig` | 3 | 1 | 1 | 0 |") != null);
+}
+
+/// An `Io` on which every task has been asked to stop.
+const Canceled = @import("shakedown").Layer(u8, .{
+    .checkCancel = struct {
+        fn checkCancel(_: ?*anyopaque) std.Io.Cancelable!void {
+            return error.Canceled;
+        }
+    }.checkCancel,
+});
+
+test "a cancel while glint builds the project or runs its rules ends the check with Canceled, never a failure or a pass" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.file("src/root.zig", "pub const x = 1;\n");
+    var canceled: Canceled = .init(std.testing.io, 0);
+    f.c.io = canceled.io();
+    f.c.errors = 0;
+    try std.testing.expectError(error.Canceled, check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}") }));
+    try std.testing.expect(f.c.errors == 0);
+    f.c.io = std.testing.io;
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
 }
 
 test "a file that cannot be read fails the run with the cause, never a pass" {

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-10-25
+
 ### Fixed
 
 - Lint takes a test root in a directory the repository keeps beside what it ships (`ci`, `examples`, `conformance`, `bench`, as glint already lints them) and follows its imports there, without that directory joining `sources`. A package whose only Zig is its repository checks, a C library's, failed with "configure test_roots" unless it shipped `ci/`. Only the shipped files' tests must still be reached.

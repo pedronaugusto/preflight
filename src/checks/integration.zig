@@ -161,6 +161,7 @@ test "portable replay records timings and still rejects failed tests and leaked 
     if (compiled.term != .exited or compiled.term.exited != 0) std.debug.print("{s}", .{compiled.stderr});
     try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
     const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir } });
+    if (command.succeeded(executed) or std.mem.find(u8, executed.stderr, "leaked") == null) std.debug.print("{s}", .{executed.stderr});
     try std.testing.expect(executed.term == .exited and executed.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, executed.stderr, "DeliberateFailure") != null);
     try std.testing.expect(std.mem.find(u8, executed.stderr, "leaked") != null);
@@ -460,6 +461,7 @@ test "compiled caches never skip a second CI execution" {
         const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci" }, .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
+        if (tmp.dir.access(io, "executions", .{})) |_| {} else |_| std.debug.print("{s}", .{result.stderr});
     }
     try std.testing.expectEqualStrings("xx", try tmp.dir.readFileAlloc(io, "executions", a, .limited(32)));
 }
@@ -666,6 +668,7 @@ test "the watchdog fails a stalled test by name and phase" {
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = bounded });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"stalls\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);\n}\n" });
     const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (std.mem.find(u8, stalled.stderr, "stalls exceeded 300 ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "preflight: watchdog: ") != null);
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls exceeded 300 ms; phase body") != null);
@@ -694,6 +697,7 @@ test "the watchdog names a stalled test that holds the stderr lock, as a hung cr
         \\
     });
     const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300 ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300 ms; phase body") != null);
 }
@@ -724,6 +728,7 @@ test "the watchdog names the Io teardown of a test that leaves a task running" {
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = leaving });
     const stuck = try gate(a, tmp.dir, &.{});
+    if (std.mem.find(u8, stuck.stderr, "lingers exceeded 300 ms; phase io_teardown") == null) std.debug.print("{s}", .{stuck.stderr});
     try std.testing.expect(!command.succeeded(stuck));
     try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers exceeded 300 ms; phase io_teardown") != null);
 }
@@ -968,6 +973,7 @@ test "the test log level is a preflight option" {
     try std.testing.expect(std.mem.find(u8, quiet.stderr, "preflight-log-marker") == null);
     try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_log_level = .info");
     const loud = try gate(a, tmp.dir, &.{});
+    if (std.mem.find(u8, loud.stderr, "preflight-log-marker") == null) std.debug.print("{s}", .{loud.stderr});
     try std.testing.expect(command.succeeded(loud));
     try std.testing.expect(std.mem.find(u8, loud.stderr, "preflight-log-marker") != null);
 }
@@ -987,6 +993,7 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     defer env.deinit();
     try env.put("PREFLIGHT_TEST_SEED", "42");
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "preflight-error-marker") != null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "error logs detected") == null);
@@ -998,6 +1005,15 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     const order = try recordedOrder(a, tmp.dir);
     const logged = std.mem.find(u8, order, "logs an error").?;
     try std.testing.expect(std.mem.findLast(u8, order, "fuzzes ").? > logged);
+}
+
+/// Whether Zig's fuzzer runs on this host, as `hardened-fuzz` decides it. Where it does not,
+/// the campaign `result` is the step's refusal, by name.
+fn fuzzerRan(result: std.process.RunResult) !bool {
+    if (builtin.target.os.tag != .windows and @bitSizeOf(usize) == 64) return true;
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support") != null);
+    return false;
 }
 
 test "a fuzz test that skips in the fuzzing build fails the campaign by name instead of being selected forever" {
@@ -1021,6 +1037,7 @@ test "a fuzz test that skips in the fuzzing build fails the campaign by name ins
     ;
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data = fuzzes });
     const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    if (!try fuzzerRan(good)) return;
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
     // Found a fuzz test unfuzzed, it never reaches the fuzzer in the fuzzing
@@ -1066,6 +1083,7 @@ test "a fuzz test two test runs of one campaign hold is named before the fuzzers
     const run_line = "profile_step.dependOn(&b.addRunArtifact(profile).step);\n";
     try edit(a, tmp.dir, "build.zig", run_line, run_line ++ "    profile_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = profile.root_module, .name = \"again\" })).step);\n");
     const twice = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    if (!try fuzzerRan(twice)) return;
     try std.testing.expect(!command.succeeded(twice));
     if (std.mem.find(u8, twice.stderr, "preflight: fuzz test hardened.test.fuzzes twice runs twice in this campaign") == null) std.debug.print("{s}", .{twice.stderr});
     try std.testing.expect(std.mem.find(u8, twice.stderr, "preflight: fuzz test hardened.test.fuzzes twice runs twice in this campaign") != null);

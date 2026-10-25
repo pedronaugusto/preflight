@@ -580,14 +580,19 @@ test "build protocol chunked transport cancellation child status and output faul
     try std.testing.expectEqualStrings("path", try notification(a, &chunked.interface));
     try std.testing.expectError(error.BuildProtocolChildSignal, successful(.{ .signal = .TERM }));
     try std.testing.expectError(error.BuildProtocolChildFailed, successful(.{ .exited = 3 }));
+    // A build of its own that configures nothing: the repository's build would be configured
+    // anew by a plain `zig build`, minutes on a cold host, for faults that need only a build.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = "pub fn build(_: *@import(\"std\").Build) void {}\n" });
     const FaultIo = @import("shakedown").FaultIo;
     const faults = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .processSpawn, .n = 1 } }, .fault = .{ .fail = error.Canceled } }} });
     defer faults.deinit();
-    try std.testing.expectError(error.Canceled, capture(.{ .a = a, .io = faults.io() }, &.{ "zig", "build", "--listen=-" }));
+    try std.testing.expectError(error.Canceled, capture(.{ .a = a, .io = faults.io(), .dir = tmp.dir }, &.{ "zig", "build", "--listen=-" }));
     try std.testing.expectEqual(@as(u64, 1), faults.count(.processSpawn));
     const write_fault = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .file_write_streaming, .n = 1 } }, .fault = .{ .fail = error.InputOutput } }} });
     defer write_fault.deinit();
-    try std.testing.expectError(error.WriteFailed, capture(.{ .a = a, .io = write_fault.io() }, &.{ "zig", "build", "--listen=-" }));
+    try std.testing.expectError(error.WriteFailed, capture(.{ .a = a, .io = write_fault.io(), .dir = tmp.dir }, &.{ "zig", "build", "--listen=-" }));
     var writer = Io.Writer.failing;
     const fixture = @import("facts_test.zig");
     const seed = try fixture.seed(a);

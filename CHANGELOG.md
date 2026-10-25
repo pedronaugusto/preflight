@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The local gate leaves `hardened-fuzz` to another machine on a host where Zig's fuzzer does not run, Windows or a 32-bit one, and names why, as it does `hardened-tsan`. It ran the job there, where `hardened-fuzz` fails by design, so every local release of a package with `.hardened` on Windows went red.
+
 ## [0.17.2] - 2026-10-24
 
 ### Fixed

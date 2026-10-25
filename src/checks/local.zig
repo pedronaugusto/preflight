@@ -43,6 +43,11 @@ fn one(job: matrix.Job, host: Host) Decision {
     if (std.mem.eql(u8, job.step, "hardened-tsan")) {
         return if ((host.os == .linux or host.os == .macos) and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux or macOS" };
     }
+    // Zig's native fuzzer runs on 64-bit hosts other than Windows (hardened.zig fails the
+    // step anywhere else), so the campaign is another machine's there.
+    if (std.mem.eql(u8, job.step, "hardened-fuzz") and (host.os == .windows or std.Target.ptrBitWidth_arch_abi(host.arch, .none) != 64)) {
+        return .{ .elsewhere = "Zig's fuzzer runs on a 64-bit host that is not Windows" };
+    }
     if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-system-riscv64 on the PATH" } else .run;
     if (anywhere(job)) return .run;
     const system = systemOf(job.os) orelse return .{ .elsewhere = "a runner no machine here is" };
@@ -121,6 +126,27 @@ test "an ARM Linux machine runs the Linux suites once each, and riscv64 with QEM
     defer a.free(decisions);
     const expected = [_]std.meta.Tag(Decision){ .run, .run, .covered, .elsewhere, .run, .run };
     for (expected, decisions) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
+}
+
+test "the fuzz campaign runs only where Zig's fuzzer does: a 64-bit host that is not Windows" {
+    const a = std.testing.allocator;
+    const jobs = [_]matrix.Job{
+        .{ .os = "ubuntu-latest", .name = "hardened", .step = "hardened" },
+        .{ .os = "ubuntu-latest", .name = "hardened-fuzz", .step = "hardened-fuzz" },
+    };
+    for ([_]struct { host: Host, fuzz: std.meta.Tag(Decision) }{
+        .{ .host = .{ .os = .windows, .arch = .x86_64, .qemu = false }, .fuzz = .elsewhere },
+        .{ .host = .{ .os = .windows, .arch = .aarch64, .qemu = false }, .fuzz = .elsewhere },
+        .{ .host = .{ .os = .linux, .arch = .x86, .qemu = false }, .fuzz = .elsewhere },
+        .{ .host = .{ .os = .linux, .arch = .x86_64, .qemu = false }, .fuzz = .run },
+        .{ .host = .{ .os = .macos, .arch = .aarch64, .qemu = false }, .fuzz = .run },
+    }) |case| {
+        const decisions = try decide(a, &jobs, case.host);
+        defer a.free(decisions);
+        // The hardened suite runs on every host: its faults are each system's own.
+        try std.testing.expectEqual(Decision.run, decisions[0]);
+        try std.testing.expectEqual(case.fuzz, std.meta.activeTag(decisions[1]));
+    }
 }
 
 test "a replay runs as the suite on the system it was linked for" {

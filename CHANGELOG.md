@@ -64,6 +64,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A test that crashes no longer erases the timing records of the tests run before it. Zig starts the test process again after a crash, and each new process truncated the shard's record, so a run with crashes or watchdog kills kept only the tests after the last one: relic's windows-11-arm and riscv64 jobs recorded 1 test of 2000. The record is now cleared once per run, when the build asks for the tests (`preflight_timings.Recorder.begin`, which a custom runner calls where its run begins), and a restarted process appends to it.
 - A configuration that is there and cannot be read (`ci/preflight.json`, `ci/workflow.json`) is the error, where any failure to reach it read as no file and every option at its default; and a value of the wrong type is `InvalidConfiguration` (`"compile_step": 3` ran `check`), only an absent or `null` one taking the default.
 - The glint check and the API surface give glint the run's `Io` (glint 0.6.0's `Options.io`), so a canceled run ends with `Canceled` at the next file glint builds or lints, where it ran the whole project out; a cancel there was reported as the run not finishing, a failure.
+### Fixed
+
+- Checkouts keep LF line endings again (`* text=auto eol=lf`): 0.16.0 replaced the line in `.gitattributes` with the CHANGELOG's merge rule, so a Windows checkout of the sample projects had CRLF and failed `zig fmt --check`.
 
 ## [0.17.3] - 2026-10-25
 

@@ -430,6 +430,7 @@ fn serve(init: std.process.Init.Minimal) !void {
         switch (header.tag) {
             .exit => return,
             .query_test_metadata => {
+                try recorder.begin(io);
                 try metadata(&server);
                 try counted(init);
             },
@@ -1037,6 +1038,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
     try counted(init);
     const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
     defer recorder.deinit(io);
+    try recorder.begin(io);
     var failures: usize = 0;
     for (order) |index| {
         const test_fn = builtin.test_functions[index];

@@ -571,6 +571,34 @@ test "shards split the tests once between them by recorded duration, natively an
     for (native[1], replayed) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
 }
 
+test "a crash keeps the records of the tests before it, and a fresh run starts the record again" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    var text: std.Io.Writer.Allocating = .init(a);
+    try text.writer.writeAll("test \"case-0\" { @panic(\"case-0 crashes\"); }\n");
+    for (1..8) |i| try text.writer.print("test \"case-{d}\" {{}}\n", .{i});
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = text.written() });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    _ = env.swapRemove("PREFLIGHT_SHARD");
+    // An order that runs the crash after other tests, which the process the
+    // build starts again after it must not drop.
+    try env.put("PREFLIGHT_TEST_SEED", "1");
+    for (0..2) |_| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+        try std.testing.expect(!command.succeeded(result));
+        try std.testing.expect(std.mem.find(u8, result.stderr, "case-0 crashes") != null);
+        const names = try recordedNames(a, tmp.dir, "-all.ndjson");
+        try std.testing.expectEqual(@as(usize, 7), names.len);
+        for (names, 1..) |name, i| try std.testing.expect(std.mem.endsWith(u8, name, try a.print("case-{d}", .{i})));
+    }
+}
+
 test "the watchdog fails a stalled test by name and phase" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1580,6 +1608,11 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
     const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-tsan" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
+    // A sanitized run records its durations in a column of its own.
+    const timed = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-tsan=true", "-Dci-timings=true", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(timed)) std.debug.print("{s}", .{timed.stderr});
+    try std.testing.expect(command.succeeded(timed));
+    try std.testing.expect(std.mem.endsWith(u8, try recordedKey(a, tmp.dir, "-all.ndjson"), "-debug-tsan"));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
         \\const std = @import("std");
         \\var go: std.atomic.Value(bool) = .init(false);

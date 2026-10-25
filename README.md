@@ -414,7 +414,10 @@ The machine is Alpine's minimal system. Tests that need more of it, such as `git
 on the machine, over QEMU's user network, when the build first makes it. They come
 from the release's repositories, verified by its signing keys. Alpine keeps only the
 newest build of a package there, so a fresh cache takes the release's current build,
-as a hosted runner's tools are its image's.
+as a hosted runner's tools are its image's. A package newer than the release has comes
+from Alpine's edge, named with the build it is: `git@edge=2.56.0-r0`. Edge moves on,
+so an entry from it without `=` and a version is refused; when edge has another build,
+the machine is not made and apk names the package, where an unstated one would drift.
 
 ### Hosted gate
 
@@ -679,7 +682,9 @@ jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, and `riscv64
 riscv64 job on its emulated kernel, which runs a suite several times as long). Every job compiles the whole suite once, or downloads it with
 `compile_once`, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
-`ci/durations.json`. A test with no record weighs the mean of those with one;
+`ci/durations.json`, a column per system, architecture and mode, and one more for a
+ThreadSanitizer build (`linux-debug-tsan`), which a declared job records with
+`-Dci-timings=true` in its `args`. A test with no record weighs the mean of those with one;
 without records the split is by count. Every shard computes the same split, so
 each test runs exactly once. A package's own jobs are declared in `ci/workflow.json`
 `jobs` and run in the tiers they name (see the options below).

@@ -32,6 +32,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - `bench-ab` reads its arguments through ensign, as preflight's own command line does: `zig build bench-ab -- --help` lists them, and a mistake is named with the flag it concerns. A flag given twice takes its last value; it was refused.
+### Added
+
+- `vm_packages` takes a package from Alpine's edge, with its build stated exactly (`git@edge=2.56.0-r0`), for a package newer than the release the machine is: edge joins the release's repositories under its tag, signed by the same keys, when an entry names it. An edge entry without `=` and a version, or another tag, is refused by name; when edge has moved on from the build named, apk fails making the machine, naming the package. relic holds its tests to git 2.56.0, which Alpine 3.24 does not have (2.54.0).
+
+### Changed
+
+- A ThreadSanitizer build records and reads its test durations in a column of its own (`linux-debug-tsan`, `preflight_order.key`), where it shared the column of the same mode without it and could not record without overwriting that column's times. A declared TSan job balances its shards by its own times once it records them (`-Dci-timings=true` in its `args`).
+
+### Fixed
+
+- A test that crashes no longer erases the timing records of the tests run before it. Zig starts the test process again after a crash, and each new process truncated the shard's record, so a run with crashes or watchdog kills kept only the tests after the last one: relic's windows-11-arm and riscv64 jobs recorded 1 test of 2000. The record is now cleared once per run, when the build asks for the tests (`preflight_timings.Recorder.begin`, which a custom runner calls where its run begins), and a restarted process appends to it.
 
 ## [0.17.0] - 2026-10-24
 

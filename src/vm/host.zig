@@ -187,6 +187,32 @@ const InstallPaths = struct { kernel: []const u8, initrd: []const u8, rootfs: []
 /// Where the machine's `apk` installs, on the run's share.
 const install_root = "/run/preflight/root";
 
+/// The repositories `apk` installs from: the release's own (`release`, its root file
+/// system's list), and when a package names `@edge`, Alpine's edge beside them under
+/// that tag, the same mirror with `edge` for the release's directory. A tagged
+/// repository gives only the packages that name its tag, and what they need that
+/// the release lacks; edge is signed by the release's own keys.
+fn repositories(gpa: std.mem.Allocator, release: []const u8, packages: []const []const u8) ![]const u8 {
+    for (packages) |package| {
+        if (std.mem.find(u8, package, "@edge") != null) break;
+    } else return release;
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(gpa, release);
+    if (release.len > 0 and release[release.len - 1] != '\n') try out.append(gpa, '\n');
+    var lines = std.mem.tokenizeScalar(u8, release, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#' or line[0] == '@') continue;
+        // `https://dl-cdn.alpinelinux.org/alpine/v3.24/main`: the release is the
+        // directory before the repository's own.
+        const repository = std.mem.findScalarLast(u8, line, '/') orelse continue;
+        const version = std.mem.findScalarLast(u8, line[0..repository], '/') orelse continue;
+        if (!std.mem.startsWith(u8, line[version + 1 .. repository], "v")) continue;
+        try out.print(gpa, "@edge {s}/edge{s}\n", .{ line[0..version], line[repository..] });
+    }
+    return out.items;
+}
+
 /// The boot image with `packages` added: Alpine's `apk` installs them and what they
 /// need on the machine, from the release's own repositories over QEMU's user
 /// network, into a root on the run's share, trusting the release's own signing
@@ -215,7 +241,8 @@ fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []cons
         const data = try aegis.own.readFile(io, keys, key.name, gpa, .fromRaw(64 * 1024));
         try run_dir.writeFile(io, .{ .sub_path = try gpa.print("root/etc/apk/keys/{s}", .{key.name}), .data = data });
     }
-    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = try aegis.own.readFile(io, rootfs, "etc/apk/repositories", gpa, .fromRaw(64 * 1024)) });
+    const release = try aegis.own.readFile(io, rootfs, "etc/apk/repositories", gpa, .fromRaw(64 * 1024));
+    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = try repositories(gpa, release, packages) });
 
     var guest_argv: std.ArrayList(u8) = .empty;
     for ([_][]const u8{ "/sbin/apk", "add", "--root", install_root, "--initdb", "--usermode", "--no-scripts", "--no-cache", "--no-progress" }) |arg| try appendEntry(gpa, &guest_argv, arg);
@@ -373,6 +400,19 @@ fn raiseOwn(sig: u32) noreturn {
         std.posix.raise(signal) catch {};
     }
     std.process.exit(@truncate(128 +% sig)); // safe: an exit code is a byte, as a shell takes 128 + a signal
+}
+
+test "edge joins the release's repositories under its tag only when a package names it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const release = "https://dl-cdn.alpinelinux.org/alpine/v3.24/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.24/community\n";
+    try std.testing.expectEqualStrings(release, try repositories(a, release, &.{ "git", "tree" }));
+    try std.testing.expectEqualStrings(release ++
+        \\@edge https://dl-cdn.alpinelinux.org/alpine/edge/main
+        \\@edge https://dl-cdn.alpinelinux.org/alpine/edge/community
+        \\
+    , try repositories(a, release, &.{ "tree", "git@edge=2.56.0-r0" }));
 }
 
 test "a path is left out when it is one of those named or lies under one" {

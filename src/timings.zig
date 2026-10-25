@@ -13,12 +13,16 @@ pub const Recorder = struct {
     /// What `init` fails with: reading the environment, creating the
     /// records' directory or file, or memory.
     pub const InitError = std.process.Environ.CreateMapError || std.Io.Dir.CreateDirPathError || std.Io.File.OpenError || std.mem.Allocator.Error;
+    /// What `begin` fails with: emptying the file.
+    pub const BeginError = std.Io.File.SetLengthError;
     /// What `record` fails with: encoding, sizing or writing the record.
     pub const RecordError = std.Io.File.StatError || std.Io.Writer.Error || std.mem.Allocator.Error;
 
     /// `stem` names the records without their shard, or is null for none:
     /// the file ends `-2of5.ndjson` for the shard `PREFLIGHT_SHARD` names,
-    /// or `-all.ndjson`. Close it with `deinit(io)`.
+    /// or `-all.ndjson`. The file keeps what it holds until `begin`: a
+    /// process the build starts again after a test crashed continues its run's
+    /// record. Close it with `deinit(io)`.
     pub fn init(io: std.Io, environ: std.process.Environ, stem: ?[]const u8, key: []const u8) InitError!Recorder {
         const prefix = stem orelse return .{ .key = key };
         const a = std.heap.page_allocator;
@@ -26,10 +30,19 @@ pub const Recorder = struct {
         const path = try a.print("{s}-{s}.ndjson", .{ prefix, shard.part });
         if (std.Io.Dir.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
         return .{
-            .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true }),
+            .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = false }),
             .key = key,
             .shard = shard.name,
         };
+    }
+
+    /// Starts the run's record afresh, dropping an earlier run's; nothing
+    /// without a file. A run begins once: the build asks a test process for
+    /// its tests once per run, and sends the one it restarts after a crash
+    /// straight to the next test.
+    pub fn begin(recorder: Recorder, io: std.Io) BeginError!void {
+        const file = recorder.file orelse return;
+        try file.setLength(io, 0);
     }
 
     pub fn deinit(recorder: Recorder, io: std.Io) void {

@@ -18,6 +18,10 @@ pub const slowdown = 10;
 /// comes from; `packages` are the Alpine packages installed on it beside its
 /// minimal system. Called after every other part of the gate has added its runs.
 pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Build.ResolvedTarget, packages: []const []const u8) void {
+    for (packages) |package| if (refusal(package)) |reason| {
+        tests.dependOn(&b.addFail(b.fmt("vm_packages: {s}: {s}", .{ package, reason })).step);
+        return;
+    };
     // Fetched on first use: a build that asks for the machine configures again once they land.
     const alpine = pkg.dependencyLazy("alpine_riscv64", .{}) catch return;
     const rootfs = pkg.dependencyLazy("alpine_riscv64_rootfs", .{}) catch return;
@@ -78,6 +82,30 @@ fn visit(b: *std.Build, step: *std.Build.Step, machine: Machine, seen: *std.Auto
     run.addFileArg(machine.kernel);
     run.addFileArg(machine.initrd);
     run.argv.appendSlice(b.graph.arena, own) catch @panic("OOM");
+}
+
+/// Why a `vm_packages` entry is refused, or null. An entry is apk's own: a package
+/// from the release (`git`), or one from Alpine's edge (`git@edge=2.56.0-r0`), which
+/// moves on where a release keeps its packages' lines, so it states the build it is:
+/// when edge has another, apk fails making the machine, naming the package, where an
+/// unstated one would drift with edge.
+pub fn refusal(entry: []const u8) ?[]const u8 {
+    const at = std.mem.findScalar(u8, entry, '@') orelse return null;
+    const compare = std.mem.findAny(u8, entry, "<>=~") orelse return "a package from edge states its version, name@edge=version";
+    if (compare < at or !std.mem.eql(u8, entry[at + 1 .. compare], "edge")) return "the one repository beside the release is edge, name@edge=version";
+    if (entry[compare] != '=' or compare + 1 == entry.len or std.mem.findAny(u8, entry[compare + 1 ..], "<>=~") != null) return "a package from edge states its version exactly, name@edge=version";
+    return null;
+}
+
+test "a package from edge states its version exactly, and edge is the one other repository" {
+    try std.testing.expectEqual(null, refusal("git"));
+    try std.testing.expectEqual(null, refusal("git=2.54.0-r0"));
+    try std.testing.expectEqual(null, refusal("git@edge=2.56.0-r0"));
+    try std.testing.expect(refusal("git@edge") != null);
+    try std.testing.expect(refusal("git@edge>=2.56.0-r0") != null);
+    try std.testing.expect(refusal("git@edge~2.56") != null);
+    try std.testing.expect(refusal("git@edge=") != null);
+    try std.testing.expect(refusal("git@testing=2.56.0-r0") != null);
 }
 
 /// A run for riscv64 Linux on a host that is not one.

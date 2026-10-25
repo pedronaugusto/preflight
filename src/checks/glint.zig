@@ -134,14 +134,16 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     @memset(carried, 0);
     for (report.diagnostics) |d| {
         const file = project.inputs[d.span.file.raw()].name;
-        all.writer.print("{s}: {s}:{d}:{d}: {s}\n", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
+        all.writer.print("{s}: {s}:{d}:{d}: {s}", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
         // A danger site of an upstream's unchanged file carries the upstream's verification.
         if (policy.inPack(d.rule)) if (for (kept, 0..) |entry, i| {
             if (std.mem.eql(u8, entry.path, file)) break i;
         } else null) |at| {
+            all.writer.print(" (vendored: carried by {s}'s verification)\n", .{kept[at].upstream}) catch @panic("OOM");
             carried[at] += 1;
             continue;
         };
+        all.writer.writeByte('\n') catch @panic("OOM");
         const fails = d.level == .gate or chosen.fails(d.rule);
         const seen = shown.getOrPutValue(c.a, d.rule, 0) catch null;
         if (seen) |count| {
@@ -467,6 +469,38 @@ test "a danger site fails in production unless it carries the aegis escape; test
     vendored = .fixed(&buffer);
     try vendored.print(entry, .{&digest});
     try std.testing.expect(try f.run(vendored.buffered(), .{}) != 0);
+}
+
+test "the list of every finding names a vendored file's carried sites as carried" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    const cast = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\n";
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(cast, &digest, .{});
+    try f.file("src/vendor/fiat.zig", cast);
+    // More sites of the package's own than the run prints, so it writes the list.
+    var own: std.Io.Writer.Allocating = .init(f.c.a);
+    for (0..printed + 1) |i| try own.writer.print("pub fn view{d}(p: *u8) *u32 {{\n    return @ptrCast(@alignCast(p));\n}}\n", .{i});
+    try f.file("src/root.zig", own.written());
+    var buffer: [512]u8 = undefined;
+    var config: std.Io.Writer = .fixed(&buffer);
+    try config.print("{{\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}", .{&digest});
+    try std.testing.expect(try f.run(config.buffered(), .{}) != 0);
+    const list = try f.tmp.dir.readFileAlloc(f.c.io, findings_path, f.c.a, .limited(1 << 20));
+    var lines = std.mem.splitScalar(u8, list, '\n');
+    var carried: usize = 0;
+    var failing: usize = 0;
+    while (lines.next()) |line| {
+        if (std.mem.find(u8, line, "src/vendor/fiat.zig:") != null) {
+            try std.testing.expect(std.mem.endsWith(u8, line, " (vendored: carried by fiat-crypto's verification)"));
+            carried += 1;
+        } else if (std.mem.find(u8, line, "src/root.zig:") != null) {
+            try std.testing.expect(std.mem.find(u8, line, "vendored") == null);
+            failing += 1;
+        }
+    }
+    try std.testing.expect(carried > 0);
+    try std.testing.expect(failing > printed);
 }
 
 test "a finding rule's undecided sites count against the repository's ceiling, which may not grow" {

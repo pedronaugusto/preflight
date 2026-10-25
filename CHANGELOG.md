@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-25
+
 ### Breaking
 
 - The default policy weighs glint's aegis pack in every repository (aegis's design §7). A001-A005 and the danger rules A007, A008, A011, A014-A017 and A019 are findings. The rules that read the input or peer fact (A006, A009, A010, A012, A013, A018, A020) and A021 (lock order) are reported until a fresh sample of each shows its noise near zero. A danger site uses aegis's type or carries `// aegis: <reason>: <why>`.
@@ -13,7 +15,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - An installed artifact the build makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with its measurement.
 - The default policy holds every package's production code to aegis's whole-file read (P006, beside the durability door): std 0.17's `Dir.readFileAlloc` and `readFileAllocOptions` lose a cancel that lands on the file's length, so `aegis.own.readFile` (or `readFileSentinel`) reads a file whole, with a limit the caller gives.
 - P001, P002 and P004 leave the default policy with glint 0.7.0, folded into A010 (a conversion of input; the safe build every package ships checks the program's own), A019 and A013. A repository naming one in `glint.rules` is told where its sites went. `glint.casts` and `glint.cast_scope` are retired.
-
 - A `vendored` entry names the upstream file it keeps: `{"upstream": ..., "verification": ..., "sha256": ...}`, the SHA-256 of the upstream's copy, where it was one string. While the file is that copy, its verification is the reason every danger site in it carries, as an escape's is for its line, and the run counts them by file; an undecided site in it still is one. A changed file fails the run: it is the package's own code, and its sites need their own reasons. It stays exempt from the house style.
 
 ### Added
@@ -24,29 +25,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `glint.unresolved`: a finding rule's ceiling of undecided sites, none by default. Above it the run fails, and below it the run asks for the ceiling to come down.
 - The run prints every aegis escape with the rules it covers, a count by rule and reason, and all of them in `.zig-cache/preflight-lint/escapes.txt`. A line of findings, escapes and undecided sites by rule follows the glint summary. Where a rule finds more than the 25 printed, every finding is in `.zig-cache/preflight-lint/findings.txt`.
 - A malformed suppression or escape is an incomplete site at its comment.
+- `vm_packages` takes a package from Alpine's edge, with its build stated exactly (`git@edge=2.56.0-r0`), for a package newer than the release the machine is: edge joins the release's repositories under its tag, signed by the same keys, when an entry names it. An edge entry without `=` and a version, or another tag, is refused by name; when edge has moved on from the build named, apk fails making the machine, naming the package. relic holds its tests to git 2.56.0, which Alpine 3.24 does not have (2.54.0).
+
+### Changed
+
+- `bench-ab` reads its arguments through ensign, as preflight's own command line does: `zig build bench-ab -- --help` lists them, and a mistake is named with the flag it concerns. A flag given twice takes its last value; it was refused.
+- A ThreadSanitizer build records and reads its test durations in a column of its own (`linux-debug-tsan`, `preflight_order.key`), where it shared the column of the same mode without it and could not record without overwriting that column's times. A declared TSan job balances its shards by its own times once it records them (`-Dci-timings=true` in its `args`).
 
 ### Fixed
 
 - The consumer check of a package whose own build holds preflight (without bay) gives the consumer preflight and what preflight depends on, which a consumer of that package fetches: aegis, now that preflight depends on it. A package reached by path is read where it is, never copied among the consumer's packages.
 - `preflight profile` named nothing when a job's timing record was not JSON: it failed with a bare `error: SyntaxError` (chronicle's and morse's nightlies of 2026-10-24, on preflight 0.5, which merged every job's records into one directory and so could interleave two). It now names the file and line, `profile: <dir>/<file>.ndjson:3: not a JSON record (SyntaxError)`, and a record without its seconds the same way; a durations or costs file that is not JSON is named too.
-### Changed
-
-- `bench-ab` reads its arguments through ensign, as preflight's own command line does: `zig build bench-ab -- --help` lists them, and a mistake is named with the flag it concerns. A flag given twice takes its last value; it was refused.
-### Added
-
-- `vm_packages` takes a package from Alpine's edge, with its build stated exactly (`git@edge=2.56.0-r0`), for a package newer than the release the machine is: edge joins the release's repositories under its tag, signed by the same keys, when an entry names it. An edge entry without `=` and a version, or another tag, is refused by name; when edge has moved on from the build named, apk fails making the machine, naming the package. relic holds its tests to git 2.56.0, which Alpine 3.24 does not have (2.54.0).
-
-### Changed
-
-- A ThreadSanitizer build records and reads its test durations in a column of its own (`linux-debug-tsan`, `preflight_order.key`), where it shared the column of the same mode without it and could not record without overwriting that column's times. A declared TSan job balances its shards by its own times once it records them (`-Dci-timings=true` in its `args`).
-
-### Fixed
-
 - A test that crashes no longer erases the timing records of the tests run before it. Zig starts the test process again after a crash, and each new process truncated the shard's record, so a run with crashes or watchdog kills kept only the tests after the last one: relic's windows-11-arm and riscv64 jobs recorded 1 test of 2000. The record is now cleared once per run, when the build asks for the tests (`preflight_timings.Recorder.begin`, which a custom runner calls where its run begins), and a restarted process appends to it.
-### Fixed
-
 - A configuration that is there and cannot be read (`ci/preflight.json`, `ci/workflow.json`) is the error, where any failure to reach it read as no file and every option at its default; and a value of the wrong type is `InvalidConfiguration` (`"compile_step": 3` ran `check`), only an absent or `null` one taking the default.
 - The glint check and the API surface give glint the run's `Io` (glint 0.6.0's `Options.io`), so a canceled run ends with `Canceled` at the next file glint builds or lints, where it ran the whole project out; a cancel there was reported as the run not finishing, a failure.
+
 ## [0.17.3] - 2026-10-25
 
 ### Fixed

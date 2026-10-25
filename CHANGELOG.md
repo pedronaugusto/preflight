@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The list of every finding (`.zig-cache/preflight-lint/findings.txt`) named a vendored file's carried danger sites like failing ones, though they never counted against the gate; each now ends `(vendored: carried by <upstream>'s verification)`. (cloak-c read its fiat files' 79 carried A019 sites as failures.)
+
 ## [0.18.0] - 2026-10-25
 
 ### Breaking

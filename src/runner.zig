@@ -184,10 +184,10 @@ const Fuzzing = if (builtin.fuzz) struct {
         @disableInstrumentation();
         server.serveU32Message(.fuzz_test_change, i) catch |err| fail("preflight test runner, fuzzing: {t}\n", .{err});
         const test_fn = builtin.test_functions[indexes[i]];
-        testing.environ = process.environ;
+        testing.environ = testsEnviron(process.environ);
         testing.log_level = log_level;
         testing.allocator_instance = .init(Backing.begin(), allocator_options);
-        testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(process.args), .environ = process.environ });
+        testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(process.args), .environ = testing.environ });
         errors.store(0, .monotonic);
         fuzz_called = false;
         const outcome: anyerror!void = test_fn.func();
@@ -408,6 +408,34 @@ const FuzzNames = struct {
         return holder[space + 1 ..];
     }
 };
+
+/// The environment the tests run in, and so what a process a test starts inherits: the
+/// runner's without preflight's controls (`PREFLIGHT_` and a name). This run's shard, seed and
+/// deadline, and the hosted job's settings, are the runner's, read before any test runs; a
+/// build a test starts is a run of its own. One that inherited the shard ran its share of its
+/// tests alone and passed with the rest unrun. On Windows the environment is the process's
+/// own, so the controls leave it.
+fn testsEnviron(environ: std.process.Environ) std.process.Environ {
+    if (tests_environ) |made| return made;
+    const gpa = std.heap.page_allocator;
+    var env = environ.createMap(gpa) catch |err| std.debug.panic("preflight test runner: the tests' environment: {t}", .{err});
+    var controls: std.ArrayList([]const u8) = .empty;
+    for (env.keys()) |name| if (std.mem.startsWith(u8, name, control_prefix)) controls.append(gpa, name) catch @panic("OOM");
+    if (builtin.target.os.tag == .windows) {
+        for (controls.items) |name| {
+            const wide = std.unicode.wtf8ToWtf16LeAllocZ(gpa, name) catch |err| std.debug.panic("preflight test runner: {s}: {t}", .{ name, err });
+            if (SetEnvironmentVariableW(wide, null) == .FALSE) std.debug.panic("preflight test runner: {s} stays in the tests' environment", .{name});
+        }
+        tests_environ = environ;
+    } else {
+        for (controls.items) |name| _ = env.swapRemove(name);
+        tests_environ = .{ .block = env.createPosixBlock(gpa, .{}) catch @panic("OOM") };
+    }
+    return tests_environ.?;
+}
+var tests_environ: ?std.process.Environ = null;
+const control_prefix = "PREFLIGHT_";
+extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
 
 fn readDeadline(environ: std.process.Environ) !?i64 {
     var env = try environ.createMap(std.heap.page_allocator);
@@ -995,10 +1023,10 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     var watchdog: Watchdog = .{ .name = test_fn.name };
     try watchdog.start();
     defer watchdog.stop();
-    testing.environ = init.environ;
+    testing.environ = testsEnviron(init.environ);
     testing.log_level = log_level;
     testing.allocator_instance = .init(Backing.begin(), allocator_options);
-    testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
+    testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = testing.environ });
     errors.store(0, .monotonic);
     fuzz_called = false;
     try server.serveStringMessage(.test_started, &.{});
@@ -1049,10 +1077,10 @@ fn terminal(init: std.process.Init.Minimal) !void {
         var watchdog: Watchdog = .{ .name = test_fn.name };
         try watchdog.start();
         defer watchdog.stop();
-        testing.environ = init.environ;
+        testing.environ = testsEnviron(init.environ);
         testing.log_level = log_level;
         testing.allocator_instance = .init(Backing.begin(), allocator_options);
-        testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = init.environ });
+        testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = testing.environ });
         errors.store(0, .monotonic);
         const start: std.Io.Clock.Timestamp = .now(io, .awake);
         const status: []const u8 = if (test_fn.func()) |_| "pass" else |err| switch (err) {

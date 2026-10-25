@@ -628,6 +628,30 @@ test "a crash keeps the records of the tests before it, and a fresh run starts t
     }
 }
 
+test "a test's environment holds none of preflight's controls, so a build it starts runs all of its own tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\test "sees no shard" {
+        \\    var env = try std.testing.environ.createMap(std.testing.allocator);
+        \\    defer env.deinit();
+        \\    if (env.get("PREFLIGHT_SHARD") != null) return error.ShardInherited;
+        \\}
+        \\
+    });
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("PREFLIGHT_SHARD", "1/1");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 test "the watchdog fails a stalled test by name and phase" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

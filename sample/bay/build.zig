@@ -18,10 +18,15 @@ pub fn build(b: *std.Build) void {
 pub fn dev(b: *std.Build, tools: type) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    // The package in a second configuration, only built, as a family package builds its
+    // variants: a dependency instance of its own over the same files, made first.
+    const variant = b.dependency("bay_sample", .{ .target = target, .optimize = .small });
+    const small = b.addObject(.{ .name = "bay_sample_small", .root_module = variant.module("bay_sample") });
     const package = b.dependency("bay_sample", .{ .target = target, .optimize = optimize });
     const module = package.module("bay_sample");
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize }).module("shakedown");
     const step = b.step("test", "Run the tests");
+    step.dependOn(&small.step);
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/backoff_test.zig"),

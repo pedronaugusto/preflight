@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-10-25
+
 ### Fixed
 
 - `gate` runs the jobs that say the same on any machine here, whatever this machine's system: the source checks and documented snippets, and the compiles of named targets. It ran them only where the hosted gate's runner system was, Linux, so a release gated on one Mac ran no source checks: bay 0.1.21 went out green with its lint red. A caller that gates on several machines sets `PREFLIGHT_PORTABLE=elsewhere` for all but the one that runs them, and they run once; any other value is refused. ReleaseSmall's compile and the SDK links stay their runner's system's, and a declared job runs as declared.

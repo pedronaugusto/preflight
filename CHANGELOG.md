@@ -71,6 +71,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A test's environment holds none of preflight's controls (the variables named `PREFLIGHT_` and something). A build a test starts inherited the run's shard and ran its share of its own tests alone, passing with the rest unrun, and the hosted job's deadline and key with it. preflight's runner reads its controls before the first test and gives the tests an environment without them (on Windows, where the environment is the process's own, they leave it).
 - Checkouts keep LF line endings again (`* text=auto eol=lf`): 0.16.0 replaced the line in `.gitattributes` with the CHANGELOG's merge rule, so a Windows checkout of the sample projects had CRLF and failed `zig fmt --check`.
 
+### Changed
+
+- preflight's own suite runs on Windows in the release tier, in two shards, so its Windows reds are seen before a release; on Linux it has 30 minutes.
+
 ## [0.17.3] - 2026-10-25
 
 ### Fixed

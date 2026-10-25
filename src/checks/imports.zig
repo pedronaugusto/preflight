@@ -62,7 +62,9 @@ fn resolve(a: std.mem.Allocator, path: []const u8, target: []const u8) ![]const 
     return std.mem.join(a, "/", parts.items);
 }
 
-pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+/// `sources` are what ships, every one of whose tests must be reached; `code` is what the
+/// repository keeps beside it (src.code_directories), which a test root may be in and reach.
+pub fn check(c: *src.Context, sources: []const src.Source, code: []const src.Source, config: src.Value) !void {
     // A root only compiled is no root: Zig runs a binary's tests only when a run runs it.
     for (src.items(src.get(config, "unrun_test_roots"))) |unrun| {
         c.fail("{s}: its tests are compiled ({s}) and never run: no run under {s} runs a test binary of it; run it with the tests, or drop it", .{ src.string(src.get(unrun, "root"), ""), src.string(src.get(unrun, "artifacts"), ""), src.string(src.get(unrun, "steps"), "") });
@@ -78,7 +80,7 @@ pub fn check(c: *src.Context, sources: []const src.Source, config: src.Value) !v
     while (pending.pop()) |path| {
         const entry = try reached.getOrPut(path);
         if (entry.found_existing) continue;
-        const s = find(sources, path) orelse {
+        const s = find(sources, path) orelse find(code, path) orelse {
             c.fail("{s}: configured or imported test root is missing", .{path});
             continue;
         };
@@ -107,10 +109,10 @@ test "reachability follows imports and aliases only from named or unnamed test b
     const value = try src.Source.parse(a, "src/value.zig", "test \"covered\" {}\n");
     const root = try src.Source.parse(a, "src/root.zig", "const value = @import(\"value.zig\");\n\ntest \"root\" { _ = value; }\n");
     var c: src.Context = .{ .a = a, .io = std.testing.io };
-    try check(&c, &.{ root, value }, config);
+    try check(&c, &.{ root, value }, &.{}, config);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     const unreached = try src.Source.parse(a, "src/root.zig", "pub const value = @import(\"value.zig\");\n");
-    try check(&c, &.{ unreached, value }, config);
+    try check(&c, &.{ unreached, value }, &.{}, config);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 
@@ -121,7 +123,7 @@ test "fixtures inside strings are not imports" {
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_roots\":[\"root.zig\"]}", .{})).value;
     var c: src.Context = .{ .a = a, .io = std.testing.io };
     const root = try src.Source.parse(a, "root.zig", "\n\ntest { const fixture = \"@import(\\\"fake.zig\\\")\"; }\n");
-    try check(&c, &.{root}, config);
+    try check(&c, &.{root}, &.{}, config);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
 }
 
@@ -139,7 +141,7 @@ test "a file only a member of reaches from a test is not named, so its tests are
         \\test "root" { _ = corpus.seed(); _ = Key.a; _ = @import("event.zig").Key; }
         \\
     );
-    try check(&c, &.{ used, corpus, event }, config);
+    try check(&c, &.{ used, corpus, event }, &.{}, config);
     try std.testing.expectEqual(@as(usize, 2), c.errors);
     c.errors = 0;
     const named = try src.Source.parse(a, "src/root.zig",
@@ -147,7 +149,7 @@ test "a file only a member of reaches from a test is not named, so its tests are
         \\test "root" { _ = corpus; _ = @import("event.zig"); }
         \\
     );
-    try check(&c, &.{ named, corpus, event }, config);
+    try check(&c, &.{ named, corpus, event }, &.{}, config);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     const everything = try src.Source.parse(a, "src/root.zig",
         \\pub const corpus = @import("corpus.zig");
@@ -155,7 +157,7 @@ test "a file only a member of reaches from a test is not named, so its tests are
         \\test { @import("std").testing.refAllDecls(@This()); }
         \\
     );
-    try check(&c, &.{ everything, corpus, event }, config);
+    try check(&c, &.{ everything, corpus, event }, &.{}, config);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 
@@ -167,6 +169,22 @@ test "a root only compiled is named, and reaches no file's tests" {
     const root = try src.Source.parse(a, "src/root.zig", "test \"root\" {}\n");
     const json = try src.Source.parse(a, "src/json.zig", "test \"json\" {}\n");
     var c: src.Context = .{ .a = a, .io = std.testing.io };
-    try check(&c, &.{ root, json }, config);
+    try check(&c, &.{ root, json }, &.{}, config);
     try std.testing.expectEqual(@as(usize, 2), c.errors);
+}
+
+test "a root kept beside the shipped sources is followed, and only shipped tests must be reached" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_roots\":[\"ci/check.zig\"]}", .{})).value;
+    const rule = try src.Source.parse(a, "ci/rule.zig", "test \"rule\" {}\n");
+    const check_root = try src.Source.parse(a, "ci/check.zig", "const rule = @import(\"rule.zig\");\ntest \"check\" { _ = rule; }\n");
+    var c: src.Context = .{ .a = a, .io = std.testing.io };
+    try check(&c, &.{}, &.{ check_root, rule }, config);
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    // A kept file nothing reaches is not shipped, so it is not this check's to fail.
+    const stray = try src.Source.parse(a, "ci/stray.zig", "test \"stray\" {}\n");
+    try check(&c, &.{}, &.{ check_root, rule, stray }, config);
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
 }

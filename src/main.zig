@@ -150,7 +150,11 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     const config = try checks.workflow.configuration(c.*, config_path);
     const jobs = try checks.matrix.plan(c.a, config, .release);
     const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch, .qemu = onPath(c.*, environ, "qemu-system-riscv64") };
-    const decisions = try checks.local.decide(c.a, jobs, host);
+    const portable = checks.local.Portable.from(environ) orelse {
+        c.report("gate: PREFLIGHT_PORTABLE is here or elsewhere, not {s}\n", .{environ.get("PREFLIGHT_PORTABLE").?}); // safe: only a value set and unknown is refused
+        return error.CheckFailed;
+    };
+    const decisions = try checks.local.decide(c.a, jobs, host, portable);
     var not_here: std.ArrayList([]const u8) = .empty;
     var failed: std.ArrayList([]const u8) = .empty;
     for (jobs, decisions) |job, decision| switch (decision) {

@@ -105,13 +105,13 @@ fn check(c: *src.Context, listed: []const []const u8, roots: []const []const u8,
         return;
     }
     if (extra == .object) for (extra.object.keys(), extra.object.values()) |path, reason| {
-        if (src.string(reason, "").len == 0) c.fail("ci/preflight.json: shipped: {s}: say why a consumer's build needs it", .{path});
+        if ((try src.string(reason, "")).len == 0) c.fail("ci/preflight.json: shipped: {s}: say why a consumer's build needs it", .{path});
         try wanted.append(c.a, path);
     };
     // A package without a README or a changelog is not made to write one; one it has, it ships.
-    for (wanted.items) |path| if (!contains(listed, path) and c.exists(path))
+    for (wanted.items) |path| if (!contains(listed, path) and try c.exists(path))
         c.fail("build.zig.zon: .paths leaves out {s}, which a fetched package needs", .{path});
-    for (listed) |path| if (!c.exists(path))
+    for (listed) |path| if (!try c.exists(path))
         c.fail("build.zig.zon: .paths names {s}, which does not exist", .{path});
     for (listed) |path| if (!contains(wanted.items, path))
         c.fail("build.zig.zon: .paths ships {s}, which no consumer's build reads; drop it, or name it in ci/preflight.json shipped with its reason", .{path});

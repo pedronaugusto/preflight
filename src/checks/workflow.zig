@@ -111,7 +111,7 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
 pub fn configuration(c: src.Context, path: []const u8) !src.Value {
     var config = try c.options(path);
     const costs = try std.Io.Dir.path.join(c.a, &.{ std.Io.Dir.path.dirname(path) orelse ".", "costs.json" });
-    if (config == .object and c.exists(costs)) try config.object.put(c.a, "measured", try c.json(costs));
+    if (config == .object and try c.exists(costs)) try config.object.put(c.a, "measured", try c.json(costs));
     return config;
 }
 
@@ -190,8 +190,8 @@ fn triggers(a: std.mem.Allocator, config: src.Value) !Triggers {
     var tier: []const u8 = "release";
     if (nightly == .object) {
         for (nightly.object.keys()) |key| if (!std.mem.eql(u8, key, "cron") and !std.mem.eql(u8, key, "tier")) return error.InvalidNightly;
-        cron = src.string(src.get(nightly, "cron"), default_cron);
-        tier = src.string(src.get(nightly, "tier"), "release");
+        cron = try src.string(src.get(nightly, "cron"), default_cron);
+        tier = try src.string(src.get(nightly, "tier"), "release");
         var fields: usize = 0;
         var parts = std.mem.tokenizeScalar(u8, cron, ' ');
         while (parts.next()) |part| : (fields += 1) {

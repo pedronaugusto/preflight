@@ -172,7 +172,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
         if (tiers == .null) wanted = tier != .fast else {
             if (tiers != .array or tiers.array.items.len == 0) return error.InvalidDeclaredJob;
             for (tiers.array.items) |item| {
-                const each = std.meta.stringToEnum(Tier, src.string(item, "")) orelse return error.InvalidDeclaredJob;
+                const each = std.meta.stringToEnum(Tier, try src.string(item, "")) orelse return error.InvalidDeclaredJob;
                 if (each == tier) wanted = true;
             }
         }
@@ -182,7 +182,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
         const hosted = src.get(entry, "os");
         const systems: []const src.Value = if (hosted == .null) &.{.{ .string = hosts[0] }} else if (hosted == .array and hosted.array.items.len != 0) hosted.array.items else return error.InvalidDeclaredJob;
         for (systems) |system| {
-            const os = src.string(system, "");
+            const os = try src.string(system, "");
             for (every_host) |known| {
                 if (std.mem.eql(u8, known, os)) break;
             } else return error.InvalidDeclaredJob;
@@ -268,7 +268,7 @@ fn mergePlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     const start = jobs.items.len;
     for (hosts[1..], host_names[1..]) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{.debug});
     for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
-    const targets = src.items(src.get(config, "targets"));
+    const targets = try src.items(src.get(config, "targets"));
     if (targets.len > 0) try crossJobs(a, config, &jobs, targets, false);
     return jobs.items;
 }
@@ -331,7 +331,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
     for (jobs) |job| {
         const portable_hosts = src.get(config, "portable_hosts");
         var allowed = portable_hosts == .null;
-        for (src.items(portable_hosts)) |host| if (std.mem.eql(u8, src.string(host, ""), job.os)) {
+        for (try src.items(portable_hosts)) |host| if (std.mem.eql(u8, try src.string(host, ""), job.os)) {
             allowed = true;
         };
         if (tier == .fast or job.declared or job.qemu or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
@@ -408,8 +408,8 @@ fn lintJob(a: std.mem.Allocator, config: src.Value) !Job {
 }
 
 /// The target a `targets` entry names: a triple, or an object's `target`.
-pub fn targetName(target: src.Value) []const u8 {
-    return if (target == .string) target.string else src.string(src.get(target, "target"), "");
+pub fn targetName(target: src.Value) src.TypeError![]const u8 {
+    return if (target == .string) target.string else try src.string(src.get(target, "target"), "");
 }
 
 /// What compiling one target costs a job when no run has measured it, in seconds.
@@ -452,7 +452,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     var known: f64 = 0;
     var measured: usize = 0;
     for (targets, cost) |target, *seconds| {
-        seconds.* = try targetSeconds(a, config, targetName(target), bench) orelse -1;
+        seconds.* = try targetSeconds(a, config, try targetName(target), bench) orelse -1;
         if (seconds.* >= 0) {
             known += seconds.*;
             measured += 1;
@@ -492,7 +492,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
         var names: std.ArrayList(u8) = .empty;
         for (targets, assignment) |target, owner| if (owner == group) {
             if (names.items.len > 0) try names.append(a, ' ');
-            try names.appendSlice(a, targetName(target));
+            try names.appendSlice(a, try targetName(target));
         };
         if (names.items.len == 0) continue;
         try jobs.append(a, .{
@@ -512,11 +512,11 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
 pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
     try validate(a, config);
     var targets: std.ArrayList(src.Value) = .empty;
-    try targets.appendSlice(a, src.items(src.get(config, "targets")));
+    try targets.appendSlice(a, try src.items(src.get(config, "targets")));
     for ([_][]const u8{ "aarch64-macos", "x86_64-windows-gnu" }) |native| {
         var found = false;
         for (targets.items) |target| {
-            if (std.mem.eql(u8, targetName(target), native)) found = true;
+            if (std.mem.eql(u8, try targetName(target), native)) found = true;
         }
         if (!found) try targets.append(a, .{ .string = native });
     }
@@ -524,9 +524,9 @@ pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
 }
 
 fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
-    const compile = src.string(src.get(config, "compile_step"), "check");
+    const compile = try src.string(src.get(config, "compile_step"), "check");
     try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=small" });
-    try crossJobs(a, config, jobs, src.items(src.get(config, "targets")), true);
+    try crossJobs(a, config, jobs, try src.items(src.get(config, "targets")), true);
 }
 
 fn validate(a: std.mem.Allocator, config: src.Value) !void {
@@ -546,7 +546,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     }
     const targets = src.get(config, "targets");
     if (targets != .null and targets != .array) return error.InvalidCrossTargets;
-    for (src.items(targets)) |target| _ = try crossOptions(a, config, target);
+    for (try src.items(targets)) |target| _ = try crossOptions(a, config, target);
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
@@ -569,7 +569,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
 }
 
 fn sdkJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
-    for (src.items(src.get(config, "targets"))) |target| {
+    for (try src.items(src.get(config, "targets"))) |target| {
         const options = try crossOptions(a, config, target);
         const name = options[1]["-Dtarget=".len..];
         const query = try std.Target.Query.parse(.{ .arch_os_abi = name });
@@ -629,7 +629,7 @@ pub fn crossArgs(a: std.mem.Allocator, command: []const []const u8, config: src.
 /// The build options that make a build target `target`: lint off, the target
 /// and CPU, and the caller's flags.
 pub fn crossOptions(a: std.mem.Allocator, config: src.Value, target: src.Value) ![]const []const u8 {
-    const name = targetName(target);
+    const name = try targetName(target);
     if (name.len == 0) return error.InvalidCrossTarget;
     const cpu = src.get(target, "cpu");
     _ = std.Target.Query.parse(.{ .arch_os_abi = name, .cpu_features = if (cpu == .string) cpu.string else null }) catch return error.InvalidCrossTarget;
@@ -662,7 +662,7 @@ test "the cross bundle retains every target, CPU and caller compile step" {
         try std.testing.expectEqualStrings("x86_64-windows-gnu aarch64-linux-gnu", job.targets);
     };
     try std.testing.expectEqual(@as(usize, 1), bundles);
-    const targets = src.items(src.get(config, "targets"));
+    const targets = try src.items(src.get(config, "targets"));
     const first = try crossArgs(a, &.{ "zig", "build" }, config, targets[0], "ci-check");
     const second = try crossArgs(a, &.{ "zig", "build" }, config, targets[1], "ci-check-bench");
     try std.testing.expectEqualStrings("ci-check", first[2]);
@@ -724,7 +724,7 @@ test "cross targets no run has measured cost 90 s each, and get as many jobs as 
         \\{"targets":["a-linux-gnu","b","c","d","e","f","g"]}
     , .{})).value;
     var jobs: std.ArrayList(Job) = .empty;
-    try crossJobs(a, many, &jobs, src.items(src.get(many, "targets")), false);
+    try crossJobs(a, many, &jobs, try src.items(src.get(many, "targets")), false);
     try std.testing.expectEqual(@as(usize, 4), jobs.items.len);
     try std.testing.expectEqualStrings("a-linux-gnu b c d e f g", try allTargets(jobs.items, a));
     try std.testing.expectEqualStrings("Cross compile 4/4", jobs.items[3].name);
@@ -732,13 +732,13 @@ test "cross targets no run has measured cost 90 s each, and get as many jobs as 
         \\{"cross_jobs":3,"targets":["a","b"]}
     , .{})).value;
     jobs.clearRetainingCapacity();
-    try crossJobs(a, asked, &jobs, src.items(src.get(asked, "targets")), true);
+    try crossJobs(a, asked, &jobs, try src.items(src.get(asked, "targets")), true);
     try std.testing.expectEqual(@as(usize, 2), jobs.items.len);
     try std.testing.expectEqualStrings("preflight-cross-bench", jobs.items[0].step);
     try std.testing.expectEqualStrings("Cross compile 1/2", jobs.items[0].name);
     for ([_][]const u8{ "{\"cross_jobs\":0,\"targets\":[\"a\"]}", "{\"cross_seconds\":0,\"targets\":[\"a\"]}" }) |text| {
         const bad = (try std.json.parseFromSlice(src.Value, a, text, .{})).value;
-        try std.testing.expect(std.meta.isError(crossJobs(a, bad, &jobs, src.items(src.get(bad, "targets")), false)));
+        try std.testing.expect(std.meta.isError(crossJobs(a, bad, &jobs, try src.items(src.get(bad, "targets")), false)));
     }
 }
 
@@ -749,7 +749,7 @@ test "cross targets a run measured are balanced by their seconds, the benchmarks
     const config = (try std.json.parseFromSlice(src.Value, a,
         \\{"targets":["a","b","c","d","e"],"measured":{"phases":{"compile a":150,"compile b":40.5,"compile c":40,"compile d":30,"benchmarks a":100,"benchmarks b":10,"benchmarks c":10,"benchmarks d":10}}}
     , .{})).value;
-    const targets = src.items(src.get(config, "targets"));
+    const targets = try src.items(src.get(config, "targets"));
     var fast: std.ArrayList(Job) = .empty;
     try crossJobs(a, config, &fast, targets, false);
     // e is unmeasured and costs the mean of the four others, 65 s: 325 s in all.

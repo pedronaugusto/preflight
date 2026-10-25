@@ -70,11 +70,11 @@ pub fn main(init: std.process.Init) !void {
 
 /// `profile`: the jobs' timing records summarized beside the durations and costs so far.
 fn profileCommand(c: src.Context, args: @FieldType(Command, "profile")) !void {
-    const previous = if (c.exists(args.durations)) try c.json(args.durations) else .null;
+    const previous = if (try c.exists(args.durations)) try c.json(args.durations) else .null;
     const summary = try checks.profile.summarize(c, args.input, previous);
     try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.output orelse args.durations, .data = try checks.profile.render(c.a, summary) });
     // The phases the jobs timed, beside the test durations.
-    const measured = try checks.profile.measure(c, args.input, if (c.exists(args.costs)) try c.json(args.costs) else .null);
+    const measured = try checks.profile.measure(c, args.input, if (try c.exists(args.costs)) try c.json(args.costs) else .null);
     try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.costs_output orelse args.costs, .data = try checks.profile.renderCosts(c.a, measured) });
 }
 
@@ -111,9 +111,9 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     // The gate's build is developed with bay or not on its own account (preflight's sample is not).
     gate.bay = if (gate.developedWithBay()) c.bay orelse "bay" else null;
     var linking: std.json.Array = .init(c.a);
-    for (src.items(src.get(config.*, "targets"))) |target| {
+    for (try src.items(src.get(config.*, "targets"))) |target| {
         const options = try checks.matrix.crossOptions(c.a, config.*, target);
-        const name = checks.matrix.targetName(target);
+        const name = try checks.matrix.targetName(target);
         const query = std.Target.Query.parse(.{ .arch_os_abi = name }) catch return error.InvalidCrossTarget;
         if (query.os_tag != .macos) continue;
         const snapshot = try facts.read(gate, c.zig, options);
@@ -274,10 +274,10 @@ fn testSteps(c: *src.Context, config: src.Value, named: []const []const u8) ![]c
         // A job in a directory of its own runs another build's steps.
         if (job.directory.len == 0) try steps.put(c.a, job.step, {});
     }
-    for (src.items(src.get(config, "extra_checks"))) |command| {
+    for (try src.items(src.get(config, "extra_checks"))) |command| {
         var building = false;
-        for (src.items(command)) |word| {
-            const text = src.string(word, "");
+        for (try src.items(command)) |word| {
+            const text = try src.string(word, "");
             if (building and !std.mem.startsWith(u8, text, "-")) try steps.put(c.a, text, {});
             if (std.mem.eql(u8, text, "build")) building = true;
         }
@@ -371,7 +371,7 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     try checks.release.changelogNamesChanges(c, exported);
     timer.end(c.*, log);
     if (c.errors != 0) return;
-    for (src.items(src.get(config, "extra_checks"))) |command| {
+    for (try src.items(src.get(config, "extra_checks"))) |command| {
         const argv = try checks.docs.zigCommand(c.a, c.buildCommand(), command);
         timer = stage(c, try std.mem.join(c.a, " ", argv));
         try checks.command.execute(c.*, argv);
@@ -542,7 +542,7 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
     while (names.next()) |name| {
         var found = false;
         for (targets) |target| {
-            if (!std.mem.eql(u8, checks.matrix.targetName(target), name)) continue;
+            if (!std.mem.eql(u8, try checks.matrix.targetName(target), name)) continue;
             found = true;
             covered += 1;
             for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {

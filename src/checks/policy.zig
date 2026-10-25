@@ -17,9 +17,9 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
     while (iterator.next()) |entry| {
         const directory = entry.key_ptr.*;
         const members = entry.value_ptr.items;
-        if (members.len < 2 or rootDirectory(directory, config)) continue;
+        if (members.len < 2 or try rootDirectory(directory, config)) continue;
         const exception = src.get(src.get(config, "layout_exceptions"), directory);
-        if (layoutException(members, exception)) continue;
+        if (try layoutException(members, exception)) continue;
         const parent = std.Io.Dir.path.dirname(directory) orelse ".";
         const name = std.Io.Dir.path.basename(directory);
         var count: usize = 0;
@@ -53,25 +53,25 @@ fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Valu
     while (iterator.next()) |entry| {
         const members = entry.value_ptr.items;
         if (members.len < 2) continue;
-        if (layoutException(members, src.get(src.get(config, "layout_exceptions"), entry.key_ptr.*))) continue;
+        if (try layoutException(members, src.get(src.get(config, "layout_exceptions"), entry.key_ptr.*))) continue;
         c.fail("layout: {s}: {d} namespace files belong in {s}/ beside its entry", .{ try std.mem.join(c.a, ", ", members), members.len, entry.key_ptr.* });
     }
 }
 
-fn rootDirectory(path: []const u8, config: src.Value) bool {
+fn rootDirectory(path: []const u8, config: src.Value) src.TypeError!bool {
     const roots = src.get(config, "sources");
     if (roots == .null) return std.mem.eql(u8, path, "src");
-    for (src.items(roots)) |root| if (std.mem.eql(u8, path, src.string(root, ""))) return true;
+    for (try src.items(roots)) |root| if (std.mem.eql(u8, path, try src.string(root, ""))) return true;
     return false;
 }
 
-fn layoutException(members: []const []const u8, exception: src.Value) bool {
-    if (std.mem.trim(u8, src.string(src.get(exception, "reason"), ""), " \t\r\n").len == 0) return false;
-    const allowed = src.items(src.get(exception, "files"));
+fn layoutException(members: []const []const u8, exception: src.Value) src.TypeError!bool {
+    if (std.mem.trim(u8, try src.string(src.get(exception, "reason"), ""), " \t\r\n").len == 0) return false;
+    const allowed = try src.items(src.get(exception, "files"));
     if (members.len != allowed.len) return false;
     for (members) |member| {
         var count: usize = 0;
-        for (allowed) |item| if (std.mem.eql(u8, member, src.string(item, ""))) {
+        for (allowed) |item| if (std.mem.eql(u8, member, try src.string(item, ""))) {
             count += 1;
         };
         if (count != 1) return false;

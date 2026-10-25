@@ -368,7 +368,7 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
     const rules = src.get(block, "rules");
     if (rules != .null and rules != .array) c.fail("glint: `rules` is a list of {{id, level}}", .{});
     const definitions = ruleDefinitions();
-    for (src.items(rules)) |entry| {
+    for (try src.items(rules)) |entry| {
         const id = src.get(entry, "id");
         const named = src.get(entry, "level");
         if (id != .string or named != .string) {
@@ -408,7 +408,7 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
     const disallowed = src.get(block, "disallowed");
     if (disallowed != .null and disallowed != .array) c.fail("glint: `disallowed` is a list of {{source, declaration, reason, replacement, scope}}: a declaration of a module or `.zig` file, or with no source an external symbol", .{});
     var list: std.ArrayList(glint.Config.Disallowed) = .empty;
-    for (src.items(disallowed)) |entry| {
+    for (try src.items(disallowed)) |entry| {
         var fields: [3][]const u8 = undefined;
         for ([_][]const u8{ "declaration", "reason", "replacement" }, &fields) |key, *field| {
             const value = src.get(entry, key);
@@ -417,7 +417,7 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
         const source = src.get(entry, "source");
         if (source != .null and source != .string) c.fail("glint: a disallowed `source` is a module or a `.zig` file", .{});
         const written = src.get(entry, "scope");
-        const chosen: @FieldType(glint.Config.Disallowed, "scope") = if (written == .null) .all else std.meta.stringToEnum(@FieldType(glint.Config.Disallowed, "scope"), src.string(written, "")) orelse blk: {
+        const chosen: @FieldType(glint.Config.Disallowed, "scope") = if (written == .null) .all else std.meta.stringToEnum(@FieldType(glint.Config.Disallowed, "scope"), try src.string(written, "")) orelse blk: {
             c.fail("glint: a disallowed `scope` is all or production", .{});
             break :blk .all;
         };
@@ -521,7 +521,7 @@ fn parseExceptions(c: *src.Context, value: src.Value) ![]const Exception {
             continue;
         };
         const lines = src.get(entry.value_ptr.*, "lines");
-        const reason = std.mem.trim(u8, src.string(src.get(entry.value_ptr.*, "reason"), ""), " \t\r\n");
+        const reason = std.mem.trim(u8, try src.string(src.get(entry.value_ptr.*, "reason"), ""), " \t\r\n");
         if (lines != .integer or lines.integer < 1 or lines.integer > std.math.maxInt(u32) or reason.len == 0 or split == 0 or split + 1 == label.len) {
             c.fail("glint: function_exceptions: {s}: needs a line ceiling and a reason", .{label});
             continue;
@@ -541,10 +541,10 @@ fn parseVendored(c: *src.Context, value: src.Value) ![]const Vendored {
     var entries = value.object.iterator();
     while (entries.next()) |entry| {
         const path = entry.key_ptr.*;
-        const upstream = std.mem.trim(u8, src.string(src.get(entry.value_ptr.*, "upstream"), ""), " \t\r\n");
-        const verification = std.mem.trim(u8, src.string(src.get(entry.value_ptr.*, "verification"), ""), " \t\r\n");
+        const upstream = std.mem.trim(u8, try src.string(src.get(entry.value_ptr.*, "upstream"), ""), " \t\r\n");
+        const verification = std.mem.trim(u8, try src.string(src.get(entry.value_ptr.*, "verification"), ""), " \t\r\n");
         var sha256: [32]u8 = undefined;
-        const digest = src.string(src.get(entry.value_ptr.*, "sha256"), "");
+        const digest = try src.string(src.get(entry.value_ptr.*, "sha256"), "");
         const hex = digest.len == 64 and if (std.fmt.hexToBytes(&sha256, digest)) |_| true else |_| false;
         if (entry.value_ptr.* != .object or upstream.len == 0 or verification.len == 0 or !hex) {
             c.fail("vendored: {s} needs its upstream, its verification and the SHA-256 of the upstream file, 64 hex digits", .{path});

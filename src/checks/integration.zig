@@ -240,7 +240,7 @@ fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
-            try names.appendSlice(a, src.string(src.get(row, "name"), ""));
+            try names.appendSlice(a, try src.string(src.get(row, "name"), ""));
             try names.append(a, '\n');
         }
     }
@@ -486,7 +486,7 @@ fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]c
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
-            try names.append(a, try a.dupe(u8, src.string(src.get(row, "name"), "")));
+            try names.append(a, try a.dupe(u8, try src.string(src.get(row, "name"), "")));
         }
     }
     std.mem.sort([]const u8, names.items, {}, struct {
@@ -507,7 +507,7 @@ fn recordedKey(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]con
         const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
         const line = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
         const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
-        return a.dupe(u8, src.string(src.get(row, "key"), ""));
+        return a.dupe(u8, try src.string(src.get(row, "key"), ""));
     }
     return error.NoTimingRecord;
 }
@@ -1407,9 +1407,9 @@ test "the plan links a macOS target on Linux unless its build links a framework"
     try std.testing.expect(command.succeeded(result));
     const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;
     var seen: usize = 0;
-    for (src.items(src.get(matrix, "include"))) |job| {
-        const name = src.string(src.get(job, "name"), "");
-        const os = src.string(src.get(job, "os"), "");
+    for (try src.items(src.get(matrix, "include"))) |job| {
+        const name = try src.string(src.get(job, "name"), "");
+        const os = try src.string(src.get(job, "os"), "");
         if (std.mem.eql(u8, name, "SDK link (x86_64-macos)")) {
             try std.testing.expectEqualStrings("macos-latest", os);
             seen += 1;

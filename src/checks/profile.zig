@@ -42,10 +42,10 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
             if (src.get(value, "phase") != .null) continue;
             const seconds = try records.seconds(value);
             result.records += 1;
-            const column = src.string(src.get(value, "key"), "");
+            const column = try src.string(src.get(value, "key"), "");
             if (column.len == 0) continue;
-            const name = src.string(src.get(value, "name"), "");
-            const shard = src.string(src.get(value, "shard"), "");
+            const name = try src.string(src.get(value, "name"), "");
+            const shard = try src.string(src.get(value, "shard"), "");
             const seen = try shards.getOrPut(c.a, try c.a.print("{s}\x00{s}", .{ name, column }));
             if (!seen.found_existing) {
                 seen.value_ptr.* = try c.a.dupe(u8, shard);
@@ -53,17 +53,17 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
                 c.report("profile: {s} ran on shards {s} and {s} of {s}\n", .{ name, seen.value_ptr.*, shard, column });
                 split = false;
             }
-            try result.put(c.a, try c.a.dupe(u8, src.string(src.get(value, "name"), "")), try c.a.dupe(u8, column), seconds);
+            try result.put(c.a, try c.a.dupe(u8, try src.string(src.get(value, "name"), "")), try c.a.dupe(u8, column), seconds);
         }
     }
     if (!split) return error.TestOnTwoShards;
     const measured = try result.keys.clone(c.a);
-    const keys = src.items(src.get(previous, "keys"));
+    const keys = try src.items(src.get(previous, "keys"));
     const tests = src.get(previous, "tests");
     if (tests == .object) {
         var rows = tests.object.iterator();
         while (rows.next()) |row| {
-            const cells = src.items(row.value_ptr.*);
+            const cells = try src.items(row.value_ptr.*);
             if (cells.len != keys.len) return error.InvalidDurations;
             for (keys, cells) |column, cell| {
                 if (column != .string or measured.contains(column.string) or cell == .null) continue;

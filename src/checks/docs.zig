@@ -2,9 +2,9 @@ const std = @import("std");
 const src = @import("source.zig");
 
 pub fn snippet(c: src.Context, generator: src.Value) ![]const u8 {
-    const source = src.string(src.get(generator, "source"), "");
+    const source = try src.string(src.get(generator, "source"), "");
     const text = try c.read(source);
-    const marker = try c.a.print("// --- README:{s} ---", .{src.string(src.get(generator, "region"), "usage")});
+    const marker = try c.a.print("// --- README:{s} ---", .{try src.string(src.get(generator, "region"), "usage")});
     var parts = std.mem.splitSequence(u8, text, marker);
     _ = parts.next();
     const body = parts.next() orelse return error.MissingReadmeMarker;
@@ -15,8 +15,8 @@ pub fn snippet(c: src.Context, generator: src.Value) ![]const u8 {
     const show = src.get(generator, "want_import");
     if (show != .bool or show.bool) {
         const imports = src.get(generator, "imports");
-        if (imports == .null) try appendImport(c.a, &out.writer, text, src.string(src.get(generator, "module"), "")) else {
-            for (src.items(imports)) |name| try appendImport(c.a, &out.writer, text, src.string(name, ""));
+        if (imports == .null) try appendImport(c.a, &out.writer, text, try src.string(src.get(generator, "module"), "")) else {
+            for (try src.items(imports)) |name| try appendImport(c.a, &out.writer, text, try src.string(name, ""));
         }
         try out.writer.writeByte('\n');
     }
@@ -74,11 +74,11 @@ pub fn generate(c: src.Context, generator: src.Value) ![]const u8 {
 /// A configured `zig build ...` command, run as the package builds: `build` is
 /// `zig build` with the Zig running the checks, or `bay` under bay.
 pub fn zigCommand(a: std.mem.Allocator, build: []const []const u8, command: src.Value) ![]const []const u8 {
-    const values = src.items(command);
-    if (values.len < 2 or !std.mem.eql(u8, src.string(values[0], ""), "zig") or !std.mem.eql(u8, src.string(values[1], ""), "build")) return error.CheckMustUseZigBuild;
+    const values = try src.items(command);
+    if (values.len < 2 or !std.mem.eql(u8, try src.string(values[0], ""), "zig") or !std.mem.eql(u8, try src.string(values[1], ""), "build")) return error.CheckMustUseZigBuild;
     const argv = try a.alloc([]const u8, build.len + values.len - 2);
     @memcpy(argv[0..build.len], build);
-    for (values[2..], argv[build.len..]) |value, *arg| arg.* = src.string(value, "");
+    for (values[2..], argv[build.len..]) |value, *arg| arg.* = try src.string(value, "");
     return argv;
 }
 

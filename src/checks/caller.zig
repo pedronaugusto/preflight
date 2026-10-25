@@ -147,7 +147,7 @@ pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
     defer top.close(c.io);
     const at_top = atTop(c, top);
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
-    const existing = if (at_top.exists(path)) try at_top.read(path) else null;
+    const existing = if (try at_top.exists(path)) try at_top.read(path) else null;
     const own = request.own or (if (existing) |text| std.mem.find(u8, text, own_ref) != null else false);
     const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops);
     if (existing) |old| if (std.mem.eql(u8, old, text)) return path;

@@ -28,12 +28,12 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
     for (proof_tiers) |tier| {
         const name = try c.a.print("preflight-{s}-{s}", .{ tier, sha });
         const found = try get(c, &client, token, try c.a.print("https://api.github.com/repos/{s}/actions/artifacts?name={s}&per_page=100", .{ repo, name }));
-        for (src.items(src.get(found, "artifacts"))) |artifact| {
+        for (try src.items(src.get(found, "artifacts"))) |artifact| {
             if (src.get(artifact, "expired") == .bool and src.get(artifact, "expired").bool) continue;
             const run_of = src.get(artifact, "workflow_run");
             const id = src.get(run_of, "id");
             if (id != .integer or id.integer == (std.fmt.parseInt(i64, current, 10) catch return error.MissingRun)) continue;
-            if (!proves(src.string(src.get(artifact, "name"), ""), sha)) continue;
+            if (!proves(try src.string(src.get(artifact, "name"), ""), sha)) continue;
             c.report("{s} passed for {s}: run {d}\n", .{ name, sha, id.integer });
             return;
         }

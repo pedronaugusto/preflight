@@ -7,7 +7,7 @@ const src = @import("source.zig");
 /// Reports each function of `build.zig` that calls `lazyImport` without an earlier `@setEvalBranchQuota`
 /// in its body.
 pub fn check(c: *src.Context) !void {
-    if (!c.exists("build.zig")) return;
+    if (!try c.exists("build.zig")) return;
     const text = try c.a.dupeSentinel(u8, try c.read("build.zig"), 0);
     for (try unguarded(c.a, text)) |line| c.fail("build.zig:{d}: lazyImport compares every package of the tree at comptime: call @setEvalBranchQuota earlier in this function", .{line});
 }

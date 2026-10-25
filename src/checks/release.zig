@@ -51,7 +51,7 @@ pub fn declared(c: *src.Context) !std.SemanticVersion {
 /// were tagged with the manifest at 0.8.7). A package that has released
 /// nothing yet has nothing to match.
 pub fn versionAgrees(c: *src.Context) !void {
-    if (!c.exists("CHANGELOG.md")) return;
+    if (!try c.exists("CHANGELOG.md")) return;
     const newest = changelog.newestReleased(try c.read("CHANGELOG.md")) orelse return;
     const version = declared(c) catch |err| switch (err) {
         // It named its fix.
@@ -68,7 +68,7 @@ pub fn versionAgrees(c: *src.Context) !void {
 /// breaking one (`### Breaking` or `### Removed`). Each failure names its fix. A package with
 /// no tag yet, or none in this clone's history, has no surface to compare with.
 pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !void {
-    if (!c.exists("CHANGELOG.md") or modules.len == 0) return;
+    if (!try c.exists("CHANGELOG.md") or modules.len == 0) return;
     const tag = try lastTag(c.*) orelse return;
     const since = changelog.parseVersion(std.mem.trimStart(u8, tag, "v"));
     var problem: changelog.Problem = undefined;
@@ -143,7 +143,7 @@ pub const Tree = struct {
     c: *const src.Context,
 
     pub fn read(tree: Tree, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
-        if (!tree.c.exists(path)) return null;
+        if (!try tree.c.exists(path)) return null;
         return try a.dupe(u8, try tree.c.read(path));
     }
 };

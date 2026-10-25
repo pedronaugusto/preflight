@@ -65,8 +65,8 @@ pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []co
         }
     } else {
         for (try src.roots(c.a, config)) |root| try collect(c, root, &found);
-        for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |root| if (c.exists(root) and !try nested(c, root)) try collect(c, root, &found);
-        if (c.exists("build.zig")) try found.put(c.a, "build.zig", {});
+        for ([_][]const u8{ "examples", "ci", "conformance", "bench" }) |root| if (try c.exists(root) and !try nested(c, root)) try collect(c, root, &found);
+        if (try c.exists("build.zig")) try found.put(c.a, "build.zig", {});
     }
     if (c.errors != before) return null;
     if (found.count() == 0) {
@@ -101,7 +101,7 @@ fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(
 /// whose files only that build compiles, with the modules it binds. Its imports would not
 /// resolve in this build's lint, so it is left to that build.
 fn nested(c: *src.Context, directory: []const u8) !bool {
-    return c.exists(try std.Io.Dir.path.join(c.a, &.{ directory, "build.zig.zon" }));
+    return try c.exists(try std.Io.Dir.path.join(c.a, &.{ directory, "build.zig.zon" }));
 }
 
 /// A path in one lexical form: `/` separators, no `.` or `..` components

@@ -167,7 +167,7 @@ const Fuzzing = if (builtin.fuzz) struct {
             index.* = for (builtin.test_functions, 0..) |test_fn, i| {
                 if (std.mem.eql(u8, name, test_fn.name)) break @intCast(i); // safe: test functions are counted in u32
             } else std.debug.panic("preflight: fuzz test {s} no longer exists", .{name});
-            if (main_instance) try server.serveU64Message(.fuzz_start_addr, abi.fuzzer_unslide_address(@intFromPtr(builtin.test_functions[index.*].func))); // aegis: no-danger: the fuzzer maps a function's address back to its place in the binary
+            if (main_instance) try server.serveU64Message(.fuzz_start_addr, abi.fuzzer_unslide_address(@intFromPtr(builtin.test_functions[index.*].func)));
         }
         abi.fuzzer_main(count, testing.random_seed, mode, amount);
         // An unbounded campaign runs until the build ends it.
@@ -642,7 +642,7 @@ const Supervisor = struct {
         }
 
         fn number(end: std.Io.File) usize {
-            return if (builtin.target.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle); // aegis: no-danger: a descriptor is never negative
+            return if (builtin.target.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle);
         }
 
         // aegis: boundary: an OS process or handle call of the runner's, at its one seam

@@ -6,6 +6,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const glint = @import("glint");
 const src = @import("source.zig");
+const matrix = @import("matrix.zig");
 pub const policy = @import("glint/policy.zig");
 pub const assembly = @import("glint/assembly.zig");
 
@@ -33,6 +34,7 @@ const printed = 25;
 pub fn check(c: *src.Context, inputs: Inputs) !void {
     var chosen = (try policy.parse(c, inputs.config)) orelse return;
     chosen.base.peer_writers = try peerWriters(c, chosen.base.peer_writers, inputs.build.modules);
+    chosen.base.pointer_widths = try pointerWidths(c);
     const paths = (try assembly.select(c, chosen, inputs.config)) orelse return;
     var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
     defer assembled.deinit();
@@ -61,6 +63,24 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
 /// The peer writers A018 reads: the package's own, then those each package it depends on
 /// declares in its `ci/preflight.json` (found beside the `build.zig.zon` above a dependency
 /// module's root).
+/// The pointer widths glint reads ranges at: those of the targets `ci/workflow.json` names
+/// and of this machine, whose tests run natively, so a package with no 32-bit target is not
+/// held to a 32-bit `usize`. A package that names no targets is read at both 32 and 64 bits.
+fn pointerWidths(c: *src.Context) ![]const u16 {
+    const targets = try src.items(src.get(try c.options("ci/workflow.json"), "targets"));
+    if (targets.len == 0) return &.{};
+    var out: std.ArrayList(u16) = .empty;
+    try out.append(c.a, @import("builtin").target.ptrBitWidth());
+    for (targets) |target| {
+        // A target the matrix refuses is named there; its width cannot be read here.
+        const query = std.Target.Query.parse(.{ .arch_os_abi = try matrix.targetName(target) }) catch continue;
+        const arch = query.cpu_arch orelse continue;
+        const width = std.Target.ptrBitWidth_arch_abi(arch, query.abi orelse .none);
+        if (std.mem.findScalar(u16, out.items, width) == null) try out.append(c.a, width);
+    }
+    return out.items;
+}
+
 fn peerWriters(c: *src.Context, own: []const glint.Config.PeerWriter, modules: []const src.BuildModule) ![]const glint.Config.PeerWriter {
     var out: std.ArrayList(glint.Config.PeerWriter) = .empty;
     try out.appendSlice(c.a, own);
@@ -429,6 +449,17 @@ test "style is reported and does not fail; a repository may gate it" {
     try f.file("src/root.zig", "pub const BadName = 1;\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z006\",\"level\":\"gate\"}]}}", .{}) != 0);
+}
+
+test "glint reads ranges at the pointer widths of the workflow's targets and of this machine" {
+    if (@import("builtin").target.ptrBitWidth() != 64) return error.SkipZigTest;
+    const f = try Fixture.init();
+    defer f.deinit();
+    try std.testing.expectEqual(@as(usize, 0), (try pointerWidths(&f.c)).len);
+    try f.file("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\",{\"target\":\"aarch64-macos\",\"cpu\":\"apple_m1\"}]}");
+    try std.testing.expectEqualSlices(u16, &.{64}, try pointerWidths(&f.c));
+    try f.file("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\",\"wasm32-freestanding\"]}");
+    try std.testing.expectEqualSlices(u16, &.{ 64, 32 }, try pointerWidths(&f.c));
 }
 
 test "a danger site fails in production unless it carries the aegis escape; tests are not shipped, a vendored file is" {

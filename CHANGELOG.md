@@ -29,6 +29,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The consumer check of a package whose own build holds preflight (without bay) gives the consumer preflight and what preflight depends on, which a consumer of that package fetches: aegis, now that preflight depends on it. A package reached by path is read where it is, never copied among the consumer's packages.
 - `preflight profile` named nothing when a job's timing record was not JSON: it failed with a bare `error: SyntaxError` (chronicle's and morse's nightlies of 2026-10-24, on preflight 0.5, which merged every job's records into one directory and so could interleave two). It now names the file and line, `profile: <dir>/<file>.ndjson:3: not a JSON record (SyntaxError)`, and a record without its seconds the same way; a durations or costs file that is not JSON is named too.
+### Changed
+
+- `bench-ab` reads its arguments through ensign, as preflight's own command line does: `zig build bench-ab -- --help` lists them, and a mistake is named with the flag it concerns. A flag given twice takes its last value; it was refused.
 
 ## [0.17.0] - 2026-10-24
 

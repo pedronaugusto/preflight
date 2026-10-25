@@ -259,7 +259,7 @@ const Deprecations = struct {
 fn parsed(arena: std.mem.Allocator, args: []const []const u8) !Cli {
     return switch (try ensign.parse(Cli, arena, args, .{})) {
         .parsed => |cli| cli,
-        .help, .version => error.NotACommand,
+        .help, .version, .complete => error.NotACommand,
     };
 }
 

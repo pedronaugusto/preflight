@@ -236,10 +236,24 @@ pub const Policy = struct {
             try exceptions.append(a, .{ .function = entry.function, .lines = entry.lines, .reason = entry.reason });
         };
         config.function_exceptions = try exceptions.toOwnedSlice(a);
-        if (policy.isVendored(path)) config = try withLevel(a, config, .P003, .off);
+        if (policy.isVendored(path)) for (std.enums.values(glint.Rule)) |rule| {
+            if (upstreamText(rule)) config = try withLevel(a, config, rule, .off);
+        };
         return config;
     }
 };
+
+/// A rule whose finding only an edit of the file's text clears, and which claims nothing of
+/// what the code does or whether it builds: the house style (Zig's style, the reading budget,
+/// the advisory on assertions) and dead code (a private declaration or import named nowhere).
+/// A vendored file leaves these off, since its text is its upstream's (fiat's generator writes
+/// every helper whether a curve calls it or not).
+fn upstreamText(rule: glint.Rule) bool {
+    return switch (rule) {
+        .P003, .Z016, .D001, .Z013 => true,
+        else => rule.group() == .zig_style,
+    };
+}
 
 fn withLevel(a: std.mem.Allocator, config: glint.Config, rule: glint.Rule, level: glint.Config.Level) std.mem.Allocator.Error!glint.Config {
     const selections = try a.alloc(glint.Config.Selection, config.selections.len + 1);
@@ -699,9 +713,16 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     try std.testing.expectEqual(@as(usize, 0), (try policy.forFile(a, "src/other.zig")).function_exceptions.len);
     const forked = try policy.forFile(a, "src/tls.zig");
     try std.testing.expectEqual(.off, forked.level(.P003));
-    // A vendored file is exempt from the house style, not from correctness, and the danger rules
-    // run on it: it ships. Its upstream's verification carries their sites while it is the copy.
+    // A vendored file is exempt from the house style and dead code, which only its upstream
+    // edits, not from correctness, and the danger rules run on it: it ships. Its upstream's
+    // verification carries their sites while it is the copy.
+    try std.testing.expectEqual(.off, forked.level(.D001));
+    try std.testing.expectEqual(.off, forked.level(.Z013));
+    try std.testing.expectEqual(.off, forked.level(.Z001));
+    try std.testing.expectEqual(.report, (try policy.forFile(a, "src/main.zig")).level(.D001));
     try std.testing.expectEqual(.gate, forked.level(.Z026));
+    try std.testing.expectEqual(.gate, forked.level(.Z034));
+    try std.testing.expectEqual(.gate, forked.level(.Z003));
     try std.testing.expectEqual(.report, forked.level(glint.AegisPack.integers));
     // A tool the package develops with ships nowhere: the danger rules leave it out.
     try std.testing.expectEqual(.off, (try policy.forFile(a, "build.zig")).level(glint.AegisPack.shared_state));

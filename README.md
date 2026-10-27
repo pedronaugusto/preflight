@@ -172,7 +172,10 @@ file. The structure check compiles each pattern once.
 `ci/preflight.json` names source directories, test roots, test support, README
 regions and extra repository checks. A `vendored` file is an upstream's file kept
 unchanged: its entry names the upstream, how the upstream's copy is verified and that
-copy's SHA-256 (`{"upstream": ..., "verification": ..., "sha256": ...}`). Function exceptions name an exact file and function,
+copy's SHA-256 (`{"upstream": ..., "verification": ..., "sha256": ...}`). Its text
+is its upstream's, so the house style and dead code (the Zig style rules, P003, Z016, D001
+and Z013) leave it out; the rules on what it does or whether it builds hold it.
+Function exceptions name an exact file and function,
 a reason and the current line ceiling; growth fails once P003 is gated. The normal limit
 is 120, with lower per-path `function_limits` for shared folds.
 

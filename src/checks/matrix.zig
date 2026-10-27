@@ -464,7 +464,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     const wanted = src.get(config, "cross_jobs");
     if (wanted != .null and (wanted != .integer or wanted.integer < 1)) return error.InvalidCrossJobs;
     const budget = src.get(config, "cross_seconds");
-    if (budget != .null and !(number(budget) orelse 0 > 0)) return error.InvalidCrossSeconds;
+    if (budget != .null and !((number(budget) orelse 0) > 0)) return error.InvalidCrossSeconds;
     const cost = try a.alloc(f64, targets.len);
     var known: f64 = 0;
     var measured: usize = 0;

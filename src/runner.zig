@@ -856,7 +856,7 @@ const Supervisor = struct {
             var length: usize = 0;
             var seen: usize = 0;
             while (seen < argc and length < rest.len) : (seen += 1) {
-                length += (std.mem.findScalar(u8, rest[length..], 0) orelse rest.len - length) + 1;
+                length += (std.mem.findScalar(u8, rest[length..], 0) orelse (rest.len - length)) + 1;
             }
             const line = rest[0..@min(length, rest.len)];
             for (line) |*byte| if (byte.* == 0) {

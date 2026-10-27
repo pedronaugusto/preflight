@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - preflight's own suite runs on Windows in the release tier, in two shards, so its Windows reds are seen before a release; on Linux it has 30 minutes.
+- Pins glint 0.7.2 and gantry 0.3.2.
 
 ### Fixed
 

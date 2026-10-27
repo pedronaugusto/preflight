@@ -6,14 +6,14 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.7.1#c6885d81a8be3495925c33d77ff45cbdf2f934ec",
-            .hash = "glint-0.7.1-3jcpoRXPFAApSvFVYLiK8dQEUrjReNJaDsqdWmfCZZ-b",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.7.2#ec52c921b34473901ee62cfb3913b8d626744d73",
+            .hash = "glint-0.7.2-3jcpoSSTFQD4iDE_8YiH8fynJXnTYnoGy4-dP8j5lxhE",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.3.1#ef92f5de72b5b32109c8a07f183b2a019f3aaed9",
-            .hash = "gantry-0.3.1-1iNrkaDJDACZIIhiH7xbhJdvj6UNXGT5Y3C50ht9v6x7",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.3.2#4a8bfa83ab5448448cf09b51b13cb0cca9695642",
+            .hash = "gantry-0.3.2-1iNrkdXJDABcC2MHdcf5Bx_EUIcL2EL3GTbwUVQqhEV8",
             .lazy = true,
         },
 

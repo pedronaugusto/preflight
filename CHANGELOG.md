@@ -19,9 +19,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The VM's cpio reader refuses an archive cut short after a member whose data ends unaligned, where the next read underflowed past the end and stopped the program, and checks a name's length against what is left before adding it to a position.
 - A hosted job's deadline (`PREFLIGHT_STARTED` plus `PREFLIGHT_JOB_TIMEOUT` minutes) is computed checked: values past `i64`'s seconds are `InvalidJobTimeout` or `InvalidJobStart`, not an overflow.
 - preflight's own lint under glint 0.7.1 reports nothing: configuration counts convert checked (`fact_budget`, `function_limits`, a ceiling's `sites`), and each remaining site says why it is safe where it is.
-
-### Fixed
-
 - The lint's release-mode check reads what the default build installs: an artifact an install step copies out. It read every compile below the install step, so a test the default build compiles in ReleaseFast (shuttle runs its suite again optimized, where its switch's bugs were found) failed the lint as if it shipped.
 
 ## [0.18.1] - 2026-10-25

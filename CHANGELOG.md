@@ -10,14 +10,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `check` compiles the package for every target the fast tier names, as its cross-compile jobs do (`ci-check` per target, without linking or running), so a test behind another system's branch fails on the machine at hand: `bay check` built the tests for that machine alone, and a Linux-only test body of reactor 0.8.6 was first compiled in the hosted run. A build that takes `-Dtarget` gets them: one that defines `check` before `addCi` keeps its own, with the targets added, and one without gets preflight's. A planned job (`PREFLIGHT_PLANNED`, which `run` and `gate` set) leaves them to the plan's cross-compile jobs.
 
+### Fixed
+
+- `ci-check` and `ci-check-bench` compile a module's C, assembly and resource sources for a COFF target, each to an object of its own with the module's flags, include paths and macros. Each artifact compiled to one object, and on COFF Zig cannot merge a module's source objects into it ("coff does not support linking multiple objects into one"): a package with preprocessed `.S` files beside its Zig root failed every object on x86_64-windows-gnu (cloak's s2n-bignum routines).
+
+## [0.18.4] - 2026-10-27
+
 ### Changed
 
 - The default policy gates Z034 (glint 0.7.3): two operators Zig 0.18 refuses to order without parentheses. glint's fix parenthesizes each as Zig 0.17 reads it.
 - A `vendored` file is left out of the house style and dead code: the Zig style rules, P003, Z016, D001 and Z013, which only an edit of its text clears and which claim nothing of what it does. Only P003 was, so a generated file's unused helpers were reported against a package that may not edit it (cloak's fiat-crypto files, D001 4 times). The rules on what it does and whether it builds, and the danger rules, still hold it.
+- Pins glint 0.7.3 and gantry 0.3.3.
 
 ### Fixed
 
-- `ci-check` and `ci-check-bench` compile a module's C, assembly and resource sources for a COFF target, each to an object of its own with the module's flags, include paths and macros. Each artifact compiled to one object, and on COFF Zig cannot merge a module's source objects into it ("coff does not support linking multiple objects into one"): a package with preprocessed `.S` files beside its Zig root failed every object on x86_64-windows-gnu (cloak's s2n-bignum routines).
 - Two expressions Zig 0.18 refuses as ambiguous operator precedence are parenthesized as Zig 0.17 reads them: `cross_seconds`'s check (`(number(budget) orelse 0) > 0`) and the runner's environment block length.
 
 ## [0.18.3] - 2026-10-27

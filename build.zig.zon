@@ -1,19 +1,19 @@
 .{
     .name = .preflight,
-    .version = "0.18.3",
+    .version = "0.18.4",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0x52c46579c2597d2d,
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.7.2#ec52c921b34473901ee62cfb3913b8d626744d73",
-            .hash = "glint-0.7.2-3jcpoSSTFQD4iDE_8YiH8fynJXnTYnoGy4-dP8j5lxhE",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=v0.7.3#769d1d2bc64f8869ebe4666e2e87fd848c1cb007",
+            .hash = "glint-0.7.3-3jcpodSsFQCgQut5w-PfNPiH5bWiABqZ91EHx6gFliM8",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.3.2#4a8bfa83ab5448448cf09b51b13cb0cca9695642",
-            .hash = "gantry-0.3.2-1iNrkdXJDABcC2MHdcf5Bx_EUIcL2EL3GTbwUVQqhEV8",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=v0.3.3#f00eeea29aca2631e9f6fbf0ca2458d16c771250",
+            .hash = "gantry-0.3.3-1iNrkU_NDACppWsxrJ1dZEQL8Xs3QwbdqToKNwbFpa_i",
             .lazy = true,
         },
 

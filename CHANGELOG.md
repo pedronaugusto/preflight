@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-10-27
+
 ### Changed
 
 - The default policy gates Z034 (glint 0.7.3): two operators Zig 0.18 refuses to order without parentheses. glint's fix parenthesizes each as Zig 0.17 reads it.

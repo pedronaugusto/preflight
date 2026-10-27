@@ -433,8 +433,10 @@ fn testsEnviron(environ: std.process.Environ) std.process.Environ {
     }
     return tests_environ.?;
 }
+// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var tests_environ: ?std.process.Environ = null;
 const control_prefix = "PREFLIGHT_";
+// aegis: boundary: an OS process or handle call of the runner's, at its one seam
 extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
 
 fn readDeadline(environ: std.process.Environ) !?i64 {

@@ -383,6 +383,35 @@ test "a manifest whose version is not the changelog's newest release fails the l
     try std.testing.expect(std.mem.find(u8, result.stderr, "build.zig.zon: .version is 0.0.0 and CHANGELOG.md's newest release is 0.1.0") != null);
 }
 
+test "a test the default build compiles ReleaseFast passes the lint, and a program it installs ReleaseFast fails it by name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const anchor = "    b.step(\"check\", \"Compile the sample\").dependOn(&tests.step);\n";
+    // The suite again in ReleaseFast, compiled by the default build, as shuttle's is: it ships nothing.
+    try edit(a, tmp.dir, "build.zig", anchor, anchor ++
+        \\    const fast = b.addTest(.{ .name = "sample-fast", .root_module = b.createModule(.{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = .fast }) });
+        \\    b.getInstallStep().dependOn(&fast.step);
+        \\
+    );
+    const compiled = try lintFixture(a, tmp.dir);
+    if (!command.succeeded(compiled)) std.debug.print("{s}\n", .{compiled.stderr});
+    try std.testing.expect(command.succeeded(compiled));
+    try tmp.dir.createDirPath(std.testing.io, "tool");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tool/main.zig", .data = "pub fn main() void {}\n" });
+    try edit(a, tmp.dir, "build.zig", anchor, anchor ++
+        \\    b.installArtifact(b.addExecutable(.{ .name = "sample-tool", .root_module = b.createModule(.{ .root_source_file = b.path("tool/main.zig"), .target = target, .optimize = .fast }) }));
+        \\
+    );
+    const installed = try lintFixture(a, tmp.dir);
+    try std.testing.expect(!command.succeeded(installed));
+    try std.testing.expect(std.mem.find(u8, installed.stderr, "release: sample-tool is installed fast although no mode was chosen") != null);
+    try std.testing.expect(std.mem.find(u8, installed.stderr, "sample-fast") == null);
+}
+
 test "hosted output appends to existing records" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

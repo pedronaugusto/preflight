@@ -10,6 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - glint reads a package's ranges at the pointer widths of the targets `ci/workflow.json` names and of the machine the tests run on (glint's `pointer_widths`): a `u32` count times a small constant widened to `usize` is A010's finding only where a target has a 32-bit `usize` (cloak's `wasm32-freestanding`), never for a package whose targets are all 64-bit (relic). A package that names no targets is read at both widths, as before.
 
+### Fixed
+
+- The lint's release-mode check reads what the default build installs: an artifact an install step copies out. It read every compile below the install step, so a test the default build compiles in ReleaseFast (shuttle runs its suite again optimized, where its switch's bugs were found) failed the lint as if it shipped.
+
 ## [0.18.1] - 2026-10-25
 
 ### Fixed

@@ -413,7 +413,9 @@ fn exported(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
 
 /// Each installed artifact the build makes ReleaseFast or ReleaseSmall while the caller chose no
 /// mode fails the lint, unless `Config.release_fast` names it with its measurement; a name that
-/// matches no such artifact fails too, so an exception cannot outlive its artifact.
+/// matches no such artifact fails too, so an exception cannot outlive its artifact. Installed is
+/// what an install step below the default one copies out: a test the default build only compiles
+/// in another mode (shuttle's suite again in ReleaseFast) ships nothing.
 fn releaseModes(b: *std.Build, config: Config) void {
     if (b.user_input_options.contains("optimize") or b.user_input_options.contains("release")) return;
     const lint = b.top_level_steps.get("lint") orelse return;
@@ -424,7 +426,8 @@ fn releaseModes(b: *std.Build, config: Config) void {
     while (stack.pop()) |step| {
         if ((seen.getOrPut(b.allocator, step) catch @panic("OOM")).found_existing) continue;
         for (step.dependencies.items) |next| stack.append(b.allocator, next) catch @panic("OOM");
-        const artifact = step.cast(std.Build.Step.Compile) orelse continue;
+        const install = step.cast(std.Build.Step.InstallArtifact) orelse continue;
+        const artifact = install.artifact;
         const mode = artifact.root_module.optimize orelse continue;
         if (mode != .fast and mode != .small) continue;
         const named = for (config.release_fast) |entry| {

@@ -11,6 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pins aegis 0.2.1, the 0.2 line: `SecretBytes` holds no allocator.
 - glint reads a package's ranges at the pointer widths of the targets `ci/workflow.json` names and of the machine the tests run on (glint's `pointer_widths`): a `u32` count times a small constant widened to `usize` is A010's finding only where a target has a 32-bit `usize` (cloak's `wasm32-freestanding`), never for a package whose targets are all 64-bit (relic). A package that names no targets is read at both widths, as before.
 - The hardened jobs are sized as the test jobs are: `hardened`, `hardened-fuzz` and `hardened-tsan` take `test_job_timeout`, where they had a fixed 20 minutes; `hardened` splits into the Linux jobs' shards and `hardened-tsan` into `shards.tsan`'s (else the Linux count), each running its share as the test jobs do; the fuzz campaign stays one job. relic's suite ran past 20 minutes under ThreadSanitizer in one job.
+- Pins glint 0.7.1, gantry 0.3.1, bay 0.2.2 and ensign 0.3.1.
 
 ### Fixed
 

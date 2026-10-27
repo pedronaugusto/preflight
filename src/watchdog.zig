@@ -66,5 +66,8 @@ pub fn jobDeadline(env: *const std.process.Environ.Map) JobDeadlineError!?i64 {
     if (started == null or timeout == null) return error.IncompleteJobDeadline;
     const start = std.fmt.parseInt(i64, started.?, 10) catch return error.InvalidJobStart;
     const minutes = std.fmt.parseInt(i64, timeout.?, 10) catch return error.InvalidJobTimeout;
-    return start + minutes * 60 - after_tests_s;
+    // Checked: the values are the environment's, and an absurd one is refused, not wrapped.
+    const limit = std.math.mul(i64, minutes, 60) catch return error.InvalidJobTimeout;
+    const end = std.math.add(i64, start, limit) catch return error.InvalidJobTimeout;
+    return std.math.sub(i64, end, after_tests_s) catch error.InvalidJobStart;
 }

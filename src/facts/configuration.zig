@@ -30,6 +30,7 @@ const Guard = struct {
     }
     fn value(g: *Guard, comptime T: type, v: T) LoadError!void {
         if (T == C.Bytes) {
+            // aegis: no-danger: the or's left side returned where the index passes the length, so the length less it is not negative
             if (v.index > g.c.string_bytes.len or v.len > g.c.string_bytes.len - v.index) return error.MalformedConfiguration;
             return;
         }
@@ -119,7 +120,9 @@ const Guard = struct {
             .@"enum" => |info| b: {
                 const raw = (try g.span(i, 1))[0];
                 if (raw > std.math.maxInt(info.tag_type)) return error.MalformedConfiguration;
+                // aegis: no-danger: checked against the tag type's greatest value on the line before; the type is a comptime parameter, which the lint cannot name
                 const backing: info.tag_type = @intCast(raw);
+                // aegis: no-danger: a non-exhaustive enum takes every value of its tag type, and an exhaustive one went through fromInt
                 break :b if (info.mode == .exhaustive) (std.enums.fromInt(T, backing) orelse return error.MalformedConfiguration) else @fromBackingInt(backing);
             },
             .@"struct" => |info| switch (info.layout) {
@@ -163,6 +166,7 @@ const Guard = struct {
                 const count: usize = (try g.span(i, 1))[0];
                 const names = @typeInfo(T.Elem).@"struct";
                 const words = try g.span(i, std.math.mul(usize, count, names.field_names.len) catch return error.MalformedConfiguration);
+                // aegis: no-danger: the columns are count words each of the words span checked; each column's type is one of Zig's u32 index enums, non-exhaustive, and value checks each word
                 inline for (names.field_types, 0..) |F, n| for (words[n * count ..][0..count]) |raw| try g.value(F, @fromBackingInt(raw));
                 return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // aegis: no-danger: Zig's multi-list decoder borrows native u32 columns validated above.
             },
@@ -185,8 +189,10 @@ const Guard = struct {
                 const payload_start = i.*;
                 const words = try g.span(i, count);
                 for (words, 0..) |raw, n| {
+                    // aegis: no-danger: the loop above returned unless start is within extra; loadBits reads the metadata words it counted there
                     const meta = C.loadBits(u32, g.c.extra[start..], n * @bitSizeOf(T.Meta), T.Meta);
                     switch (meta.tag) {
+                        // aegis: no-danger: each payload's type is one of Zig's u32 index enums, non-exhaustive, and value checks each word
                         inline else => |tag| try g.value(@FieldType(T.Union, @tagName(tag)), @fromBackingInt(raw)),
                     }
                 }

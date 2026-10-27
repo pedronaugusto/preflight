@@ -60,6 +60,7 @@ pub const Timer = struct {
 };
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
+    // aegis: no-danger: the step summary or record file the hosted runner or the caller names, written with their rights
     const file = try c.directory().createFile(c.io, path, .{ .truncate = false, .read = true });
     defer file.close(c.io);
     var buffer: [1024]u8 = undefined;

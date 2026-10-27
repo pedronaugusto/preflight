@@ -399,7 +399,8 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
     }
     const budget = src.get(block, "fact_budget");
     if (budget != .null) {
-        if (budget == .integer and budget.integer > 0) base.fact_budget = @intCast(budget.integer) else c.fail("glint: `fact_budget` is a positive count", .{});
+        const count: ?usize = if (budget == .integer and budget.integer > 0) std.math.cast(usize, budget.integer) else null;
+        if (count) |given| base.fact_budget = given else c.fail("glint: `fact_budget` is a positive count", .{});
     }
     const width = src.get(block, "max_line_length");
     if (width != .null) {
@@ -472,11 +473,12 @@ fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule
             c.fail("glint: unresolved: {s} is not one of the aegis pack's findings, so its undecided sites are not counted against a ceiling", .{name});
             continue;
         }
-        if (sites != .integer or sites.integer < 1) {
+        const count: usize = if (sites == .integer and sites.integer >= 1) std.math.cast(usize, sites.integer) orelse 0 else 0;
+        if (count == 0) {
             c.fail("glint: unresolved: {s}: a positive count of sites (a rule not named may leave none)", .{name});
             continue;
         }
-        try out.append(c.a, .{ .rule = rule, .name = name, .sites = @intCast(sites.integer) });
+        try out.append(c.a, .{ .rule = rule, .name = name, .sites = count });
     }
     return out.items;
 }
@@ -497,11 +499,12 @@ fn parseLimits(c: *src.Context, globs: *gantry.rules.Globs, value: src.Value) ![
     var entries = value.object.iterator();
     while (entries.next()) |entry| {
         const lines = entry.value_ptr.*;
-        if (lines != .integer or lines.integer < 1 or lines.integer > std.math.maxInt(u32)) {
+        const count: u32 = if (lines == .integer and lines.integer >= 1) std.math.cast(u32, lines.integer) orelse 0 else 0;
+        if (count == 0) {
             c.fail("glint: function_limits: {s}: a positive line count", .{entry.key_ptr.*});
             continue;
         }
-        try out.append(c.a, .{ .pattern = try globs.get(.path, entry.key_ptr.*), .lines = @intCast(lines.integer) });
+        try out.append(c.a, .{ .pattern = try globs.get(.path, entry.key_ptr.*), .lines = count });
     }
     return out.items;
 }

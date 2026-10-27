@@ -77,4 +77,10 @@ test "a hosted job's deadline is its start and limit, less what it does after it
     try std.testing.expectEqual(@as(?i64, 1700000000 + 20 * 60 - watchdog.after_tests_s), try watchdog.jobDeadline(&env));
     try env.put("PREFLIGHT_JOB_TIMEOUT", "twenty");
     try std.testing.expectError(error.InvalidJobTimeout, watchdog.jobDeadline(&env));
+    // Values past i64's seconds are refused, not wrapped.
+    try env.put("PREFLIGHT_JOB_TIMEOUT", "9223372036854775807");
+    try std.testing.expectError(error.InvalidJobTimeout, watchdog.jobDeadline(&env));
+    try env.put("PREFLIGHT_JOB_TIMEOUT", "0");
+    try env.put("PREFLIGHT_STARTED", "-9223372036854775808");
+    try std.testing.expectError(error.InvalidJobStart, watchdog.jobDeadline(&env));
 }

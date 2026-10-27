@@ -70,18 +70,23 @@ pub const Reader = struct {
     at: usize = 0,
 
     pub fn next(r: *Reader) ReadError!?Entry {
-        if (r.bytes.len - r.at < header_len) return error.Truncated;
+        // A member padded past the end of an archive cut short leaves `at` beyond it.
+        if (r.at > r.bytes.len or r.bytes.len - r.at < header_len) return error.Truncated;
         const header = r.bytes[r.at..][0..header_len];
         if (!std.mem.eql(u8, header[0..6], magic)) return error.NotCpio;
         const mode = try field(header, 1);
         const size = try field(header, 6);
         const name_len = try field(header, 11);
         if (name_len == 0) return error.NotCpio;
+        // Each length is checked against what is left before it is added to a position.
         const name_start = r.at + header_len;
-        const data_start = std.mem.alignForward(usize, name_start + name_len, 4);
+        if (name_len > r.bytes.len - name_start) return error.Truncated;
+        const name_end = name_start + name_len;
+        const data_start = std.mem.alignForward(usize, name_end, 4);
+        if (data_start > r.bytes.len or size > r.bytes.len - data_start) return error.Truncated;
         const data_end = data_start + size;
-        if (data_end > r.bytes.len) return error.Truncated;
-        const name = r.bytes[name_start .. name_start + name_len - 1];
+        // aegis: no-danger: name_len is not zero and at most what is left after name_start, checked above
+        const name = r.bytes[name_start .. name_end - 1];
         r.at = std.mem.alignForward(usize, data_end, 4);
         if (std.mem.eql(u8, name, trailer)) return null;
         const kind: Kind = switch (mode & 0o170000) {
@@ -128,4 +133,17 @@ test "a damaged archive is refused, not read past its end" {
     try std.testing.expectError(error.Truncated, r.next());
     var wrong: Reader = .{ .bytes = "070707" ++ @as([104]u8, @splat('0')) };
     try std.testing.expectError(error.NotCpio, wrong.next());
+    // A last member whose data ends the archive unaligned, with no trailer after it: its padding
+    // runs past the end, and the next read is refused, not taken from past it.
+    var buffer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer buffer.deinit();
+    var w: Writer = .{ .out = &buffer.writer };
+    try w.add(.{ .name = "a", .kind = .file, .mode = 0o644, .data = "x" });
+    var cut: Reader = .{ .bytes = buffer.written()[0 .. buffer.written().len - 3] };
+    try std.testing.expectEqualStrings("x", (try cut.next()).?.data);
+    try std.testing.expectError(error.Truncated, cut.next());
+    // A name longer than what is left.
+    const long = "070701" ++ @as([8 * 11]u8, @splat('0')) ++ "FFFFFFF0" ++ "00000000";
+    var named: Reader = .{ .bytes = long };
+    try std.testing.expectError(error.Truncated, named.next());
 }

@@ -111,6 +111,7 @@ pub const Context = struct {
     /// there and cannot be reached is the error, never "no file", which
     /// would read an unreadable configuration as every default.
     pub fn exists(c: Context, path: []const u8) Io.Dir.AccessError!bool {
+        // aegis: no-danger: a file of the package's own configuration, asked for with its user's rights
         c.directory().access(c.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => return false,
             else => |e| return e,

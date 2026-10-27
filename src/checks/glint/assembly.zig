@@ -50,6 +50,7 @@ pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []co
     if (policy.paths) |explicit| {
         for (explicit) |path| {
             const clean = try normalize(c.a, path);
+            // aegis: no-danger: a path the package's own configuration names; its build already runs its author's code with these rights
             const stat = c.directory().statFile(c.io, clean, .{}) catch |err| switch (err) {
                 error.FileNotFound => {
                     c.fail("glint: glint_paths: {s}: not found", .{path});
@@ -83,6 +84,7 @@ pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []co
 }
 
 fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(void)) !void {
+    // aegis: no-danger: a directory the package's own configuration or the defaults name; its build already runs its author's code with these rights
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walkSelectively(c.a);

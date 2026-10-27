@@ -66,6 +66,7 @@ fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) ![]const C.
     const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
     // Zig reports a package's root from the directory it runs in, the build's root:
     // under bay the development root, which bay names.
+    // aegis: no-danger: the development root bay names for this package
     var build_root = try Io.Dir.cwd().openDir(c.io, try developmentRoot(c, bay), .{});
     defer build_root.close(c.io);
     var owners: std.array_hash_map.Auto(C.Package.Index, void) = .empty;
@@ -81,6 +82,7 @@ fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) ![]const C.
     var instances: std.ArrayList(C.Package.Index) = .empty;
     for (owners.keys()) |owner| {
         const package = owner.get(config) orelse continue;
+        // aegis: no-danger: a package root Zig's configuration of the package's own build names
         const path = build_root.realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch continue;
         if (std.mem.eql(u8, path, here)) try instances.append(c.a, owner);
     }

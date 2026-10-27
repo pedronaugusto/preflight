@@ -10,6 +10,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Pins aegis 0.2.1, the 0.2 line: `SecretBytes` holds no allocator.
 - glint reads a package's ranges at the pointer widths of the targets `ci/workflow.json` names and of the machine the tests run on (glint's `pointer_widths`): a `u32` count times a small constant widened to `usize` is A010's finding only where a target has a 32-bit `usize` (cloak's `wasm32-freestanding`), never for a package whose targets are all 64-bit (relic). A package that names no targets is read at both widths, as before.
+- The hardened jobs are sized as the test jobs are: `hardened`, `hardened-fuzz` and `hardened-tsan` take `test_job_timeout`, where they had a fixed 20 minutes; `hardened` splits into the Linux jobs' shards and `hardened-tsan` into `shards.tsan`'s (else the Linux count), each running its share as the test jobs do; the fuzz campaign stays one job. relic's suite ran past 20 minutes under ThreadSanitizer in one job.
+
+### Fixed
+
+- The riscv64 job installs `qemu-system-riscv` where the runner's Ubuntu has it (26.04, the hosted `ubuntu-latest` since October 2026, ships `qemu-system-riscv64` in a package of its own), else `qemu-system-misc`, and fails the install step when no `qemu-system-riscv64` is on the PATH. It failed later, at `preflight-vm: starting qemu-system-riscv64: FileNotFound`.
+- `src/main.zig` parenthesizes `mode | ((mode & 0o444) >> 2)`, which Zig master refuses as ambiguous precedence.
+- The VM's cpio reader refuses an archive cut short after a member whose data ends unaligned, where the next read underflowed past the end and stopped the program, and checks a name's length against what is left before adding it to a position.
+- A hosted job's deadline (`PREFLIGHT_STARTED` plus `PREFLIGHT_JOB_TIMEOUT` minutes) is computed checked: values past `i64`'s seconds are `InvalidJobTimeout` or `InvalidJobStart`, not an overflow.
+- preflight's own lint under glint 0.7.1 reports nothing: configuration counts convert checked (`fact_budget`, `function_limits`, a ceiling's `sites`), and each remaining site says why it is safe where it is.
 
 ### Fixed
 

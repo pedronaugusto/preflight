@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-10-27
+
 ### Changed
 
 - preflight's own suite runs on Windows in the release tier, in two shards, so its Windows reds are seen before a release; on Linux it has 30 minutes.

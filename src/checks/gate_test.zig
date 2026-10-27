@@ -2,7 +2,8 @@
 //! the preflight program run as `bay gate` runs it, refusing what a release must not carry
 //! (a caller other than `generate` makes, a manifest and a CHANGELOG at different releases,
 //! a public declaration changed with no breaking entry) before any job runs. The program
-//! gets PATH and what the test sets, nothing else of the user's.
+//! gets PATH (on Windows, PATHEXT and SystemRoot beside it) and what the test sets, nothing
+//! else of the user's.
 const std = @import("std");
 const test_options = @import("test_options");
 const workflow = @import("workflow.zig");
@@ -21,7 +22,8 @@ const Package = struct {
         const a = p.arena.allocator();
         const inherited = try std.testing.environ.createMap(a);
         p.env = .init(a);
-        const kept: []const []const u8 = if (@import("builtin").target.os.tag == .windows) &.{ "PATH", "SystemRoot" } else &.{"PATH"};
+        // A Windows program finds `git` on PATH by the extensions its own PATHEXT names.
+        const kept: []const []const u8 = if (@import("builtin").target.os.tag == .windows) &.{ "PATH", "PATHEXT", "SystemRoot" } else &.{"PATH"};
         for (kept) |name| if (inherited.get(name)) |value| try p.env.put(name, value);
         try p.env.put("HOME", try p.tmp.dir.realPathFileAlloc(std.testing.io, ".", a));
         try p.env.put("GIT_CONFIG_NOSYSTEM", "1");

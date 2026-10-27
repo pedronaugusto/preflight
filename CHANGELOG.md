@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- preflight's own suite runs on Windows in the release tier, in two shards, so its Windows reds are seen before a release; on Linux it has 30 minutes.
+
+### Fixed
+
+- Files are named with `/` on Windows too. Zig keeps a module's paths with `\` there (`std.Build.Graph.dupePath`), and lint took them as they came: a Windows package's compiled-never-run artifact was named `src\compiled.zig` beside its `src/compiled.zig` read from disk, so the two never met, the empty-run-root failure named `src\empty.zig`, a file of another package reached through the checked one was named with both separators, and `facts` printed `src\\sample.zig`. Every path the configured build hands over is named once, at the facts adapter, as lint names files.
+- The gate prints the tests counted per root wherever the build keeps its cache. It read the counts from the package's own `.zig-cache`, while the count is written into the build's cache, which `--cache-dir` or `ZIG_LOCAL_CACHE_DIR` can put anywhere: a hosted job names the workspace's, so a package in a subdirectory (preflight's sample jobs) printed no counts. The gate names the file in `PREFLIGHT_COUNTS`, and the count writes there.
+- A test's environment holds none of preflight's controls (the variables named `PREFLIGHT_` and something). A build a test starts inherited the run's shard and ran its share of its own tests alone, passing with the rest unrun, and the hosted job's deadline and key with it. preflight's runner reads its controls before the first test and gives the tests an environment without them (on Windows, where the environment is the process's own, they leave it).
+- On Windows, a configured build that fails mid-protocol (a refused write, a frame too long, a timeout) is reported, where preflight waited for it forever: the build is ended before its output's readers are, since Windows waits for every pending read of a pipe the build still holds and a build waiting for its next message never ends one (the build protocol fault test, which ran into the 300 s watchdog on windows-latest).
+- Checkouts keep LF line endings again (`* text=auto eol=lf`): 0.16.0 replaced the line in `.gitattributes` with the CHANGELOG's merge rule, so a Windows checkout of the sample projects had CRLF and failed `zig fmt --check`.
+
 ## [0.18.2] - 2026-10-27
 
 ### Changed

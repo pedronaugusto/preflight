@@ -5,8 +5,13 @@ const std = @import("std");
 const aegis = @import("aegis");
 const src = @import("source.zig");
 
-/// The counts of the last run, beside the records, which the gate prints.
+/// The counts of the last run, beside the records, unless the gate names the file it prints
+/// (`summary_variable`).
 pub const summary_name = "summary.txt";
+
+/// The variable through which the gate names the file it prints the counts from: the build's
+/// cache, where the records are, can be anywhere (`--cache-dir`, `ZIG_LOCAL_CACHE_DIR`).
+pub const summary_variable = "PREFLIGHT_COUNTS";
 
 /// The runner's record, as `timings.Count` writes it.
 const Record = struct { root: []const u8, artifact: []const u8, filtered: bool, tests: usize, selected: usize, shard: []const u8 = "" };
@@ -15,8 +20,8 @@ const Record = struct { root: []const u8, artifact: []const u8, filtered: bool, 
 /// names (`2/5`, or empty for all of the tests). A missing record is a run that never
 /// reached preflight's runner, and a binary that holds no test, unfiltered, has its tests in
 /// modules it imports, which Zig never runs, or none: both fail by name. The counts go to
-/// `summary_name` either way.
-pub fn check(c: *src.Context, records: []const u8, names: []const []const u8, shard: []const u8) !void {
+/// `summary`, given, else `summary_name` beside the records, either way.
+pub fn check(c: *src.Context, records: []const u8, names: []const []const u8, shard: []const u8, summary: ?[]const u8) !void {
     const part = if (shard.len == 0) "all" else try std.mem.replaceOwned(u8, c.a, shard, "/", "of");
     try std.Io.Dir.cwd().createDirPath(c.io, records);
     var dir = try std.Io.Dir.cwd().openDir(c.io, records, .{});
@@ -42,7 +47,10 @@ pub fn check(c: *src.Context, records: []const u8, names: []const []const u8, sh
         try line.writer.print(" ({s})", .{record.artifact});
     }
     try line.writer.writeByte('\n');
-    try dir.writeFile(c.io, .{ .sub_path = summary_name, .data = line.written() });
+    if (summary) |path| {
+        if (std.Io.Dir.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(c.io, parent);
+        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = line.written() });
+    } else try dir.writeFile(c.io, .{ .sub_path = summary_name, .data = line.written() });
 }
 
 test "the counts name each root, and fail a missing record and a binary with no test" {
@@ -59,13 +67,31 @@ test "the counts name each root, and fail a missing record and a binary with no 
     const records = try tmp.dir.realPathFileAlloc(io, ".", a);
     var held: std.Io.Writer.Allocating = .init(a);
     var c: src.Context = .{ .a = a, .io = io, .held = &held };
-    try check(&c, records, &.{ "tests-macos-Debug", "only-macos-Debug" }, "");
+    try check(&c, records, &.{ "tests-macos-Debug", "only-macos-Debug" }, "", null);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqualStrings("preflight: tests per root: src/root.zig 3 (tests), src/only.zig 0 (only)\n", try tmp.dir.readFileAlloc(io, summary_name, a, .limited(1024)));
-    try check(&c, records, &.{"tests-macos-Debug"}, "2/2");
+    try check(&c, records, &.{"tests-macos-Debug"}, "2/2", null);
     try std.testing.expectEqualStrings("preflight: tests per root: src/root.zig 1 of 3 (tests)\n", try tmp.dir.readFileAlloc(io, summary_name, a, .limited(1024)));
-    try check(&c, records, &.{ "empty-macos-Debug", "gone-macos-Debug" }, "");
+    try check(&c, records, &.{ "empty-macos-Debug", "gone-macos-Debug" }, "", null);
     try std.testing.expectEqual(@as(usize, 2), c.errors);
     try std.testing.expect(std.mem.find(u8, held.written(), "src/empty.zig (empty): the binary holds no test") != null);
     try std.testing.expect(std.mem.find(u8, held.written(), "gone-macos-Debug: no count of its tests") != null);
+}
+
+test "the counts go to the file the gate names, wherever the records are" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "cache/preflight-counts");
+    try tmp.dir.writeFile(io, .{ .sub_path = "cache/preflight-counts/tests-macos-Debug-all.json", .data = "{\"root\":\"src/root.zig\",\"artifact\":\"tests\",\"filtered\":false,\"tests\":3,\"selected\":3}" });
+    const records = try tmp.dir.realPathFileAlloc(io, "cache/preflight-counts", a);
+    const summary = try std.Io.Dir.path.join(a, &.{ try tmp.dir.realPathFileAlloc(io, ".", a), "package", ".zig-cache", "preflight-counts", summary_name });
+    var held: std.Io.Writer.Allocating = .init(a);
+    var c: src.Context = .{ .a = a, .io = io, .held = &held };
+    try check(&c, records, &.{"tests-macos-Debug"}, "", summary);
+    try std.testing.expectEqualStrings("preflight: tests per root: src/root.zig 3 (tests)\n", try std.Io.Dir.cwd().readFileAlloc(io, summary, a, .limited(1024)));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "cache/preflight-counts/" ++ summary_name, .{}));
 }

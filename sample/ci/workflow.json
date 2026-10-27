@@ -7,7 +7,8 @@
   "targets": ["x86_64-linux-gnu", "aarch64-linux-gnu", "x86_64-linux-musl", "x86_64-windows-gnu", "aarch64-windows-gnu", "x86_64-macos", "aarch64-macos"],
   "hardened": true,
   "jobs": [
-    {"name": "preflight's own suite", "step": "verify", "directory": ".", "args": ["-Dci-bench-smoke=false"], "tiers": ["fast", "merge", "release"], "setup": false},
+    {"name": "preflight's own suite", "step": "verify", "directory": ".", "args": ["-Dci-bench-smoke=false"], "tiers": ["fast", "merge", "release"], "setup": false, "timeout": 30},
+    {"name": "preflight's own suite on Windows", "step": "verify", "directory": ".", "os": ["windows-latest"], "args": ["-Dci-bench-smoke=false"], "tiers": ["release"], "setup": false, "timeout": 40, "shards": 2},
     {"name": "a project with no configuration", "step": "ci", "directory": "sample/zero", "os": ["ubuntu-latest", "macos-latest", "windows-latest"]},
     {"name": "a project developed with bay", "step": "ci", "directory": "sample/bay", "os": ["ubuntu-latest", "macos-latest", "windows-latest"]}
   ]

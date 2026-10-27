@@ -103,11 +103,14 @@ pub fn developmentRoot(c: src.Context, bay: []const u8) ![]const u8 {
 
 fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
-    defer child.kill(c.io);
     var streams: Io.File.MultiReader.Buffer(2) = undefined;
     var multi: Io.File.MultiReader = undefined;
     multi.init(c.a, c.io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer multi.deinit();
+    // The child ends before its readers do: on Windows, deinit waits for every pending read,
+    // and a build left waiting for its next message on stdin never ends one. Killing it
+    // closes the pipes, which ends them; it is a no-op once `wait` has reaped it.
+    defer child.kill(c.io);
     var protocol: Io.Writer.Allocating = .init(c.a);
     var frame_count: usize = 0;
     while (true) {
@@ -262,7 +265,7 @@ pub fn write(a: std.mem.Allocator, snapshot: Snapshot, writer: *Io.Writer) !void
         try writer.writeAll(",\"flags2\":");
         try std.json.Stringify.value(module.flags2, .{}, writer);
         try writer.writeAll(",\"source\":");
-        try writePath(c, module.root_source_file, writer);
+        try writePath(a, c, module.root_source_file, writer);
         try writer.writeAll(",\"target\":");
         if (module.resolved_target.get(c)) |target| {
             const result = target.result.get(c);
@@ -300,7 +303,7 @@ pub fn write(a: std.mem.Allocator, snapshot: Snapshot, writer: *Io.Writer) !void
         if (!first) try writer.writeByte(',');
         first = false;
         try writer.print("{{\"step\":{d},\"module\":{d},\"source\":", .{ i, @backingInt(artifact.root_module) });
-        try writePath(c, artifact.root_module.get(c).root_source_file, writer);
+        try writePath(a, c, artifact.root_module.get(c).root_source_file, writer);
         try writer.writeByte('}');
     }
     try writer.writeAll("],\"packages\":[");
@@ -315,12 +318,12 @@ pub fn write(a: std.mem.Allocator, snapshot: Snapshot, writer: *Io.Writer) !void
     }
     try writer.writeAll("]}\n");
 }
-fn writePath(c: *const C, index: C.LazyPath.OptionalIndex, writer: *Io.Writer) !void {
+fn writePath(a: std.mem.Allocator, c: *const C, index: C.LazyPath.OptionalIndex, writer: *Io.Writer) !void {
     const value = (index.unwrap() orelse return writer.writeAll("null")).get(c);
     switch (value) {
-        .source_path => |source| try std.json.Stringify.value(.{ .kind = "source", .owner = @backingInt(source.owner), .path = source.sub_path.slice(c) }, .{}, writer),
-        .relative => |relative| try std.json.Stringify.value(.{ .kind = "relative", .base = relative.flags.base, .path = relative.sub_path.slice(c) }, .{}, writer),
-        .generated => |generated| try std.json.Stringify.value(.{ .kind = "generated", .id = @backingInt(generated.index), .up = generated.flags.up, .path = generated.sub_path.slice(c) }, .{}, writer),
+        .source_path => |source| try std.json.Stringify.value(.{ .kind = "source", .owner = @backingInt(source.owner), .path = try named(a, source.sub_path.slice(c)) }, .{}, writer),
+        .relative => |relative| try std.json.Stringify.value(.{ .kind = "relative", .base = relative.flags.base, .path = try named(a, relative.sub_path.slice(c)) }, .{}, writer),
+        .generated => |generated| try std.json.Stringify.value(.{ .kind = "generated", .id = @backingInt(generated.index), .up = generated.flags.up, .path = try named(a, generated.sub_path.slice(c)) }, .{}, writer),
     }
 }
 
@@ -387,12 +390,12 @@ fn rootPath(a: std.mem.Allocator, c: *const C, checked: C.Package.Index, index: 
     const path = (index.unwrap() orelse return null).get(c);
     switch (path) {
         .source_path => |source| {
-            if (source.owner == checked) return try a.dupe(u8, source.sub_path.slice(c));
-            const package = source.owner.get(c) orelse return try a.dupe(u8, source.sub_path.slice(c));
-            const own = checked.get(c) orelse return try Io.Dir.path.join(a, &.{ package.root_path.slice(c), source.sub_path.slice(c) });
+            if (source.owner == checked) return try named(a, source.sub_path.slice(c));
+            const package = source.owner.get(c) orelse return try named(a, source.sub_path.slice(c));
+            const own = checked.get(c) orelse return try named(a, try Io.Dir.path.join(a, &.{ package.root_path.slice(c), source.sub_path.slice(c) }));
             return try packagePath(a, own.root_path.slice(c), package.root_path.slice(c), source.sub_path.slice(c));
         },
-        .relative => |relative| return if (relative.flags.base == .cwd) try a.dupe(u8, relative.sub_path.slice(c)) else null,
+        .relative => |relative| return if (relative.flags.base == .cwd) try named(a, relative.sub_path.slice(c)) else null,
         .generated => return null,
     }
 }
@@ -404,8 +407,17 @@ fn rootPath(a: std.mem.Allocator, c: *const C, checked: C.Package.Index, index: 
 fn packagePath(a: std.mem.Allocator, checked_root: []const u8, root: []const u8, sub_path: []const u8) ![]const u8 {
     const own = try Io.Dir.path.resolveAlloc(a, &.{checked_root});
     const other = try Io.Dir.path.resolveAlloc(a, &.{root});
-    if (std.mem.eql(u8, own, other)) return try a.dupe(u8, sub_path);
-    return try Io.Dir.path.join(a, &.{ root, sub_path });
+    if (std.mem.eql(u8, own, other)) return try named(a, sub_path);
+    return try named(a, try Io.Dir.path.join(a, &.{ root, sub_path }));
+}
+
+/// A path of the configured build as preflight names files: with `/` on every host, as lint
+/// names them (`glint.assembly.normalize`). Zig's build keeps a module's paths with `\` on
+/// Windows (`std.Build.Graph.dupePath`), so a Windows configuration hands them over so.
+fn named(a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const name = try a.dupe(u8, path);
+    if (builtin.target.os.tag == .windows) std.mem.replaceScalar(u8, name, '\\', '/');
+    return name;
 }
 
 test "a module of the checked package reached through a second package is named as the repository's" {
@@ -517,15 +529,15 @@ fn testRoot(a: std.mem.Allocator, snapshot: Snapshot, compiled: C.Step.Compile) 
     if (!snapshot.checks(module.owner)) return null;
     const source = (module.root_source_file.unwrap() orelse return error.MissingConfiguredTestRoot).get(c);
     return switch (source) {
-        .source_path => |p| if (snapshot.instance(p.owner)) p.sub_path.slice(c) else null,
+        .source_path => |p| if (snapshot.instance(p.owner)) try named(a, p.sub_path.slice(c)) else null,
         .generated => |generated| try generatedName(a, c, generated),
-        .relative => |p| if (p.flags.base == .cwd) p.sub_path.slice(c) else error.UnsupportedTestRootBase,
+        .relative => |p| if (p.flags.base == .cwd) try named(a, p.sub_path.slice(c)) else error.UnsupportedTestRootBase,
     };
 }
 
 fn generatedName(a: std.mem.Allocator, c: *const C, generated: C.LazyPath.Generated) ![]const u8 {
     if (generated.flags.up != 0) return error.UnsupportedGeneratedTestRoot;
-    return a.print(".preflight-generated/{d}/{s}", .{ @backingInt(generated.index), generated.sub_path.slice(c) });
+    return named(a, try a.print(".preflight-generated/{d}/{s}", .{ @backingInt(generated.index), generated.sub_path.slice(c) }));
 }
 
 /// Embedded WriteFile content is already a compiler fact. Dynamic producer
@@ -571,14 +583,19 @@ test "build protocol chunked transport cancellation child status and output faul
     try std.testing.expectEqualStrings("path", try notification(a, &chunked.interface));
     try std.testing.expectError(error.BuildProtocolChildSignal, successful(.{ .signal = .TERM }));
     try std.testing.expectError(error.BuildProtocolChildFailed, successful(.{ .exited = 3 }));
+    // A build of its own that configures nothing: the repository's build would be configured
+    // anew by a plain `zig build`, minutes on a cold host, for faults that need only a build.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = "pub fn build(_: *@import(\"std\").Build) void {}\n" });
     const FaultIo = @import("shakedown").FaultIo;
     const faults = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .processSpawn, .n = 1 } }, .fault = .{ .fail = error.Canceled } }} });
     defer faults.deinit();
-    try std.testing.expectError(error.Canceled, capture(.{ .a = a, .io = faults.io() }, &.{ "zig", "build", "--listen=-" }));
+    try std.testing.expectError(error.Canceled, capture(.{ .a = a, .io = faults.io(), .dir = tmp.dir }, &.{ "zig", "build", "--listen=-" }));
     try std.testing.expectEqual(@as(u64, 1), faults.count(.processSpawn));
     const write_fault = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .file_write_streaming, .n = 1 } }, .fault = .{ .fail = error.InputOutput } }} });
     defer write_fault.deinit();
-    try std.testing.expectError(error.WriteFailed, capture(.{ .a = a, .io = write_fault.io() }, &.{ "zig", "build", "--listen=-" }));
+    try std.testing.expectError(error.WriteFailed, capture(.{ .a = a, .io = write_fault.io(), .dir = tmp.dir }, &.{ "zig", "build", "--listen=-" }));
     var writer = Io.Writer.failing;
     const fixture = @import("facts_test.zig");
     const seed = try fixture.seed(a);

@@ -146,8 +146,7 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     try tmp.dir.writeFile(io, .{ .sub_path = "attempt.zig", .data =
         \\const std = @import("std");
         \\pub fn main(init: std.process.Init) !void {
-        \\    const args = try init.minimal.args.toSlice(init.gpa);
-        \\    defer init.gpa.free(args);
+        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
         \\    const file = try std.Io.Dir.cwd().createFile(init.io, "attempts", .{ .truncate = false, .read = true });
         \\    defer file.close(init.io);
         \\    var buffer: [32]u8 = undefined;

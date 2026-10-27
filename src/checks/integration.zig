@@ -552,14 +552,14 @@ test "check compiles the tests for every target of the fast tier, where a test b
         \\    return 1;
         \\}
         \\test "id" {
-        \\    if (builtin.os.tag == .windows) _ = undefined_on_windows;
+        \\    if (builtin.os.tag == .windows) @compileError("a body only Windows compiles");
         \\    _ = id();
         \\}
         \\
     });
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(result));
-    try std.testing.expect(std.mem.find(u8, result.stderr, "use of undeclared identifier 'undefined_on_windows'") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "a body only Windows compiles") != null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "x86_64-windows") != null);
 }
 

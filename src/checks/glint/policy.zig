@@ -75,7 +75,9 @@ const Entry = struct { rule: glint.Rule, weight: Weight };
 /// reported until a fresh sample of each shows its noise near zero (designs/aegis.md §7). The
 /// function reading budget (P003) is a house style, reported until a package gates it in its
 /// `glint.rules`. A discarded error (Z026, an empty `catch` with no reason written at it) is a
-/// result nobody read, and gates: a best-effort cleanup is a fine reason, silence is not. The
+/// result nobody read, and gates: a best-effort cleanup is a fine reason, silence is not. Two
+/// operators Zig 0.18 refuses to order without parentheses (Z034) gate, so a package fixes them
+/// while 0.17 still reads them, before they stop its build. The
 /// Zig style rules are reported until a package is clean under them and gates them itself. A
 /// private declaration its file never names (D001) is dead code or a use gone missing, and is
 /// reported. The readability report (Z024) stays off, as the fork's selection kept it.
@@ -86,6 +88,7 @@ const defaults = [_]Entry{
     .{ .rule = .P003, .weight = .report },
     .{ .rule = .P005, .weight = .finding },
     .{ .rule = .Z026, .weight = .gate },
+    .{ .rule = .Z034, .weight = .gate },
     .{ .rule = .Z012, .weight = .report },
     .{ .rule = .Z016, .weight = .report },
     .{ .rule = .Z001, .weight = .report },
@@ -586,7 +589,7 @@ test "the default policy gates correctness, weighs the danger rules as findings,
     const policy = (try parse(&c, try parsed(c.a, "{}"))).?;
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expect(policy.base.strict_suppressions);
-    for ([_]glint.Rule{ .Z003, .Z013, .Z026 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
+    for ([_]glint.Rule{ .Z003, .Z013, .Z026, .Z034 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
     for ([_]glint.Rule{ .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032, .D001 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
     try std.testing.expectEqual(.off, policy.base.level(.Z024));
     try std.testing.expect(policy.base.metrics);

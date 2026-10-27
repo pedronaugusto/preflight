@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Pins aegis 0.2.1, the 0.2 line: `SecretBytes` holds no allocator.
 - glint reads a package's ranges at the pointer widths of the targets `ci/workflow.json` names and of the machine the tests run on (glint's `pointer_widths`): a `u32` count times a small constant widened to `usize` is A010's finding only where a target has a 32-bit `usize` (cloak's `wasm32-freestanding`), never for a package whose targets are all 64-bit (relic). A package that names no targets is read at both widths, as before.
 
 ### Fixed

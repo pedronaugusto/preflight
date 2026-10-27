@@ -123,7 +123,7 @@ test "format checks owned sources and ignores extracted dependency packages" {
     // A build of its own under a checked directory, such as a conformance
     // build with a manifest of its own, keeps its packages and outputs beside
     // it: neither is the repository's source, to format or to read for casts.
-    const foreign = "pub fn address(ptr: *const u8) usize {\nreturn @intFromPtr(ptr);\n}\n";
+    const foreign = "pub fn at(address: usize) *const u8 {\nreturn @ptrFromInt(address);\n}\n";
     for ([_][]const u8{ "conformance/zig-pkg/third-party", "conformance/zig-out/generated", "conformance/.zig-cache/o" }) |path| {
         try tmp.dir.createDirPath(io, path);
         try tmp.dir.writeFile(io, .{ .sub_path = try std.Io.Dir.path.join(a, &.{ path, "value.zig" }), .data = foreign });
@@ -137,12 +137,12 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try std.testing.expect(std.mem.find(u8, invalid.stderr, "non-conforming formatting") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
     try tmp.dir.createDir(io, "examples", .default_dir);
-    try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn at(address: usize) *const u8 {\n    return @ptrFromInt(address);\n}\n" });
     // An example ships nowhere: the danger rules hold the sources.
     const example = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(example.term == .exited and example.term.exited == 0);
     // In the sources a pointer conversion is a danger site (A019): without the aegis escape it fails the gate.
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "pub fn address(ptr: *const u8) usize {\n    return @intFromPtr(ptr);\n}\ntest {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "pub fn at(address: usize) *const u8 {\n    return @ptrFromInt(address);\n}\ntest {}\n" });
     const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, cast.stderr, "A019: src/sample.zig:2:") != null);

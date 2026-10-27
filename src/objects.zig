@@ -202,6 +202,11 @@ const Projection = struct {
                 else => include,
             }) catch @panic("OOM");
         }
+        // A COFF compile emits one object, into which Zig cannot merge the objects of a module's
+        // C and assembly sources ("coff does not support linking multiple objects into one"):
+        // there each source compiles to an object of its own, with the module's flags, include
+        // paths and macros (cloak's `.S` files on x86_64-windows-gnu).
+        const apart = coff(copy) and sources(original) + @intFromBool(original.root_source_file != null) > 1;
         for (original.link_objects.items) |link| {
             const projected: std.Build.Module.LinkObject = switch (link) {
                 .other_step => |other| {
@@ -209,10 +214,55 @@ const Projection = struct {
                     continue;
                 },
                 .system_lib => continue,
+                .c_source_file, .c_source_files, .assembly_file, .win32_resource_file => if (apart) {
+                    p.alone(copy, link);
+                    continue;
+                } else link,
                 else => link,
             };
             copy.link_objects.append(p.b.allocator, projected) catch @panic("OOM");
         }
         return copy;
+    }
+
+    fn coff(owner: *const std.Build.Module) bool {
+        const target = owner.resolved_target orelse return false;
+        return target.result.ofmt == .coff;
+    }
+
+    /// The C, assembly and resource sources a module compiles beside its Zig root.
+    fn sources(owner: *const std.Build.Module) usize {
+        var count: usize = 0;
+        for (owner.link_objects.items) |link| count += switch (link) {
+            .c_source_files => |set| set.files.len,
+            .c_source_file, .assembly_file, .win32_resource_file => 1,
+            else => 0,
+        };
+        return count;
+    }
+
+    /// `link`, a source of `owner`, compiled to an object of its own: a set of C sources one
+    /// object per file.
+    fn alone(p: *Projection, owner: *const std.Build.Module, link: std.Build.Module.LinkObject) void {
+        if (link == .c_source_files and link.c_source_files.files.len > 1) {
+            const set = link.c_source_files;
+            for (0..set.files.len) |index| {
+                const one = p.b.allocator.create(std.Build.Module.CSourceFiles) catch @panic("OOM");
+                one.* = set.*;
+                one.files = set.files[index..][0..1];
+                p.alone(owner, .{ .c_source_files = one });
+            }
+            return;
+        }
+        const solo = p.b.allocator.create(std.Build.Module) catch @panic("OOM");
+        solo.* = owner.*;
+        solo.root_source_file = null;
+        solo.import_table = .empty;
+        solo.cached_graph = .{ .modules = &.{}, .names = &.{} };
+        solo.link_objects = .empty;
+        solo.link_objects.append(p.b.allocator, link) catch @panic("OOM");
+        const object = p.b.addObject(.{ .name = "ci-source", .root_module = solo });
+        _ = object.getEmittedBin();
+        p.objects.dependOn(&object.step);
     }
 };

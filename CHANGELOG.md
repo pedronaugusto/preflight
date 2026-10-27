@@ -17,6 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `ci-check` and `ci-check-bench` compile a module's C, assembly and resource sources for a COFF target, each to an object of its own with the module's flags, include paths and macros. Each artifact compiled to one object, and on COFF Zig cannot merge a module's source objects into it ("coff does not support linking multiple objects into one"): a package with preprocessed `.S` files beside its Zig root failed every object on x86_64-windows-gnu (cloak's s2n-bignum routines).
 - Two expressions Zig 0.18 refuses as ambiguous operator precedence are parenthesized as Zig 0.17 reads them: `cross_seconds`'s check (`(number(budget) orelse 0) > 0`) and the runner's environment block length.
 
 ## [0.18.3] - 2026-10-27

@@ -505,6 +505,38 @@ test "the compile check reaches the code a consumer's libc build selects, where 
     try std.testing.expect(std.mem.find(u8, result.stderr, "-libc") != null);
 }
 
+test "the compile check compiles a module's assembly sources for COFF, each to an object of its own" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // cloak's shape: preprocessed `.S` files beside a Zig root, each including a header from an
+    // include path and reading a -D flag; the tests take the module as their root, and an
+    // installed program imports it.
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
+    const sourced = try std.mem.replaceOwned(u8, a, build, "    const tests = b.addTest(.{ .root_module = module });",
+        \\    module.addIncludePath(b.path("src/asm"));
+        \\    const abi = if (target.result.os.tag == .windows) "-DWINDOWS_ABI=1" else "-DWINDOWS_ABI=0";
+        \\    for ([_][]const u8{ "src/asm/one.S", "src/asm/two.S" }) |file| module.addCSourceFile(.{ .file = b.path(file), .flags = &.{abi}, .language = .assembly_with_preprocessor });
+        \\    b.installArtifact(b.addExecutable(.{ .name = "user", .root_module = b.createModule(.{ .root_source_file = b.path("src/user.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "sample", .module = module }} }) }));
+        \\    const tests = b.addTest(.{ .root_module = module });
+    );
+    try std.testing.expect(!std.mem.eql(u8, build, sourced));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = sourced });
+    try tmp.dir.createDirPath(io, "src/asm");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/asm/names.h", .data = "#define ONE sample_one\n#define TWO sample_two\n" });
+    for ([_][2][]const u8{ .{ "src/asm/one.S", "ONE" }, .{ "src/asm/two.S", "TWO" } }) |source| {
+        try tmp.dir.writeFile(io, .{ .sub_path = source[0], .data = try a.print("#include \"names.h\"\n    .data\n    .globl {s}\n{s}:\n    .long WINDOWS_ABI\n", .{ source[1], source[1] }) });
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/user.zig", .data = "const sample = @import(\"sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 test "check compiles the tests for every target of the fast tier, where a test behind another system's branch fails" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -14,6 +14,7 @@ pub const Cli = struct {
         lint: Lint,
         surface: Surface,
         gate: Gate,
+        targets: Targets,
         setup,
         prepare,
         fetch,
@@ -144,6 +145,15 @@ const Gate = struct {
     pub const spec: ensign.Spec(@This()) = .{
         .about = "What a release needs, then the release tier's jobs this machine runs, each as the hosted job runs it; what it cannot run is named",
         .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module },
+    };
+};
+
+const Targets = struct {
+    zig_exe: ?[]const u8 = null,
+    config: []const u8 = "ci/workflow.json",
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Compile the package for every target the fast tier's cross-compile jobs name, as they do, without linking or running; zig build check runs it",
+        .options = .{ .zig_exe = zig_exe, .config = workflow_config },
     };
 };
 
@@ -297,6 +307,8 @@ test "gate, lint and surface take the build's modules before what the user passe
     const gate = (try parsed(a, &.{ "gate", "--zig-exe", "/z/zig", "--module", "build.zig=build.zig", "--module", "pkg=src/root.zig", "--working-directory", "sample" })).command.gate;
     try std.testing.expectEqual(2, gate.module.len);
     try std.testing.expectEqualStrings("sample", gate.working_directory.?);
+    // `check`'s compile of the other targets, as the build runs it.
+    try std.testing.expectEqualStrings("ci/workflow.json", (try parsed(a, &.{ "targets", "--zig-exe", "/z/zig" })).command.targets.config);
     try std.testing.expectEqual(1, (try parsed(a, &.{ "lint", "--zig-exe", "/z/zig", "--module", "build.zig=build.zig" })).command.lint.module.len);
     try std.testing.expectEqualStrings("v0.1.0", (try parsed(a, &.{ "surface", "--module", "build.zig=build.zig", "--since", "v0.1.0" })).command.surface.since.?);
     // Releasing is bay's: preflight only verifies.

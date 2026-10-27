@@ -74,6 +74,14 @@ project, and preflight's own gate runs it on every host.
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
 
+`addCi` also gives `check` the fast tier's cross compiles: `zig build check` (`bay check`)
+runs `ci-check` for every target the fast tier names, as its hosted jobs do, so a test
+behind another system's branch, a Linux-only body on a Mac, fails on the machine at hand
+rather than first in the hosted run. A build that takes `-Dtarget` gets them: one that
+defines `check` before `addCi` keeps its own, with the targets added, and one without gets
+preflight's. A planned job leaves them to the
+plan's own cross-compile jobs.
+
 `zig build lint` runs source checks, among them that a function of `build.zig` that calls `lazyImport` calls `@setEvalBranchQuota` first: std compares every package of the tree there at comptime, and a large tree passes the default 1000 branches. `zig build ci` checks sources before running
 tests. A watchdog in the shared test runner fails a test that runs longer than
 120 s, its Io teardown included, by name, phase and seed, in local runs too. A

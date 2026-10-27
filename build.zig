@@ -103,6 +103,11 @@ pub fn dev(b: *std.Build, _: type) void {
         .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "aegis", .module = aegis } },
     }) });
     b.step("profile-tests", "Native protocol fuzzer and concurrent tests").dependOn(&b.addRunArtifact(profile).step);
+    // Before addCi, which adds the other targets' compile to it.
+    const check = b.step("check", "Compile the shared checks and runner without running tests");
+    check.dependOn(&tests.step);
+    check.dependOn(&order.step);
+    check.dependOn(&executable.step);
     // preflight gates its own sources with the checks it ships: the preflight
     // the gate finds among this build's dependencies is this package.
     ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
@@ -111,10 +116,6 @@ pub fn dev(b: *std.Build, _: type) void {
         .target = target,
         .optimize = .debug,
     } });
-    const check = b.step("check", "Compile the shared checks and runner without running tests");
-    check.dependOn(&tests.step);
-    check.dependOn(&order.step);
-    check.dependOn(&executable.step);
     const verify = b.step("verify", "Check format, sources, checker regressions and the hosted runner");
     verify.dependOn(&b.top_level_steps.get("ci").?.step);
     verify.dependOn(&b.addFmt(.{ .paths = package.pathList(&.{"."}), .check = true }).step);

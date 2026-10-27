@@ -14,24 +14,26 @@ const std = @import("std");
 /// ReleaseFast takes longer than all the rest: the fast tier leaves it to the
 /// merge tier, since a benchmark's Debug object already holds what a target
 /// accepts of its source.
-pub const Steps = struct { objects: *std.Build.Step, bench_objects: *std.Build.Step, links: *std.Build.Step, bench: ?*std.Build.Step };
+/// `targets` is `check`'s compile of the other targets, which runs builds of its own: no
+/// projection reaches into it. `check` is the development build's own, null where preflight's is the step.
+pub const Steps = struct { objects: *std.Build.Step, bench_objects: *std.Build.Step, links: *std.Build.Step, bench: ?*std.Build.Step, targets: ?*std.Build.Step, check: ?*std.Build.Step };
 
 pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, sdk: ?[]const u8, steps: Steps) void {
     const objects = steps.objects;
     const bench_objects = steps.bench_objects;
     const links = steps.links;
-    var projection: Projection = .{ .b = b, .objects = objects, .sdk = sdk };
+    var projection: Projection = .{ .b = b, .objects = objects, .sdk = sdk, .skip = steps.targets };
     projection.collect(tests, links);
     projection.collect(package.getInstallStep(), links);
-    // `check` is the development build's where `addCheck` added it there, else the package's own.
-    if (b.top_level_steps.get("check") orelse package.top_level_steps.get("check")) |check| projection.collect(&check.step, links);
+    // `check` is the development build's own where it has one, else the package's.
+    if (steps.check orelse if (package.top_level_steps.get("check")) |own| &own.step else null) |check| projection.collect(check, links);
     if (steps.bench) |bench| {
-        var debug: Projection = .{ .b = b, .objects = objects, .sdk = null, .debug = true };
+        var debug: Projection = .{ .b = b, .objects = objects, .sdk = null, .skip = steps.targets, .debug = true };
         debug.collect(bench, links);
-        var release: Projection = .{ .b = b, .objects = bench_objects, .sdk = sdk };
+        var release: Projection = .{ .b = b, .objects = bench_objects, .sdk = sdk, .skip = steps.targets };
         release.collect(bench, links);
     }
-    var libc: Projection = .{ .b = b, .objects = objects, .sdk = null, .libc = true };
+    var libc: Projection = .{ .b = b, .objects = objects, .sdk = null, .skip = steps.targets, .libc = true };
     libc.collect(tests, null);
     for (package.modules.values()) |module| {
         const object = b.addObject(.{ .name = "ci-root", .root_module = projection.module(module) });
@@ -48,6 +50,8 @@ const Projection = struct {
     b: *std.Build,
     objects: *std.Build.Step,
     sdk: ?[]const u8,
+    /// `check`'s compile of the other targets: builds of its own, never projected.
+    skip: ?*std.Build.Step,
     /// Compile every module in Debug, whatever the graph asks.
     debug: bool = false,
     /// Link libc in every module: the tests alone, each where Zig ships the
@@ -62,6 +66,7 @@ const Projection = struct {
     /// `links`: where the compiles found go to be linked, null for a
     /// projection that only compiles.
     fn collect(p: *Projection, step: *std.Build.Step, links: ?*std.Build.Step) void {
+        if (step == p.skip) return;
         const entry = p.steps.getOrPut(p.b.allocator, step) catch @panic("OOM");
         if (entry.found_existing) return;
         if (step.cast(std.Build.Step.Compile)) |compiled| {

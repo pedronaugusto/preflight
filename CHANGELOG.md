@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `check` compiles the package for every target the fast tier names, as its cross-compile jobs do (`ci-check` per target, without linking or running), so a test behind another system's branch fails on the machine at hand: `bay check` built the tests for that machine alone, and a Linux-only test body of reactor 0.8.6 was first compiled in the hosted run. A build that takes `-Dtarget` gets them: one that defines `check` before `addCi` keeps its own, with the targets added, and one without gets preflight's. A planned job (`PREFLIGHT_PLANNED`, which `run` and `gate` set) leaves them to the plan's cross-compile jobs.
+
 ### Changed
 
 - The default policy gates Z034 (glint 0.7.3): two operators Zig 0.18 refuses to order without parentheses. glint's fix parenthesizes each as Zig 0.17 reads it.

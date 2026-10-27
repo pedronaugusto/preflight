@@ -23,6 +23,7 @@ pub fn main(init: std.process.Init) !void {
         .generate => |args| try generateCommand(&c, args),
         .surface => |args| try surfaceCommand(&c, args),
         .gate => |args| try gateCommand(&c, init.environ_map, args),
+        .targets => |args| try targetsCommand(c, init.environ_map, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
         .executable => |args| for (args.paths) |path| try executable(c, path),
         .counts => |args| try checks.counts.check(&c, args.records, args.expect, environment(init.environ_map, "PREFLIGHT_SHARD") orelse "", environment(init.environ_map, checks.counts.summary_variable)),
@@ -452,6 +453,10 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
 
 fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
     var c = context;
+    // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
+    // (`targets`). A test's environment holds none of preflight's controls, this one either.
+    try env.put("PREFLIGHT_PLANNED", "true");
+    c.environ_map = env;
     // The test runners end a test that runs when the job's time is up, named,
     // before the host cancels the job and says nothing of what ran.
     if (try watchdog.jobDeadline(env)) |deadline| {
@@ -565,13 +570,7 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
             if (!std.mem.eql(u8, try checks.matrix.targetName(target), name)) continue;
             found = true;
             covered += 1;
-            for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
-                if (index == 1 and !bench) break;
-                const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step);
-                const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
-                defer timer.end(c, log);
-                try checks.command.execute(c, argv);
-            }
+            try compileTarget(c, log, config, target, bench);
         }
         if (!found) {
             c.report("preflight: {s} is no target of ci/workflow.json; regenerate the workflow\n", .{name});
@@ -579,4 +578,30 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
         }
     }
     if (covered == 0) return error.MissingCrossTargets;
+}
+
+/// `zig build check`'s other targets: what the fast tier's cross-compile jobs compile, for
+/// every target they name, so that a test behind a target's branch (a Linux-only body on a
+/// Mac) fails on the machine at hand rather than first in the hosted run. A planned job
+/// (`PREFLIGHT_PLANNED`, hosted or `gate`'s) leaves it to the plan's own cross-compile jobs.
+fn targetsCommand(context: src.Context, environ: *std.process.Environ.Map, args: @FieldType(Command, "targets")) !void {
+    var c = context;
+    if (environ.get("PREFLIGHT_PLANNED") != null) return;
+    if (args.zig_exe) |zig| c.zig = zig;
+    const config = try c.options(args.config);
+    const log = try checks.phases.Log.init(c.a, environ);
+    for (try checks.matrix.fastTargets(c.a, config)) |target| try compileTarget(c, log, config, target, false);
+}
+
+/// One target's objects in Debug, and with `bench` its ReleaseFast benchmarks in a second
+/// build, each timed.
+fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, target: src.Value, bench: bool) !void {
+    const name = try checks.matrix.targetName(target);
+    for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
+        if (index == 1 and !bench) break;
+        const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step);
+        const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
+        defer timer.end(c, log);
+        try checks.command.execute(c, argv);
+    }
 }

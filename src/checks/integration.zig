@@ -505,6 +505,32 @@ test "the compile check reaches the code a consumer's libc build selects, where 
     try std.testing.expect(std.mem.find(u8, result.stderr, "-libc") != null);
 }
 
+test "check compiles the tests for every target of the fast tier, where a test behind another system's branch fails" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // Only Windows compiles the broken body, as a Linux-only test body of reactor 0.8.6 was
+    // compiled nowhere on a Mac until the hosted run.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data =
+        \\const builtin = @import("builtin");
+        \\pub fn id() u32 {
+        \\    return 1;
+        \\}
+        \\test "id" {
+        \\    if (builtin.os.tag == .windows) _ = undefined_on_windows;
+        \\    _ = id();
+        \\}
+        \\
+    });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "use of undeclared identifier 'undefined_on_windows'") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "x86_64-windows") != null);
+}
+
 /// Test names recorded in timing files whose names end with `suffix`.
 fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]const []const u8 {
     var timings = try dir.openDir(std.testing.io, ".zig-cache/preflight-timings", .{ .iterate = true });

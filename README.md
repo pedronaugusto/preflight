@@ -678,8 +678,11 @@ run the whole gate, documentation or not: what a landing passes does not depend 
 path filter.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
-jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, and `riscv64` for the
-riscv64 job on its emulated kernel, which runs a suite several times as long). Every job compiles the whole suite once, or downloads it with
+jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, `riscv64` for the
+riscv64 job on its emulated kernel, which runs a suite several times as long, and `tsan` for
+the hardened ThreadSanitizer run). The hardened runs take `test_job_timeout`; `hardened` splits
+as the Linux jobs do, `hardened-tsan` by `tsan` (else as they do), and the fuzz campaign is one
+job. Every job compiles the whole suite once, or downloads it with
 `compile_once`, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`, a column per system, architecture and mode, and one more for a

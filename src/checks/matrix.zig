@@ -10,6 +10,9 @@ pub const arm_hosts = [_][]const u8{ "ubuntu-24.04-arm", "windows-11-arm" };
 const arm_host_names = [_][]const u8{ "linux_arm", "windows_arm" };
 /// The `shards` key of the riscv64 job on its emulated kernel.
 const emulated_host_name = "riscv64";
+/// The `shards` key of the hardened ThreadSanitizer run, several times slower than the suite;
+/// the hardened run without it takes the Linux count.
+const tsan_name = "tsan";
 /// Every runner a job may name.
 const every_host = hosts ++ arm_hosts;
 /// Named cases with weights gave way to per-test shards that the test runner
@@ -72,7 +75,7 @@ const workflow_options = [_][]const u8{
 fn shardCount(value: src.Value) !usize {
     if (value == .null) return 1;
     if (value != .integer or value.integer < 1) return error.InvalidShardCount;
-    return @intCast(value.integer);
+    return std.math.cast(usize, value.integer) orelse error.InvalidShardCount;
 }
 
 fn shardName(a: std.mem.Allocator, index: usize, count: usize) ![]const u8 {
@@ -124,11 +127,25 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     const hardened = src.get(config, "hardened");
     if (hardened != .null and !(hardened == .bool and hardened.bool)) return error.InvalidHardenedProfile;
     if (tier == .release) {
-        for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }) |step| {
-            var job: Job = .{ .os = hosts[0], .name = step, .step = step, .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}), .setup = true };
+        // Each runs the suite as the Linux test jobs do, so each has their time limit; the suite and its
+        // ThreadSanitizer run split into shards as those jobs do, and a fuzz campaign is one job.
+        const shards = src.get(config, "shards");
+        const linux = try shardCount(src.get(shards, host_names[0]));
+        const tsan = src.get(shards, tsan_name);
+        for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, [_]usize{ linux, 1, if (tsan == .null) linux else try shardCount(tsan) }) |step, count| for (0..count) |i| {
+            const shard = try shardName(a, i, count);
+            var job: Job = .{
+                .os = hosts[0],
+                .name = try a.print("{s}{s}{s}", .{ step, if (count > 1) " shard " else "", shard }),
+                .step = step,
+                .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+                .shard = shard,
+                .setup = true,
+                .job_timeout = try minutes(config, "test_job_timeout"),
+            };
             job.cache_key = try key(a, job);
             try jobs.append(a, job);
-        }
+        };
     }
     try declaredJobs(a, config, tier, &jobs);
     return jobs.toOwnedSlice(a);
@@ -473,7 +490,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     const limit = @max(number(budget) orelse default_cross_seconds, std.mem.max(f64, cost));
     const assignment = try a.alloc(usize, targets.len);
     const load = try a.alloc(f64, targets.len);
-    var count: usize = if (wanted == .null) 1 else @min(@as(usize, @intCast(wanted.integer)), targets.len);
+    var count: usize = if (wanted == .null) 1 else @min(std.math.cast(usize, wanted.integer) orelse return error.InvalidCrossJobs, targets.len);
     while (true) : (count += 1) {
         @memset(load[0..count], 0);
         var longest: f64 = 0;
@@ -550,7 +567,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
-    for (host_names ++ arm_host_names ++ .{emulated_host_name}) |host| _ = try shardCount(src.get(shards, host));
+    for (host_names ++ arm_host_names ++ .{ emulated_host_name, tsan_name }) |host| _ = try shardCount(src.get(shards, host));
     for ([_][]const u8{ "compile_once", "windows_git_latest", "attest" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
@@ -1060,6 +1077,31 @@ test "hardened planner schedules native execution with no portable sanitizer rep
         try std.testing.expectEqualStrings("", job.artifact);
     };
     try std.testing.expectEqual(@as(usize, 3), executed);
+}
+
+test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitizer's of its own, and fuzz in one job" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":45,\"shards\":{\"linux\":2,\"tsan\":8}}", .{})).value;
+    try validate(a, config);
+    var counts = [_]usize{ 0, 0, 0 };
+    for (try plan(a, config, .release)) |job| for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, &counts) |step, *count| {
+        if (!std.mem.eql(u8, job.step, step)) continue;
+        count.* += 1;
+        try std.testing.expectEqual(@as(usize, 45), job.job_timeout);
+        if (std.mem.eql(u8, step, "hardened-fuzz")) try std.testing.expectEqualStrings("", job.shard) else try std.testing.expect(job.shard.len > 0);
+    };
+    try std.testing.expectEqual([_]usize{ 2, 1, 8 }, counts);
+    // Without a count of its own, ThreadSanitizer's run splits as the suite does.
+    const plain = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"linux\":3}}", .{})).value;
+    var tsan: usize = 0;
+    for (try plan(a, plain, .release)) |job| if (std.mem.eql(u8, job.step, "hardened-tsan")) {
+        tsan += 1;
+        try std.testing.expectEqual(@as(usize, 20), job.job_timeout);
+    };
+    try std.testing.expectEqual(@as(usize, 3), tsan);
+    try std.testing.expectError(error.InvalidShardCount, validate(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"tsan\":0}}", .{})).value));
 }
 
 test "a package's own jobs join the tiers they name, on the hosts they name, with the gate's setup" {

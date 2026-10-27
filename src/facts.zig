@@ -103,11 +103,14 @@ pub fn developmentRoot(c: src.Context, bay: []const u8) ![]const u8 {
 
 fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
-    defer child.kill(c.io);
     var streams: Io.File.MultiReader.Buffer(2) = undefined;
     var multi: Io.File.MultiReader = undefined;
     multi.init(c.a, c.io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer multi.deinit();
+    // The child ends before its readers do: on Windows, deinit waits for every pending read,
+    // and a build left waiting for its next message on stdin never ends one. Killing it
+    // closes the pipes, which ends them; it is a no-op once `wait` has reaped it.
+    defer child.kill(c.io);
     var protocol: Io.Writer.Allocating = .init(c.a);
     var frame_count: usize = 0;
     while (true) {

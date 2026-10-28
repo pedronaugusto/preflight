@@ -237,42 +237,6 @@ pub fn builtOn(c: *src.Context) ![]const []const u8 {
     return found.items;
 }
 
-/// Gives every other manifest in the repository the package's own pin of each package
-/// both pin, the drift `nested` reports, by rewriting its `.url` and `.hash` in place.
-pub fn alignNested(c: *src.Context) !void {
-    const own = try gantry.manifests.parse(c.a, "build.zig.zon", try c.read("build.zig.zon"));
-    var dir = try c.directory().openDir(c.io, ".", .{ .iterate = true });
-    defer dir.close(c.io);
-    var walker = try dir.walkSelectively(c.a);
-    defer walker.deinit();
-    while (try walker.next(c.io)) |entry| {
-        if (entry.kind == .directory) {
-            if (!configure.generated(entry.basename)) try walker.enter(c.io, entry);
-            continue;
-        }
-        if (entry.kind != .file or !std.mem.eql(u8, entry.basename, "build.zig.zon") or std.mem.eql(u8, entry.path, "build.zig.zon")) continue;
-        const path = try c.a.dupe(u8, entry.path);
-        std.mem.replaceScalar(u8, path, '\\', '/');
-        var text = try c.read(path);
-        const pins = gantry.manifests.parse(c.a, "build.zig.zon", text) catch continue;
-        var changed = false;
-        for (pins) |pin| {
-            if (pin.origin != .remote) continue;
-            for (own) |ours| {
-                if (ours.origin != .remote or !std.mem.eql(u8, ours.name, pin.name)) continue;
-                var swapped = false;
-                for ([2][2][]const u8{ .{ pin.source, ours.source }, .{ pin.requirement, ours.requirement } }) |swap| {
-                    if (swap[0].len == 0 or std.mem.eql(u8, swap[0], swap[1])) continue;
-                    text = try std.mem.replaceOwned(u8, c.a, text, try c.a.print("\"{s}\"", .{swap[0]}), try c.a.print("\"{s}\"", .{swap[1]}));
-                    swapped = true;
-                }
-                changed = changed or swapped;
-            }
-        }
-        if (changed) try c.directory().writeFile(c.io, .{ .sub_path = path, .data = text });
-    }
-}
-
 pub const Drift = struct { name: []const u8, ours: []const u8, theirs: []const u8 };
 
 /// The remote pins in `pins` that name a package `own` also pins remotely, at another revision.

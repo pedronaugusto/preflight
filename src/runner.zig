@@ -666,7 +666,6 @@ const Supervisor = struct {
             return .{ .read = file(ends[0]), .write = file(ends[1]) };
         }
 
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         fn file(handle: std.Io.File.Handle) std.Io.File {
             return .{ .handle = handle, .flags = .{ .nonblocking = false } };
         }

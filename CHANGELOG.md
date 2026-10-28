@@ -6,17 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-10-28
+
 ### Added
 
 - `check` compiles the package for every target the fast tier names, as its cross-compile jobs do (`ci-check` per target, without linking or running), so a test behind another system's branch fails on the machine at hand: `bay check` built the tests for that machine alone, and a Linux-only test body of reactor 0.8.6 was first compiled in the hosted run. A build that takes `-Dtarget` gets them: one that defines `check` before `addCi` keeps its own, with the targets added, and one without gets preflight's. A planned job (`PREFLIGHT_PLANNED`, which `run` and `gate` set) leaves them to the plan's cross-compile jobs.
 
-### Fixed
-
-- `ci-check` and `ci-check-bench` compile a module's C, assembly and resource sources for a COFF target, each to an object of its own with the module's flags, include paths and macros. Each artifact compiled to one object, and on COFF Zig cannot merge a module's source objects into it ("coff does not support linking multiple objects into one"): a package with preprocessed `.S` files beside its Zig root failed every object on x86_64-windows-gnu (cloak's s2n-bignum routines).
-
 ### Changed
 
 - Pins glint 0.7.4 and gantry 0.3.4.
+
+### Fixed
+
+- `ci-check` and `ci-check-bench` compile a module's C, assembly and resource sources for a COFF target, each to an object of its own with the module's flags, include paths and macros. Each artifact compiled to one object, and on COFF Zig cannot merge a module's source objects into it ("coff does not support linking multiple objects into one"): a package with preprocessed `.S` files beside its Zig root failed every object on x86_64-windows-gnu (cloak's s2n-bignum routines).
 
 ## [0.18.4] - 2026-10-27
 

@@ -7,6 +7,7 @@ const aegis = @import("aegis");
 const glint = @import("glint");
 const src = @import("source.zig");
 const matrix = @import("matrix.zig");
+const fetched = @import("manifest.zig");
 pub const policy = @import("glint/policy.zig");
 pub const assembly = @import("glint/assembly.zig");
 
@@ -35,7 +36,15 @@ const printed = 25;
 /// budget for, a site a gating rule could not decide, a suppression that
 /// suppresses nothing.
 pub fn check(c: *src.Context, inputs: Inputs) !void {
-    var chosen = (try policy.parse(c, inputs.config)) orelse return;
+    const shipped = fetched.shippedPaths(c) catch |err| switch (err) {
+        error.InvalidManifest => return,
+        error.FileNotFound => {
+            c.fail("build.zig.zon: not found: what it ships is the danger rules' scope", .{});
+            return;
+        },
+        else => return err,
+    };
+    var chosen = (try policy.parse(c, inputs.config, shipped)) orelse return;
     chosen.base.peer_writers = try peerWriters(c, chosen.base.peer_writers, inputs.build.modules);
     chosen.base.pointer_widths = try pointerWidths(c);
     const paths = (try assembly.select(c, chosen, inputs.config)) orelse return;
@@ -408,6 +417,8 @@ const Fixture = struct {
         self.arena = .init(std.testing.allocator);
         self.tmp = std.testing.tmpDir(.{});
         self.c = .{ .a = self.arena.allocator(), .io = std.testing.io, .dir = self.tmp.dir };
+        // What a package of the tests ships: the danger rules' scope.
+        try self.tmp.dir.writeFile(self.c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .fixture, .version = \"0.0.0\", .paths = .{ \"build.zig\", \"build.zig.zon\", \"src\" } }\n" });
         return self;
     }
     fn deinit(self: *Fixture) void {
@@ -437,11 +448,12 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger: the same type\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
-    // A discarded error fails unless its reason is written at the site; a repository may only report it.
+    // A discarded error fails unless its reason is written at the site; a repository cannot
+    // lower it to a report.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
     const reported = "{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}";
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run(reported, .{}));
+    try std.testing.expect(try f.run(reported, .{}) != 0);
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    // glint-ignore: Z026 -- cleanup after a failure the caller already gets\n    f() catch {};\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
 }

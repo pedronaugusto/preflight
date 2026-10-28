@@ -33,6 +33,8 @@ pub fn main(init: std.process.Init) !void {
     var dir = try std.Io.Dir.cwd().openDir(init.io, path, .{});
     defer dir.close(init.io);
     try dir.writeFile(init.io, .{ .sub_path = "src/work.zig", .data = text.written() });
+    // What the package ships: the danger rules' scope.
+    try dir.writeFile(init.io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .bench, .version = \"0.0.0\", .paths = .{ \"build.zig\", \"build.zig.zon\", \"src\" } }\n" });
     var context: Context = .{
         .scratch = .init(init.gpa),
         .gpa = init.gpa,

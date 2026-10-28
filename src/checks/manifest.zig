@@ -282,3 +282,27 @@ test "a nested manifest pins a shared package as the package does, and anything 
     try std.testing.expectEqualStrings("core", found[0].name);
     try std.testing.expectEqualStrings("tools", found[1].name);
 }
+
+/// What the manifest's `.paths` ships, as it names it: the danger rules'
+/// scope.
+pub fn shippedPaths(c: *src.Context) ![]const []const u8 {
+    const text = (try zon.source(c.a, try c.read("build.zig.zon"))) orelse {
+        c.fail("build.zig.zon: not UTF-8", .{});
+        return error.InvalidManifest;
+    };
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const manifest = std.zon.parse.fromSlice(Manifest, .{
+        .gpa = c.a,
+        .arena = c.a,
+        .source = text,
+        .diagnostics = &diagnostics,
+        .ignore_unknown_fields = true,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseZon => {
+            c.fail("{f}", .{diagnostics.fmt("build.zig.zon")});
+            return error.InvalidManifest;
+        },
+    };
+    return manifest.paths;
+}

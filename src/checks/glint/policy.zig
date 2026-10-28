@@ -88,6 +88,7 @@ const defaults = [_]Entry{
     .{ .rule = .P003, .weight = .report },
     .{ .rule = .P005, .weight = .finding },
     .{ .rule = .Z026, .weight = .gate },
+    .{ .rule = .P006, .weight = .gate },
     .{ .rule = .Z034, .weight = .gate },
     .{ .rule = .Z012, .weight = .report },
     .{ .rule = .Z016, .weight = .report },
@@ -136,7 +137,7 @@ const retired = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "glint_config", .instead = "move its fields into the `glint` object" },
 };
 
-const glint_keys = [_][]const u8{ "rules", "strict_suppressions", "fact_budget", "max_line_length", "disallowed", "unresolved", "peer_writers" };
+const glint_keys = [_][]const u8{ "rules", "fact_budget", "max_line_length", "disallowed", "unresolved", "peer_writers" };
 
 /// The rules glint folded into the aegis pack's danger rules (designs/aegis.md §7): a repository
 /// still naming one is told where its sites went.
@@ -153,6 +154,7 @@ const folded = [_]struct { id: []const u8, instead: []const u8 }{
 const retired_glint = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "casts", .instead = "A010 and A019 find every fallible or pointer conversion; write `// aegis: <reason>: <why>` at a raw one" },
     .{ .key = "cast_scope", .instead = "the danger rules read production code only" },
+    .{ .key = "strict_suppressions", .instead = "suppressions are strict in every repository: one that suppresses nothing fails" },
 };
 
 pub const Limit = struct { pattern: *const gantry.rules.Pattern, lines: u32 };
@@ -183,8 +185,20 @@ pub const Policy = struct {
     tests: []const *const gantry.rules.Pattern,
     /// The part of `tests` that is a test by its file name alone.
     named_tests: []const *const gantry.rules.Pattern,
-    /// `glint_paths`, when the repository names its own selection.
+    /// `glint_paths`: what the repository lints beside what it ships.
     paths: ?[]const []const u8,
+    /// What `build.zig.zon`'s `.paths` ships, files and directories: the danger
+    /// rules' scope, which no setting narrows.
+    shipped: []const []const u8,
+
+    /// Whether `path` is in what the package ships.
+    fn ships(policy: Policy, path: []const u8) bool {
+        for (policy.shipped) |entry| {
+            if (std.mem.eql(u8, path, entry)) return true;
+            if (std.mem.startsWith(u8, path, entry) and path.len > entry.len and path[entry.len] == '/') return true;
+        }
+        return false;
+    }
 
     /// A test file, one that tests name, or neither.
     pub fn kind(policy: Policy, path: []const u8) Kind {
@@ -226,9 +240,10 @@ pub const Policy = struct {
         // build script or an example is long for reasons of its own: a
         // repository that wants a ceiling there names the path.
         if (!named and !policy.inSources(path)) config = try withLevel(a, config, .P003, .off);
-        // The danger rules hold what the package ships: its sources. Its build script, CI
-        // programs, benchmarks and the baselines they compare against are its own tools.
-        if (!policy.inSources(path)) for (glint.AegisPack.danger) |rule| {
+        // The danger rules hold what the package ships, as its manifest lists it: its
+        // sources, its build script and whatever else a consumer fetches. Its CI programs,
+        // benchmarks and the baselines they compare against are its own tools.
+        if (!policy.ships(path)) for (glint.AegisPack.danger) |rule| {
             config = try withLevel(a, config, rule, .off);
         };
         var exceptions: std.ArrayList(glint.Config.FunctionException) = .empty;
@@ -272,6 +287,16 @@ fn withLevel(a: std.mem.Allocator, config: glint.Config, rule: glint.Rule, level
     return changed;
 }
 
+/// How much a weight holds a package to: off, reported, a finding, gated.
+fn rank(weight: Weight) u2 {
+    return switch (weight) {
+        .off => 0,
+        .report => 1,
+        .finding => 2,
+        .gate => 3,
+    };
+}
+
 fn levelOf(weight: Weight) glint.Config.Level {
     return switch (weight) {
         .gate => .gate,
@@ -283,7 +308,7 @@ fn levelOf(weight: Weight) glint.Config.Level {
 /// Reads the default policy and the repository's amendments to it. Anything
 /// the repository wrote that cannot be honoured is reported and yields null:
 /// a setting that is ignored is a gate that is not there.
-pub fn parse(c: *src.Context, config: src.Value) !?Policy {
+pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?Policy {
     const a = c.a;
     const before = c.errors;
     for (retired) |entry| if (src.get(config, entry.key) != .null) c.fail("glint: `{s}` is retired: {s}", .{ entry.key, entry.instead });
@@ -320,12 +345,16 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
     for (defaults) |entry| {
         var weight = entry.weight;
         for (chosen.items) |amendment| if (amendment.rule == entry.rule) {
-            weight = switch (amendment.level) {
+            // A repository may only raise a rule: a lower level would be a hole in the
+            // family's bar, and `report` on a finding rule would read as a choice and do nothing.
+            const asked: Weight = switch (amendment.level) {
                 .gate => .gate,
-                // A finding rule stays one: its weight is the default's, not a lesser level of glint's.
-                .report => if (entry.weight == .finding) .finding else .report,
+                .report => .report,
                 .off => .off,
             };
+            if (rank(asked) < rank(entry.weight)) {
+                c.fail("glint: {s} is {t} in preflight's default policy, and a repository may only raise a rule, not set it to {t}", .{ nameOf(entry.rule), entry.weight, amendment.level });
+            } else weight = asked;
         };
         if (weight == .finding) try findings.append(a, entry.rule);
         try all.append(a, .{ .rule = entry.rule, .level = levelOf(weight) });
@@ -338,11 +367,6 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
     // The family's durability door and its whole-file read hold in every repository, before what
     // it disallows itself.
     base.disallowed = try std.mem.concat(a, glint.Config.Disallowed, &.{ &durability, &whole_reads, base.disallowed });
-    {
-        var named = false;
-        for (chosen.items) |amendment| named = named or amendment.rule == .P006;
-        if (!named) try all.append(a, .{ .rule = .P006, .level = .gate });
-    }
     base.selections = try all.toOwnedSlice(a);
     base.validate() catch {
         c.fail("glint: the `glint` setting is not valid: a rule is listed twice, or a disallowed declaration lacks its reason or replacement, or names a symbol with dots", .{});
@@ -361,6 +385,7 @@ pub fn parse(c: *src.Context, config: src.Value) !?Policy {
         .tests = try globs.list(.path, try src.testPaths(a, config)),
         .named_tests = try globs.list(.path, &src.test_files),
         .paths = null,
+        .shipped = shipped,
     };
     const limit = src.get(config, "function_limit");
     if (limit != .null) {
@@ -409,10 +434,6 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
         };
         for (selections.items) |earlier| if (earlier.rule == rule) c.fail("glint: {s} is listed twice", .{id.string});
         try selections.append(a, .{ .rule = rule, .level = chosen });
-    }
-    const strict = src.get(block, "strict_suppressions");
-    if (strict != .null) {
-        if (strict == .bool) base.strict_suppressions = strict.bool else c.fail("glint: `strict_suppressions` is true or false", .{});
     }
     const budget = src.get(block, "fact_budget");
     if (budget != .null) {
@@ -498,6 +519,12 @@ fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule
         try out.append(c.a, .{ .rule = rule, .name = name, .sites = count });
     }
     return out.items;
+}
+
+/// A rule's id as a configuration writes it.
+fn nameOf(rule: glint.Rule) []const u8 {
+    for (ruleDefinitions()) |definition| if (definition.id == rule) return definition.name;
+    return @tagName(rule);
 }
 
 fn ruleDefinitions() [project_rules.len]glint.RuleDefinition {
@@ -596,11 +623,14 @@ fn parsed(a: std.mem.Allocator, text: []const u8) !src.Value {
     return (try std.json.parseFromSlice(src.Value, a, text, .{ .allocate = .alloc_always })).value;
 }
 
+/// What a package of the tests ships, as most do: its build files and its sources.
+const test_shipped: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src" };
+
 test "the default policy gates correctness, weighs the danger rules as findings, and reports the rest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
-    const policy = (try parse(&c, try parsed(c.a, "{}"))).?;
+    const policy = (try parse(&c, try parsed(c.a, "{}"), test_shipped)).?;
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expect(policy.base.strict_suppressions);
     for ([_]glint.Rule{ .Z003, .Z013, .Z026, .Z034 }) |rule| try std.testing.expectEqual(.gate, policy.base.level(rule));
@@ -626,12 +656,12 @@ test "a package declares the peer writers it owns, each a module and a declarati
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
     const declared = (try parse(&c, try parsed(c.a,
         \\{"glint":{"peer_writers":[{"module":"uplink","declaration":"server.Response.writer"}]}}
-    ))).?;
+    ), test_shipped)).?;
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqualStrings("server.Response.writer", declared.base.peer_writers[0].declaration);
     _ = try parse(&c, try parsed(c.a,
         \\{"glint":{"peer_writers":[{"module":"uplink"}]}}
-    ));
+    ), test_shipped);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 
@@ -640,20 +670,25 @@ test "a repository amends the policy by rule and cannot swap it for another prof
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
     const amended = (try parse(&c, try parsed(c.a,
-        \\{"glint":{"rules":[{"id":"A004","level":"gate"},{"id":"Z006","level":"gate"},{"id":"P005","level":"off"}],"strict_suppressions":false,"unresolved":{"A007":2}}}
-    ))).?;
+        \\{"glint":{"rules":[{"id":"A004","level":"gate"},{"id":"Z006","level":"gate"},{"id":"Z024","level":"report"},{"id":"Z026","level":"gate"}],"unresolved":{"A007":2}}}
+    ), test_shipped)).?;
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqual(.gate, amended.base.level(glint.AegisPack.rules[3].definition.id));
     try std.testing.expectEqual(.gate, amended.base.level(.Z006));
-    try std.testing.expectEqual(.off, amended.base.level(.P005));
-    try std.testing.expect(!amended.fails(.P005) and amended.fails(.Z011));
+    try std.testing.expectEqual(.report, amended.base.level(.Z024));
+    try std.testing.expect(amended.fails(.P005) and amended.fails(.Z011));
     try std.testing.expectEqual(@as(usize, 2), amended.ceilings[0].sites);
-    try std.testing.expect(!amended.base.strict_suppressions);
-    // Asking a finding rule to report keeps it a finding: its weight is the default's.
-    const same = (try parse(&c, try parsed(c.a, "{\"glint\":{\"rules\":[{\"id\":\"Z011\",\"level\":\"report\"}]}}"))).?;
-    try std.testing.expect(same.fails(.Z011));
-    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    try std.testing.expect(amended.base.strict_suppressions);
     for ([_][]const u8{
+        // A repository may only raise a rule: nothing turns one off or lowers it, and
+        // `report` on a finding rule, which used to do nothing in silence, fails by name.
+        "{\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"}]}}",
+        "{\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}}",
+        "{\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}",
+        "{\"glint\":{\"rules\":[{\"id\":\"Z011\",\"level\":\"report\"}]}}",
+        "{\"glint\":{\"rules\":[{\"id\":\"A002\",\"level\":\"report\"}]}}",
+        "{\"glint\":{\"rules\":[{\"id\":\"A009\",\"level\":\"off\"}]}}",
+        "{\"glint\":{\"strict_suppressions\":false}}",
         "{\"glint\":{\"profile\":\"none\"}}",
         "{\"glint\":{\"rule\":[]}}",
         "{\"glint\":{\"rules\":[{\"id\":\"Z999\",\"level\":\"gate\"}]}}",
@@ -684,7 +719,7 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"glint_config\":\"ci/glint.json\"}",
     }) |text| {
         c.errors = 0;
-        try std.testing.expectEqual(@as(?Policy, null), try parse(&c, try parsed(c.a, text)));
+        try std.testing.expectEqual(@as(?Policy, null), try parse(&c, try parsed(c.a, text), test_shipped));
         try std.testing.expect(c.errors != 0);
     }
 }
@@ -698,7 +733,7 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
         \\ "function_limit":100,"function_limits":{"src/fold/*.zig":60,"src/**":90},"vendored":{"src/tls.zig":{"upstream":"std's tls client","verification":"check-tls","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
         \\ "test_support":["src/testing/**"],
         \\ "function_exceptions":{"src/big.zig:compress":{"lines":150,"reason":"one asm block"}}}
-    ))).?;
+    ), test_shipped)).?;
     const a = c.a;
     try std.testing.expectEqual(@as(u32, 60), (try policy.forFile(a, "src/fold/crc.zig")).max_function_lines);
     try std.testing.expectEqual(@as(u32, 90), (try policy.forFile(a, "src/other.zig")).max_function_lines);
@@ -724,8 +759,10 @@ test "a file is configured by its path: ceilings, exceptions, vendored forks and
     try std.testing.expectEqual(.gate, forked.level(.Z034));
     try std.testing.expectEqual(.gate, forked.level(.Z003));
     try std.testing.expectEqual(.report, forked.level(glint.AegisPack.integers));
-    // A tool the package develops with ships nowhere: the danger rules leave it out.
-    try std.testing.expectEqual(.off, (try policy.forFile(a, "build.zig")).level(glint.AegisPack.shared_state));
+    // The build script ships, and runs in every consumer's build: the danger rules hold it.
+    // A tool the package develops with ships nowhere: they leave it out.
+    try std.testing.expectEqual(.report, (try policy.forFile(a, "build.zig")).level(glint.AegisPack.shared_state));
+
     try std.testing.expectEqual(.off, (try policy.forFile(a, "bench/main.zig")).level(glint.AegisPack.integers));
     try std.testing.expectEqual(Policy.Kind.test_file, policy.kind("src/deep/x_test.zig"));
     try std.testing.expectEqual(Policy.Kind.test_file, policy.kind("src/tests.zig"));

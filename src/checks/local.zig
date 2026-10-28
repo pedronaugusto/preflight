@@ -214,3 +214,32 @@ test "where the portable jobs run is read from the environment, here when it is 
     try environ.put("PREFLIGHT_PORTABLE", "somewhere");
     try std.testing.expectEqual(null, Portable.from(&environ));
 }
+
+/// The gate's last line: how the release-tier jobs run here went, and the
+/// jobs it did not run, which it never calls green. A gate that ran none
+/// proves nothing and is refused.
+pub fn verdict(a: std.mem.Allocator, ran: usize, failed: []const []const u8, not_here: []const []const u8) !struct { line: []const u8, green: bool } {
+    const unproven = if (not_here.len == 0) "" else try a.print("; not run by this gate, so unproven: {s}", .{try std.mem.join(a, "; ", not_here)});
+    if (failed.len != 0) return .{ .line = try a.print("gate: red here: {s}{s}", .{ try std.mem.join(a, "; ", failed), unproven }), .green = false };
+    if (ran == 0) return .{ .line = try a.print("gate: no release-tier job ran here, so nothing is proven{s}", .{unproven}), .green = false };
+    if (not_here.len == 0) return .{ .line = try a.print("gate: green: all {d} release-tier jobs ran here", .{ran}), .green = true };
+    return .{ .line = try a.print("gate: green for the {d} release-tier jobs run here{s}", .{ ran, unproven }), .green = true };
+}
+
+test "the gate calls green only what it ran, names the rest unproven, and refuses a gate that ran nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const all = try verdict(a, 3, &.{}, &.{});
+    try std.testing.expect(all.green);
+    try std.testing.expectEqualStrings("gate: green: all 3 release-tier jobs ran here", all.line);
+    const some = try verdict(a, 2, &.{}, &.{"test (windows-latest, Debug) (a Windows runner)"});
+    try std.testing.expect(some.green);
+    try std.testing.expect(std.mem.find(u8, some.line, "green here") == null);
+    try std.testing.expect(std.mem.find(u8, some.line, "unproven: test (windows-latest") != null);
+    const none = try verdict(a, 0, &.{}, &.{"lint (a Linux machine)"});
+    try std.testing.expect(!none.green);
+    const red = try verdict(a, 2, &.{"lint"}, &.{});
+    try std.testing.expect(!red.green);
+    try std.testing.expectEqualStrings("gate: red here: lint", red.line);
+}

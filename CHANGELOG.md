@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The gate's last line calls green only the release-tier jobs it ran, and names the rest "not run by this gate, so unproven"; a gate that ran none is refused, where it printed "green here".
 - The release tier holds the aegis pack's bar in the tool: its source checks (`-Dci-release`, `preflight lint --release`) fail on every aegis-pack finding, the flow rules' (A006, A009, A010, A012, A013, A018, A020, A021) included, which the default policy only reports. A landing's lint still reports them; `bay release`, which gates the release tier, refuses them.
 - The lint is glint 0.7.5's: the rule batch from the family's survey, which reads the false alarms it found as the checks they are (A007, A008, A009, A010, A012, A014, A015, A020), reads a literal a parser returns as the parse refines it, finds two that went unreported (A008 through an alias, A011 through a constant one), and nests Z034's fix. A struct's fields are read by the values stored in them only while nothing writes its bytes where no store shows it (viewed as bytes, reinterpreted, handed outside the program, a computed `@field`), which went unseen since glint 0.7.1, so a package may see findings it had not.
 - Internal, no consumer's: the checks' `alignNested`, which nothing has called since `land` left preflight, is gone, and so is the escape on the runner's pipe `file`, which glint 0.7.5 reads as handing over no owner (a literal naming the handle it is given).

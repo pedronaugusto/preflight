@@ -158,6 +158,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     const decisions = try checks.local.decide(c.a, jobs, host, portable);
     var not_here: std.ArrayList([]const u8) = .empty;
     var failed: std.ArrayList([]const u8) = .empty;
+    var ran: usize = 0;
     for (jobs, decisions) |job, decision| switch (decision) {
         .covered => {},
         .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
@@ -179,18 +180,19 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
             // The package there builds as it is developed: with bay only if its manifest says so.
             if (moved) w.bay = w.bayFor(&env);
             try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));
+            ran += 1;
             runGate(w, &env) catch |err| {
                 c.report("gate: {s} failed: {t}\n", .{ job.name, err });
                 try failed.append(c.a, job.name);
             };
         },
     };
-    const elsewhere = if (not_here.items.len == 0) "" else try c.a.print("; not run here: {s}", .{try std.mem.join(c.a, "; ", not_here.items)});
-    if (failed.items.len != 0) {
-        c.report("gate: red here: {s}{s}\n", .{ try std.mem.join(c.a, "; ", failed.items), elsewhere });
+    const verdict = try checks.local.verdict(c.a, ran, failed.items, not_here.items);
+    if (!verdict.green) {
+        c.report("{s}\n", .{verdict.line});
         return error.CheckFailed;
     }
-    try stdout(c.*, try c.a.print("gate: green here{s}\n", .{elsewhere}));
+    try stdout(c.*, try c.a.print("{s}\n", .{verdict.line}));
 }
 
 /// Whether `name` is a program on the PATH.

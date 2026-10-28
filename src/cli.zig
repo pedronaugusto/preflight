@@ -110,6 +110,7 @@ const Lint = struct {
     build_option: []const []const u8 = &.{},
     test_step: []const []const u8 = &.{},
     fix: bool = false,
+    release: bool = false,
     module: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The source checks over the repository's files, then the check on the configured build's revisions",
@@ -121,6 +122,7 @@ const Lint = struct {
             .module = module,
             .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
             .fix = .{ .negatable = false, .help = "Apply glint's deterministic fixes to the sources first (zig build fix): the report is the run before them" },
+            .release = .{ .negatable = false, .help = "The release tier's bar: every aegis-pack finding fails, those the default policy reports included" },
         },
     };
 };

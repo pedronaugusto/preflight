@@ -267,7 +267,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     }
     for (arm_hosts, arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe });
     try emulatedJobs(a, config, &jobs);
-    try jobs.append(a, try lintJob(a, config));
+    try jobs.append(a, try lintJob(a, config, .release));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
     for (jobs.items) |*job| job.cache_key = try key(a, job.*);
@@ -392,7 +392,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
 fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     const timing = tier != .fast;
     var jobs: std.ArrayList(Job) = .empty;
-    try jobs.append(a, try lintJob(a, config));
+    try jobs.append(a, try lintJob(a, config, tier));
     const count = try shardCount(src.get(config, "fast_shards"));
     for (0..count) |i| {
         const shard = try shardName(a, i, count);
@@ -413,12 +413,14 @@ fn fastPlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
 /// The source checks: format, structure, the code rules, layout, snippets and
 /// the package's own extra checks. Nothing in them runs a test, so they need
 /// neither the external tools nor a test build.
-fn lintJob(a: std.mem.Allocator, config: src.Value) !Job {
+/// The source checks. The release tier's (`-Dci-release`) fail on every
+/// aegis-pack finding; a landing's report the flow rules'.
+fn lintJob(a: std.mem.Allocator, config: src.Value, tier: Tier) !Job {
     return .{
         .os = hosts[0],
         .name = "source checks and documented snippets",
         .step = "lint",
-        .args = std.mem.trimStart(u8, try buildArgs(a, src.get(config, "build_args")), " "),
+        .args = std.mem.trimStart(u8, try a.print("{s}{s}", .{ if (tier == .release) " -Dci-release" else "", try buildArgs(a, src.get(config, "build_args")) }), " "),
         .job_timeout = try minutes(config, "source_job_timeout"),
         .cache_key = "lint",
     };
@@ -1188,4 +1190,17 @@ test "an option the planner does not know, or a malformed timeout or step, is re
     for ([_][]const u8{ "{\"lnad\":true}", "{\"package\":\"x\"}", "{\"test_job_timeout\":\"30\"}", "{\"test_job_timeout\":400}", "{\"compile_step\":3}", "{\"setup_step\":\"a b\"}" }) |bad|
         try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .fast)));
     try std.testing.expectError(error.ObsoleteSanitizer, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release));
+}
+
+test "only the release tier's source checks hold every aegis-pack finding to the bar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value;
+    for ([_]Tier{ .fast, .merge, .release }) |tier| {
+        const lint = for (try plan(a, config, tier)) |job| {
+            if (std.mem.eql(u8, job.step, "lint")) break job;
+        } else return error.NoLintJob;
+        try std.testing.expectEqual(tier == .release, std.mem.find(u8, lint.args, "-Dci-release") != null);
+    }
 }

@@ -223,12 +223,18 @@ fn fixtureCache(a: std.mem.Allocator) ![]const u8 {
 }
 
 fn lintFixture(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
+    return lintFixtureWith(a, dir, &.{});
+}
+
+/// The fixture's lint with build options `options` after the step.
+fn lintFixtureWith(a: std.mem.Allocator, dir: std.Io.Dir, options: []const []const u8) !std.process.RunResult {
     const format = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = dir } });
     if (!command.succeeded(format)) return error.FixtureFormatFailed;
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
-    return std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = dir }, .environ_map = &env });
+    const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, options });
+    return std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
 
 fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
@@ -316,6 +322,10 @@ fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !
 /// The sample fixture linted with `text` as its source, or as the fixture writes it when null:
 /// each case one lint of its own, so no test holds several and comes near the watchdog's bound.
 fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
+    return lintSampleWith(text, rule, fails, &.{});
+}
+
+fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []const []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -323,7 +333,7 @@ fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     if (text) |source| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = source });
-    const result = try lintFixture(a, tmp.dir);
+    const result = try lintFixtureWith(a, tmp.dir, options);
     if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the lint output it did not find the rule in
     try std.testing.expect(result.term == .exited and (result.term.exited != 0) == fails);
     if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
@@ -331,6 +341,10 @@ fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
 
 test "the default policy reports a flow rule's site and does not fail the gate: an error input makes unreachable (A013)" {
     try lintSample("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", false);
+}
+
+test "the release tier fails a flow rule's site the default policy reports: an error input makes unreachable (A013)" {
+    try lintSampleWith("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", true, &.{"-Dci-release"});
 }
 
 test "the default policy gates P005: a debug print left in" {

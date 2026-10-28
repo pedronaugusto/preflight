@@ -153,6 +153,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true,
         .sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner"),
         .lint_enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true,
+        .release = b.option(bool, "ci-release", "The release tier's source checks: every aegis-pack finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux on its own kernel under QEMU's system emulation (qemu-system-riscv64 on PATH)") orelse false,
@@ -164,6 +165,7 @@ pub const CiOptions = struct {
     smoke: bool,
     sdk: ?[]const u8,
     lint_enabled: bool,
+    release: bool,
     timing: bool,
     checks: ?[]const u8,
     vm: bool,
@@ -176,6 +178,7 @@ const Steps = struct {
     bench_objects: *std.Build.Step,
     links: *std.Build.Step,
     lint_enabled: bool,
+    release: bool,
     timing: bool,
     sdk: ?[]const u8,
     checks: ?[]const u8,
@@ -192,7 +195,7 @@ const Steps = struct {
         const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -361,6 +364,7 @@ const Steps = struct {
         const checks = executable.run(b);
         checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+        if (steps.release) checks.addArg("--release");
         for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
         // What the CHANGELOG must name of the public API since the last tag.
         exported(b, package, checks);

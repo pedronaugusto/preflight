@@ -22,6 +22,9 @@ pub const Inputs = struct {
     build: assembly.Build = .{},
     /// Apply the findings' fixes to the package's sources (`zig build fix`).
     fix: bool = false,
+    /// The release tier's bar: every aegis-pack finding fails, the flow rules' too,
+    /// which the default policy only reports while a landing reads them.
+    release: bool = false,
 };
 
 /// How many lines of one kind a run prints before it counts the rest.
@@ -56,7 +59,7 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     };
     defer report.deinit();
     if (inputs.fix) try applyFixes(c, &assembled.project, &report);
-    judge(c, chosen, &assembled.project, &report);
+    judge(c, chosen, &assembled.project, &report, inputs.release);
     assertions(c, &assembled.project, &report);
 }
 
@@ -142,7 +145,7 @@ fn assertions(c: *src.Context, project: *const glint.Project, report: *const gli
     appendTo(c.*, c.directory(), path, text.written()) catch {};
 }
 
-fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report) void {
+fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report, release: bool) void {
     var failing: usize = 0;
     var warned: usize = 0;
     var shown: std.AutoHashMapUnmanaged(glint.Rule, usize) = .empty;
@@ -164,7 +167,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             continue;
         };
         all.writer.writeByte('\n') catch @panic("OOM");
-        const fails = d.level == .gate or chosen.fails(d.rule);
+        const fails = d.level == .gate or chosen.fails(d.rule) or (release and policy.inPack(d.rule));
         const seen = shown.getOrPutValue(c.a, d.rule, 0) catch null;
         if (seen) |count| {
             count.value_ptr.* += 1;

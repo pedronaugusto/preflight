@@ -14,12 +14,12 @@ const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
 /// The options module carries its own copy of the enum.
 const log_level = @field(std.log.Level, @tagName(options.test_log_level));
-// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+// aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var errors: std.atomic.Value(usize) = .init(0);
-// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+// aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var order: []usize = &.{};
 /// The job's deadline, `PREFLIGHT_DEADLINE`, which a hosted job's runner sets.
-// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+// aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var job_deadline: ?i64 = null;
 /// As upstream's runner sets up `std.testing.allocator` for each test.
 const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701ba, .check_write_after_free = true };
@@ -34,7 +34,7 @@ const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701b
 /// reports leaks, double frees and a damaged block footer. Every run fails the same way.
 const Backing = struct {
     const Quarantine = if (options.quarantine) @import("preflight_quarantine").alloc.Quarantine else void;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var quarantine: Quarantine = undefined;
 
     fn begin() std.mem.Allocator {
@@ -64,7 +64,7 @@ pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), compti
 /// Whether the test running now called `std.testing.fuzz`. A build finds
 /// its fuzz tests by running them unfuzzed first and asking each whether it
 /// was one; the fuzzing build asks it again of each test it runs (`Fuzzing`).
-// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+// aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var fuzz_called: bool = false;
 
 pub fn fuzz(
@@ -86,27 +86,27 @@ pub fn fuzz(
 /// upstream's runner returns from such a skip quietly. Here it fails, by name.
 const Fuzzing = if (builtin.fuzz) struct {
     const abi = std.Build.abi.fuzz;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var arg_buffer: [8192]u8 = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var input: [4096]u8 = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var output: [4096]u8 = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var reader: std.Io.File.Reader = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var writer: std.Io.File.Writer = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var server: std.zig.Server = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var process: std.process.Init.Minimal = undefined;
     /// The Io the fuzzer's own tasks run on: the poller of the build's inputs.
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var threaded: std.Io.Threaded = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var poller: std.Io.Future(std.Io.Cancelable!void) = undefined;
     /// The fuzz tests the build named, as indexes into the test functions.
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var indexes: []u32 = &.{};
     const gpa = std.heap.page_allocator;
 
@@ -282,9 +282,9 @@ fn report(comptime format: []const u8, args: anytype) void {
 /// which test and phase it was in.
 const Watchdog = struct {
     name: []const u8,
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     phase: std.atomic.Value(Phase) = .init(.body),
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     done: std.atomic.Value(u32) = .init(0),
     thread: ?std.Thread = null,
 
@@ -313,7 +313,7 @@ const Watchdog = struct {
         var line: [512]u8 = undefined;
         var text: std.Io.Writer = .fixed(&line);
         const name = watchdog.name;
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+        // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
         const phase = watchdog.phase.load(.acquire);
         if (wait.job) {
@@ -361,15 +361,15 @@ pub fn main(init: std.process.Init.Minimal) void {
 /// the names of its own there, and a name another binary holds fails its test,
 /// naming both, before any fuzzer starts.
 const FuzzNames = struct {
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var directory: ?[]const u8 = null;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var directory_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     /// This run's claim: a number of its own, then its executable's path.
     /// Two runs of one binary contend as two binaries do.
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var claim_buffer: [17 + std.Io.Dir.max_path_bytes]u8 = undefined;
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var own: []const u8 = &.{};
 
     fn read(environ: std.process.Environ) !void {
@@ -433,10 +433,10 @@ fn testsEnviron(environ: std.process.Environ) std.process.Environ {
     }
     return tests_environ.?;
 }
-// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+// aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var tests_environ: ?std.process.Environ = null;
 const control_prefix = "PREFLIGHT_";
-// aegis: boundary: an OS process or handle call of the runner's, at its one seam
+// aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
 extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
 
 fn readDeadline(environ: std.process.Environ) !?i64 {
@@ -631,26 +631,26 @@ const Supervisor = struct {
             peak_process_memory: usize,
             peak_job_memory: usize,
         };
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn CreateJobObjectW(security: ?*std.os.windows.SECURITY_ATTRIBUTES, name: ?[*:0]const u16) callconv(.winapi) ?std.os.windows.HANDLE;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn SetInformationJobObject(job: std.os.windows.HANDLE, class: c_int, information: *const anyopaque, length: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn AssignProcessToJobObject(job: std.os.windows.HANDLE, process: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn TerminateJobObject(job: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn TerminateProcess(process: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn ResumeThread(thread: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.DWORD;
     };
 
     /// A pipe whose write end only the supervisor holds; the tests' process
     /// holds the read end, which ends when the supervisor does.
     const Lifeline = struct {
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+        // aegis: design(A015): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         read: std.Io.File,
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+        // aegis: design(A015): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         write: std.Io.File,
 
         /// Both ends close on exec and are not inherited; the spawn passes the
@@ -674,7 +674,7 @@ const Supervisor = struct {
             return if (builtin.target.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle);
         }
 
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn CreatePipe(read: *std.os.windows.HANDLE, write: *std.os.windows.HANDLE, security: ?*std.os.windows.SECURITY_ATTRIBUTES, size: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
     };
 
@@ -683,7 +683,7 @@ const Supervisor = struct {
     fn follow(text: []const u8) !void {
         const value = std.fmt.parseUnsigned(usize, text, 10) catch return error.InvalidLifeline;
         const end: std.Io.File = if (builtin.target.os.tag == .windows)
-            // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+            // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
             Lifeline.file(@ptrFromInt(value))
         else
             Lifeline.file(std.math.cast(std.posix.fd_t, value) orelse return error.InvalidLifeline);
@@ -747,7 +747,7 @@ const Supervisor = struct {
         var buffer: [1024]u8 = undefined;
         var writer = to.writerStreaming(sio, &buffer);
         const w = &writer.interface;
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+        // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         try w.print("\npreflight: the tests' process ended, and processes it started still hold its output {d} ms later:\n", .{release.toMilliseconds()});
         switch (builtin.target.os.tag) {
             .linux => try listHolders(sio, output, w),
@@ -804,11 +804,11 @@ const Supervisor = struct {
             status: i32,
             reserved: i32,
         };
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "c" fn proc_listallpids(buffer: ?*anyopaque, size: c_int) c_int;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, size: c_int) c_int;
-        // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+        // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
         extern "c" fn proc_pidfdinfo(pid: c_int, fd: c_int, flavor: c_int, buffer: ?*anyopaque, size: c_int) c_int;
 
         fn listHolders(output: std.Io.File, w: *std.Io.Writer) !void {
@@ -901,9 +901,9 @@ const Supervisor = struct {
         }
     }
 
-    // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+    // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn WaitForSingleObject(handle: std.os.windows.HANDLE, milliseconds: std.os.windows.DWORD) callconv(.winapi) std.os.windows.DWORD;
-    // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+    // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn GetExitCodeProcess(process: std.os.windows.HANDLE, code: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
 };
 
@@ -971,9 +971,9 @@ const Protocol = struct {
     const file_share_read = 0x1;
     const file_share_write = 0x2;
     const open_existing = 3;
-    // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+    // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn SetHandleInformation(handle: std.os.windows.HANDLE, mask: std.os.windows.DWORD, flags: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
-    // aegis: boundary: an OS process or handle call of the runner's, at its one seam
+    // aegis: boundary(A019): an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn CreateFileW(
         name: [*:0]const u16,
         access: std.os.windows.DWORD,
@@ -1006,7 +1006,7 @@ fn metadata(server: *std.zig.Server) !void {
 
 /// The build's cache, which the build names to a run of the tests (`--cache-dir`), where it
 /// replays them too; null for a binary run by hand.
-// aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+// aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var build_cache: ?[]const u8 = null;
 
 /// The count of this binary's tests, for the build's count of its tests per root: written
@@ -1056,7 +1056,7 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
             fuzz_called = false;
         }
     }
-    // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     try recorder.record(io, test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{
@@ -1097,7 +1097,7 @@ fn terminal(init: std.process.Init.Minimal) !void {
         const leaks = testing.allocator_instance.deinit();
         Backing.end();
         watchdog.phase.store(.reporting, .release);
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+        // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         try recorder.record(io, test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
     }

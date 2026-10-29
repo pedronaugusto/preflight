@@ -369,7 +369,7 @@ fn findPorts(io: Io, gpa: std.mem.Allocator) !?Ports {
     return ports;
 }
 
-// aegis: design: the test machine's first process, one thread and std alone, as its kernel runs it
+// aegis: design(A007): the test machine's first process, one thread and std alone, as its kernel runs it
 var status_port: linux.fd_t = -1;
 
 /// Runs the program with pipes for its standard streams, as a build gives a program

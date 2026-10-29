@@ -85,7 +85,7 @@ pub const Reader = struct {
         const data_start = std.mem.alignForward(usize, name_end, 4);
         if (data_start > r.bytes.len or size > r.bytes.len - data_start) return error.Truncated;
         const data_end = data_start + size;
-        // aegis: no-danger: name_len is not zero and at most what is left after name_start, checked above
+        // aegis: no-danger(A009, A010): name_len is not zero and at most what is left after name_start, checked above
         const name = r.bytes[name_start .. name_end - 1];
         r.at = std.mem.alignForward(usize, data_end, 4);
         if (std.mem.eql(u8, name, trailer)) return null;
@@ -95,7 +95,7 @@ pub const Reader = struct {
             0o120000 => .symlink,
             else => return error.UnknownKind,
         };
-        return .{ .name = name, .kind = kind, .mode = @intCast(mode & 0o7777), .data = r.bytes[data_start..data_end] }; // aegis: no-danger: masked to twelve bits
+        return .{ .name = name, .kind = kind, .mode = @intCast(mode & 0o7777), .data = r.bytes[data_start..data_end] }; // aegis: no-danger(A009): data_start is at most the length and size at most what is left after it, checked above
     }
 };
 

@@ -226,7 +226,7 @@ const Steps = struct {
         const sanitizer: i96 = if (steps.profile_options.tsan or hardened.sanitizesThreads(b, config.tests, &visited)) hardened.tsan_slowdown else 1;
         const emulation: i96 = if (steps.vm) vm.slowdown else 1;
         const slowdown = sanitizer * emulation;
-        // aegis: design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+        // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         const bounded: std.Io.Duration = .fromNanoseconds(timeout.toNanoseconds() *| slowdown);
         // One way to fuzz, in every package: its properties, by the step it names, else
         // the one its hardened run fuzzes, else its tests. Its tests take the runner as

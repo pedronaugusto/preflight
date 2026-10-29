@@ -174,7 +174,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
             w.environ_map = &env;
             const directory = if (job.directory.len != 0) job.directory else working;
             const moved = !std.mem.eql(u8, directory, ".");
-            // aegis: no-danger: a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
+            // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
             if (moved) w.dir = try c.directory().openDir(c.io, directory, .{});
             defer if (moved) w.dir.?.close(c.io);
             // The package there builds as it is developed: with bay only if its manifest says so.
@@ -409,7 +409,7 @@ fn stdout(c: src.Context, text: []const u8) !void {
 }
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
-    // aegis: no-danger: the output file the hosted runner names in GITHUB_OUTPUT or GITHUB_ENV
+    // aegis: no-danger(A009): the output file the hosted runner names in GITHUB_OUTPUT or GITHUB_ENV
     const file = try std.Io.Dir.cwd().createFile(c.io, path, .{ .truncate = false, .read = true });
     defer file.close(c.io);
     var buffer: [4096]u8 = undefined;

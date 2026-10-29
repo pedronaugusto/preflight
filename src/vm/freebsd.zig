@@ -33,8 +33,10 @@ pub const traced_deadline_seconds = 90;
 /// debugger.
 /// Without a loader there is no device.hints: the two serial ports are named here, the
 /// first the console, as FreeBSD's FIRECRACKER kernel names them. The kernel splits
-/// this at spaces and commas.
-pub const kernel_environment = "-h vfs.root.mountfrom=cd9660:/dev/vtbd0 vfs.mountroot.timeout=30 init_path=/preflight/init hw.uart.console=io:0x3f8 " ++
+/// this at spaces and commas. A PVH boot drops the command line's flags (15.1's pv.c
+/// keeps only what boot_env_to_howto reads), so the serial console is `boot_serial`,
+/// not `-h`: without it the uart ranks below vt, which takes the console to no display.
+pub const kernel_environment = "boot_serial=YES vfs.root.mountfrom=cd9660:/dev/vtbd0 vfs.mountroot.timeout=30 init_path=/preflight/init hw.uart.console=io:0x3f8 " ++
     "hint.uart.0.at=isa hint.uart.0.port=0x3F8 hint.uart.0.flags=0x10 hint.uart.0.irq=4 hint.uart.1.at=isa hint.uart.1.port=0x2F8 hint.uart.1.irq=3 " ++
     "kern.panic_reboot_wait_time=0 debug.debugger_on_panic=0";
 

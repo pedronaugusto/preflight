@@ -168,7 +168,10 @@ There is no loader. The release's `base.txz`, the one archive holding `loader.ef
 cannot be a dependency (below), and pkgbase's `.pkg` files are not an archive type Zig
 fetches. QEMU starts the kernel at its PVH entry (`-kernel`; FreeBSD's amd64 kernel
 carries `XEN_ELFNOTE_PHYS32_ENTRY`) with its environment on the command line:
-`vfs.root.mountfrom`, `init_path`, the serial console and the serial ports' hints. The
+`vfs.root.mountfrom`, `init_path`, the serial console and the serial ports' hints. A PVH
+boot keeps none of the command line's flags, only its variables, so the serial console is
+`boot_serial=YES` (`-h` would be dropped and vt, outranking the uart, would take the
+console to no display). The
 processor's TSC is invariant (`-cpu host,+invtsc`): a PVH boot sets FreeBSD 15.1's early
 `DELAY` to Xen's, which reads Xen's shared page, NULL on KVM, so the console's first
 `DELAY` faulted and the boot ended in a double fault before printing; with an invariant

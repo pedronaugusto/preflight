@@ -205,18 +205,34 @@ const Projection = struct {
         // A COFF compile emits one object, into which Zig cannot merge the objects of a module's
         // C and assembly sources ("coff does not support linking multiple objects into one"):
         // there each source compiles to an object of its own, with the module's flags, include
-        // paths and macros (cloak's `.S` files on x86_64-windows-gnu).
+        // paths and macros (cloak's `.S` files on x86_64-windows-gnu). A module with no Zig root
+        // keeps its first source as its own object's, which otherwise has nothing to compile
+        // (a C library's: ztreesitter's grammars with a scanner).
         const apart = coff(copy) and sources(original) + @intFromBool(original.root_source_file != null) > 1;
+        var holds = original.root_source_file != null;
         for (original.link_objects.items) |link| {
-            const projected: std.Build.Module.LinkObject = switch (link) {
+            const projected: std.Build.Module.LinkObject = projected: switch (link) {
                 .other_step => |other| {
                     p.objects.dependOn(&p.artifact(other).step);
                     continue;
                 },
                 .system_lib => continue,
                 .c_source_file, .c_source_files, .assembly_file, .win32_resource_file => if (apart) {
-                    p.alone(copy, link);
-                    continue;
+                    if (holds) {
+                        p.alone(copy, link);
+                        continue;
+                    }
+                    holds = true;
+                    if (link != .c_source_files or link.c_source_files.files.len == 1) break :projected link;
+                    const set = link.c_source_files;
+                    const first = p.b.allocator.create(std.Build.Module.CSourceFiles) catch @panic("OOM");
+                    first.* = set.*;
+                    first.files = set.files[0..1];
+                    const rest = p.b.allocator.create(std.Build.Module.CSourceFiles) catch @panic("OOM");
+                    rest.* = set.*;
+                    rest.files = set.files[1..];
+                    p.alone(copy, .{ .c_source_files = rest });
+                    break :projected .{ .c_source_files = first };
                 } else link,
                 else => link,
             };

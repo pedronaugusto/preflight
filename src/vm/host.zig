@@ -208,7 +208,7 @@ fn freebsdBoot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const
             return 0;
         },
         .panic => |line| try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD kernel panicked: {s}\n", .{line})),
-        .deadline => try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine wrote no status within {d} s and was stopped\n", .{if (trace) freebsd.traced_deadline_seconds else freebsd.boot_deadline_seconds})),
+        .deadline => try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine wrote no status within {d} s and was stopped\n", .{@as(u32, if (trace) freebsd.traced_deadline_seconds else freebsd.boot_deadline_seconds)})),
         .ended => try stderr.writeStreamingAll(io, "preflight-vm: the FreeBSD machine ended without a status or a panic\n"),
     }
     const console = aegis.own.readFile(io, cwd, console_out, gpa, .fromRaw(64 * 1024 * 1024)) catch "";

@@ -792,8 +792,9 @@ test "portable matrix links macOS and Windows binaries on their SDK runners with
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
-    try std.testing.expectEqual(@as(usize, 6), tiers.compile.len);
-    try std.testing.expectEqual(@as(usize, 6), tiers.run.len);
+    // macOS, Windows and ARM Windows, each at Debug, ReleaseSafe and ReleaseFast.
+    try std.testing.expectEqual(@as(usize, 9), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 9), tiers.run.len);
     try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);
     for (tiers.compile, tiers.run) |builder, executor| {
         try std.testing.expectEqualStrings(executor.os, builder.os);
@@ -822,8 +823,8 @@ test "each host's shards run every mode, split by count, with the lint and compi
             try std.testing.expectEqualStrings("", job.shard);
         }
     }
-    try std.testing.expectEqual(@as(usize, 6), windows);
-    try std.testing.expectEqual(@as(usize, 4), macos);
+    try std.testing.expectEqual(@as(usize, 9), windows);
+    try std.testing.expectEqual(@as(usize, 6), macos);
     try std.testing.expectEqual(@as(usize, 3), linux);
     for (jobs) |job| if (std.mem.eql(u8, job.name, "test (windows-latest, ReleaseSafe) shard 3/3")) {
         try std.testing.expectEqualStrings("3/3", job.shard);
@@ -894,8 +895,8 @@ test "portable shards share one compilation per host and mode" {
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":3}}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
-    try std.testing.expectEqual(@as(usize, 6), tiers.compile.len);
-    try std.testing.expectEqual(@as(usize, 2 + 6 + 2), tiers.run.len);
+    try std.testing.expectEqual(@as(usize, 9), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 3 + 9 + 3), tiers.run.len);
     for (tiers.compile) |builder| {
         try std.testing.expectEqualStrings("", builder.shard);
         try std.testing.expect(std.mem.find(u8, builder.name, "shard") == null);

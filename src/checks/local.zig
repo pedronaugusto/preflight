@@ -1,14 +1,16 @@
 //! `gate`: the release tier's jobs a machine at hand runs, for a landing gated on the machines
 //! the person has rather than by a hosted run. A job runs here when its runner's system is this
 //! one's, so that a Linux machine of either architecture runs the Linux suites, a Mac the macOS
-//! suites; the hardened runs, which each system decides for itself, run on each machine. The
-//! jobs that say the same on any machine (the source checks, every compile of named targets),
-//! which the hosted gate runs on Linux, run here too, unless the gate's caller runs them on
-//! another of its machines (`PREFLIGHT_PORTABLE=elsewhere`): a gate on one Mac would
-//! otherwise release a package whose source checks no machine ran. What this machine cannot
-//! run is said, never skipped quietly: another system's suite, ThreadSanitizer off x86_64 and
-//! aarch64 Linux. Only that may stay unproven: a job this machine runs and could not, as
-//! riscv64 on Linux with no QEMU here, keeps the gate from green.
+//! suites, each at every optimize mode; the hardened runs, which each system decides for
+//! itself, and a package's own jobs that name no runner run on each machine. The jobs that say
+//! the same on any machine (the source checks, every compile of named targets), which the
+//! hosted gate runs on Linux, run here too, unless the gate's caller runs them on another of
+//! its machines (`PREFLIGHT_PORTABLE=elsewhere`): a gate on one Mac would otherwise release a
+//! package whose source checks no machine ran. What this machine does not run is said, never
+//! skipped quietly, and only that may stay unproven: another system's suite, ThreadSanitizer
+//! off x86_64 and aarch64, and the VM legs (riscv64 on its kernel under QEMU), which are the
+//! nightly's by declaration on every host, since no machine that gates a release runs a VM
+//! (design.md, "The gate on the machines at hand").
 const std = @import("std");
 const matrix = @import("matrix.zig");
 
@@ -16,8 +18,6 @@ const matrix = @import("matrix.zig");
 pub const Host = struct {
     os: std.Target.Os.Tag,
     arch: std.Target.Cpu.Arch,
-    /// QEMU's riscv64 system emulation is on the PATH.
-    qemu: bool,
 };
 
 /// Where the jobs that say the same on any machine run: here, or on another machine of the
@@ -38,10 +38,9 @@ pub const Portable = enum {
 /// A job of the plan, and whether it runs here or why not.
 pub const Decision = union(enum) {
     run,
-    /// Another system's, or another machine's of this gate: what this one cannot run.
+    /// Another system's, another machine's of this gate, or the nightly's: what this one
+    /// does not run.
     elsewhere: []const u8,
-    /// This machine's to run, lacking what it needs: a release gated here is not green.
-    missing: []const u8,
     /// What another job this machine runs builds already: the same build, or the hosted
     /// gate's compile-once link of a suite that runs here.
     covered,
@@ -61,6 +60,8 @@ pub fn decide(a: std.mem.Allocator, jobs: []const matrix.Job, host: Host, portab
 }
 
 fn one(job: matrix.Job, host: Host, portable: Portable) Decision {
+    // A VM leg is the nightly's on every host, whatever the host has installed.
+    if (job.qemu) return .{ .elsewhere = "a VM leg: the nightly's" };
     // ThreadSanitizer runs on Linux and macOS, x86_64 and aarch64.
     if (std.mem.eql(u8, job.step, "hardened-tsan")) {
         return if ((host.os == .linux or host.os == .macos) and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux or macOS" };
@@ -70,7 +71,6 @@ fn one(job: matrix.Job, host: Host, portable: Portable) Decision {
     if (std.mem.eql(u8, job.step, "hardened-fuzz") and (host.os == .windows or std.Target.ptrBitWidth_arch_abi(host.arch, .none) != 64)) {
         return .{ .elsewhere = "Zig's fuzzer runs on a 64-bit host that is not Windows" };
     }
-    if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .missing = "no qemu-system-riscv64 on the PATH" } else .run;
     if (anywhere(job)) return .run;
     if (sameAnywhere(job)) return switch (portable) {
         .here => .run,
@@ -90,10 +90,10 @@ fn one(job: matrix.Job, host: Host, portable: Portable) Decision {
 }
 
 /// A job whose outcome depends on the system it runs on although the hosted gate runs it on
-/// one: the hardened runs, whose faults and allocator are each system's own; each machine
-/// runs them.
+/// one, so each machine runs it: the hardened runs, whose faults and allocator are each
+/// system's own, and a package's own job that names no runner, which is the package's on any.
 fn anywhere(job: matrix.Job) bool {
-    if (job.declared) return false;
+    if (job.declared) return job.any_host;
     for ([_][]const u8{ "hardened", "hardened-fuzz" }) |step| if (std.mem.eql(u8, job.step, step)) return true;
     return false;
 }
@@ -135,19 +135,21 @@ test "a Mac runs its own suites, the hardened runs and the jobs that say the sam
         .{ .os = "windows-latest", .name = "test (windows-latest, Debug)", .args = "-Doptimize=debug" },
         .{ .os = "ubuntu-latest", .name = "source checks", .step = "lint" },
         .{ .os = "ubuntu-latest", .name = "Cross compile 1/2", .step = "preflight-cross-bench", .operation = .objects, .targets = "x86_64-linux-gnu" },
-        .{ .os = "ubuntu-latest", .name = "compile (ReleaseSmall)", .step = "check", .args = "-Doptimize=small" },
+        .{ .os = "ubuntu-latest", .name = "compile (ubuntu-latest, ReleaseSmall)", .step = "check", .args = "-Doptimize=small" },
         .{ .os = "windows-latest", .name = "SDK link (x86_64-windows-gnu)", .step = "ci-link", .operation = .link },
         .{ .os = "ubuntu-latest", .name = "hardened", .step = "hardened" },
         .{ .os = "ubuntu-latest", .name = "hardened-tsan", .step = "hardened-tsan" },
         .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
+        .{ .os = "ubuntu-latest", .name = "examples", .step = "examples", .declared = true, .any_host = true },
     };
-    const host: Host = .{ .os = .macos, .arch = .aarch64, .qemu = false };
+    const host: Host = .{ .os = .macos, .arch = .aarch64 };
     // The gate's one machine runs the source checks and the compiles of named targets: no
-    // other machine would. ReleaseSmall's compile is for its runner's own system, Linux.
+    // other machine would. ReleaseSmall's compile is for its runner's own system, Linux. A
+    // declared job that names no runner is this machine's too.
     const alone = try decide(a, &jobs, host, .here);
     defer a.free(alone);
-    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere };
+    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run };
     for (expected, alone) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
     // A machine whose gate's caller runs them on another machine names them as that machine's.
     const beside = try decide(a, &jobs, host, .elsewhere);
@@ -159,20 +161,34 @@ test "a Mac runs its own suites, the hardened runs and the jobs that say the sam
     }
 }
 
-test "an ARM Linux machine runs the Linux suites once each, and riscv64 with QEMU" {
+test "an ARM Linux machine runs the Linux suites once each" {
     const a = std.testing.allocator;
     const jobs = [_]matrix.Job{
         .{ .os = "ubuntu-latest", .name = "test (ubuntu-latest, Debug)", .args = "-Doptimize=debug" },
         .{ .os = "ubuntu-latest", .name = "test (ubuntu-latest, ReleaseFast)", .args = "-Doptimize=fast" },
         .{ .os = "ubuntu-24.04-arm", .name = "test (ubuntu-24.04-arm, Debug)", .args = "-Doptimize=debug" },
         .{ .os = "macos-latest", .name = "native link for test (macos-latest, Debug)", .step = "ci-build", .operation = .link },
-        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
     };
-    const decisions = try decide(a, &jobs, .{ .os = .linux, .arch = .aarch64, .qemu = true }, .here);
+    const decisions = try decide(a, &jobs, .{ .os = .linux, .arch = .aarch64 }, .here);
     defer a.free(decisions);
-    const expected = [_]std.meta.Tag(Decision){ .run, .run, .covered, .elsewhere, .run, .run };
+    const expected = [_]std.meta.Tag(Decision){ .run, .run, .covered, .elsewhere, .run };
     for (expected, decisions) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
+}
+
+test "a VM leg is the nightly's on every host" {
+    const a = std.testing.allocator;
+    const jobs = [_]matrix.Job{.{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true }};
+    for ([_]Host{
+        .{ .os = .linux, .arch = .x86_64 },
+        .{ .os = .linux, .arch = .aarch64 },
+        .{ .os = .macos, .arch = .aarch64 },
+        .{ .os = .windows, .arch = .x86_64 },
+    }) |host| {
+        const decisions = try decide(a, &jobs, host, .here);
+        defer a.free(decisions);
+        try std.testing.expectEqualStrings("a VM leg: the nightly's", decisions[0].elsewhere);
+    }
 }
 
 test "the fuzz campaign runs only where Zig's fuzzer does: a 64-bit host that is not Windows" {
@@ -182,11 +198,11 @@ test "the fuzz campaign runs only where Zig's fuzzer does: a 64-bit host that is
         .{ .os = "ubuntu-latest", .name = "hardened-fuzz", .step = "hardened-fuzz" },
     };
     for ([_]struct { host: Host, fuzz: std.meta.Tag(Decision) }{
-        .{ .host = .{ .os = .windows, .arch = .x86_64, .qemu = false }, .fuzz = .elsewhere },
-        .{ .host = .{ .os = .windows, .arch = .aarch64, .qemu = false }, .fuzz = .elsewhere },
-        .{ .host = .{ .os = .linux, .arch = .x86, .qemu = false }, .fuzz = .elsewhere },
-        .{ .host = .{ .os = .linux, .arch = .x86_64, .qemu = false }, .fuzz = .run },
-        .{ .host = .{ .os = .macos, .arch = .aarch64, .qemu = false }, .fuzz = .run },
+        .{ .host = .{ .os = .windows, .arch = .x86_64 }, .fuzz = .elsewhere },
+        .{ .host = .{ .os = .windows, .arch = .aarch64 }, .fuzz = .elsewhere },
+        .{ .host = .{ .os = .linux, .arch = .x86 }, .fuzz = .elsewhere },
+        .{ .host = .{ .os = .linux, .arch = .x86_64 }, .fuzz = .run },
+        .{ .host = .{ .os = .macos, .arch = .aarch64 }, .fuzz = .run },
     }) |case| {
         const decisions = try decide(a, &jobs, case.host, .here);
         defer a.free(decisions);
@@ -196,17 +212,33 @@ test "the fuzz campaign runs only where Zig's fuzzer does: a 64-bit host that is
     }
 }
 
-test "a job this machine runs, left unrun for what it lacks, keeps a release from green; another system's does not" {
+test "a release plan leaves a Mac only other systems' jobs and the VM legs unproven" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const jobs = [_]matrix.Job{.{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .step = "ci", .qemu = true }};
-    // On Linux the riscv64 leg is this machine's: no QEMU leaves it missing (review-1029 M4).
-    try std.testing.expectEqual(std.meta.Tag(Decision).missing, std.meta.activeTag((try decide(a, &jobs, .{ .os = .linux, .arch = .x86_64, .qemu = false }, .here))[0]));
-    try std.testing.expectEqual(std.meta.Tag(Decision).elsewhere, std.meta.activeTag((try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64, .qemu = false }, .here))[0]));
-    const lacking = try verdict(a, 3, &.{}, &.{"test (riscv64-linux on its kernel under QEMU, Debug) (no qemu-system-riscv64 on the PATH)"}, &.{});
-    try std.testing.expect(!lacking.green);
-    try std.testing.expect(std.mem.find(u8, lacking.line, "lacking what it needs") != null);
+    const config = (try std.json.parseFromSlice(@import("source.zig").Value, a,
+        \\{"jobs": [{"name": "examples", "step": "examples"}, {"name": "on Linux", "step": "x", "os": ["ubuntu-latest"]}]}
+    , .{})).value;
+    const jobs = try matrix.plan(a, config, .release);
+    const decisions = try decide(a, jobs, .{ .os = .macos, .arch = .aarch64 }, .here);
+    var modes: [4]bool = @splat(false);
+    for (jobs, decisions) |job, decision| switch (decision) {
+        .run => if (std.mem.eql(u8, job.os, "macos-latest")) {
+            for ([_][]const u8{ "debug", "safe", "fast", "small" }, &modes) |mode, *seen| {
+                if (std.mem.find(u8, job.args, try a.print("-Doptimize={s}", .{mode})) != null) seen.* = true;
+            }
+        },
+        .covered => {},
+        .elsewhere => |why| {
+            // Only another system's or a VM leg's.
+            if (job.qemu) continue;
+            try std.testing.expect(systemOf(job.os).? != .macos);
+            try std.testing.expect(!std.mem.eql(u8, why, "another machine of this gate"));
+        },
+    };
+    // This system's suite runs at every optimize mode the package releases.
+    for (modes) |seen| try std.testing.expect(seen);
+    for (jobs, decisions) |job, decision| if (std.mem.eql(u8, job.name, "examples")) try std.testing.expectEqual(Decision.run, decision);
 }
 
 test "a replay runs as the suite on the system it was linked for" {
@@ -215,7 +247,7 @@ test "a replay runs as the suite on the system it was linked for" {
         .{ .os = "macos-latest", .name = "native link for test (macos-latest, Debug)", .step = "ci-build", .args = "-Doptimize=debug -Dtarget=aarch64-macos", .operation = .link },
         .{ .os = "macos-latest", .name = "test (macos-latest, Debug)", .step = "ci-run", .args = "-Doptimize=debug", .operation = .replay },
     };
-    const decisions = try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64, .qemu = false }, .here);
+    const decisions = try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64 }, .here);
     defer a.free(decisions);
     try std.testing.expectEqual(Decision.covered, decisions[0]);
     try std.testing.expectEqual(Decision.run, decisions[1]);
@@ -234,12 +266,10 @@ test "where the portable jobs run is read from the environment, here when it is 
 
 /// The gate's last line: how the release-tier jobs run here went, and the
 /// jobs it did not run, which it never calls green. A gate that ran none
-/// proves nothing and is refused, and so is one that left a job of this
-/// machine's unrun: only another system's or another machine's may be unproven.
-pub fn verdict(a: std.mem.Allocator, ran: usize, failed: []const []const u8, missing: []const []const u8, not_here: []const []const u8) !struct { line: []const u8, green: bool } {
+/// proves nothing and is refused.
+pub fn verdict(a: std.mem.Allocator, ran: usize, failed: []const []const u8, not_here: []const []const u8) !struct { line: []const u8, green: bool } {
     const unproven = if (not_here.len == 0) "" else try a.print("; not run by this gate, so unproven: {s}", .{try std.mem.join(a, "; ", not_here)});
     if (failed.len != 0) return .{ .line = try a.print("gate: red here: {s}{s}", .{ try std.mem.join(a, "; ", failed), unproven }), .green = false };
-    if (missing.len != 0) return .{ .line = try a.print("gate: not green: this machine's own jobs did not run, each lacking what it needs: {s}{s}", .{ try std.mem.join(a, "; ", missing), unproven }), .green = false };
     if (ran == 0) return .{ .line = try a.print("gate: no release-tier job ran here, so nothing is proven{s}", .{unproven}), .green = false };
     if (not_here.len == 0) return .{ .line = try a.print("gate: green: all {d} release-tier jobs ran here", .{ran}), .green = true };
     return .{ .line = try a.print("gate: green for the {d} release-tier jobs run here{s}", .{ ran, unproven }), .green = true };
@@ -249,16 +279,16 @@ test "the gate calls green only what it ran, names the rest unproven, and refuse
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const all = try verdict(a, 3, &.{}, &.{}, &.{});
+    const all = try verdict(a, 3, &.{}, &.{});
     try std.testing.expect(all.green);
     try std.testing.expectEqualStrings("gate: green: all 3 release-tier jobs ran here", all.line);
-    const some = try verdict(a, 2, &.{}, &.{}, &.{"test (windows-latest, Debug) (a Windows runner)"});
+    const some = try verdict(a, 2, &.{}, &.{"test (windows-latest, Debug) (a Windows runner)"});
     try std.testing.expect(some.green);
     try std.testing.expect(std.mem.find(u8, some.line, "green here") == null);
     try std.testing.expect(std.mem.find(u8, some.line, "unproven: test (windows-latest") != null);
-    const none = try verdict(a, 0, &.{}, &.{}, &.{"lint (a Linux machine)"});
+    const none = try verdict(a, 0, &.{}, &.{"lint (a Linux machine)"});
     try std.testing.expect(!none.green);
-    const red = try verdict(a, 2, &.{"lint"}, &.{}, &.{});
+    const red = try verdict(a, 2, &.{"lint"}, &.{});
     try std.testing.expect(!red.green);
     try std.testing.expectEqualStrings("gate: red here: lint", red.line);
 }

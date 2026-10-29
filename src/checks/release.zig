@@ -71,7 +71,7 @@ pub fn versionAgrees(c: *src.Context) !void {
 pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !void {
     if (!try c.exists("CHANGELOG.md") or modules.len == 0) return;
     const tag = (lastTag(c, try c.read("CHANGELOG.md")) catch |err| switch (err) {
-        error.HistoryUnreadable => return,
+        error.HistoryUnreadable, error.ReleaseUnnamed => return,
         else => return err,
     }) orelse return;
     const since = changelog.parseVersion(std.mem.trimStart(u8, tag, "v"));
@@ -188,38 +188,45 @@ fn succeeded(result: std.process.RunResult) bool {
     return result.term == .exited and result.term.exited == 0;
 }
 
-/// The release tag the surface is compared with, as `CHANGELOG.md` (`text`) names it: the
-/// newest release's, once work follows it. A commit that releases the newest (its Unreleased
-/// section empty, its tag not made yet) is compared with the release before. Null before the
-/// first release. A release named there whose tag this clone's history lacks fails, as do a
-/// shallow clone and git failing, reported: each would compare the surface with nothing,
-/// which passes (a clone fetched without tags passed so).
+/// The release tag the surface is compared with: the newest `v<version>` tag in the commit's
+/// history, whatever `CHANGELOG.md` (`text`) says, for git records what was released and the
+/// text may say otherwise. A commit that releases, before its tag is made, is so compared with
+/// the release before. The text must name that release (`## [X.Y.Z]`): the entries since it
+/// are what the comparison reads, and a text naming no release that resolves to a tag fails,
+/// as does one naming a release while history holds no tag. Null before the first release
+/// (neither a tag nor a release) and on the commit that makes it. A shallow clone and git failing fail too, reported: each
+/// would compare the surface with nothing, which passes (a clone fetched without tags passed so).
 pub fn lastTag(c: *src.Context, text: []const u8) !?[]const u8 {
     const shallow = try must(c, &.{ "git", "rev-parse", "--is-shallow-repository" });
     if (std.mem.eql(u8, shallow, "true")) {
         c.fail("git: this clone is shallow, so the last release tag may be missing from its history: fetch it whole (`git fetch --unshallow`)", .{});
         return error.HistoryUnreadable;
     }
+    var newest: ?struct { name: []const u8, version: std.SemanticVersion } = null;
+    var tags = std.mem.splitScalar(u8, try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", "v*" }), '\n');
+    while (tags.next()) |line| {
+        const name = std.mem.trim(u8, line, " \r");
+        if (!std.mem.startsWith(u8, name, "v")) continue;
+        const version = changelog.parseVersion(name["v".len..]) orelse continue;
+        if (newest == null or version.order(newest.?.version) == .gt) newest = .{ .name = name, .version = version };
+    }
     var releases = releasesOf(text);
-    const newest = releases.next() orelse return null;
-    if (try tagOf(c, newest)) |tag| return tag;
-    var problem: changelog.Problem = undefined;
-    const releasing = if (changelog.unreleased(c.a, text, &problem)) |section| section.empty() else |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        // Not a release's text, so the newest release is behind it; changelogNamesChanges
-        // reports what is wrong with it.
-        error.NoUnreleased, error.Malformed => false,
+    const tag = newest orelse {
+        const named = releases.next() orelse return null;
+        // The commit that makes the first release, before its tag: Unreleased empty, one release.
+        var problem: changelog.Problem = undefined;
+        const releasing = if (changelog.unreleased(c.a, text, &problem)) |section| section.empty() else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // changelogNamesChanges reports what is wrong with it.
+            error.NoUnreleased, error.Malformed => false,
+        };
+        if (releasing and releases.next() == null) return null;
+        c.fail("git: CHANGELOG.md's release {f} has no tag v{f} in this clone's history, so the surface has nothing to be compared with: fetch the tags (`git fetch --tags`)", .{ named, named });
+        return error.HistoryUnreadable;
     };
-    const wanted = if (releasing) releases.next() orelse return null else newest;
-    if (try tagOf(c, wanted)) |tag| return tag;
-    c.fail("git: CHANGELOG.md's release {f} has no tag v{f} in this clone's history, so the surface has nothing to be compared with: fetch the tags (`git fetch --tags`)", .{ wanted, wanted });
-    return error.HistoryUnreadable;
-}
-
-/// `v<version>` when that tag is in the history of the commit, else null.
-fn tagOf(c: *src.Context, version: std.SemanticVersion) !?[]const u8 {
-    const tag = try c.a.print("v{f}", .{version});
-    return if ((try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", tag })).len == 0) null else tag;
+    while (releases.next()) |release| if (release.order(tag.version) == .eq) return tag.name;
+    c.fail("CHANGELOG.md: the newest release tag in this commit's history is {s}, and no `## [{f}] - <date>` heading names it, so what changed since cannot be read; record each release under its version", .{ tag.name, tag.version });
+    return error.ReleaseUnnamed;
 }
 
 /// The releases `CHANGELOG.md` records, newest first: its `## [X.Y.Z]` headings.
@@ -526,6 +533,35 @@ test "a release whose tag the clone lacks fails; a commit that releases is compa
     var releasing = f.context();
     try changelogNamesChanges(&releasing, &package_modules);
     try std.testing.expectEqual(@as(usize, 1), releasing.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "since v0.1.0 the package removed or changed") != null);
+}
+
+test "the newest tag in history is the base whatever the headings say, and a CHANGELOG must name it" {
+    const f = try tagged();
+    defer f.deinit();
+    try f.write("src/a.zig", "pub const a = 1;\n");
+    // Headings that name no release resolving to the tag: without brackets, with a v, or none
+    // (review-1029b N8). Each would leave the removal unseen.
+    for ([_][]const u8{
+        "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- x.\n\n## 0.1.0 - 2026-01-01\n\n- First.\n",
+        "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- x.\n\n## [v0.1.0] - 2026-01-01\n\n- First.\n",
+        "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- x.\n",
+    }) |text| {
+        f.held.clearRetainingCapacity();
+        try f.write("CHANGELOG.md", text);
+        var c = f.context();
+        try changelogNamesChanges(&c, &package_modules);
+        try std.testing.expectEqual(@as(usize, 1), c.errors);
+        try std.testing.expect(std.mem.find(u8, f.held.written(), "the newest release tag in this commit's history is v0.1.0, and no `## [0.1.0] - <date>` heading names it") != null);
+    }
+    // A heading for a release never tagged does not move the base: the removal since v0.1.0 is
+    // still seen.
+    f.held.clearRetainingCapacity();
+    try f.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.3.0] - 2026-03-01\n\n### Fixed\n\n- x.\n\n## [0.1.0] - 2026-01-01\n\n- First.\n");
+    try f.commit("Remove run");
+    var untagged = f.context();
+    try changelogNamesChanges(&untagged, &package_modules);
+    try std.testing.expectEqual(@as(usize, 1), untagged.errors);
     try std.testing.expect(std.mem.find(u8, f.held.written(), "since v0.1.0 the package removed or changed") != null);
 }
 

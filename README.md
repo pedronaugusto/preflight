@@ -452,8 +452,8 @@ The gate has four tiers, each holding everything the one before it checks:
   configured cross target (macOS and Windows run natively instead). It is the required
   status check of a pull request.
 - **release**: the full matrix, nightly and before a cut: every mode on every host
-  (Debug and ReleaseSafe everywhere, ARM Linux and Windows included, ReleaseFast on
-  Linux), the Debug suite on a riscv64 Linux kernel under QEMU, ReleaseSmall, every cross
+  (Debug, ReleaseSafe and ReleaseFast, ARM Linux and Windows included), the Debug suite on a
+  riscv64 Linux kernel under QEMU, ReleaseSmall compiled on each system, every cross
   target with the ReleaseFast benchmarks, the links of every macOS and Windows target
   (a macOS one on a Mac only when its build links a framework), TSan and the hardened
   checks where configured, and the Debug suite on Linux with Zig master.
@@ -585,18 +585,21 @@ what a release needs beside the jobs, each refusal naming its fix:
    field given a default, and a constant's new value needs an entry, not a breaking one. `zig
    build surface` lists the surface, `zig build surface -- --since <tag>` what changed (`-`
    removed or changed, `+` added). A shallow clone, or git failing, fails the check rather than
-   compare with nothing. What it cannot see: an inferred error set (`!T`), which only the
+   compare with nothing. The last tag is the newest `v*` tag in the commit's history, whatever
+   the CHANGELOG's headings say, and the CHANGELOG must name its release (`## [X.Y.Z]`). What it cannot see: an inferred error set (`!T`), which only the
    compiler's analysis of both revisions knows, and the members of what another package's
    module declares. A change of behaviour it cannot see at all: its author names it. CHANGELOG.md is read as bay reads it (bay's `changelog` module):
    an entry is a line under one of Keep a Changelog's groups or `### Breaking`.
 
 The lint checks 2 and 3 on every commit too. Then the gate runs, on this machine, the release
-tier's jobs it can: the suites of its own system (a Linux machine of either architecture runs
-the Linux ones, once each, with the source checks and every target's compile, which the hosted
-gate runs on Linux), and on every machine the hardened runs; each as the hosted job runs it,
-every one of them, so a red names all that failed. It names what it did not run and why:
-another system's suite, ThreadSanitizer off x86_64 and aarch64 Linux and macOS, riscv64 with
-no `qemu-system-riscv64` on the PATH. bay runs it on each machine a release is gated on.
+tier's jobs of its own system, at every optimize mode (a Linux machine of either architecture
+runs the Linux ones, once each), the source checks and every target's compile, which the hosted
+gate runs on Linux, a declared job that names no runner, and the hardened runs; each as the
+hosted job runs it, every one of them, so a red names all that failed. It names what it did not
+run and why, and only that stays unproven: another system's suite, ThreadSanitizer off x86_64
+and aarch64 Linux and macOS, and the VM legs (riscv64 under QEMU), which are the nightly's by
+declaration on every host (docs/design.md, "The gate on the machines at hand"). bay runs it on
+each machine a release is gated on.
 It runs the planned jobs in the directory the package's caller runs its gate in (preflight's
 own runs its sample), or the one `--working-directory <dir>` names, and the declared jobs in
 their own directories.

@@ -150,20 +150,18 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     const config_path = args.config orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
     const config = try checks.workflow.configuration(c.*, config_path);
     const jobs = try checks.matrix.plan(c.a, config, .release);
-    const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch, .qemu = onPath(c.*, environ, "qemu-system-riscv64") };
+    const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch };
     const portable = checks.local.Portable.from(environ) orelse {
         c.report("gate: PREFLIGHT_PORTABLE is here or elsewhere, not {s}\n", .{environ.get("PREFLIGHT_PORTABLE").?}); // safe: only a value set and unknown is refused
         return error.CheckFailed;
     };
     const decisions = try checks.local.decide(c.a, jobs, host, portable);
     var not_here: std.ArrayList([]const u8) = .empty;
-    var missing: std.ArrayList([]const u8) = .empty;
     var failed: std.ArrayList([]const u8) = .empty;
     var ran: usize = 0;
     for (jobs, decisions) |job, decision| switch (decision) {
         .covered => {},
         .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
-        .missing => |why| try missing.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
         .run => {
             var env = try environ.clone(c.a);
             try env.put("STEP", checks.local.stepOf(job));
@@ -189,23 +187,12 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
             };
         },
     };
-    const verdict = try checks.local.verdict(c.a, ran, failed.items, missing.items, not_here.items);
+    const verdict = try checks.local.verdict(c.a, ran, failed.items, not_here.items);
     if (!verdict.green) {
         c.report("{s}\n", .{verdict.line});
         return error.CheckFailed;
     }
     try stdout(c.*, try c.a.print("{s}\n", .{verdict.line}));
-}
-
-/// Whether `name` is a program on the PATH.
-fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const u8) bool {
-    const path = environ.get("PATH") orelse return false;
-    var dirs = std.mem.tokenizeScalar(u8, path, std.Io.Dir.path.delimiter);
-    while (dirs.next()) |dir| {
-        const candidate = std.Io.Dir.path.join(c.a, &.{ dir, name }) catch return false;
-        if (std.Io.Dir.cwd().access(c.io, candidate, .{})) |_| return true else |_| {}
-    }
-    return false;
 }
 
 /// `generate`: the caller made again for the package's pins and configuration, where it

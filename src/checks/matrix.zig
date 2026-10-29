@@ -57,6 +57,9 @@ pub const Job = struct {
     /// The job runs riscv64 Linux's tests on a riscv64 kernel under QEMU's system emulation
     /// (`-Dci-vm`), which the runner installs.
     qemu: bool = false,
+    /// A job of the package's own that names no runner: the package's on any machine, which
+    /// the hosted gate runs on Linux and a gate at hand runs wherever it is.
+    any_host: bool = false,
 };
 
 /// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
@@ -218,6 +221,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
                     .job_timeout = try minutes(entry, "timeout"),
                     .directory = directory,
                     .declared = true,
+                    .any_host = hosted == .null,
                 };
                 job.cache_key = try key(a, job);
                 try jobs.append(a, job);
@@ -261,11 +265,9 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
         .release => {},
     }
     var jobs: std.ArrayList(Job) = .empty;
-    for (hosts, host_names) |host, host_name| {
-        const modes: []const Mode = if (std.mem.eql(u8, host, hosts[0])) &.{ .debug, .safe, .fast } else &.{ .debug, .safe };
-        try hostJobs(a, config, &jobs, host, host_name, modes);
-    }
-    for (arm_hosts, arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe });
+    // Every mode on every runner, so that a gate at hand on any of them proves its own system at
+    // each mode a package releases in.
+    for (hosts ++ arm_hosts, host_names ++ arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe, .fast });
     try emulatedJobs(a, config, &jobs);
     try jobs.append(a, try lintJob(a, config, .release));
     try releaseJobs(a, config, &jobs);
@@ -544,7 +546,7 @@ pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
 
 fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     const compile = try src.string(src.get(config, "compile_step"), "check");
-    try jobs.append(a, .{ .os = hosts[0], .name = "compile (ReleaseSmall)", .step = compile, .args = "-Doptimize=small" });
+    for (hosts) |host| try jobs.append(a, .{ .os = host, .name = try a.print("compile ({s}, ReleaseSmall)", .{host}), .step = compile, .args = "-Doptimize=small" });
     try crossJobs(a, config, jobs, try src.items(src.get(config, "targets")), true);
 }
 
@@ -950,20 +952,22 @@ test "the merge tier links macOS and Windows Debug once on native runners and ru
     for (tiers.compile) |builder| try std.testing.expect(std.mem.find(u8, builder.args, "-Doptimize=debug") != null);
 }
 
-test "the release tier is the full matrix: every mode on every host, ReleaseSmall, cross targets and the source checks" {
+test "the release tier is the full matrix: every mode on every host, ReleaseSmall on each system, cross targets and the source checks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const expected = [_][]const u8{
-        "test (ubuntu-latest, Debug)",        "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
-        "test (macos-latest, Debug)",         "test (macos-latest, ReleaseSafe)",      "test (windows-latest, Debug)",
-        "test (windows-latest, ReleaseSafe)", "source checks and documented snippets", "compile (ReleaseSmall)",
-        "Cross compile",                      "test (ubuntu-24.04-arm, Debug)",        "test (ubuntu-24.04-arm, ReleaseSafe)",
-        "test (windows-11-arm, Debug)",       "test (windows-11-arm, ReleaseSafe)",    "test (riscv64-linux on its kernel under QEMU, Debug)",
+        "test (ubuntu-latest, Debug)",            "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
+        "test (macos-latest, Debug)",             "test (macos-latest, ReleaseSafe)",      "test (macos-latest, ReleaseFast)",
+        "test (windows-latest, Debug)",           "test (windows-latest, ReleaseSafe)",    "test (windows-latest, ReleaseFast)",
+        "test (ubuntu-24.04-arm, Debug)",         "test (ubuntu-24.04-arm, ReleaseSafe)",  "test (ubuntu-24.04-arm, ReleaseFast)",
+        "test (windows-11-arm, Debug)",           "test (windows-11-arm, ReleaseSafe)",    "test (windows-11-arm, ReleaseFast)",
+        "source checks and documented snippets",  "compile (ubuntu-latest, ReleaseSmall)", "compile (macos-latest, ReleaseSmall)",
+        "compile (windows-latest, ReleaseSmall)", "Cross compile",                         "test (riscv64-linux on its kernel under QEMU, Debug)",
         // The hardened profile is every package's.
-        "hardened",                           "hardened-fuzz",                         "hardened-tsan",
+        "hardened",                               "hardened-fuzz",                         "hardened-tsan",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {
@@ -998,7 +1002,9 @@ test "only the merge and release tiers execute macOS and Windows, and only the r
         try std.testing.expectEqual(@as(usize, switch (tier) {
             .fast => 0,
             .merge => 2 + 1,
-            .release => 2 * 2 + 2 + 2 * 2,
+            // Every mode on macOS (two shards), Windows and both ARM runners, and the
+            // ReleaseSmall compiles of macOS and Windows.
+            .release => 2 * 3 + 3 + 2 * 3 + 2,
         }), executed);
     }
 }

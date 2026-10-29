@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     // Fetched only by a build that asks for the machine.
     if (b.option(bool, "vm-freebsd-boot", "Add vm-freebsd-boot: boot the FreeBSD test machine to its first process (qemu-system-x86_64 and KVM on a Linux host)") orelse false) {
         const freebsd_boot = b.step("vm-freebsd-boot", "Boot the FreeBSD test machine to its first process and report its status");
-        if (vm.addFreebsdBoot(b, b, b.graph.host, "zig-out/freebsd-console.log")) |boot| freebsd_boot.dependOn(boot);
+        if (vm.addFreebsdBoot(b, b, b.graph.host, "zig-out/freebsd-console.log", "zig-out/freebsd-qemu.log")) |boot| freebsd_boot.dependOn(boot);
     }
     const executable = program(b, b, ci.ciTarget(b)) orelse return;
     b.installArtifact(executable);

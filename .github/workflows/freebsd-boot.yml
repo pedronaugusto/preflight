@@ -39,5 +39,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: freebsd-console
-          path: zig-out/freebsd-console.log
+          path: zig-out/freebsd-*.log
           if-no-files-found: warn

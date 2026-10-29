@@ -29,7 +29,12 @@ pub const boot_deadline_seconds = 180;
 /// The kernel's environment: its root, the machine's first process, the serial
 /// console, and a panic that ends the machine at once instead of waiting at the
 /// debugger.
-pub const kernel_environment = "-h vfs.root.mountfrom=cd9660:/dev/vtbd0 vfs.mountroot.timeout=30 init_path=/preflight/init hw.uart.console=io:0x3f8 kern.panic_reboot_wait_time=0 debug.debugger_on_panic=0";
+/// Without a loader there is no device.hints: the two serial ports are named here, the
+/// first the console, as FreeBSD's FIRECRACKER kernel names them. The kernel splits
+/// this at spaces and commas.
+pub const kernel_environment = "-h vfs.root.mountfrom=cd9660:/dev/vtbd0 vfs.mountroot.timeout=30 init_path=/preflight/init hw.uart.console=io:0x3f8 " ++
+    "hint.uart.0.at=isa hint.uart.0.port=0x3F8 hint.uart.0.flags=0x10 hint.uart.0.irq=4 hint.uart.1.at=isa hint.uart.1.port=0x2F8 hint.uart.1.irq=3 " ++
+    "kern.panic_reboot_wait_time=0 debug.debugger_on_panic=0";
 
 pub const ImagePaths = struct { kernel_set: []const u8, runtime: []const u8, init: []const u8, kernel: []const u8, root: []const u8 };
 
@@ -144,33 +149,44 @@ pub fn hostRefusal(io: Io) ?[]const u8 {
     return null;
 }
 
-/// Boots the machine on `root` and returns how it ended; `console_out` receives its
-/// whole console, whatever the outcome, for the job's artifact.
-pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, console_out: []const u8) !Outcome {
+/// Boots the machine on `root` and returns how it ended. `console_out` receives its
+/// whole console and `qemu_out` QEMU's side (its log of resets and guest errors, and
+/// what its monitor says of the processor when the deadline stops it), whatever the
+/// outcome, for the job's artifact.
+pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, console_out: []const u8, qemu_out: []const u8) !Outcome {
     const cwd = Io.Dir.cwd();
     const cpus = @min(std.Thread.getCpuCount() catch 1, max_cpus);
     const console_path = try gpa.print("{s}/console", .{run_path});
     const status_path = try gpa.print("{s}/status", .{run_path});
+    const log_path = try gpa.print("{s}/qemu.log", .{run_path});
     const argv = [_][]const u8{
         qemu,                        "-machine",                    "pc,accel=kvm",                             "-cpu",                                                                    "host",
         "-smp",                      try gpa.print("{d}", .{cpus}), "-m",                                       memory,                                                                    "-nodefaults",
         "-display",                  "none",                        "-no-reboot",                               "-kernel",                                                                 kernel,
         "-append",                   kernel_environment,            "-drive",                                   try gpa.print("file={s},format=raw,if=none,id=root,readonly=on", .{root}), "-device",
         "virtio-blk-pci,drive=root", "-serial",                     try gpa.print("file:{s}", .{console_path}), "-serial",                                                                 try gpa.print("file:{s}", .{status_path}),
+        // The monitor on QEMU's own standard streams, for the deadline's questions.
+        "-monitor",                  "stdio",                       "-d",                                       "cpu_reset,guest_errors,unimp",                                            "-D",
+        log_path,
     };
-    var child = std.process.spawn(io, .{ .argv = &argv, .stdin = .ignore, .stdout = .inherit, .stderr = .inherit }) catch |err| {
+    var child = std.process.spawn(io, .{ .argv = &argv, .stdin = .pipe, .stdout = .pipe, .stderr = .inherit }) catch |err| {
         try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: starting {s}: {t}\n", .{ qemu, err }));
         return err;
     };
-    var deadline: Deadline = .{ .pid = child.id.? };
+    var deadline: Deadline = .{ .pid = child.id.?, .monitor = child.stdin.? };
     const watch = try std.Thread.spawn(.{}, Deadline.watch, .{ &deadline, io });
     _ = try child.wait(io);
     const fired = deadline.finish();
     watch.join();
 
+    var monitor_buffer: [4096]u8 = undefined;
+    var monitor = child.stdout.?.readerStreaming(io, &monitor_buffer);
+    const answers = monitor.interface.allocRemaining(gpa, .limited(1024 * 1024)) catch "";
+    const log = aegis.own.readFile(io, cwd, log_path, gpa, .fromRaw(16 * 1024 * 1024)) catch "";
     const console = aegis.own.readFile(io, cwd, console_path, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
-    if (std.Io.Dir.path.dirname(console_out)) |dir| try cwd.createDirPath(io, dir);
+    for ([_][]const u8{ console_out, qemu_out }) |out| if (std.Io.Dir.path.dirname(out)) |dir| try cwd.createDirPath(io, dir);
     try cwd.writeFile(io, .{ .sub_path = console_out, .data = console });
+    try cwd.writeFile(io, .{ .sub_path = qemu_out, .data = try std.mem.concat(gpa, u8, &.{ "QEMU's log (-d cpu_reset,guest_errors,unimp):\n", log, "\nQEMU's monitor:\n", answers }) });
     const status = std.mem.trim(u8, aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(4096)) catch "", "\r\n ");
     return classify(status, console, fired);
 }
@@ -186,23 +202,36 @@ pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) O
     return .ended;
 }
 
-/// Stops QEMU, the one process this program started, when the boot outlives its deadline.
+/// Stops QEMU, the one process this program started, when the boot outlives its
+/// deadline: first asks its monitor where the processor is and to quit, then, if it
+/// has not, ends it.
 const Deadline = struct {
     pid: std.posix.pid_t,
+    monitor: Io.File,
     state: aegis.Atomic(State) = .init(.running),
 
     const State = enum(u8) { running, done, fired };
+    const questions = "info status\ninfo registers\nx/8i $pc\nquit\n";
 
     fn watch(d: *Deadline, io: Io) void {
-        var waited: u32 = 0;
-        while (waited < boot_deadline_seconds * 10) : (waited += 1) {
-            if (d.state.load(.acquire) == .done) return;
-            // A canceled wait ends the watch: the boot is being given up anyway.
-            io.sleep(.fromMilliseconds(100), .awake) catch return;
-        }
+        if (d.waitDone(io, boot_deadline_seconds * 10)) return;
         if (d.state.cmpxchgStrong(.running, .fired, .acq_rel, .acquire) != null) return;
+        // glint-ignore: Z026 -- a monitor that cannot be written to leaves the signal below to end QEMU
+        d.monitor.writeStreamingAll(io, questions) catch {};
+        if (d.waitDone(io, 100)) return;
         // glint-ignore: Z026 -- QEMU may have ended between the check and the signal; its wait reports either way
         std.posix.kill(d.pid, .KILL) catch {};
+    }
+
+    /// Whether the boot ended within `tenths` of a second.
+    fn waitDone(d: *Deadline, io: Io, tenths: u32) bool {
+        var waited: u32 = 0;
+        while (waited < tenths) : (waited += 1) {
+            if (d.state.load(.acquire) == .done) return true;
+            // A canceled wait counts as the boot over: it is being given up anyway.
+            io.sleep(.fromMilliseconds(100), .awake) catch return true;
+        }
+        return d.state.load(.acquire) == .done;
     }
 
     /// Marks the boot over; whether the deadline had stopped it.

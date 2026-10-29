@@ -22,7 +22,7 @@ const usage =
     \\       preflight-vm install <kernel> <initrd> <rootfs> <initrd-out> <package>...
     \\       preflight-vm run <kernel> <initrd> <program> [args...]
     \\       preflight-vm freebsd-image <kernel-set> <runtime-image> <init> <kernel-out> <root-out>
-    \\       preflight-vm freebsd-boot <kernel> <root> <console-out>
+    \\       preflight-vm freebsd-boot <kernel> <root> <console-out> <qemu-out>
     \\
 ;
 
@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !u8 {
         try freebsd.image(io, gpa, .{ .kernel_set = args[2], .runtime = args[3], .init = args[4], .kernel = args[5], .root = args[6] });
         return 0;
     }
-    if (args.len == 5 and std.mem.eql(u8, args[1], "freebsd-boot")) return freebsdBoot(io, gpa, args[2], args[3], args[4]);
+    if (args.len == 6 and std.mem.eql(u8, args[1], "freebsd-boot")) return freebsdBoot(io, gpa, args[2], args[3], args[4], args[5]);
     try Io.File.stderr().writeStreamingAll(io, usage);
     return 2;
 }
@@ -192,7 +192,7 @@ fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, 
 
 /// Boots the FreeBSD machine to its first process and reports the status it wrote,
 /// or names how the boot failed; the console goes to `console_out` either way.
-fn freebsdBoot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, console_out: []const u8) !u8 {
+fn freebsdBoot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, console_out: []const u8, qemu_out: []const u8) !u8 {
     const stderr = Io.File.stderr();
     if (freebsd.hostRefusal(io)) |reason| {
         try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: {s}\n", .{reason}));
@@ -202,7 +202,7 @@ fn freebsdBoot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const
     const run_path = try runDirectory(io, gpa, try cwd.realPathFileAlloc(io, ".", gpa));
     // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the boot's outcome is the result
     defer cwd.deleteTree(io, run_path) catch {};
-    switch (try freebsd.boot(io, gpa, kernel, root, run_path, console_out)) {
+    switch (try freebsd.boot(io, gpa, kernel, root, run_path, console_out, qemu_out)) {
         .status => |status| {
             try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine's first process: {s}\n", .{status}));
             return 0;
@@ -214,6 +214,9 @@ fn freebsdBoot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const
     const console = aegis.own.readFile(io, cwd, console_out, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
     try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: its console ({s}), last 16 KiB:\n", .{console_out}));
     try stderr.writeStreamingAll(io, console[console.len -| 16384..]);
+    const qemu_side = aegis.own.readFile(io, cwd, qemu_out, gpa, .fromRaw(16 * 1024 * 1024)) catch "";
+    try stderr.writeStreamingAll(io, try gpa.print("\npreflight-vm: QEMU's side ({s}), last 16 KiB:\n", .{qemu_out}));
+    try stderr.writeStreamingAll(io, qemu_side[qemu_side.len -| 16384..]);
     return 1;
 }
 

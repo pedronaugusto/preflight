@@ -1,5 +1,6 @@
 const std = @import("std");
 const ci = @import("src/build.zig");
+const vm = @import("src/vm.zig");
 /// Adds preflight's gate to a build, over a package: from `dev` with bay, or from `build`.
 pub const addCi = ci.addCi;
 /// What `addCi` checks and how its tests run.
@@ -35,6 +36,11 @@ pub fn build(b: *std.Build) void {
     // A package that depends on preflight builds nothing of it here: its gate
     // installs the tools through addCi.
     if (b.pkg_hash.len != 0) return;
+    // Fetched only by a build that asks for the machine.
+    if (b.option(bool, "vm-freebsd-boot", "Add vm-freebsd-boot: boot the FreeBSD test machine to its first process (qemu-system-x86_64 and KVM on a Linux host)") orelse false) {
+        const freebsd_boot = b.step("vm-freebsd-boot", "Boot the FreeBSD test machine to its first process and report its status");
+        if (vm.addFreebsdBoot(b, b, b.graph.host, "zig-out/freebsd-console.log")) |boot| freebsd_boot.dependOn(boot);
+    }
     const executable = program(b, b, ci.ciTarget(b)) orelse return;
     b.installArtifact(executable);
     if (!addToolchain(b)) return;

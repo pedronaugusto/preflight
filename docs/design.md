@@ -153,3 +153,48 @@ values keep clock and scale together.
 Under the build runner's protocol a passing test run and a passing lint write nothing: Zig 0.17
 shows any stderr of a passing build step under a "failed command:" line. A failure names its
 seed, and lint prints all it held when it fails.
+
+## The FreeBSD test machine
+
+A program built for x86_64 FreeBSD runs on FreeBSD's own kernel under QEMU with KVM, on
+a Linux host only (vm/freebsd.zig refuses any other by name); it is the nightly tier's,
+for what no hosted runner is and a cross-compile cannot show: FreeBSD's kernel TLS and
+its sockets. The machine is FreeBSD's own release files, pinned by hash in preflight's
+manifest and fetched only by a build that asks for it, as the riscv64 machine's Alpine
+files are: the kernel distribution set (`kernel.txz`) and the runtime OCI image, whose
+one layer is the base system a program needs (`ld-elf.so.1`, libc, libthr, `sh`).
+
+There is no loader. The release's `base.txz`, the one archive holding `loader.efi`,
+cannot be a dependency (below), and pkgbase's `.pkg` files are not an archive type Zig
+fetches. QEMU starts the kernel at its PVH entry (`-kernel`; FreeBSD's amd64 kernel
+carries `XEN_ELFNOTE_PHYS32_ENTRY`) with its environment on the command line:
+`vfs.root.mountfrom`, `init_path`, the serial console. Without a loader no module is
+preloaded, so the root is a file system GENERIC builds in: an ISO 9660 image with Rock
+Ridge (vm/iso9660.zig, cpio.zig's counterpart) that the host writes from the layer's
+members as they are (modes, owners, symbolic and hard links), the kernel and its modules
+under `/boot/kernel`, and preflight's first process at `/preflight/init`
+(vm/freebsd/guest.zig), which can load what else it needs from there. Its status goes to
+the second serial port; the console, the first, is kept whole as the job's artifact.
+Each wait has a deadline and a named failure: no status in time, a panic on the
+console, QEMU ending without either. The writer is checked against libarchive's reader
+on FreeBSD's own layer, member for member, and against FreeBSD's cd9660 by the boot.
+
+Rock Ridge readers disagree on a symbolic link whose SL entries split between two
+components (libarchive starts each entry without a `/`; FreeBSD follows the last
+component's continue flag), so the writer ends an entry only inside a continued name,
+where both agree, and refuses the rare target it cannot split that way.
+
+**A gap in Zig 0.17.0: tar hard links.** Zig's package fetch fails on any archive with a
+hard link (ustar type `1`), and `std.tar.Iterator` skips one, reporting it as
+unsupported without its target. FreeBSD's `base.txz` has 13,021 of them (`/rescue`,
+`/bin/[`), so it cannot be a dependency; the OCI image's outer archive has none, and
+the host reads the layer inside it with its own reader (vm/ustar.zig), which keeps them.
+The repro, two members:
+
+    printf 'x\n' > a && ln a b && bsdtar --format ustar -cf one-hardlink.tar a b
+    zig fetch one-hardlink.tar
+    # error: unable to unpack tarball
+    #     note: file 'b' has unsupported type '1'
+
+When Zig's fetch takes hard links, `base.txz` could replace the OCI image and bring
+FreeBSD's loader with it; the ISO root and PVH boot would not need to change.

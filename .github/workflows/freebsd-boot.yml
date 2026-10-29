@@ -1,0 +1,43 @@
+# The FreeBSD test machine's first proof, on its branch only: boot FreeBSD's kernel by
+# its PVH entry to preflight's first process on the ISO 9660 root, and report its status.
+# The console is kept as the job's artifact whatever the outcome.
+name: FreeBSD machine boot
+
+on:
+  push:
+    branches: [freebsd-vm]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+      - name: Install QEMU's x86_64 system emulation and open KVM to the runner
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          qemu-system-x86_64 --version
+      - name: Boot FreeBSD to preflight's first process
+        timeout-minutes: 10
+        run: zig build -Dvm-freebsd-boot vm-freebsd-boot
+      - name: Keep the console
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-console
+          path: zig-out/freebsd-console.log
+          if-no-files-found: warn

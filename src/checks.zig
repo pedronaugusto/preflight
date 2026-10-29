@@ -35,6 +35,9 @@ test {
     _ = @import("vm.zig");
     _ = @import("vm/cpio.zig");
     _ = @import("vm/host.zig");
+    _ = @import("vm/freebsd.zig");
+    _ = @import("vm/iso9660.zig");
+    _ = @import("vm/ustar.zig");
     _ = @import("record_test.zig");
     _ = @import("configure.zig");
     _ = @import("facts.zig");

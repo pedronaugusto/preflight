@@ -60,6 +60,42 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Bui
     visit(b, tests, machine, &seen);
 }
 
+/// Boots the FreeBSD machine (vm/freebsd.zig) to its first process and reports
+/// its status: the step that proves the machine before tests run on it. `console`
+/// is where its console is written, whatever the outcome, from the build's root.
+pub fn addFreebsdBoot(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget, console: []const u8) ?*std.Build.Step {
+    const kernel_set = pkg.dependencyLazy("freebsd_amd64_kernel", .{}) catch return null;
+    const runtime = pkg.dependencyLazy("freebsd_amd64_runtime", .{}) catch return null;
+    const freebsd = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .freebsd });
+    const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = b.createModule(.{
+        .root_source_file = pkg.path("src/vm/freebsd/guest.zig"),
+        .target = freebsd,
+        .optimize = .safe,
+        .link_libc = true,
+    }) });
+    const runner = b.addExecutable(.{ .name = "preflight-vm", .root_module = b.createModule(.{
+        .root_source_file = pkg.path("src/vm/host.zig"),
+        .target = host,
+        .optimize = .safe,
+        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = host, .optimize = .safe }).module("aegis") }},
+    }) });
+    const make = b.addRunArtifact(runner);
+    make.addArg("freebsd-image");
+    make.addDirectoryArg2(kernel_set.path("."), .{});
+    make.addDirectoryArg2(runtime.path("."), .{});
+    make.addArtifactArg2(guest, .{});
+    const kernel = make.addOutputFileArg2("kernel", .{});
+    const root = make.addOutputFileArg2("root.iso", .{});
+    const boot = b.addRunArtifact(runner);
+    boot.addArg("freebsd-boot");
+    boot.addFileArg(kernel);
+    boot.addFileArg(root);
+    boot.addArg(console);
+    boot.setCwd(b.path("."));
+    boot.has_side_effects = true;
+    return &boot.step;
+}
+
 const Machine = struct {
     runner: *std.Build.Step.Compile,
     kernel: std.Build.LazyPath,

@@ -15,11 +15,14 @@ const aegis = @import("aegis");
 const builtin = @import("builtin");
 const Io = std.Io;
 const cpio = @import("cpio.zig");
+const freebsd = @import("freebsd.zig");
 
 const usage =
     \\usage: preflight-vm image <alpine> <rootfs> <init> <kernel-out> <initrd-out>
     \\       preflight-vm install <kernel> <initrd> <rootfs> <initrd-out> <package>...
     \\       preflight-vm run <kernel> <initrd> <program> [args...]
+    \\       preflight-vm freebsd-image <kernel-set> <runtime-image> <init> <kernel-out> <root-out>
+    \\       preflight-vm freebsd-boot <kernel> <root> <console-out>
     \\
 ;
 
@@ -39,6 +42,11 @@ pub fn main(init: std.process.Init) !u8 {
     }
     if (args.len >= 7 and std.mem.eql(u8, args[1], "install")) return install(io, gpa, .{ .kernel = args[2], .initrd = args[3], .rootfs = args[4], .out = args[5] }, args[6..]);
     if (args.len >= 5 and std.mem.eql(u8, args[1], "run")) return run(io, gpa, init.environ_map, args[2], args[3], args[4..]);
+    if (args.len == 7 and std.mem.eql(u8, args[1], "freebsd-image")) {
+        try freebsd.image(io, gpa, .{ .kernel_set = args[2], .runtime = args[3], .init = args[4], .kernel = args[5], .root = args[6] });
+        return 0;
+    }
+    if (args.len == 5 and std.mem.eql(u8, args[1], "freebsd-boot")) return freebsdBoot(io, gpa, args[2], args[3], args[4]);
     try Io.File.stderr().writeStreamingAll(io, usage);
     return 2;
 }
@@ -180,6 +188,33 @@ fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, 
         .exited => |code| return code,
         .signal => |sig| raiseOwn(sig),
     }
+}
+
+/// Boots the FreeBSD machine to its first process and reports the status it wrote,
+/// or names how the boot failed; the console goes to `console_out` either way.
+fn freebsdBoot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, console_out: []const u8) !u8 {
+    const stderr = Io.File.stderr();
+    if (freebsd.hostRefusal(io)) |reason| {
+        try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: {s}\n", .{reason}));
+        return 2;
+    }
+    const cwd = Io.Dir.cwd();
+    const run_path = try runDirectory(io, gpa, try cwd.realPathFileAlloc(io, ".", gpa));
+    // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the boot's outcome is the result
+    defer cwd.deleteTree(io, run_path) catch {};
+    switch (try freebsd.boot(io, gpa, kernel, root, run_path, console_out)) {
+        .status => |status| {
+            try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine's first process: {s}\n", .{status}));
+            return 0;
+        },
+        .panic => |line| try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD kernel panicked: {s}\n", .{line})),
+        .deadline => try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine wrote no status within {d} s and was stopped\n", .{freebsd.boot_deadline_seconds})),
+        .ended => try stderr.writeStreamingAll(io, "preflight-vm: the FreeBSD machine ended without a status or a panic\n"),
+    }
+    const console = aegis.own.readFile(io, cwd, console_out, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
+    try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: its console ({s}), last 16 KiB:\n", .{console_out}));
+    try stderr.writeStreamingAll(io, console[console.len -| 16384..]);
+    return 1;
 }
 
 const InstallPaths = struct { kernel: []const u8, initrd: []const u8, rootfs: []const u8, out: []const u8 };

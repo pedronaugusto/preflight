@@ -31,6 +31,22 @@
             .lazy = true,
         },
 
+        // The FreeBSD test machine: FreeBSD 15.1's kernel distribution set and its
+        // runtime OCI image (the base system's run-time linker, libc and shell), fetched
+        // only by a build that boots it. The release's base.txz cannot be a dependency:
+        // Zig's fetch refuses its hard links.
+        .freebsd_amd64_kernel = .{
+            .url = "https://download.freebsd.org/releases/amd64/15.1-RELEASE/kernel.txz",
+            .hash = "N-V-__8AAC_9ngkzIdjDIfoFKFszRY5WsaeewthaOGDNyBWZ",
+            .lazy = true,
+        },
+
+        .freebsd_amd64_runtime = .{
+            .url = "https://download.freebsd.org/releases/OCI-IMAGES/15.1-RELEASE/amd64/Latest/FreeBSD-15.1-RELEASE-amd64-container-image-runtime.txz",
+            .hash = "N-V-__8AAGVbtgC1hJ0Cm64qW3BbGIMGb--Sg6Rb7t8GVPbY",
+            .lazy = true,
+        },
+
         .bay = .{
             .url = "git+https://github.com/pedronaugusto/bay?ref=v0.2.2#816ce309ea11d3f17bfcdafefd2700ecb175f5c0",
             .hash = "bay-0.2.2-uwJ5Z2mvBgBu0Z_J5RqeMgIaVpbQqYtKH8sLf1QPuCVN",

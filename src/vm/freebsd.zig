@@ -175,13 +175,14 @@ pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8
     };
     var deadline: Deadline = .{ .pid = child.id.?, .monitor = child.stdin.? };
     const watch = try std.Thread.spawn(.{}, Deadline.watch, .{ &deadline, io });
+    // The monitor's answers end when QEMU does; `wait` closes the pipes, so they are read first.
+    var monitor_buffer: [4096]u8 = undefined;
+    var monitor = child.stdout.?.readerStreaming(io, &monitor_buffer);
+    const answers = monitor.interface.allocRemaining(gpa, .limited(1024 * 1024)) catch "";
     _ = try child.wait(io);
     const fired = deadline.finish();
     watch.join();
 
-    var monitor_buffer: [4096]u8 = undefined;
-    var monitor = child.stdout.?.readerStreaming(io, &monitor_buffer);
-    const answers = monitor.interface.allocRemaining(gpa, .limited(1024 * 1024)) catch "";
     const log = aegis.own.readFile(io, cwd, log_path, gpa, .fromRaw(16 * 1024 * 1024)) catch "";
     const console = aegis.own.readFile(io, cwd, console_path, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
     for ([_][]const u8{ console_out, qemu_out }) |out| if (std.Io.Dir.path.dirname(out)) |dir| try cwd.createDirPath(io, dir);

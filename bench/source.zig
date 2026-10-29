@@ -13,12 +13,17 @@ const Context = struct {
     config: checks.source.Value,
     fn scan(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
-            var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io, .dir = c.dir };
+            // What the check says is held: a run prints nothing per unit.
+            var held: std.Io.Writer.Allocating = .init(c.scratch.allocator());
+            var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io, .dir = c.dir, .held = &held };
             checks.glint.check(&context, .{ .gpa = c.gpa, .config = c.config }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.CheckFailed,
             };
-            if (context.errors != 0) return error.UnexpectedFindings;
+            if (context.errors != 0) {
+                std.debug.print("{s}", .{held.written()});
+                return error.UnexpectedFindings;
+            }
             _ = c.scratch.reset(.retain_capacity);
         }
     }

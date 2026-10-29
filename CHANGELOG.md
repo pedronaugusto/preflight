@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- glint reads every Zig file the package ships (`build.zig.zon`'s `.paths`), those under `examples`, `ci`, `conformance` and `bench`, and `build.zig`; `glint_paths` adds to them, where it replaced them and could leave shipped code unread.
 - A repository may only raise a rule in `ci/preflight.json`: `off` or `report` below preflight's default fails by name (`report` on a finding rule did nothing in silence), P006 is a gated default like any other, and `strict_suppressions` is retired: suppressions are strict everywhere. The danger rules' scope is what `build.zig.zon`'s `.paths` ships, the build script included, not the `sources` a repository writes.
 - The gate's last line calls green only the release-tier jobs it ran, and names the rest "not run by this gate, so unproven"; a gate that ran none is refused, where it printed "green here".
 - The release tier holds the aegis pack's bar in the tool: its source checks (`-Dci-release`, `preflight lint --release`) fail on every aegis-pack finding, the flow rules' (A006, A009, A010, A012, A013, A018, A020, A021) included, which the default policy only reports. A landing's lint still reports them; `bay release`, which gates the release tier, refuses them.

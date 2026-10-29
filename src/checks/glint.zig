@@ -47,7 +47,7 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     var chosen = (try policy.parse(c, inputs.config, shipped)) orelse return;
     chosen.base.peer_writers = try peerWriters(c, chosen.base.peer_writers, inputs.build.modules);
     chosen.base.pointer_widths = try pointerWidths(c);
-    const paths = (try assembly.select(c, chosen, inputs.config)) orelse return;
+    const paths = (try assembly.select(c, chosen)) orelse return;
     var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
     defer assembled.deinit();
     var files: std.ArrayList(glint.FileConfig) = .empty;

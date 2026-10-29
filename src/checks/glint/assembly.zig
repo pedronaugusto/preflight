@@ -41,37 +41,24 @@ pub const Assembly = struct {
     }
 };
 
-/// The Zig files to check: `glint_paths`, or `sources` and the directories a
-/// repository keeps code in beside them. An explicit path that is not there is
-/// an error; a default one that is not is not part of this repository.
-pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []const u8 {
+/// The Zig files to check: every one the package ships (`build.zig.zon`'s `.paths`), those
+/// in the directories a repository keeps code in beside them, and `build.zig`, with
+/// `glint_paths` adding to them, never narrowing them. A named path that is not there is
+/// an error; a shipped or default one that is not is not part of this repository.
+pub fn select(c: *src.Context, policy: Policy) !?[]const []const u8 {
     var found: std.array_hash_map.String(void) = .empty;
     const before = c.errors;
-    if (policy.paths) |explicit| {
-        for (explicit) |path| {
-            const clean = try normalize(c.a, path);
-            // aegis: no-danger: a path the package's own configuration names; its build already runs its author's code with these rights
-            const stat = c.directory().statFile(c.io, clean, .{}) catch |err| switch (err) {
-                error.FileNotFound => {
-                    c.fail("glint: glint_paths: {s}: not found", .{path});
-                    continue;
-                },
-                else => return err,
-            };
-            if (stat.kind == .directory) {
-                try collect(c, clean, &found);
-            } else if (std.mem.endsWith(u8, clean, ".zig")) {
-                try found.put(c.a, clean, {});
-            } else c.fail("glint: glint_paths: {s}: not a Zig file or a directory", .{path});
-        }
-    } else {
-        for (try src.roots(c.a, config)) |root| try collect(c, root, &found);
-        for (src.code_directories) |root| if (try c.exists(root) and !try nested(c, root)) try collect(c, root, &found);
-        if (try c.exists("build.zig")) try found.put(c.a, "build.zig", {});
-    }
+    for (policy.shipped) |path| _ = try take(c, path, &found);
+    for (src.code_directories) |path| _ = try take(c, path, &found);
+    _ = try take(c, "build.zig", &found);
+    for (policy.paths orelse &.{}) |path| switch (try take(c, path, &found)) {
+        .taken => {},
+        .absent => c.fail("glint: glint_paths: {s}: not found", .{path}),
+        .other => c.fail("glint: glint_paths: {s}: not a Zig file or a directory", .{path}),
+    };
     if (c.errors != before) return null;
     if (found.count() == 0) {
-        c.fail("glint: no Zig file is selected: name them in `glint_paths`", .{});
+        c.fail("glint: no Zig file is selected: the package ships none, and `glint_paths` names none", .{});
         return null;
     }
     const paths = found.keys();
@@ -81,6 +68,23 @@ pub fn select(c: *src.Context, policy: Policy, config: src.Value) !?[]const []co
         }
     }.less);
     return paths;
+}
+
+/// Adds the Zig files at `path`: the file, or those under the directory, a nested
+/// package's left to its own build.
+fn take(c: *src.Context, path: []const u8, found: *std.array_hash_map.String(void)) !enum { taken, absent, other } {
+    const clean = try normalize(c.a, path);
+    // aegis: no-danger: a path the package's own manifest or configuration names, or a default; its build already runs its author's code with these rights
+    const stat = c.directory().statFile(c.io, clean, .{}) catch |err| switch (err) {
+        error.FileNotFound => return .absent,
+        else => return err,
+    };
+    if (stat.kind == .directory) {
+        if (!try nested(c, clean)) try collect(c, clean, found);
+    } else if (std.mem.endsWith(u8, clean, ".zig")) {
+        try found.put(c.a, clean, {});
+    } else return .other;
+    return .taken;
 }
 
 fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(void)) !void {
@@ -339,7 +343,7 @@ fn write(dir: std.Io.Dir, path: []const u8, data: []const u8) !void {
     try dir.writeFile(std.testing.io, .{ .sub_path = path, .data = data });
 }
 
-test "default selection is the sources and the directories a repository keeps code in, build outputs and caches left out" {
+test "default selection is what the package ships and the directories a repository keeps code in, build outputs and caches left out" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
@@ -347,8 +351,8 @@ test "default selection is the sources and the directories a repository keeps co
     for ([_][]const u8{ "src/a.zig", "src/deep/b.zig", "bench/run.zig", "examples/use.zig", "ci/layers.zig", "conformance/build.zig", "build.zig", "src/note.md", "zig-pkg/dep/x.zig", "src/zig-out/y.zig", ".zig-cache/z.zig", "docs/skip.zig", "bench/zig-pkg/q.zig", "bench/emulator/build.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
     const config = try parsed(c.a, "{}");
-    const policy = (try policy_module.parse(&c, config)).?;
-    const paths = (try select(&c, policy, config)).?;
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
     try std.testing.expectEqual(@as(usize, 7), paths.len);
     for ([_][]const u8{ "bench/run.zig", "build.zig", "ci/layers.zig", "conformance/build.zig", "examples/use.zig", "src/a.zig", "src/deep/b.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
 }
@@ -361,30 +365,32 @@ test "a nested build's directory is its own package, left out of the default sel
     for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/build.zig.zon", "conformance/main.zig", "bench/run.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
     const config = try parsed(c.a, "{}");
-    const policy = (try policy_module.parse(&c, config)).?;
-    const paths = (try select(&c, policy, config)).?;
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
     try std.testing.expectEqual(@as(usize, 2), paths.len);
     for ([_][]const u8{ "bench/run.zig", "src/a.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
-test "named paths replace the default, accept files and directories and fail when absent" {
+const test_shipped: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src", "README.md" };
+
+test "named paths add to what the package ships, never narrow it, and fail when absent" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     for ([_][]const u8{ "src/a.zig", "bench/run.zig", "docs/skip.zig", "tools/t.zig", "README.md" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
-    var config = try parsed(c.a, "{\"glint_paths\":[\"bench\",\"./tools/t.zig\"]}");
-    var policy = (try policy_module.parse(&c, config)).?;
-    const paths = (try select(&c, policy, config)).?;
-    try std.testing.expectEqual(@as(usize, 2), paths.len);
-    try std.testing.expectEqualStrings("bench/run.zig", paths[0]);
-    try std.testing.expectEqualStrings("tools/t.zig", paths[1]);
+    var held: std.Io.Writer.Allocating = .init(arena.allocator());
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir, .held = &held };
+    var config = try parsed(c.a, "{\"glint_paths\":[\"./tools/t.zig\"]}");
+    var policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
+    try std.testing.expectEqual(@as(usize, 3), paths.len);
+    for ([_][]const u8{ "bench/run.zig", "src/a.zig", "tools/t.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
     for ([_][]const u8{ "{\"glint_paths\":[\"missing\"]}", "{\"glint_paths\":[\"README.md\"]}" }) |text| {
         c.errors = 0;
         config = try parsed(c.a, text);
-        policy = (try policy_module.parse(&c, config)).?;
-        try std.testing.expectEqual(@as(?[]const []const u8, null), try select(&c, policy, config));
+        policy = (try policy_module.parse(&c, config, test_shipped)).?;
+        try std.testing.expectEqual(@as(?[]const []const u8, null), try select(&c, policy));
         try std.testing.expect(c.errors != 0);
     }
     // A selection that finds nothing is an error, not a pass over nothing.
@@ -392,11 +398,12 @@ test "named paths replace the default, accept files and directories and fail whe
     defer bare.cleanup();
     c.dir = bare.dir;
     c.errors = 0;
-    config = try parsed(c.a, "{\"sources\":[\"empty\"]}");
-    try bare.dir.createDirPath(std.testing.io, "empty");
-    policy = (try policy_module.parse(&c, config)).?;
-    try std.testing.expectEqual(@as(?[]const []const u8, null), try select(&c, policy, config));
+    config = try parsed(c.a, "{}");
+    try bare.dir.createDirPath(std.testing.io, "src");
+    policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    try std.testing.expectEqual(@as(?[]const []const u8, null), try select(&c, policy));
     try std.testing.expect(c.errors != 0);
+    for ([_][]const u8{ "glint_paths: missing: not found", "glint_paths: README.md: not a Zig file", "no Zig file is selected" }) |said| try std.testing.expect(std.mem.indexOf(u8, held.written(), said) != null);
 }
 
 test "an import means what the configured build binds it to, in the module that compiles the file" {
@@ -426,8 +433,8 @@ test "an import means what the configured build binds it to, in the module that 
     };
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
-    const policy = (try policy_module.parse(&c, config)).?;
-    const paths = (try select(&c, policy, config)).?;
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
     var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .std_dir = "stdlib", .package = "pkg" })).?;
     defer assembly.deinit();
     try std.testing.expectEqual(@as(usize, 0), c.errors);

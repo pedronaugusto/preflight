@@ -100,9 +100,9 @@ pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !
     // covered them all.
     const breaking = try breakingSince(c.a, try c.read("CHANGELOG.md"), since);
     var unnamed: std.ArrayList([]const u8) = .empty;
-    for (gone) |line| if (!namesWord(breaking, declarationName(line))) try unnamed.append(c.a, line);
+    for (gone) |line| if (!namesCode(breaking, declarationPath(line, modules), modules)) try unnamed.append(c.a, line);
     if (unnamed.items.len != 0) {
-        c.fail("CHANGELOG.md: since {s} the package removed or changed these public declarations, and no ### Breaking or ### Removed entry since names them; name each there:{s}", .{ tag, try listed(c.a, unnamed.items) });
+        c.fail("CHANGELOG.md: since {s} the package removed or changed these public declarations, and no ### Breaking or ### Removed entry since names them; name each there in code form, with its container (`S.field`, `S.run`):{s}", .{ tag, try listed(c.a, unnamed.items) });
         return;
     }
     if (said != .none) return;
@@ -136,39 +136,57 @@ fn breakingSince(a: std.mem.Allocator, text: []const u8, since: ?std.SemanticVer
     return out.toOwnedSlice();
 }
 
-/// The name a surface line declares: the last part of its first word (`pkg.S.run` is `run`).
-fn declarationName(line: []const u8) []const u8 {
+/// The declaration a surface line names, below its module (`pkg.S.run fn ...` is `S.run`): its
+/// path, with the container that holds it.
+fn declarationPath(line: []const u8, modules: []const surface.Module) []const u8 {
     const path = line[0 .. std.mem.findScalar(u8, line, ' ') orelse line.len];
-    return path[if (std.mem.findScalarLast(u8, path, '.')) |dot| dot + 1 else 0..];
+    for (modules) |module| {
+        if (path.len > module.name.len and std.mem.startsWith(u8, path, module.name) and path[module.name.len] == '.') return path[module.name.len + 1 ..];
+    }
+    // A module the package no longer exports: its name has no dot of its own.
+    return path[if (std.mem.findScalar(u8, path, '.')) |dot| dot + 1 else 0..];
 }
 
-/// Whether `name` stands in `text` as a word of its own, no identifier byte beside it.
-fn namesWord(text: []const u8, name: []const u8) bool {
-    if (name.len == 0) return false;
-    var from: usize = 0;
-    while (std.mem.findPos(u8, text, from, name)) |at| : (from = at + 1) {
-        const before = at == 0 or !identifierByte(text[at - 1]);
-        const after = at + name.len == text.len or !identifierByte(text[at + name.len]);
-        if (before and after) return true;
+/// Whether `text` names the declaration at `path` in code form: a code span holding the path
+/// (`S.run`), its module's name before it (`pkg.S.run`), or either with its parameters after it
+/// (`S.run(size: u32)`). A word in prose is not a name: `y` names no field `S.y`.
+fn namesCode(text: []const u8, path: []const u8, modules: []const surface.Module) bool {
+    if (path.len == 0) return false;
+    var spans = std.mem.splitScalar(u8, text, '`');
+    // The text before the first backtick is prose; then code and prose take turns.
+    _ = spans.next();
+    while (spans.next()) |span| {
+        const named = std.mem.trim(u8, span[0 .. std.mem.findScalar(u8, span, '(') orelse span.len], " ");
+        if (std.mem.eql(u8, named, path)) return true;
+        for (modules) |module| {
+            if (named.len == module.name.len + 1 + path.len and std.mem.startsWith(u8, named, module.name) and named[module.name.len] == '.' and std.mem.endsWith(u8, named, path)) return true;
+        }
+        _ = spans.next() orelse break;
     }
     return false;
 }
 
-fn identifierByte(byte: u8) bool {
-    return std.ascii.isAlphanumeric(byte) or byte == '_';
-}
-
-test "a breaking entry names a declaration by its name as a word of its own" {
-    try std.testing.expectEqualStrings("run", declarationName("pkg.run fn ( usize ) void"));
-    try std.testing.expectEqualStrings("x", declarationName("pkg.S.x u32"));
-    try std.testing.expect(namesWord("- `run` takes a size.\n", "run"));
-    try std.testing.expect(!namesWord("- `runner` takes a size.\n", "run"));
-    try std.testing.expect(!namesWord("- rerun it.\n", "run"));
+test "a breaking entry names a declaration in code form, with its container" {
+    const modules = [_]surface.Module{ .{ .name = "pkg", .root = "src/a.zig" }, .{ .name = "build.zig", .root = "build.zig" } };
+    try std.testing.expectEqualStrings("run", declarationPath("pkg.run fn ( usize ) void", &modules));
+    try std.testing.expectEqualStrings("S.x", declarationPath("pkg.S.x u32", &modules));
+    try std.testing.expectEqualStrings("Config.bench", declarationPath("build.zig.Config.bench ?Bench", &modules));
+    try std.testing.expectEqualStrings("T.y", declarationPath("gone.T.y u8", &modules));
+    try std.testing.expect(namesCode("- `run` takes a size.\n", "run", &modules));
+    try std.testing.expect(namesCode("- `run(size: u32)` takes a smaller size.\n", "run", &modules));
+    try std.testing.expect(namesCode("- `pkg.S.x` is gone.\n", "S.x", &modules));
+    // A prose word, a field named without its container, another container, a longer name.
+    try std.testing.expect(!namesCode("- The x axis is gone; run it again.\n", "S.x", &modules));
+    try std.testing.expect(!namesCode("- `x` is gone.\n", "S.x", &modules));
+    try std.testing.expect(!namesCode("- `T.S.x` is gone.\n", "S.x", &modules));
+    try std.testing.expect(!namesCode("- `runner` takes a size.\n", "run", &modules));
+    // The text between two spans is prose.
+    try std.testing.expect(!namesCode("- `a` and run and `b`.\n", "run", &modules));
     const text = "# Changelog\n\n## [Unreleased]\n\n### Breaking\n\n- `a` is gone.\n\n### Added\n\n- `b`.\n\n## [0.2.0] - 2026-02-01\n\n### Removed\n\n- `c`.\n\n## [0.1.0] - 2026-01-01\n\n### Breaking\n\n- `d`.\n";
     const said = try breakingSince(std.testing.allocator, text, changelog.parseVersion("0.1.0"));
     defer std.testing.allocator.free(said);
-    for ([_][]const u8{ "a", "c" }) |name| try std.testing.expect(namesWord(said, name));
-    for ([_][]const u8{ "b", "d" }) |name| try std.testing.expect(!namesWord(said, name));
+    for ([_][]const u8{ "a", "c" }) |name| try std.testing.expect(namesCode(said, name, &modules));
+    for ([_][]const u8{ "b", "d" }) |name| try std.testing.expect(!namesCode(said, name, &modules));
 }
 
 /// Up to 20 of `lines`, each on a line of its own, and how many more.

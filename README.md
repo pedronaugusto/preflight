@@ -570,7 +570,7 @@ what a release needs beside the jobs, each refusal naming its fix:
    surface needs an entry in `[Unreleased]` or in a release made since, and a removed or
    changed public declaration of a module the package exports (`b.addModule`), or of its
    `build.zig`, which a build depending on it imports, a breaking one (`### Breaking` or
-   `### Removed`), each declaration named. The modules are read from `build.zig`'s
+   `### Removed`), each declaration named in code form with its container (`` `S.y` ``). The modules are read from `build.zig`'s
    `b.addModule("name", .{ .root_source_file = b.path("...") })` calls at the last tag and now,
    so a module moved or no longer exported is compared too; a build that names a module or its
    root through anything but a literal is refused, since what its tag exported cannot be read.

@@ -66,10 +66,10 @@ jobs:
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -79,7 +79,7 @@ jobs:
           preflight-ref: ${{ inputs.preflight-ref }}
       # preflight keeps its own run's toolchain ninety days, for the callers
       # pinned to its commit; a caller's run keeps it for the run.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: toolchain-${{ inputs.preflight-ref }}
           path: .preflight-bin
@@ -87,7 +87,7 @@ jobs:
           retention-days: ${{ github.repository == 'pedronaugusto/preflight' && 90 || 1 }}
           overwrite: true
       # A documentation generator may run zig.
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         if: inputs.tier == 'fast'
         with:
           version: 0.17.0
@@ -104,7 +104,7 @@ jobs:
     if: inputs.attest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -140,8 +140,8 @@ jobs:
           - { os: windows-latest, copy: 3 }
           - { os: macos-latest, copy: 1 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -166,10 +166,10 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'merge' && inputs.merge-matrix || inputs.fast-matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -232,7 +232,7 @@ jobs:
           PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight run
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:
           name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
@@ -240,7 +240,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: timings-${{ matrix.cache_key }}
@@ -264,11 +264,11 @@ jobs:
     # cancellation bound, so continue-on-error can keep the run advisory.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         timeout-minutes: 2
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         timeout-minutes: 2
         with:
           repository: pedronaugusto/preflight
@@ -276,7 +276,7 @@ jobs:
           path: .preflight
       # bay is on the path before the setup, whose fetch configures the
       # package's build: `bay dev` for a package bay develops.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         timeout-minutes: 2
         with:
           name: toolchain-${{ inputs.preflight-ref }}
@@ -340,8 +340,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-compile-matrix || inputs.merge-compile-matrix) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -384,7 +384,7 @@ jobs:
           # With the job's start, its deadline: a test running then ends named.
           PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
         run: preflight run
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact }}
           path: ${{ inputs.working-directory }}/zig-out/preflight
@@ -399,8 +399,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-run-matrix || inputs.merge-run-matrix) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -412,7 +412,7 @@ jobs:
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
           toolchain: toolchain-${{ inputs.preflight-ref }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ matrix.artifact }}
           path: ${{ inputs.working-directory }}/zig-out/preflight
@@ -448,7 +448,7 @@ jobs:
           # With the job's start, its deadline: a test running then ends named.
           PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
         run: preflight run
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:
           name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
@@ -456,7 +456,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: timings-${{ matrix.cache_key }}
@@ -469,15 +469,15 @@ jobs:
     if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: toolchain-${{ inputs.preflight-ref }}
           path: .preflight-bin
       # Each job's records in a directory of its own: jobs on one OS and mode
       # name their records alike, and merged into one directory they overwrite
       # each other, interleaved when two downloads write one file at once.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: timings-*
           path: .preflight-timings
@@ -485,7 +485,7 @@ jobs:
         run: |
           chmod +x .preflight-bin/linux/preflight
           .preflight-bin/linux/preflight profile --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json --costs "${{ inputs.working-directory }}/ci/costs.json" --costs-output .preflight-timings/costs.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preflight-${{ inputs.tier }}-${{ github.sha }}
           path: |

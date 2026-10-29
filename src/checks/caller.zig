@@ -79,6 +79,79 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
     return error.CallerRefused;
 }
 
+/// Every `uses:` in the repository's `.github` (its workflows and its own actions) names
+/// what it runs by commit: a path in this repository (`./`), or `owner/repo[/path]@<commit>`.
+/// A tag or a branch is the other repository's to move, and a run would take what it moved
+/// to unseen; the caller pins preflight's workflow by commit, which pins nothing that
+/// workflow takes in turn unless it pins it so too.
+fn pinnedActions(c: *src.Context, top: []const u8) !void {
+    const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github" });
+    // aegis: no-danger: git's own answer for this repository's top, which preflight checks with its user's rights
+    var dir = std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer dir.close(c.io);
+    var walker = try dir.walk(c.a);
+    defer walker.deinit();
+    const before = c.errors;
+    while (try walker.next(c.io)) |entry| {
+        if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
+        const text = try aegis.own.readFile(c.io, dir, entry.path, c.a, .fromRaw(16 * 1024 * 1024));
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        var number: usize = 0;
+        while (lines.next()) |line| {
+            number += 1;
+            const used = usesOf(line) orelse continue;
+            if (!pinned(used)) c.fail("gate: .github/{s}:{d}: `uses: {s}` names no commit; pin it as `owner/repo@<commit>`, the tag in a comment beside it", .{ entry.path, number, used });
+        }
+    }
+    if (c.errors != before) return error.CallerRefused;
+}
+
+/// What a `uses:` line names, its quotes and a trailing comment left out; null for any other line.
+fn usesOf(line: []const u8) ?[]const u8 {
+    var rest = std.mem.trimStart(u8, line, " \t");
+    if (std.mem.startsWith(u8, rest, "- ")) rest = std.mem.trimStart(u8, rest[2..], " \t");
+    if (!std.mem.startsWith(u8, rest, "uses:")) return null;
+    rest = rest["uses:".len..];
+    if (std.mem.find(u8, rest, " #")) |comment| rest = rest[0..comment];
+    return std.mem.trim(u8, std.mem.trim(u8, rest, " \t\r"), "\"'");
+}
+
+/// Whether `used` names a fixed revision: a path in this repository, a container image by
+/// its digest, or a repository at a full commit id.
+fn pinned(used: []const u8) bool {
+    if (std.mem.startsWith(u8, used, "./")) return true;
+    if (std.mem.startsWith(u8, used, "docker://")) return std.mem.find(u8, used, "@sha256:") != null;
+    const at = std.mem.findScalarLast(u8, used, '@') orelse return false;
+    const commit = used[at + 1 ..];
+    if (commit.len != 40 and commit.len != 64) return false;
+    for (commit) |ch| if (!std.ascii.isDigit(ch) and !(ch >= 'a' and ch <= 'f')) return false;
+    return true;
+}
+
+test "a workflow's uses names a commit, a path here or an image's digest; a tag or a branch does not" {
+    try std.testing.expectEqualStrings("actions/checkout@11d5960a326750d5838078e36cf38b85af677262", usesOf("      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0").?);
+    try std.testing.expectEqualStrings("o/r/.github/workflows/zig.yml@main", usesOf("    uses: \"o/r/.github/workflows/zig.yml@main\"").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), usesOf("      run: echo uses: x"));
+    for ([_][]const u8{
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+        "o/r/.github/workflows/zig.yml@11d5960a326750d5838078e36cf38b85af677262",
+        "./.github/actions/setup",
+        "docker://alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1",
+    }) |used| try std.testing.expect(pinned(used));
+    for ([_][]const u8{
+        "actions/checkout@v4",
+        "mlugg/setup-zig@v2",
+        "o/r/.github/workflows/zig.yml@main",
+        "actions/checkout@11d5960",
+        "actions/checkout@11D5960A326750D5838078E36CF38B85AF677262",
+        "docker://alpine:3.20",
+        "actions/checkout",
+    }) |used| try std.testing.expect(!pinned(used));
+}
+
 /// The directory a generated caller's gate runs in, as its `working-directory:` line says.
 fn gateOf(text: []const u8) ?[]const u8 {
     const key = "      working-directory: \"";
@@ -164,6 +237,7 @@ pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
 /// Returns where the caller's gate runs, from the package's directory: the directory the gate
 /// runs the planned jobs in when it is given none (preflight's own runs in its sample).
 pub fn currentCaller(c: *src.Context, working_directory: ?[]const u8, config: ?[]const u8, sdk: ?Sdk) !?[]const u8 {
+    try pinnedActions(c, try must(c, &.{ "rev-parse", "--show-toplevel" }));
     var found = (try findCaller(c, working_directory)) orelse return null;
     if (config) |given| found.config = given;
     try requireCurrentCaller(c, found, sdk);

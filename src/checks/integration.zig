@@ -537,6 +537,32 @@ test "the compile check compiles a module's assembly sources for COFF, each to a
     try std.testing.expect(command.succeeded(result));
 }
 
+test "the compile check compiles a C library of several sources and no Zig root for COFF, its first source its own object's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // ztreesitter's shape: a grammar's parser and scanner as one C library, linked by the module.
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
+    const sourced = try std.mem.replaceOwned(u8, a, build, "    const tests = b.addTest(.{ .root_module = module });",
+        \\    const grammar = b.addLibrary(.{ .name = "grammar", .linkage = .static, .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }) });
+        \\    grammar.root_module.addCSourceFiles(.{ .files = &.{ "src/c/parser.c", "src/c/scanner.c" } });
+        \\    module.linkLibrary(grammar);
+        \\    const tests = b.addTest(.{ .root_module = module });
+    );
+    try std.testing.expect(!std.mem.eql(u8, build, sourced));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = sourced });
+    try tmp.dir.createDirPath(io, "src/c");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/c/parser.c", .data = "int grammar_parse(int x) { return x + 1; }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/c/scanner.c", .data = "int grammar_scan(int x) { return x * 2; }\n" });
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 test "check compiles the tests for every target of the fast tier, where a test behind another system's branch fails" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

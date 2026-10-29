@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A package holds its aegis escapes' count by reason in `glint.escapes` (`{"boundary": 12, "no-danger": 4}`; none by default): above it the lint fails, so a new escape is a line in review, and below it the lint fails until the count comes down, so it only falls. A package with escapes adds the line at its next pin of preflight; the lint names each count.
 - glint reads every Zig file the package ships (`build.zig.zon`'s `.paths`), those under `examples`, `ci`, `conformance` and `bench`, and `build.zig`; `glint_paths` adds to them, where it replaced them and could leave shipped code unread.
 - A repository may only raise a rule in `ci/preflight.json`: `off` or `report` below preflight's default fails by name (`report` on a finding rule did nothing in silence), P006 is a gated default like any other, and `strict_suppressions` is retired: suppressions are strict everywhere. The danger rules' scope is what `build.zig.zon`'s `.paths` ships, the build script included, not the `sources` a repository writes.
 - The gate's last line calls green only the release-tier jobs it ran, and names the rest "not run by this gate, so unproven"; a gate that ran none is refused, where it printed "green here".

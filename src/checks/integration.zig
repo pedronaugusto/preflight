@@ -322,10 +322,10 @@ fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !
 /// The sample fixture linted with `text` as its source, or as the fixture writes it when null:
 /// each case one lint of its own, so no test holds several and comes near the watchdog's bound.
 fn lintSample(text: ?[]const u8, rule: ?[]const u8, fails: bool) !void {
-    return lintSampleWith(text, rule, fails, &.{});
+    return lintSampleWith(text, rule, fails, &.{}, null);
 }
 
-fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []const []const u8) !void {
+fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []const []const u8, config: ?[]const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -333,6 +333,7 @@ fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     if (text) |source| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = source });
+    if (config) |settings| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = settings });
     const result = try lintFixtureWith(a, tmp.dir, options);
     if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the lint output it did not find the rule in
     try std.testing.expect(result.term == .exited and (result.term.exited != 0) == fails);
@@ -344,7 +345,7 @@ test "the default policy reports a flow rule's site and does not fail the gate: 
 }
 
 test "the release tier fails a flow rule's site the default policy reports: an error input makes unreachable (A013)" {
-    try lintSampleWith("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", true, &.{"-Dci-release"});
+    try lintSampleWith("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", true, &.{"-Dci-release"}, null);
 }
 
 test "the default policy gates P005: a debug print left in" {
@@ -363,8 +364,11 @@ test "a style rule is reported with its site and does not fail the gate" {
     try lintSample("pub const BadName = 1;\ntest {}\n", "Z006", false);
 }
 
-test "a danger site with the aegis escape passes, and the escape is listed with its rule" {
-    try lintSample("pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: the kernel wrote a u32 there\n}\ntest {}\n", "escape: src/sample.zig:2", false);
+test "a danger site with the aegis escape passes, the escape listed with its rule and counted against the package's" {
+    const escaped = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: the kernel wrote a u32 there\n}\ntest {}\n";
+    const counted = "{\"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"glint\": {\"escapes\": {\"boundary\": 1}}}";
+    try lintSampleWith(escaped, "escape: src/sample.zig:2", false, &.{}, counted);
+    try lintSampleWith(escaped, "above the 0 `glint.escapes` holds", true, &.{}, null);
 }
 
 test "the sample's clean code passes the gate" {

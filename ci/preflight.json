@@ -19,6 +19,11 @@
       "A007": 2,
       "A011": 1
     },
+    "escapes": {
+      "no-danger": 28,
+      "design": 38,
+      "boundary": 16
+    },
     "rules": [
       {
         "id": "A001",

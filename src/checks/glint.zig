@@ -584,28 +584,21 @@ test "function length: the limit, a per-path ceiling and a reasoned exception th
 test "a debug print and a deprecated call are findings the standard library's declarations decide" {
     const f = try Fixture.init();
     defer f.deinit();
-    // The stub standard library holds none of the durability door's declarations, which a real
-    // one does: the door is off here, or its missing declarations leave every run incomplete.
-    // So are the danger rules that name std's declarations: each would leave its sites undecided.
-    const danger = "{\"id\":\"A007\",\"level\":\"off\"},{\"id\":\"A008\",\"level\":\"off\"},{\"id\":\"A011\",\"level\":\"off\"},{\"id\":\"A014\",\"level\":\"off\"},{\"id\":\"A015\",\"level\":\"off\"}";
-    const door = ",\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}," ++ danger ++ "]}";
-    try f.file("stdlib/std.zig", "pub const debug = @import(\"debug.zig\");\npub const mem = @import(\"mem.zig\");\n");
-    try f.file("stdlib/debug.zig", "pub fn print(comptime fmt: []const u8, args: anytype) void {\n    _ = fmt;\n    _ = args;\n}\n");
-    try f.file("stdlib/mem.zig", "/// Deprecated: use `find`.\npub fn indexOf(haystack: []const u8, needle: u8) ?usize {\n    _ = haystack;\n    _ = needle;\n    return null;\n}\npub fn find(haystack: []const u8, needle: u8) ?usize {\n    _ = haystack;\n    _ = needle;\n    return null;\n}\n");
-    const build: assembly.Build = .{ .std_dir = "stdlib" };
-    const paths = "\"glint_paths\":[\"src\"]";
+    // The standard library of the Zig that builds these tests: the durability door and the
+    // danger rules name its declarations, as they do in every repository.
+    const build: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
+    const paths = "{\"glint_paths\":[\"src\"]}";
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{});\n}\n");
-    try std.testing.expect(try f.run("{" ++ paths ++ door ++ "}", build) != 0);
+    try std.testing.expect(try f.run(paths, build) != 0);
     // The same code without the standard library's declarations is unresolved, not a finding.
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[" ++ danger ++ "]}}", .{}));
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"},{\"id\":\"P006\",\"level\":\"off\"}," ++ danger ++ "]}}", build));
+    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, .{}));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{}); // glint-ignore: P005 -- the tool's one line of output\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ door ++ "}", build));
-    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOf(text, 'x');\n}\n");
-    try std.testing.expect(try f.run("{" ++ paths ++ door ++ "}", build) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
+    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOfScalar(u8, text, 'x');\n}\n");
+    try std.testing.expect(try f.run(paths, build) != 0);
     try f.file("src/root_test.zig", "const std = @import(\"std\");\ntest {\n    std.debug.print(\"in a test\", .{});\n}\n");
     try f.file("src/root.zig", "pub const x = 1;\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ door ++ "}", build));
+    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
 }
 
 test "an analysis glint did not finish is never a pass, whatever its findings" {
@@ -625,10 +618,9 @@ test "an analysis glint did not finish is never a pass, whatever its findings" {
     // A suppression that suppresses nothing.
     try f.file("src/root.zig", "// glint-ignore: Z026 -- there is no empty catch here\npub const x = 1;\n");
     try std.testing.expect(try f.run("{" ++ paths ++ "}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ ",\"glint\":{\"strict_suppressions\":false}}", .{}));
-    // A finding allowed by amendment does not hide what else is wrong.
-    try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\npub fn broken( {\n");
-    try std.testing.expect(try f.run("{" ++ paths ++ ",\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"off\"}]}}", .{}) != 0);
+    // A finding its site allows does not hide what else is wrong.
+    try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    // glint-ignore: Z026 -- cleanup after a failure the caller already gets\n    f() catch {};\n}\npub fn broken( {\n");
+    try std.testing.expect(try f.run("{" ++ paths ++ "}", .{}) != 0);
 }
 
 test "a run counts every incomplete site, prints the first ones and lists them all in the cache and the job's summary" {
@@ -674,7 +666,7 @@ test "assertions are counted by the declaration a call resolves to, never by its
     var held: std.Io.Writer.Allocating = .init(f.c.a);
     f.c.held = &held;
     f.c.summary_path = "summary.md";
-    _ = try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}}", .{ .std_dir = "stdlib" });
+    _ = try f.run("{\"glint_paths\":[\"src\"]}", .{ .std_dir = "stdlib" });
     const out = held.written();
     try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one; 0 calls spelled like one unresolved") != null);
     const summary = try f.c.read("summary.md");

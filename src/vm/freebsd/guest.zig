@@ -79,6 +79,7 @@ const Ending = union(enum) {
 };
 
 fn run(io: Io, gpa: std.mem.Allocator) !Ending {
+    try holdStandardFds();
     for (modules) |name| {
         // A module GENERIC already holds is loaded: EEXIST.
         if (kldload(name) < 0 and c._errno().* != @backingInt(c.E.EXIST)) {
@@ -111,6 +112,20 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     const ports = try openPorts(io);
     try writeAll(ports.status, "started\n");
     return try launch(gpa, .{ .argv = argv, .environ = environ, .cwd = cwd, .user = user, .home = home }, ports);
+}
+
+/// The kernel starts the first process with no descriptors: /dev/null takes 0, 1 and 2,
+/// so that every port and pipe opened after is above them, and the child's dup2 onto
+/// each always moves it (a dup2 onto itself would leave it closed on exec).
+fn holdStandardFds() !void {
+    while (true) {
+        const fd = c.open("/dev/null", .{ .ACCMODE = .RDWR, .NOCTTY = true });
+        if (fd < 0) return error.StandardFds;
+        if (fd > 2) {
+            closeFd(fd);
+            return;
+        }
+    }
 }
 
 /// The program's root in the machine's memory, at `new_root` (a directory of the

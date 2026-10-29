@@ -168,7 +168,7 @@ There is no loader. The release's `base.txz`, the one archive holding `loader.ef
 cannot be a dependency (below), and pkgbase's `.pkg` files are not an archive type Zig
 fetches. QEMU starts the kernel at its PVH entry (`-kernel`; FreeBSD's amd64 kernel
 carries `XEN_ELFNOTE_PHYS32_ENTRY`) with its environment on the command line:
-`vfs.root.mountfrom`, `init_path`, the serial console and the serial ports' hints. A PVH
+`vfs.root.mountfrom`, `init_path`, the serial console and its port's hints. A PVH
 boot keeps none of the command line's flags, only its variables, so the serial console is
 `boot_serial=YES` (`-h` would be dropped and vt, outranking the uart, would take the
 console to no display). The
@@ -180,11 +180,37 @@ preloaded, so the root is a file system GENERIC builds in: an ISO 9660 image wit
 Ridge (vm/iso9660.zig, cpio.zig's counterpart) that the host writes from the layer's
 members as they are (modes, owners, symbolic and hard links), the kernel and its modules
 under `/boot/kernel`, and preflight's first process at `/preflight/init`
-(vm/freebsd/guest.zig), which can load what else it needs from there. Its status goes to
-the second serial port; the console, the first, is kept whole as the job's artifact.
-Each wait has a deadline and a named failure: no status in time, a panic on the
-console, QEMU ending without either. The writer is checked against libarchive's reader
-on FreeBSD's own layer, member for member, and against FreeBSD's cd9660 by the boot.
+(vm/freebsd/guest.zig), which loads the modules the run needs from there
+(virtio_console, virtio_p9fs, tmpfs, nullfs). The writer is checked against libarchive's
+reader on FreeBSD's own layer, member for member, and against FreeBSD's cd9660 by the
+machine's every boot.
+
+A run is the riscv64 machine's: the host writes it in a directory shared over 9p (the
+program, its arguments and environment, the directories it names, its scratch
+directory, its user), and the program's stdin and stdout are a virtio port, its stderr
+another, its ending a third. The ISO root cannot be written, so the program's root is the
+machine's memory: the first process mounts a tmpfs, nullfs-mounts FreeBSD's system
+directories into it read-only (`bin`, `boot`, `etc`, `lib`, `libexec`, `sbin`, `usr`),
+gives it its own devfs, `/tmp` and `/var/tmp`, and takes it as its root; the host's
+directories are then made at their host paths and bound there from the host's share,
+and the scratch directory is a tmpfs of its own. The share stays mounted at `/run/host`
+beneath the binds, where the riscv64 machine detaches it (FreeBSD unmounts no file system
+with mounts on it), so the program can reach the host's files there, as the build's own
+programs can on the host. FreeBSD's virtio ports are terminals,
+which drop what arrives before they are opened and mangle it until they are set raw, so
+the first process opens them raw and writes `started` to the status port, and the host
+sends the program's input only after it. `started` ends the one deadline the machine
+has of its own (180 s, the boot); the program after it is bounded as it is on any host,
+by the test runner's watchdog. Every way a run ends is named: the program's exit code
+or signal (FreeBSD's number, which the host ends by under Linux's number for that
+signal, or by 128 plus it for one Linux has not), the first process's error, a panic
+on the console, the deadline, or QEMU ending without any of them; for all but the
+first, the run's directory is kept, its console among it, and the console's last lines
+are written to the build's output. A FreeBSD run on a host other than Linux is refused
+when the build is configured, naming `ci-vm=freebsd`, and one on a Linux host without
+KVM open to its user when it runs. vm/freebsd/probe_test.zig is the machine's own
+proof: tests built for FreeBSD and run on it through this path (`zig build
+-Dvm-freebsd-probe vm-freebsd-probe`), skipped on every other system.
 
 Rock Ridge readers disagree on a symbolic link whose SL entries split between two
 components (libarchive starts each entry without a `/`; FreeBSD follows the last

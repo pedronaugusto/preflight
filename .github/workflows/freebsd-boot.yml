@@ -1,7 +1,7 @@
-# The FreeBSD test machine's first proof, on its branch only: boot FreeBSD's kernel by
-# its PVH entry to preflight's first process on the ISO 9660 root, and report its status.
-# The console is kept as the job's artifact whatever the outcome.
-name: FreeBSD machine boot
+# The FreeBSD test machine's proof, on its branch only: its own tests, built for x86_64
+# FreeBSD and run on FreeBSD's kernel under KVM through -Dci-vm's path. A machine that
+# fails keeps its run directory, console among it, as the job's artifact.
+name: FreeBSD machine probe
 
 on:
   push:
@@ -33,13 +33,13 @@ jobs:
           qemu-system-x86_64 --version
           # The guest's invariant TSC needs the runner's: Linux names it nonstop_tsc.
           grep -m1 -o -w -e constant_tsc -e nonstop_tsc /proc/cpuinfo || echo "the runner shows no invariant TSC"
-      - name: Boot FreeBSD to preflight's first process
+      - name: Run the machine's own tests on it
         timeout-minutes: 10
-        run: zig build -Dvm-freebsd-boot vm-freebsd-boot
-      - name: Keep the console
-        if: always()
+        run: zig build -Dvm-freebsd-probe vm-freebsd-probe --summary all
+      - name: Keep a failed machine's run
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: freebsd-console
-          path: zig-out/freebsd-*.log
-          if-no-files-found: warn
+          name: freebsd-run
+          path: .zig-cache/tmp/preflight-vm-*
+          if-no-files-found: ignore

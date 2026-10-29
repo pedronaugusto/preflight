@@ -23,21 +23,19 @@ const ustar = @import("ustar.zig");
 const qemu = "qemu-system-x86_64";
 const memory = "2G";
 const max_cpus = 8;
-/// How long a boot has to report its status before it is stopped and named a failure.
+/// How long the machine has to start its program before it is stopped and named a failure.
 pub const boot_deadline_seconds = 180;
-/// A traced boot's: TCG's interrupt log grows by gigabytes a minute.
-pub const traced_deadline_seconds = 90;
 
 /// The kernel's environment: its root, the machine's first process, the serial
 /// console, and a panic that ends the machine at once instead of waiting at the
 /// debugger.
-/// Without a loader there is no device.hints: the two serial ports are named here, the
-/// first the console, as FreeBSD's FIRECRACKER kernel names them. The kernel splits
+/// Without a loader there is no device.hints: the serial port is named here as the
+/// console, as FreeBSD's FIRECRACKER kernel names it. The kernel splits
 /// this at spaces and commas. A PVH boot drops the command line's flags (15.1's pv.c
 /// keeps only what boot_env_to_howto reads), so the serial console is `boot_serial`,
 /// not `-h`: without it the uart ranks below vt, which takes the console to no display.
 pub const kernel_environment = "boot_serial=YES vfs.root.mountfrom=cd9660:/dev/vtbd0 vfs.mountroot.timeout=30 init_path=/preflight/init hw.uart.console=io:0x3f8 " ++
-    "hint.uart.0.at=isa hint.uart.0.port=0x3F8 hint.uart.0.flags=0x10 hint.uart.0.irq=4 hint.uart.1.at=isa hint.uart.1.port=0x2F8 hint.uart.1.irq=3 " ++
+    "hint.uart.0.at=isa hint.uart.0.port=0x3F8 hint.uart.0.flags=0x10 hint.uart.0.irq=4 " ++
     "kern.panic_reboot_wait_time=0 debug.debugger_on_panic=0";
 
 pub const ImagePaths = struct { kernel_set: []const u8, runtime: []const u8, init: []const u8, kernel: []const u8, root: []const u8 };
@@ -69,6 +67,8 @@ pub fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
         try root.add(.{ .name = try gpa.print("boot/kernel/{s}", .{file.name}), .kind = .file, .mode = 0o555, .data = data });
     }
     try root.add(.{ .name = "preflight/init", .kind = .file, .mode = 0o555, .data = try aegis.own.readFile(io, cwd, paths.init, gpa, .fromRaw(limit)) });
+    // Where the first process makes the program's root, in the machine's memory.
+    try root.add(.{ .name = "preflight/root", .kind = .directory, .mode = 0o755 });
 
     const out = try cwd.createFile(io, paths.root, .{});
     defer out.close(io);
@@ -133,18 +133,6 @@ fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
     return decompress.reader.allocRemaining(gpa, .limited(limit));
 }
 
-/// How a boot ended, each with its name.
-pub const Outcome = union(enum) {
-    /// The first process's status line.
-    status: []const u8,
-    /// A kernel panic, its line from the console.
-    panic: []const u8,
-    /// No status by the deadline: the machine was stopped.
-    deadline,
-    /// QEMU ended with no status and no panic printed.
-    ended,
-};
-
 /// Why the machine cannot run here, or null: it needs KVM, which only a Linux host gives.
 pub fn hostRefusal(io: Io) ?[]const u8 {
     if (builtin.os.tag != .linux) return "the FreeBSD machine runs under KVM, which only a Linux host has; ci-vm=freebsd runs on the nightly's Linux runner";
@@ -160,103 +148,82 @@ pub fn hostRefusal(io: Io) ?[]const u8 {
 /// then reports under KVM at hypervisor leaf 0x40000010.
 const kvm_cpu = "host,+invtsc";
 
-/// Boots the machine on `root` and returns how it ended. `console_out` receives its
-/// whole console and `qemu_out` QEMU's side (its log of resets and guest errors, and
-/// what its monitor says of the processor when the deadline stops it), whatever the
-/// outcome, for the job's artifact.
-/// `trace` (the branch's diagnosis, PREFLIGHT_VM_TRACE) runs one processor under TCG,
-/// where QEMU logs every exception with its address, which KVM keeps from it; it
-/// knows no TSC frequency, so it reaches the console's first DELAY and no further.
-pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, console_out: []const u8, qemu_out: []const u8, trace: bool) !Outcome {
+pub const Ending = union(enum) { exited: u8, signal: u32 };
+
+/// How the machine's run ended, each with its name.
+pub const Outcome = union(enum) {
+    /// The program's ending.
+    ending: Ending,
+    /// The first process failed before the program ended: its error.
+    failed: []const u8,
+    /// A kernel panic, its line from the console.
+    panic: []const u8,
+    /// The first process did not start the program by the deadline: the machine was stopped.
+    deadline,
+    /// QEMU ended with no ending and no panic printed.
+    ended,
+};
+
+/// Runs the program described in `run_path` (host.zig's `describe`) on the machine
+/// and returns its ending, or names why there is none, with the console's last
+/// lines, and fails. `forward` carries the host's input to the `io` port; it starts
+/// once the first process says its ports are open.
+pub fn run(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, forward: *const fn (Io, Io.File) void) !Ending {
     const cwd = Io.Dir.cwd();
-    const cpus = if (trace) 1 else @min(std.Thread.getCpuCount() catch 1, max_cpus);
+    const cpus = @min(std.Thread.getCpuCount() catch 1, max_cpus);
     const console_path = try gpa.print("{s}/console", .{run_path});
     const status_path = try gpa.print("{s}/status", .{run_path});
-    const log_path = try gpa.print("{s}/qemu.log", .{run_path});
     const argv = [_][]const u8{
-        qemu,                        "-machine",                    if (trace) "pc,accel=tcg" else "pc,accel=kvm", "-cpu",                                                                            if (trace) "max" else kvm_cpu,
-        "-smp",                      try gpa.print("{d}", .{cpus}), "-m",                                          memory,                                                                            "-nodefaults",
-        "-display",                  "none",                        "-no-reboot",                                  "-kernel",                                                                         kernel,
-        "-append",                   kernel_environment,            "-drive",                                      try gpa.print("file={s},format=raw,if=none,id=root,readonly=on", .{root}),         "-device",
-        "virtio-blk-pci,drive=root", "-serial",                     try gpa.print("file:{s}", .{console_path}),    "-serial",                                                                         try gpa.print("file:{s}", .{status_path}),
-        // The monitor on QEMU's own standard streams, for the deadline's questions.
-        "-monitor",                  "stdio",                       "-d",                                          if (trace) "int,cpu_reset,guest_errors,unimp" else "cpu_reset,guest_errors,unimp", "-D",
-        log_path,
+        qemu,                                     "-machine",                                  "pc,accel=kvm",                             "-cpu",                                                                    kvm_cpu,
+        "-smp",                                   try gpa.print("{d}", .{cpus}),               "-m",                                       memory,                                                                    "-nodefaults",
+        "-display",                               "none",                                      "-no-reboot",                               "-kernel",                                                                 kernel,
+        "-append",                                kernel_environment,                          "-drive",                                   try gpa.print("file={s},format=raw,if=none,id=root,readonly=on", .{root}), "-device",
+        "virtio-blk-pci,drive=root",              "-serial",                                   try gpa.print("file:{s}", .{console_path}), "-device",                                                                 "virtio-serial-pci",
+        "-chardev",                               "stdio,id=io,signal=off",                    "-device",                                  "virtserialport,chardev=io,name=io",
+        // Appended, so that a log the host's stderr is redirected to is not truncated.
+                                              "-chardev",
+        "file,id=err,path=/dev/stderr,append=on", "-device",                                   "virtserialport,chardev=err,name=err",      "-chardev",                                                                try gpa.print("file,id=status,path={s}", .{status_path}),
+        "-device",                                "virtserialport,chardev=status,name=status", "-fsdev",                                   try gpa.print("local,id=run,path={s},security_model=none", .{run_path}),   "-device",
+        "virtio-9p-pci,fsdev=run,mount_tag=run",  "-fsdev",                                    "local,id=host,path=/,security_model=none", "-device",                                                                 "virtio-9p-pci,fsdev=host,mount_tag=host",
     };
-    var child = std.process.spawn(io, .{ .argv = &argv, .stdin = .pipe, .stdout = .pipe, .stderr = .inherit }) catch |err| {
+    var child = std.process.spawn(io, .{ .argv = &argv, .stdin = .pipe, .stdout = .inherit, .stderr = .inherit }) catch |err| {
         try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: starting {s}: {t}\n", .{ qemu, err }));
         return err;
     };
-    var deadline: Deadline = .{ .pid = child.id.?, .monitor = child.stdin.?, .seconds = if (trace) traced_deadline_seconds else boot_deadline_seconds };
+    var deadline: Deadline = .{ .pid = child.id.?, .status_path = status_path };
     const watch = try std.Thread.spawn(.{}, Deadline.watch, .{ &deadline, io });
-    // The monitor's answers end when QEMU does; `wait` closes the pipes, so they are read first.
-    var monitor_buffer: [4096]u8 = undefined;
-    var monitor = child.stdout.?.readerStreaming(io, &monitor_buffer);
-    const answers = monitor.interface.allocRemaining(gpa, .limited(1024 * 1024)) catch "";
-    _ = try child.wait(io);
+    // The input waits for the first process's ports; the pipe stays open after it, as
+    // a port whose host end closes stalls the machine's writes to it.
+    const feed = try std.Thread.spawn(.{}, Deadline.feed, .{ &deadline, io, child.stdin.?, forward });
+    feed.detach();
+    const term = try child.wait(io);
     const fired = deadline.finish();
     watch.join();
 
-    const log = qemuLog(io, gpa, log_path, trace) catch "";
+    const status = aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(4096)) catch "";
     const console = aegis.own.readFile(io, cwd, console_path, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
-    for ([_][]const u8{ console_out, qemu_out }) |out| if (std.Io.Dir.path.dirname(out)) |dir| try cwd.createDirPath(io, dir);
-    try cwd.writeFile(io, .{ .sub_path = console_out, .data = console });
-    try cwd.writeFile(io, .{ .sub_path = qemu_out, .data = try std.mem.concat(gpa, u8, &.{ "QEMU's log (resets, guest errors; traced, the exceptions alone):\n", log, "\nQEMU's monitor:\n", answers }) });
-    const status = std.mem.trim(u8, aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(4096)) catch "", "\r\n ");
-    return classify(status, console, fired);
-}
-
-/// QEMU's log. A traced one logs every interrupt, the firmware's and the timer's,
-/// and runs to gigabytes: of it only the processor's exceptions (vectors below 32,
-/// each line with its address and CR2) are kept, in order, at most 4 MiB of them.
-fn qemuLog(io: Io, gpa: std.mem.Allocator, path: []const u8, trace: bool) ![]const u8 {
-    if (!trace) return aegis.own.readFile(io, Io.Dir.cwd(), path, gpa, .fromRaw(16 * 1024 * 1024));
-    const file = try Io.Dir.cwd().openFile(io, path, .{});
-    defer file.close(io);
-    var buffer: [64 * 1024]u8 = undefined;
-    var reader = file.readerStreaming(io, &buffer);
-    var kept: std.ArrayList(u8) = .empty;
-    while (kept.items.len < 4 * 1024 * 1024) {
-        const read = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
-            // A line longer than the buffer is no exception's: passed over whole.
-            error.StreamTooLong => {
-                _ = reader.interface.discardDelimiterInclusive('\n') catch |e| switch (e) {
-                    error.EndOfStream => break,
-                    else => |other| return other,
-                };
-                continue;
-            },
-            else => |e| return e,
-        };
-        const line = read orelse break;
-        if (isException(line)) {
-            try kept.appendSlice(gpa, line);
-            try kept.append(gpa, '\n');
-        }
+    const stderr = Io.File.stderr();
+    switch (classify(status, console, fired)) {
+        .ending => |ending| return ending,
+        .failed => |err| try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine's first process failed: {s}\n", .{err})),
+        .panic => |line| try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD kernel panicked: {s}\n", .{line})),
+        .deadline => try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine did not start its program within {d} s and was stopped\n", .{boot_deadline_seconds})),
+        .ended => try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine ended ({any}) without its program's ending or a panic\n", .{term})),
     }
-    return kept.items;
+    try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: its console ({s}), last 16 KiB:\n", .{console_path}));
+    try stderr.writeStreamingAll(io, console[console.len -| 16384..]);
+    return error.MachineFailed;
 }
 
-/// Whether a line of QEMU's `-d int` log is an exception's: `v=NN` below 0x20, or a check of one.
-pub fn isException(line: []const u8) bool {
-    if (std.mem.find(u8, line, "check_exception") != null) return true;
-    const at = std.mem.find(u8, line, " v=") orelse return false;
-    if (line.len < at + 5) return false;
-    const vector = std.fmt.parseInt(u8, line[at + 3 .. at + 5], 16) catch return false;
-    return vector < 0x20;
-}
-
-test "the exceptions of a traced log are told from its interrupts" {
-    try std.testing.expect(isException("    12: v=0e e=0000 i=0 cpl=0 IP=0020:ffffffff80e2a1c4 pc=ffffffff80e2a1c4 SP=0028:ffffffff82051000 CR2=000000007ec072ff"));
-    try std.testing.expect(isException("check_exception old: 0xe new 0xe"));
-    try std.testing.expect(!isException("   331: v=20 e=0000 i=0 cpl=0 IP=0020:ffffffff80c3b0b2 pc=ffffffff80c3b0b2"));
-    try std.testing.expect(!isException("Servicing hardware INT=0x08"));
-    try std.testing.expect(!isException(" v=1"));
-}
-
-/// The outcome a status port's text, a console and the deadline say.
+/// The outcome the status port's lines (`started`, then the ending), the console
+/// and the deadline say.
 pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) Outcome {
-    if (status.len > 0) return .{ .status = status };
+    var lines = std.mem.tokenizeAny(u8, whole(status), "\r\n");
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "exited ")) if (std.fmt.parseInt(u8, line["exited ".len..], 10)) |code| return .{ .ending = .{ .exited = code } } else |_| {};
+        if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10)) |sig| return .{ .ending = .{ .signal = sig } } else |_| {};
+        if (std.mem.startsWith(u8, line, "failed ")) return .{ .failed = line["failed ".len..] };
+    }
     if (std.mem.find(u8, console, "panic: ")) |at| {
         const end = std.mem.findScalarPos(u8, console, at, '\n') orelse console.len;
         return .{ .panic = std.mem.trimEnd(u8, console[at..end], "\r") };
@@ -265,53 +232,114 @@ pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) O
     return .ended;
 }
 
-/// Stops QEMU, the one process this program started, when the boot outlives its
-/// deadline: first asks its monitor where the processor is and to quit, then, if it
-/// has not, ends it.
+/// Whether the status port says the program has started: its ports are open.
+pub fn started(status: []const u8) bool {
+    var lines = std.mem.tokenizeAny(u8, whole(status), "\r\n");
+    while (lines.next()) |line| if (std.mem.eql(u8, line, "started")) return true;
+    return false;
+}
+
+/// The status port's whole lines: a line still being written says nothing yet.
+fn whole(status: []const u8) []const u8 {
+    const end = std.mem.findScalarLast(u8, status, '\n') orelse return "";
+    return status[0 .. end + 1];
+}
+
+/// FreeBSD's number for a signal as Linux numbers it, for the host to end by, or
+/// null for one Linux has not (SIGEMT, SIGINFO, SIGTHR, SIGLIBRT and the real-time
+/// ones). sys/signal.h and Linux's asm-generic/signal.h.
+pub fn linuxSignal(freebsd_signal: u32) ?u32 {
+    const table = [_]u8{
+        0, 1, 2, 3, 4, 5, 6, 0, // HUP INT QUIT ILL TRAP ABRT EMT
+        8, 9, 7, 11, 31, 13, 14, 15, // FPE KILL BUS SEGV SYS PIPE ALRM TERM
+        23, 19, 20, 18, 17, 21, 22, 29, // URG STOP TSTP CONT CHLD TTIN TTOU IO
+        24, 25, 26, 27, 28, 0, 10, 12, // XCPU XFSZ VTALRM PROF WINCH INFO USR1 USR2
+    };
+    if (freebsd_signal >= table.len or table[freebsd_signal] == 0) return null;
+    return table[freebsd_signal];
+}
+
+/// Stops QEMU, the one process this program started, when the first process has
+/// not started the program by the deadline, and lets the host's input through once
+/// it has. Once started, the program is the test runner's watchdog's to bound.
 const Deadline = struct {
     pid: std.posix.pid_t,
-    seconds: u32,
-    monitor: Io.File,
-    state: aegis.Atomic(State) = .init(.running),
+    status_path: []const u8,
+    state: aegis.Atomic(State) = .init(.booting),
 
-    const State = enum(u8) { running, done, fired };
-    const questions = "info status\ninfo registers\nx/8i $pc\nquit\n";
+    const State = enum(u8) { booting, started, done, fired };
 
     fn watch(d: *Deadline, io: Io) void {
-        if (d.waitDone(io, d.seconds * 10)) return;
-        if (d.state.cmpxchgStrong(.running, .fired, .acq_rel, .acquire) != null) return;
-        // glint-ignore: Z026 -- a monitor that cannot be written to leaves the signal below to end QEMU
-        d.monitor.writeStreamingAll(io, questions) catch {};
-        if (d.waitDone(io, 100)) return;
+        var tenths: u32 = 0;
+        while (tenths < boot_deadline_seconds * 10) : (tenths += 1) {
+            if (d.state.load(.acquire) == .done) return;
+            var buffer: [256]u8 = undefined;
+            // A status not yet written reads as none.
+            const status = Io.Dir.cwd().readFile(io, d.status_path, &buffer) catch "";
+            if (started(status)) {
+                _ = d.state.cmpxchgStrong(.booting, .started, .acq_rel, .acquire); // safe: a run already done keeps its state
+                return;
+            }
+            // A canceled wait counts as the boot over: it is being given up anyway.
+            io.sleep(.fromMilliseconds(100), .awake) catch return;
+        }
+        if (d.state.cmpxchgStrong(.booting, .fired, .acq_rel, .acquire) != null) return;
         // glint-ignore: Z026 -- QEMU may have ended between the check and the signal; its wait reports either way
         std.posix.kill(d.pid, .KILL) catch {};
     }
 
-    /// Whether the boot ended within `tenths` of a second.
-    fn waitDone(d: *Deadline, io: Io, tenths: u32) bool {
-        var waited: u32 = 0;
-        while (waited < tenths) : (waited += 1) {
-            if (d.state.load(.acquire) == .done) return true;
-            // A canceled wait counts as the boot over: it is being given up anyway.
-            io.sleep(.fromMilliseconds(100), .awake) catch return true;
-        }
-        return d.state.load(.acquire) == .done;
+    /// The host's input to the machine once its program has started; none to a
+    /// machine that ends or is stopped first.
+    fn feed(d: *Deadline, io: Io, to: Io.File, forward: *const fn (Io, Io.File) void) void {
+        while (true) switch (d.state.load(.acquire)) {
+            .booting => io.sleep(.fromMilliseconds(20), .awake) catch return,
+            .started => return forward(io, to),
+            .done, .fired => return,
+        };
     }
 
-    /// Marks the boot over; whether the deadline had stopped it.
+    /// Marks the run over; whether the deadline had stopped it.
     fn finish(d: *Deadline) bool {
         return d.state.swap(.done, .acq_rel) == .fired;
     }
 };
 
-test "a boot's ending is named from its status, a panic on the console, or the deadline" {
-    try std.testing.expectEqualStrings("booted 15.1-RELEASE", classify("booted 15.1-RELEASE", "", false).status);
-    // A status wins over what the console says, the deadline included.
-    try std.testing.expectEqualStrings("booted", classify("booted", "panic: later\n", true).status);
+test "a run's ending is named from its status, a failure, a panic on the console, or the deadline" {
+    try std.testing.expectEqual(Outcome{ .ending = .{ .exited = 0 } }, classify("started\nexited 0\n", "", false));
+    try std.testing.expectEqual(Outcome{ .ending = .{ .exited = 3 } }, classify("started\r\nexited 3\r\n", "", false));
+    try std.testing.expectEqual(Outcome{ .ending = .{ .signal = 11 } }, classify("started\nsignal 11\n", "", false));
+    // An ending wins over what the console says, the deadline included.
+    try std.testing.expectEqual(Outcome{ .ending = .{ .exited = 1 } }, classify("started\nexited 1\n", "panic: later\n", true));
+    try std.testing.expectEqualStrings("Mount", classify("failed Mount\n", "", false).failed);
     const console = "Mounting from cd9660:/dev/vtbd0 failed with error 19.\r\npanic: mountroot: unable to mount root\r\ncpuid = 0\r\n";
     try std.testing.expectEqualStrings("panic: mountroot: unable to mount root", classify("", console, true).panic);
+    // Started, then the kernel panicked under the program.
+    try std.testing.expectEqualStrings("panic: page fault", classify("started\n", "panic: page fault\n", false).panic);
     try std.testing.expectEqual(Outcome.deadline, classify("", "mountroot> ", true));
-    try std.testing.expectEqual(Outcome.ended, classify("", "Copyright (c) 1992-2026 The FreeBSD Project.\n", false));
+    try std.testing.expectEqual(Outcome.ended, classify("started\n", "Copyright (c) 1992-2026 The FreeBSD Project.\n", false));
+    // A status cut short names no ending.
+    try std.testing.expectEqual(Outcome.ended, classify("started\nexited 30", "", false));
+    try std.testing.expectEqual(Outcome.ended, classify("started\nexite", "", false));
+}
+
+test "input waits for the started line, which a partial write does not say" {
+    try std.testing.expect(!started(""));
+    try std.testing.expect(!started("star"));
+    try std.testing.expect(started("started\n"));
+    try std.testing.expect(started("started\nexited 0\n"));
+    try std.testing.expect(!started("failed Mount\n"));
+}
+
+test "a FreeBSD signal ends the host by Linux's number for it, or by none" {
+    try std.testing.expectEqual(@as(?u32, 11), linuxSignal(11)); // SEGV
+    try std.testing.expectEqual(@as(?u32, 7), linuxSignal(10)); // BUS
+    try std.testing.expectEqual(@as(?u32, 10), linuxSignal(30)); // USR1
+    try std.testing.expectEqual(@as(?u32, 17), linuxSignal(20)); // CHLD
+    try std.testing.expectEqual(@as(?u32, 31), linuxSignal(12)); // SYS
+    try std.testing.expectEqual(@as(?u32, null), linuxSignal(7)); // EMT
+    try std.testing.expectEqual(@as(?u32, null), linuxSignal(29)); // INFO
+    try std.testing.expectEqual(@as(?u32, null), linuxSignal(32)); // THR
+    try std.testing.expectEqual(@as(?u32, null), linuxSignal(0));
 }
 
 test "the machine is refused by name on a host without KVM" {

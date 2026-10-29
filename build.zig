@@ -37,9 +37,15 @@ pub fn build(b: *std.Build) void {
     // installs the tools through addCi.
     if (b.pkg_hash.len != 0) return;
     // Fetched only by a build that asks for the machine.
-    if (b.option(bool, "vm-freebsd-boot", "Add vm-freebsd-boot: boot the FreeBSD test machine to its first process (qemu-system-x86_64 and KVM on a Linux host)") orelse false) {
-        const freebsd_boot = b.step("vm-freebsd-boot", "Boot the FreeBSD test machine to its first process and report its status");
-        if (vm.addFreebsdBoot(b, b, b.graph.host, "zig-out/freebsd-console.log", "zig-out/freebsd-qemu.log")) |boot| freebsd_boot.dependOn(boot);
+    if (b.option(bool, "vm-freebsd-probe", "Add vm-freebsd-probe: run the FreeBSD test machine's own tests on it (qemu-system-x86_64 and KVM on a Linux host)") orelse false) {
+        const probe = b.step("vm-freebsd-probe", "Run the FreeBSD test machine's own tests on it, through -Dci-vm's path");
+        const tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path("src/vm/freebsd/probe_test.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .freebsd }),
+            .link_libc = true,
+        }) });
+        probe.dependOn(&b.addRunArtifact(tests).step);
+        vm.add(b, probe, b, b.graph.host, &.{});
     }
     const executable = program(b, b, ci.ciTarget(b)) orelse return;
     b.installArtifact(executable);

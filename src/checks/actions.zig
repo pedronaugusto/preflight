@@ -1,9 +1,10 @@
 //! The actions a GitHub workflow uses: every `uses` key of its YAML, in block style or flow
 //! style (`- {uses: o/r@v1}`), with the value it names. Read from the YAML's structure, not
 //! its lines, so no style hides one. A block scalar's text (a `run: |` script) is text, not
-//! keys. What cannot be read for certain (a `uses` naming no plain or quoted value, an
-//! explicit `?` key, a tab in indentation, an alias to no scalar) is an error at its line:
-//! a check that skipped it would pass it.
+//! keys. What cannot be read for certain is an error at its line, as a check that skipped it
+//! would pass it: a `uses` naming no plain or quoted value, or one continued on the next line,
+//! a quoted key or `uses` value with an escape or a line break (which YAML decodes), an alias
+//! as a key or to no scalar, an explicit `?` key, a tab in indentation.
 const std = @import("std");
 
 pub const Use = struct { value: []const u8, line: usize };
@@ -18,27 +19,41 @@ pub fn uses(a: std.mem.Allocator, text: []const u8, problem: *Problem) Error![]c
     var scanner: Scanner = .{ .a = a, .text = text, .problem = problem };
     try scanner.scan();
     const tokens = scanner.tokens.items;
-    var anchors: std.StringHashMapUnmanaged([]const u8) = .empty;
+    // Each anchor, by name, at the token of the scalar it holds.
+    var anchors: std.StringHashMapUnmanaged(usize) = .empty;
     var out: std.ArrayList(Use) = .empty;
     for (tokens, 0..) |token, i| {
+        // A key is read only as it is written: one that escapes or folds a character, or an
+        // alias, could be `uses`.
+        if (token.kind == .alias and isKey(tokens, i)) return fail(problem, token.line, "an alias as a key");
+        if (token.kind == .scalar and isKey(tokens, i) and !token.exact) return fail(problem, token.line, "a quoted key with an escape or a line break, which this reader does not decode");
         if (token.kind == .anchor and i + 1 < tokens.len and tokens[i + 1].kind == .scalar and !isKey(tokens, i + 1)) {
-            try anchors.put(a, token.text, tokens[i + 1].text);
+            try anchors.put(a, token.text, i + 1);
         }
         if (token.kind != .scalar or !isKey(tokens, i) or !std.mem.eql(u8, token.text, "uses")) continue;
         var at = i + 2;
         while (at < tokens.len and (tokens[at].kind == .anchor or tokens[at].kind == .tag)) at += 1;
-        if (at < tokens.len and tokens[at].kind == .scalar and !isKey(tokens, at)) {
-            try out.append(a, .{ .value = tokens[at].text, .line = tokens[at].line });
-        } else if (at < tokens.len and tokens[at].kind == .alias) {
-            const value = anchors.get(tokens[at].text) orelse return fail(problem, tokens[at].line, "`uses` names an alias whose anchor holds no scalar before it");
-            try out.append(a, .{ .value = value, .line = tokens[at].line });
-        } else return fail(problem, token.line, "`uses` names no action as a plain or quoted scalar");
+        const value = if (at < tokens.len and tokens[at].kind == .scalar and !isKey(tokens, at))
+            at
+        else if (at < tokens.len and tokens[at].kind == .alias)
+            anchors.get(tokens[at].text) orelse return fail(problem, tokens[at].line, "`uses` names an alias whose anchor holds no scalar before it")
+        else
+            return fail(problem, token.line, "`uses` names no action as a plain or quoted scalar");
+        if (!tokens[value].exact) return fail(problem, tokens[value].line, "`uses` names its action with an escape or a line break, which this reader does not decode");
+        if (continued(tokens, value)) return fail(problem, tokens[value].line, "`uses` names its action in a plain scalar continued on the next line");
+        try out.append(a, .{ .value = tokens[value].text, .line = tokens[at].line });
     }
     return out.items;
 }
 
 fn isKey(tokens: []const Token, i: usize) bool {
     return i + 1 < tokens.len and tokens[i + 1].kind == .colon;
+}
+
+/// Whether the plain scalar at `i` goes on in the next token: a scalar with no indicator
+/// between them that is no key, as only a multi-line plain scalar's next line can be.
+fn continued(tokens: []const Token, i: usize) bool {
+    return i + 1 < tokens.len and tokens[i + 1].kind == .scalar and !isKey(tokens, i + 1);
 }
 
 fn fail(problem: *Problem, line: usize, what: []const u8) error{Unreadable} {
@@ -52,6 +67,9 @@ const Token = struct {
     line: usize,
     column: usize,
     quoted: bool = false,
+    /// The text is the scalar's value as written: no escape, doubled quote or line break in
+    /// a quoted one, which YAML would decode or fold.
+    exact: bool = true,
 };
 
 const Scanner = struct {
@@ -156,12 +174,14 @@ const Scanner = struct {
         const column = s.i - s.line_start;
         s.i += 1;
         const start = s.i;
+        var exact = true;
         while (s.i < s.text.len and s.text[s.i] != '"') {
+            if (s.text[s.i] == '\\' or s.text[s.i] == '\n') exact = false;
             if (s.text[s.i] == '\\') s.i += 1 else if (s.text[s.i] == '\n') s.newlineInside();
             s.i += 1;
         }
         if (s.i >= s.text.len) return fail(s.problem, line, "a double-quoted scalar never closes");
-        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .column = column, .quoted = true });
+        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .column = column, .quoted = true, .exact = exact });
         s.i += 1;
     }
 
@@ -170,19 +190,24 @@ const Scanner = struct {
         const column = s.i - s.line_start;
         s.i += 1;
         const start = s.i;
+        var exact = true;
         while (s.i < s.text.len) {
             if (s.text[s.i] == '\'') {
                 if (s.i + 1 < s.text.len and s.text[s.i + 1] == '\'') {
+                    exact = false;
                     s.i += 2;
                     continue;
                 }
                 break;
             }
-            if (s.text[s.i] == '\n') s.newlineInside();
+            if (s.text[s.i] == '\n') {
+                exact = false;
+                s.newlineInside();
+            }
             s.i += 1;
         }
         if (s.i >= s.text.len) return fail(s.problem, line, "a single-quoted scalar never closes");
-        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .column = column, .quoted = true });
+        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .column = column, .quoted = true, .exact = exact });
         s.i += 1;
     }
 
@@ -302,4 +327,17 @@ test "an alias to a scalar is read as its anchor's value; what cannot be read fo
     try expectUnreadable("steps:\n  - ? uses\n    : o/r@v1\n", "explicit key");
     try expectUnreadable("steps:\n\t- uses: o/r@v1\n", "tab");
     try expectUnreadable("steps: [{uses: o/r@v1}\n", "never closes");
+}
+
+test "a key or a value YAML would decode or join is refused, never read as written (review-1029b m-c)" {
+    try expectUnreadable("steps:\n  - \"u\\x73es\": o/r@main\n", "quoted key");
+    try expectUnreadable("steps:\n  - \"\\u0075ses\": o/r@main\n", "quoted key");
+    try expectUnreadable("steps:\n  - \"us\\\n    es\": o/r@main\n", "quoted key");
+    try expectUnreadable("k: &k uses\nsteps:\n  - *k : o/r@main\n", "alias as a key");
+    try expectUnreadable("steps:\n  - uses: \"o/r@\\x6dain\"\n", "with an escape");
+    try expectUnreadable("steps:\n  - uses: 'o/r@it''s'\n", "with an escape");
+    try expectUnreadable("steps:\n  - uses: o/r@\n      main\n", "continued on the next line");
+    try expectUnreadable("a: &v o/r@\n  main\nsteps:\n  - uses: *v\n", "continued on the next line");
+    // A run script's escapes are its own: only keys and what `uses` names are read.
+    try expectUses("steps:\n  - run: \"echo \\\"hi\\\"\"\n    uses: o/r@v1\n  - uses:\n      o/r@v2\n", &.{ "o/r@v1", "o/r@v2" });
 }

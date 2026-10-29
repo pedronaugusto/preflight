@@ -8,9 +8,9 @@
 //! its machines (`PREFLIGHT_PORTABLE=elsewhere`): a gate on one Mac would otherwise release a
 //! package whose source checks no machine ran. What this machine does not run is said, never
 //! skipped quietly, and only that may stay unproven: another system's suite, ThreadSanitizer
-//! off x86_64 and aarch64, and the VM legs (riscv64 on its kernel under QEMU), which are the
-//! nightly's by declaration on every host, since no machine that gates a release runs a VM
-//! (design.md, "The gate on the machines at hand").
+//! off x86_64 and aarch64, and the VM legs (riscv64 on its kernel under QEMU, x86_64 FreeBSD
+//! on its kernel under KVM), which are the nightly's by declaration on every host, since no
+//! machine that gates a release runs a VM (design.md, "The gate on the machines at hand").
 const std = @import("std");
 const matrix = @import("matrix.zig");
 
@@ -61,7 +61,7 @@ pub fn decide(a: std.mem.Allocator, jobs: []const matrix.Job, host: Host, portab
 
 fn one(job: matrix.Job, host: Host, portable: Portable) Decision {
     // A VM leg is the nightly's on every host, whatever the host has installed.
-    if (job.qemu) return .{ .elsewhere = "a VM leg: the nightly's" };
+    if (job.machine != .none) return .{ .elsewhere = "a VM leg: the nightly's" };
     // ThreadSanitizer runs on Linux and macOS, x86_64 and aarch64.
     if (std.mem.eql(u8, job.step, "hardened-tsan")) {
         return if ((host.os == .linux or host.os == .macos) and (host.arch == .x86_64 or host.arch == .aarch64)) .run else .{ .elsewhere = "ThreadSanitizer runs on x86_64 or aarch64 Linux or macOS" };
@@ -139,9 +139,10 @@ test "a Mac runs its own suites, the hardened runs and the jobs that say the sam
         .{ .os = "windows-latest", .name = "SDK link (x86_64-windows-gnu)", .step = "ci-link", .operation = .link },
         .{ .os = "ubuntu-latest", .name = "hardened", .step = "hardened" },
         .{ .os = "ubuntu-latest", .name = "hardened-tsan", .step = "hardened-tsan" },
-        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
+        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .machine = .riscv64 },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
         .{ .os = "ubuntu-latest", .name = "examples", .step = "examples", .declared = true, .any_host = true },
+        .{ .os = "ubuntu-latest", .name = "test (x86_64-freebsd on its kernel under KVM, Debug)", .machine = .freebsd },
     };
     const host: Host = .{ .os = .macos, .arch = .aarch64 };
     // The gate's one machine runs the source checks and the compiles of named targets: no
@@ -149,7 +150,7 @@ test "a Mac runs its own suites, the hardened runs and the jobs that say the sam
     // declared job that names no runner is this machine's too.
     const alone = try decide(a, &jobs, host, .here);
     defer a.free(alone);
-    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run };
+    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .elsewhere };
     for (expected, alone) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
     // A machine whose gate's caller runs them on another machine names them as that machine's.
     const beside = try decide(a, &jobs, host, .elsewhere);
@@ -178,7 +179,10 @@ test "an ARM Linux machine runs the Linux suites once each" {
 
 test "a VM leg is the nightly's on every host" {
     const a = std.testing.allocator;
-    const jobs = [_]matrix.Job{.{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true }};
+    const jobs = [_]matrix.Job{
+        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .machine = .riscv64 },
+        .{ .os = "ubuntu-latest", .name = "test (x86_64-freebsd on its kernel under KVM, Debug)", .machine = .freebsd },
+    };
     for ([_]Host{
         .{ .os = .linux, .arch = .x86_64 },
         .{ .os = .linux, .arch = .aarch64 },
@@ -187,7 +191,7 @@ test "a VM leg is the nightly's on every host" {
     }) |host| {
         const decisions = try decide(a, &jobs, host, .here);
         defer a.free(decisions);
-        try std.testing.expectEqualStrings("a VM leg: the nightly's", decisions[0].elsewhere);
+        for (decisions) |decision| try std.testing.expectEqualStrings("a VM leg: the nightly's", decision.elsewhere);
     }
 }
 
@@ -231,7 +235,7 @@ test "a release plan leaves a Mac only other systems' jobs and the VM legs unpro
         .covered => {},
         .elsewhere => |why| {
             // Only another system's or a VM leg's.
-            if (job.qemu) continue;
+            if (job.machine != .none) continue;
             try std.testing.expect(systemOf(job.os).? != .macos);
             try std.testing.expect(!std.mem.eql(u8, why, "another machine of this gate"));
         },

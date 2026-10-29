@@ -156,7 +156,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .release = b.option(bool, "ci-release", "The release tier's source checks: every aegis-pack finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
-        .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux on its own kernel under QEMU's system emulation (qemu-system-riscv64 on PATH)") orelse false,
+        .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on a Linux host, on PATH)") orelse false,
     };
 }
 /// Controls accepted during a root script's lazy-discovery pass.

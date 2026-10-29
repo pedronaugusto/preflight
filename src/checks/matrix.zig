@@ -10,6 +10,8 @@ pub const arm_hosts = [_][]const u8{ "ubuntu-24.04-arm", "windows-11-arm" };
 const arm_host_names = [_][]const u8{ "linux_arm", "windows_arm" };
 /// The `shards` key of the riscv64 job on its emulated kernel.
 const emulated_host_name = "riscv64";
+/// The `shards` key of the x86_64 FreeBSD job on its kernel under KVM.
+const freebsd_host_name = "freebsd";
 /// The `shards` key of the hardened ThreadSanitizer run, several times slower than the suite;
 /// the hardened run without it takes the Linux count.
 const tsan_name = "tsan";
@@ -54,12 +56,20 @@ pub const Job = struct {
     prepare: []const u8 = "",
     /// A job of the package's own (`jobs`), which runs as declared: never split into a link and a replay.
     declared: bool = false,
-    /// The job runs riscv64 Linux's tests on a riscv64 kernel under QEMU's system emulation
-    /// (`-Dci-vm`), which the runner installs.
-    qemu: bool = false,
+    /// The machine the job's tests run on (`-Dci-vm`), whose tools the runner installs.
+    machine: Machine = .none,
     /// A job of the package's own that names no runner: the package's on any machine, which
     /// the hosted gate runs on Linux and a gate at hand runs wherever it is.
     any_host: bool = false,
+};
+
+/// A target no hosted runner is, whose tests run on its own kernel under QEMU.
+pub const Machine = enum {
+    none,
+    /// riscv64 Linux, emulated: `qemu-system-riscv64`.
+    riscv64,
+    /// x86_64 FreeBSD under KVM: `qemu-system-x86_64` and the runner's /dev/kvm.
+    freebsd,
 };
 
 /// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
@@ -269,6 +279,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     // each mode a package releases in.
     for (hosts ++ arm_hosts, host_names ++ arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe, .fast });
     try emulatedJobs(a, config, &jobs);
+    try freebsdJobs(a, config, &jobs);
     try jobs.append(a, try lintJob(a, config, .release));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
@@ -332,7 +343,27 @@ fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Jo
             .args = try a.print("-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
             .shard = shard,
             .setup = true,
-            .qemu = true,
+            .machine = .riscv64,
+            .job_timeout = try minutes(config, "test_job_timeout"),
+        });
+    }
+}
+
+/// The Debug suite on x86_64 FreeBSD, which no hosted runner is: built for it on the Linux
+/// runner and run on FreeBSD's own kernel under KVM (`-Dci-vm`), so that what a package
+/// claims of FreeBSD (kqueue, its sockets and kernel TLS) has a kernel's evidence, not a
+/// cross-compile's. It splits into `shards.freebsd` jobs, its durations a column of their own.
+fn freebsdJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
+    const count = try shardCount(src.get(src.get(config, "shards"), freebsd_host_name));
+    for (0..count) |i| {
+        const shard = try shardName(a, i, count);
+        try jobs.append(a, .{
+            .os = hosts[0],
+            .name = try a.print("test (x86_64-freebsd on its kernel under KVM, Debug){s}{s}", .{ if (count > 1) " shard " else "", shard }),
+            .args = try a.print("-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+            .shard = shard,
+            .setup = true,
+            .machine = .freebsd,
             .job_timeout = try minutes(config, "test_job_timeout"),
         });
     }
@@ -353,7 +384,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         for (try src.items(portable_hosts)) |host| if (std.mem.eql(u8, try src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (tier == .fast or job.declared or job.qemu or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
+        if (tier == .fast or job.declared or job.machine != .none or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
             try native.append(a, job);
             continue;
         }
@@ -571,7 +602,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
-    for (host_names ++ arm_host_names ++ .{ emulated_host_name, tsan_name }) |host| _ = try shardCount(src.get(shards, host));
+    for (host_names ++ arm_host_names ++ .{ emulated_host_name, freebsd_host_name, tsan_name }) |host| _ = try shardCount(src.get(shards, host));
     for ([_][]const u8{ "compile_once", "windows_git_latest", "attest" }) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
@@ -815,7 +846,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     var linux: usize = 0;
     for (jobs) |job| {
         if (!std.mem.eql(u8, job.step, "ci")) continue;
-        if (job.qemu) continue;
+        if (job.machine != .none) continue;
         if (std.mem.eql(u8, job.os, hosts[2])) windows += 1;
         if (std.mem.eql(u8, job.os, hosts[1])) macos += 1;
         if (std.mem.eql(u8, job.os, hosts[0])) {
@@ -835,13 +866,31 @@ test "each host's shards run every mode, split by count, with the lint and compi
     try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, .release));
 }
 
+test "the FreeBSD job on its kernel splits into its shards, and runs where KVM is" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":2}}", .{})).value;
+    var shards: usize = 0;
+    for (try plan(a, config, .release)) |job| if (job.machine == .freebsd) {
+        shards += 1;
+        try std.testing.expectEqualStrings(hosts[0], job.os);
+        try std.testing.expectEqualStrings(try a.print("{d}/2", .{shards}), job.shard);
+        try std.testing.expect(std.mem.endsWith(u8, job.name, try a.print(" shard {d}/2", .{shards})));
+    };
+    try std.testing.expectEqual(@as(usize, 2), shards);
+    // Only the release tier runs it.
+    for ([_]Tier{ .fast, .merge }) |tier| for (try plan(a, config, tier)) |job| try std.testing.expect(job.machine == .none);
+    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":0}}", .{})).value, .release));
+}
+
 test "the riscv64 job on its emulated kernel splits into its shards" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":2}}", .{})).value;
     var shards: usize = 0;
-    for (try plan(a, config, .release)) |job| if (job.qemu) {
+    for (try plan(a, config, .release)) |job| if (job.machine == .riscv64) {
         shards += 1;
         try std.testing.expectEqualStrings(try a.print("{d}/2", .{shards}), job.shard);
         try std.testing.expect(std.mem.endsWith(u8, job.name, try a.print(" shard {d}/2", .{shards})));
@@ -960,15 +1009,17 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const expected = [_][]const u8{
-        "test (ubuntu-latest, Debug)",            "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
-        "test (macos-latest, Debug)",             "test (macos-latest, ReleaseSafe)",      "test (macos-latest, ReleaseFast)",
-        "test (windows-latest, Debug)",           "test (windows-latest, ReleaseSafe)",    "test (windows-latest, ReleaseFast)",
-        "test (ubuntu-24.04-arm, Debug)",         "test (ubuntu-24.04-arm, ReleaseSafe)",  "test (ubuntu-24.04-arm, ReleaseFast)",
-        "test (windows-11-arm, Debug)",           "test (windows-11-arm, ReleaseSafe)",    "test (windows-11-arm, ReleaseFast)",
-        "source checks and documented snippets",  "compile (ubuntu-latest, ReleaseSmall)", "compile (macos-latest, ReleaseSmall)",
-        "compile (windows-latest, ReleaseSmall)", "Cross compile",                         "test (riscv64-linux on its kernel under QEMU, Debug)",
+        "test (ubuntu-latest, Debug)",                          "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
+        "test (macos-latest, Debug)",                           "test (macos-latest, ReleaseSafe)",      "test (macos-latest, ReleaseFast)",
+        "test (windows-latest, Debug)",                         "test (windows-latest, ReleaseSafe)",    "test (windows-latest, ReleaseFast)",
+        "test (ubuntu-24.04-arm, Debug)",                       "test (ubuntu-24.04-arm, ReleaseSafe)",  "test (ubuntu-24.04-arm, ReleaseFast)",
+        "test (windows-11-arm, Debug)",                         "test (windows-11-arm, ReleaseSafe)",    "test (windows-11-arm, ReleaseFast)",
+        "source checks and documented snippets",                "compile (ubuntu-latest, ReleaseSmall)", "compile (macos-latest, ReleaseSmall)",
+        "compile (windows-latest, ReleaseSmall)",               "Cross compile",                         "test (riscv64-linux on its kernel under QEMU, Debug)",
+        "test (x86_64-freebsd on its kernel under KVM, Debug)",
         // The hardened profile is every package's.
-        "hardened",                               "hardened-fuzz",                         "hardened-tsan",
+        "hardened",                              "hardened-fuzz",
+        "hardened-tsan",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {
@@ -981,9 +1032,16 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     // Every host the tier executes records its durations, QEMU's emulated kernel too, a column
     // of its own; none of it is the fast job.
     for (jobs) |job| {
-        if (job.qemu) {
-            try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm") != null);
-            continue;
+        switch (job.machine) {
+            .none => {},
+            .riscv64 => {
+                try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm") != null);
+                continue;
+            },
+            .freebsd => {
+                try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm") != null);
+                continue;
+            },
         }
         if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
     }

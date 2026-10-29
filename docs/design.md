@@ -106,13 +106,14 @@ stays unproven here is named on the gate's last line, and is only ever another s
 a VM leg.
 
 The VM legs are the nightly's by declaration, on every host: riscv64 Linux on its own kernel
-under QEMU's system emulation now, and FreeBSD when it joins. No machine that gates a release
-runs a VM (the owner's rule since 2026-10-25), and preflight reads no machine's configuration
-to decide it, so a gate cannot pass or fail on what a machine happens to have installed. Their
-result is the nightly's run on GitHub's Linux runners. It is a rule, not a limit: the riscv64
-leg would run on macOS, since QEMU's 9p file sharing, which gives the machine the host's files
-at their paths, its user network and its serial ports all work on a macOS host. Only Windows
-lacks the 9p sharing it needs.
+under QEMU's system emulation, and x86_64 FreeBSD on its own kernel under KVM. No machine that
+gates a release runs a VM (the owner's rule since 2026-10-25), and preflight reads no machine's
+configuration to decide it, so a gate cannot pass or fail on what a machine happens to have
+installed. Their result is the nightly's run on GitHub's Linux runners. It is a rule, not a
+limit: the riscv64 leg would run on macOS, since QEMU's 9p file sharing, which gives the machine
+the host's files at their paths, its user network and its serial ports all work on a macOS
+host; only Windows lacks the 9p sharing it needs. FreeBSD's leg runs under KVM, so on an x86_64
+Linux host.
 
 ## Generated caller
 
@@ -173,3 +174,82 @@ values keep clock and scale together.
 Under the build runner's protocol a passing test run and a passing lint write nothing: Zig 0.17
 shows any stderr of a passing build step under a "failed command:" line. A failure names its
 seed, and lint prints all it held when it fails.
+
+## The FreeBSD test machine
+
+A program built for x86_64 FreeBSD runs on FreeBSD's own kernel under QEMU with KVM, on
+a Linux host only (vm/freebsd.zig refuses any other by name); it is the nightly tier's,
+for what no hosted runner is and a cross-compile cannot show: FreeBSD's kernel TLS and
+its sockets. The machine is FreeBSD's own release files, pinned by hash in preflight's
+manifest and fetched only by a build that asks for it, as the riscv64 machine's Alpine
+files are: the kernel distribution set (`kernel.txz`) and the runtime OCI image, whose
+one layer is the base system a program needs (`ld-elf.so.1`, libc, libthr, `sh`).
+
+There is no loader. The release's `base.txz`, the one archive holding `loader.efi`,
+cannot be a dependency (below), and pkgbase's `.pkg` files are not an archive type Zig
+fetches. QEMU starts the kernel at its PVH entry (`-kernel`; FreeBSD's amd64 kernel
+carries `XEN_ELFNOTE_PHYS32_ENTRY`) with its environment on the command line:
+`vfs.root.mountfrom`, `init_path`, the serial console and its port's hints. A PVH
+boot keeps none of the command line's flags, only its variables, so the serial console is
+`boot_serial=YES` (`-h` would be dropped and vt, outranking the uart, would take the
+console to no display). The
+processor's TSC is invariant (`-cpu host,+invtsc`): a PVH boot sets FreeBSD 15.1's early
+`DELAY` to Xen's, which reads Xen's shared page, NULL on KVM, so the console's first
+`DELAY` faulted and the boot ended in a double fault before printing; with an invariant
+TSC whose frequency QEMU reports, `DELAY` counts the TSC instead. Without a loader no module is
+preloaded, so the root is a file system GENERIC builds in: an ISO 9660 image with Rock
+Ridge (vm/iso9660.zig, cpio.zig's counterpart) that the host writes from the layer's
+members as they are (modes, owners, symbolic and hard links), the kernel and its modules
+under `/boot/kernel`, and preflight's first process at `/preflight/init`
+(vm/freebsd/guest.zig), which loads the modules the run needs from there
+(virtio_console, virtio_p9fs, nullfs). The writer is checked against libarchive's
+reader on FreeBSD's own layer, member for member, and against FreeBSD's cd9660 by the
+machine's every boot.
+
+A run is the riscv64 machine's: the host writes it in a directory shared over 9p (the
+program, its arguments and environment, the directories it names, its scratch
+directory, its user), and the program's stdin and stdout are a virtio port, its stderr
+another, its ending a third. The ISO root cannot be written, so the program's root is the
+machine's memory: the first process mounts a tmpfs, nullfs-mounts FreeBSD's system
+directories into it read-only (`bin`, `boot`, `etc`, `lib`, `libexec`, `sbin`, `usr`),
+gives it its own devfs, `/tmp` and `/var/tmp`, and takes it as its root; the host's
+directories are then made at their host paths and bound there from the host's share
+(one inside another already bound is there already: nullfs refuses it, `EDEADLK`),
+and the scratch directory is a tmpfs of its own. The share stays mounted at `/run/host`
+beneath the binds, where the riscv64 machine detaches it (FreeBSD unmounts no file system
+with mounts on it), so the program can reach the host's files there, as the build's own
+programs can on the host. FreeBSD's virtio ports are terminals,
+which drop what arrives before they are opened and mangle it until they are set raw, so
+the first process opens them raw and writes `started` to the status port, and the host
+sends the program's input only after it. `started` ends the one deadline the machine
+has of its own (180 s, the boot); the program after it is bounded as it is on any host,
+by the test runner's watchdog. Every way a run ends is named: the program's exit code
+or signal (FreeBSD's number, which the host ends by under Linux's number for that
+signal, or by 128 plus it for one Linux has not), the first process's error, a panic
+on the console, the deadline, or QEMU ending without any of them; for all but the
+first, the run's directory is kept, its console among it, and the console's last lines
+are written to the build's output. A FreeBSD run on a host other than Linux is refused
+when the build is configured, naming `ci-vm=freebsd`, and one on a Linux host without
+KVM open to its user when it runs. vm/freebsd/probe_test.zig is the machine's own
+proof: tests built for FreeBSD and run on it through this path (`zig build
+-Dvm-freebsd-probe vm-freebsd-probe`), skipped on every other system.
+
+Rock Ridge readers disagree on a symbolic link whose SL entries split between two
+components (libarchive starts each entry without a `/`; FreeBSD follows the last
+component's continue flag), so the writer ends an entry only inside a continued name,
+where both agree, and refuses the rare target it cannot split that way.
+
+**A gap in Zig 0.17.0: tar hard links.** Zig's package fetch fails on any archive with a
+hard link (ustar type `1`), and `std.tar.Iterator` skips one, reporting it as
+unsupported without its target. FreeBSD's `base.txz` has 13,021 of them (`/rescue`,
+`/bin/[`), so it cannot be a dependency; the OCI image's outer archive has none, and
+the host reads the layer inside it with its own reader (vm/ustar.zig), which keeps them.
+The repro, two members:
+
+    printf 'x\n' > a && ln a b && bsdtar --format ustar -cf one-hardlink.tar a b
+    zig fetch one-hardlink.tar
+    # error: unable to unpack tarball
+    #     note: file 'b' has unsupported type '1'
+
+When Zig's fetch takes hard links, `base.txz` could replace the OCI image and bring
+FreeBSD's loader with it; the ISO root and PVH boot would not need to change.

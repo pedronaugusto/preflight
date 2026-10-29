@@ -1,0 +1,45 @@
+# The FreeBSD test machine's proof, on its branch only: its own tests, built for x86_64
+# FreeBSD and run on FreeBSD's kernel under KVM through -Dci-vm's path. A machine that
+# fails keeps its run directory, console among it, as the job's artifact.
+name: FreeBSD machine probe
+
+on:
+  push:
+    branches: [freebsd-vm]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+      - name: Install QEMU's x86_64 system emulation and open KVM to the runner
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          qemu-system-x86_64 --version
+          # The guest's invariant TSC needs the runner's: Linux names it nonstop_tsc.
+          grep -m1 -o -w -e constant_tsc -e nonstop_tsc /proc/cpuinfo || echo "the runner shows no invariant TSC"
+      - name: Run the machine's own tests on it
+        timeout-minutes: 10
+        run: zig build -Dvm-freebsd-probe vm-freebsd-probe --summary all
+      - name: Keep a failed machine's run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-run
+          path: .zig-cache/tmp/preflight-vm-*
+          if-no-files-found: ignore

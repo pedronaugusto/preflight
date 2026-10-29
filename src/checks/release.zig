@@ -190,12 +190,14 @@ fn succeeded(result: std.process.RunResult) bool {
 
 /// The release tag the surface is compared with: the newest `v<version>` tag in the commit's
 /// history, whatever `CHANGELOG.md` (`text`) says, for git records what was released and the
-/// text may say otherwise. A commit that releases, before its tag is made, is so compared with
-/// the release before. The text must name that release (`## [X.Y.Z]`): the entries since it
-/// are what the comparison reads, and a text naming no release that resolves to a tag fails,
-/// as does one naming a release while history holds no tag. Null before the first release
-/// (neither a tag nor a release) and on the commit that makes it. A shallow clone and git failing fail too, reported: each
-/// would compare the surface with nothing, which passes (a clone fetched without tags passed so).
+/// text may say otherwise. The tags are the releases of the package at the repository's top;
+/// one below it (a sample, a fixture) has none. A commit that releases, before its tag is made,
+/// is so compared with the release before. The text must name that release (`## [X.Y.Z]`): the
+/// entries since it are what the comparison reads, and a text naming no release that resolves
+/// to a tag fails, as does one naming a release while history holds no tag. Null before the
+/// first release (neither a tag nor a release) and on the commit that makes it. A shallow clone
+/// and git failing fail too, reported: each would compare the surface with nothing, which
+/// passes (a clone fetched without tags passed so).
 pub fn lastTag(c: *src.Context, text: []const u8) !?[]const u8 {
     const shallow = try must(c, &.{ "git", "rev-parse", "--is-shallow-repository" });
     if (std.mem.eql(u8, shallow, "true")) {
@@ -203,7 +205,10 @@ pub fn lastTag(c: *src.Context, text: []const u8) !?[]const u8 {
         return error.HistoryUnreadable;
     }
     var newest: ?struct { name: []const u8, version: std.SemanticVersion } = null;
-    var tags = std.mem.splitScalar(u8, try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", "v*" }), '\n');
+    // The `v*` tags are the releases of the package at the repository's top: one below it (a
+    // sample, a fixture) has none of its own.
+    const below = (try must(c, &.{ "git", "rev-parse", "--show-prefix" })).len != 0;
+    var tags = std.mem.splitScalar(u8, if (below) "" else try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", "v*" }), '\n');
     while (tags.next()) |line| {
         const name = std.mem.trim(u8, line, " \r");
         if (!std.mem.startsWith(u8, name, "v")) continue;
@@ -563,6 +568,17 @@ test "the newest tag in history is the base whatever the headings say, and a CHA
     try changelogNamesChanges(&untagged, &package_modules);
     try std.testing.expectEqual(@as(usize, 1), untagged.errors);
     try std.testing.expect(std.mem.find(u8, f.held.written(), "since v0.1.0 the package removed or changed") != null);
+    // A package below the repository's top, as a sample is, has no tags of its own: the
+    // repository's are its top package's.
+    f.held.clearRetainingCapacity();
+    for ([_][]const u8{ "build.zig", "build.zig.zon", "src/a.zig" }) |path| try f.write(try f.arena.allocator().print("sample/{s}", .{path}), try f.read(path));
+    try f.write("sample/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- A sample.\n");
+    try f.commit("Sample");
+    var sample = f.context();
+    sample.dir = try f.tmp.dir.openDir(std.testing.io, "sample", .{});
+    defer sample.dir.?.close(std.testing.io);
+    try changelogNamesChanges(&sample, &package_modules);
+    try std.testing.expectEqual(@as(usize, 0), sample.errors);
 }
 
 test "a shallow clone and a failing git are errors, never a surface compared with nothing" {

@@ -346,12 +346,17 @@ fn ruleName(rule: glint.Rule) []const u8 {
 /// incomplete sites. The reviews read each one, and the findings they cover, by reason and
 /// rule, hold to `glint.escapes`: above it fails, since a new escape, or one widened to a rule
 /// it did not cover, is a visible line there, and below it fails too, until the line comes
-/// down, so each count only falls.
+/// down, so each count only falls. An escape in the older form, which names no rule, covers
+/// nothing glint 0.8.0 holds it to: it is counted apart, in the report and in the file, and
+/// held to no line, since `zig build fix` names its rules.
 fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report) void {
     var text: std.Io.Writer.Allocating = .init(c.a);
     var counts: std.array_hash_map.String([policy.escape_reasons.len]usize) = .empty;
     const reasons = policy.escape_reasons;
-    for (report.escapes) |escape| for (escape.covered) |covered| {
+    var older: usize = 0;
+    for (report.escapes) |escape| if (olderForm(project, escape)) {
+        older += 1;
+    } else for (escape.covered) |covered| {
         const entry = counts.getOrPutValue(c.a, covered.name, @splat(0)) catch @panic("OOM");
         for (reasons, 0..) |reason, r| if (std.mem.eql(u8, reason, escape.reason)) {
             entry.value_ptr[r] += 1;
@@ -394,7 +399,19 @@ fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project
         };
         summary.writer.writeByte(')') catch @panic("OOM");
     }
-    c.report("preflight: escapes: {d}: {s}; all of them: {s}\n", .{ report.escapes.len, summary.written(), writeList(c, escapes_path, text.written()) });
+    const apart = if (older == 0) "" else c.a.print(" ({d} in the older form, naming no rule, so covering nothing: `zig build fix` names their rules)", .{older}) catch @panic("OOM");
+    const line = c.a.print("preflight: escapes: {d}{s}: {s}", .{ report.escapes.len, apart, summary.written() }) catch @panic("OOM");
+    text.writer.print("{s}\n", .{line}) catch @panic("OOM");
+    c.report("{s}; all of them: {s}\n", .{ line, writeList(c, escapes_path, text.written()) });
+}
+
+/// Whether `escape` is written in the older form, `// aegis: <reason>: <why>`, naming no rule.
+fn olderForm(project: *const glint.Project, escape: glint.Report.Escape) bool {
+    const bytes = project.inputs[escape.span.file.raw()].bytes;
+    const comment = bytes[@min(escape.span.start, bytes.len)..];
+    const marker = "aegis:";
+    const after = std.mem.trimStart(u8, comment[(std.mem.find(u8, comment, marker) orelse return false) + marker.len ..], " ");
+    return !std.mem.startsWith(u8, after[@min(escape.reason.len, after.len)..], "(");
 }
 
 /// Every aegis escape of a lint, relative to the package.
@@ -539,6 +556,17 @@ test "a danger site fails in production unless it carries the aegis escape; test
     try f.file("src/root.zig", read ++ "boundary(A019, A010): p points at a u32 the kernel wrote\n}\n");
     try std.testing.expect(try f.run(held, with_std) != 0);
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2,\"A010\":1}}}}", with_std));
+    // An escape in the older form names no rule, so it covers nothing it is held to: counted
+    // apart in the report and in the file, never against `glint.escapes` (review-1029b m-b).
+    var report: std.Io.Writer.Allocating = .init(f.c.a);
+    f.c.held = &report;
+    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: p points at a u32 the kernel wrote\n}\n");
+    try std.testing.expect(try f.run(held, .{}) != 0);
+    try std.testing.expect(std.mem.find(u8, report.written(), "below the 2 `glint.escapes` holds") != null);
+    const older = "preflight: escapes: 1 (1 in the older form, naming no rule, so covering nothing: `zig build fix` names their rules): ";
+    try std.testing.expect(std.mem.find(u8, report.written(), older) != null);
+    try std.testing.expect(std.mem.find(u8, try f.c.read(escapes_path), older) != null);
+    f.c.held = null;
     try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): p points at a u32 the kernel wrote\n}\n");
     // An escape needs one of the five reasons and a why, and the pack takes no other suppression.
     try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: fast: it is\n}\n");

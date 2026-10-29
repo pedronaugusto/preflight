@@ -157,11 +157,13 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     };
     const decisions = try checks.local.decide(c.a, jobs, host, portable);
     var not_here: std.ArrayList([]const u8) = .empty;
+    var missing: std.ArrayList([]const u8) = .empty;
     var failed: std.ArrayList([]const u8) = .empty;
     var ran: usize = 0;
     for (jobs, decisions) |job, decision| switch (decision) {
         .covered => {},
         .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
+        .missing => |why| try missing.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
         .run => {
             var env = try environ.clone(c.a);
             try env.put("STEP", checks.local.stepOf(job));
@@ -187,7 +189,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
             };
         },
     };
-    const verdict = try checks.local.verdict(c.a, ran, failed.items, not_here.items);
+    const verdict = try checks.local.verdict(c.a, ran, failed.items, missing.items, not_here.items);
     if (!verdict.green) {
         c.report("{s}\n", .{verdict.line});
         return error.CheckFailed;

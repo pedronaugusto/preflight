@@ -369,8 +369,12 @@ fn forwardInput(io: Io, to: Io.File) void {
     var output = to.writerStreaming(io, &out_buffer);
     const stdin = Io.File.stdin();
     while (true) {
-        // The end of the host's input, or a read of it that failed: the program's input ends either way.
-        const n = stdin.readStreaming(io, &.{&chunk}) catch 0;
+        // The end of the host's input, or a read of it that failed: the program's input ends either
+        // way. A cancel ends the forwarding itself, at once.
+        const n = stdin.readStreaming(io, &.{&chunk}) catch |err| switch (err) {
+            error.Canceled => return,
+            else => 0,
+        };
         output.interface.writeInt(u32, @intCast(n), .little) catch return; // safe: at most the chunk's length
         output.interface.writeAll(chunk[0..n]) catch return;
         output.interface.flush() catch return;

@@ -17,10 +17,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A package holds the findings its aegis escapes cover, by reason and rule, in `glint.escapes` (`{"boundary": {"A019": 12}, "no-danger": {"A009": 3}}`; none by default): above it the lint fails, so a new escape, or one widened to a rule it did not cover, is a line in review, and below it the lint fails until the count comes down, so it only falls. A package with escapes adds the line at its next pin of preflight; the lint names each count.
 - glint reads every Zig file the package ships (`build.zig.zon`'s `.paths`), those under `examples`, `ci`, `conformance` and `bench`, and `build.zig`; `glint_paths` adds to them, where it replaced them and could leave shipped code unread. What ships is read whole: a nested `build.zig.zon` inside it ships too, so its directory is linted; beside what ships, a nested package is still left to its own build.
 - A repository may only raise a rule in `ci/preflight.json`: `off` or `report` below preflight's default fails by name (`report` on a finding rule did nothing in silence), P006 is a gated default like any other, and `strict_suppressions` is retired: suppressions are strict everywhere. The danger rules' scope is what `build.zig.zon`'s `.paths` ships, the build script included, not the `sources` a repository writes.
-- The gate's last line calls green only the release-tier jobs it ran, and names the rest "not run by this gate, so unproven"; a gate that ran none is refused, where it printed "green here".
+- The gate's last line calls green only the release-tier jobs it ran, and names the rest "not run by this gate, so unproven"; a gate that ran none is refused, where it printed "green here". Only another system's jobs, or another machine's of the same gate, may stay unproven: a job this machine runs and could not (riscv64 on Linux with no QEMU) keeps it from green. preflight's own suite runs on macOS too, so a Mac's gate proves it; only its riscv64 leg needs Linux.
 - The release tier holds the aegis pack's bar in the tool: its source checks (`-Dci-release`, `preflight lint --release`) fail on every aegis-pack finding, the flow rules' (A006, A009, A010, A012, A013, A018, A020, A021) included, which the default policy only reports. A landing's lint still reports them; `bay release`, which gates the release tier, refuses them.
 - The lint is glint 0.7.5's: the rule batch from the family's survey, which reads the false alarms it found as the checks they are (A007, A008, A009, A010, A012, A014, A015, A020), reads a literal a parser returns as the parse refines it, finds two that went unreported (A008 through an alias, A011 through a constant one), and nests Z034's fix. A struct's fields are read by the values stored in them only while nothing writes its bytes where no store shows it (viewed as bytes, reinterpreted, handed outside the program, a computed `@field`), which went unseen since glint 0.7.1, so a package may see findings it had not.
 - Internal, no consumer's: the checks' `alignNested`, which nothing has called since `land` left preflight, is gone, and so is the escape on the runner's pipe `file`, which glint 0.7.5 reads as handing over no owner (a literal naming the handle it is given).
+
+### Fixed
+
+- A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu).
+- The VM host's input forwarding ends at once on a cancel; it read a cancel as the end of the input and sent the program an end-of-input frame first.
 
 ## [0.18.5] - 2026-10-28
 
@@ -35,7 +40,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `ci-check` and `ci-check-bench` compile a module's C, assembly and resource sources for a COFF target, each to an object of its own with the module's flags, include paths and macros. Each artifact compiled to one object, and on COFF Zig cannot merge a module's source objects into it ("coff does not support linking multiple objects into one"): a package with preprocessed `.S` files beside its Zig root failed every object on x86_64-windows-gnu (cloak's s2n-bignum routines).
-- A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu).
 
 ## [0.18.4] - 2026-10-27
 

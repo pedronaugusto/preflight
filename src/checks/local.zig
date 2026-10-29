@@ -7,7 +7,8 @@
 //! another of its machines (`PREFLIGHT_PORTABLE=elsewhere`): a gate on one Mac would
 //! otherwise release a package whose source checks no machine ran. What this machine cannot
 //! run is said, never skipped quietly: another system's suite, ThreadSanitizer off x86_64 and
-//! aarch64 Linux, riscv64 with no QEMU here.
+//! aarch64 Linux. Only that may stay unproven: a job this machine runs and could not, as
+//! riscv64 on Linux with no QEMU here, keeps the gate from green.
 const std = @import("std");
 const matrix = @import("matrix.zig");
 
@@ -37,7 +38,10 @@ pub const Portable = enum {
 /// A job of the plan, and whether it runs here or why not.
 pub const Decision = union(enum) {
     run,
+    /// Another system's, or another machine's of this gate: what this one cannot run.
     elsewhere: []const u8,
+    /// This machine's to run, lacking what it needs: a release gated here is not green.
+    missing: []const u8,
     /// What another job this machine runs builds already: the same build, or the hosted
     /// gate's compile-once link of a suite that runs here.
     covered,
@@ -66,7 +70,7 @@ fn one(job: matrix.Job, host: Host, portable: Portable) Decision {
     if (std.mem.eql(u8, job.step, "hardened-fuzz") and (host.os == .windows or std.Target.ptrBitWidth_arch_abi(host.arch, .none) != 64)) {
         return .{ .elsewhere = "Zig's fuzzer runs on a 64-bit host that is not Windows" };
     }
-    if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-system-riscv64 on the PATH" } else .run;
+    if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .missing = "no qemu-system-riscv64 on the PATH" } else .run;
     if (anywhere(job)) return .run;
     if (sameAnywhere(job)) return switch (portable) {
         .here => .run,
@@ -192,6 +196,19 @@ test "the fuzz campaign runs only where Zig's fuzzer does: a 64-bit host that is
     }
 }
 
+test "a job this machine runs, left unrun for what it lacks, keeps a release from green; another system's does not" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const jobs = [_]matrix.Job{.{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .step = "ci", .qemu = true }};
+    // On Linux the riscv64 leg is this machine's: no QEMU leaves it missing (review-1029 M4).
+    try std.testing.expectEqual(std.meta.Tag(Decision).missing, std.meta.activeTag((try decide(a, &jobs, .{ .os = .linux, .arch = .x86_64, .qemu = false }, .here))[0]));
+    try std.testing.expectEqual(std.meta.Tag(Decision).elsewhere, std.meta.activeTag((try decide(a, &jobs, .{ .os = .macos, .arch = .aarch64, .qemu = false }, .here))[0]));
+    const lacking = try verdict(a, 3, &.{}, &.{"test (riscv64-linux on its kernel under QEMU, Debug) (no qemu-system-riscv64 on the PATH)"}, &.{});
+    try std.testing.expect(!lacking.green);
+    try std.testing.expect(std.mem.find(u8, lacking.line, "lacking what it needs") != null);
+}
+
 test "a replay runs as the suite on the system it was linked for" {
     const a = std.testing.allocator;
     const jobs = [_]matrix.Job{
@@ -217,10 +234,12 @@ test "where the portable jobs run is read from the environment, here when it is 
 
 /// The gate's last line: how the release-tier jobs run here went, and the
 /// jobs it did not run, which it never calls green. A gate that ran none
-/// proves nothing and is refused.
-pub fn verdict(a: std.mem.Allocator, ran: usize, failed: []const []const u8, not_here: []const []const u8) !struct { line: []const u8, green: bool } {
+/// proves nothing and is refused, and so is one that left a job of this
+/// machine's unrun: only another system's or another machine's may be unproven.
+pub fn verdict(a: std.mem.Allocator, ran: usize, failed: []const []const u8, missing: []const []const u8, not_here: []const []const u8) !struct { line: []const u8, green: bool } {
     const unproven = if (not_here.len == 0) "" else try a.print("; not run by this gate, so unproven: {s}", .{try std.mem.join(a, "; ", not_here)});
     if (failed.len != 0) return .{ .line = try a.print("gate: red here: {s}{s}", .{ try std.mem.join(a, "; ", failed), unproven }), .green = false };
+    if (missing.len != 0) return .{ .line = try a.print("gate: not green: this machine's own jobs did not run, each lacking what it needs: {s}{s}", .{ try std.mem.join(a, "; ", missing), unproven }), .green = false };
     if (ran == 0) return .{ .line = try a.print("gate: no release-tier job ran here, so nothing is proven{s}", .{unproven}), .green = false };
     if (not_here.len == 0) return .{ .line = try a.print("gate: green: all {d} release-tier jobs ran here", .{ran}), .green = true };
     return .{ .line = try a.print("gate: green for the {d} release-tier jobs run here{s}", .{ ran, unproven }), .green = true };
@@ -230,16 +249,16 @@ test "the gate calls green only what it ran, names the rest unproven, and refuse
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const all = try verdict(a, 3, &.{}, &.{});
+    const all = try verdict(a, 3, &.{}, &.{}, &.{});
     try std.testing.expect(all.green);
     try std.testing.expectEqualStrings("gate: green: all 3 release-tier jobs ran here", all.line);
-    const some = try verdict(a, 2, &.{}, &.{"test (windows-latest, Debug) (a Windows runner)"});
+    const some = try verdict(a, 2, &.{}, &.{}, &.{"test (windows-latest, Debug) (a Windows runner)"});
     try std.testing.expect(some.green);
     try std.testing.expect(std.mem.find(u8, some.line, "green here") == null);
     try std.testing.expect(std.mem.find(u8, some.line, "unproven: test (windows-latest") != null);
-    const none = try verdict(a, 0, &.{}, &.{"lint (a Linux machine)"});
+    const none = try verdict(a, 0, &.{}, &.{}, &.{"lint (a Linux machine)"});
     try std.testing.expect(!none.green);
-    const red = try verdict(a, 2, &.{"lint"}, &.{});
+    const red = try verdict(a, 2, &.{"lint"}, &.{}, &.{});
     try std.testing.expect(!red.green);
     try std.testing.expectEqualStrings("gate: red here: lint", red.line);
 }

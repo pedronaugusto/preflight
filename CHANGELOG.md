@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `zig build fix -- --escapes-before FILE` (`preflight lint --fix --escapes-before FILE`): glint names an escape in the older form from the escapes a lint before reported (its `.zig-cache/preflight-lint/escapes.txt`, kept before re-pinning), with only the rules listed for it there that find something now. A migration aid for glint 0.8.0's named escapes; it goes once the family is re-pinned.
+
 ### Changed
 
 - The API surface check reads what the last tag exported from its own `build.zig` (`b.addModule("name", .{ .root_source_file = b.path("...") })`), so a module moved or no longer exported is compared, where the tag was read at today's roots and a removal there went unseen; a build that names a module through anything but a literal is refused by name. An exhaustive enum's tags and a tagged union's fields are one line each, so one added (or `_` added or taken away), which breaks exhaustive switches, needs a breaking entry where it passed as an addition; a constant's value is compared and needs an entry; a type is compared as what it names, so a private alias that names another type is a change and a respelling is not; a field given a default is no break. A shallow clone, a failed `git describe` and a failed `git show` fail the check, where each passed as a package with no tag or a file not there. An inferred error set is still not compared: only the compiler's analysis of both revisions knows it.

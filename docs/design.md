@@ -181,7 +181,7 @@ Ridge (vm/iso9660.zig, cpio.zig's counterpart) that the host writes from the lay
 members as they are (modes, owners, symbolic and hard links), the kernel and its modules
 under `/boot/kernel`, and preflight's first process at `/preflight/init`
 (vm/freebsd/guest.zig), which loads the modules the run needs from there
-(virtio_console, virtio_p9fs, tmpfs, nullfs). The writer is checked against libarchive's
+(virtio_console, virtio_p9fs, nullfs). The writer is checked against libarchive's
 reader on FreeBSD's own layer, member for member, and against FreeBSD's cd9660 by the
 machine's every boot.
 
@@ -192,7 +192,8 @@ another, its ending a third. The ISO root cannot be written, so the program's ro
 machine's memory: the first process mounts a tmpfs, nullfs-mounts FreeBSD's system
 directories into it read-only (`bin`, `boot`, `etc`, `lib`, `libexec`, `sbin`, `usr`),
 gives it its own devfs, `/tmp` and `/var/tmp`, and takes it as its root; the host's
-directories are then made at their host paths and bound there from the host's share,
+directories are then made at their host paths and bound there from the host's share
+(one inside another already bound is there already: nullfs refuses it, `EDEADLK`),
 and the scratch directory is a tmpfs of its own. The share stays mounted at `/run/host`
 beneath the binds, where the riscv64 machine detaches it (FreeBSD unmounts no file system
 with mounts on it), so the program can reach the host's files there, as the build's own

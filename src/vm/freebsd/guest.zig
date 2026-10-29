@@ -49,8 +49,9 @@ const read_only = 0x1;
 const sig_block = 1;
 const sig_setmask = 3;
 
-/// The modules the machine's devices and file systems need; GENERIC builds in the rest.
-const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "tmpfs", "nullfs" };
+/// The modules the machine's devices and file systems need; GENERIC builds in the rest,
+/// tmpfs among them.
+const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "nullfs" };
 /// The directories of FreeBSD's system the program sees, read-only: every other path
 /// in its root is the machine's memory, so that the host's directories can be made
 /// at their paths.
@@ -141,7 +142,11 @@ fn mount(from: [:0]const u8, fspath: [:0]const u8, fstype: [:0]const u8, options
     for (options, pairs.len..) |pair, i| iov[2 * i ..][0..2].* = .{ entry(pair[0]), entry(pair[1]) };
     const count: c_uint = @intCast(2 * (pairs.len + options.len)); // safe: at most ten entries
     if (nmount(&iov, count, flags) < 0) {
-        say("mount {s} at {s}: {t}", .{ fstype, fspath, @as(c.E, @fromBackingInt(@intCast(c._errno().*))) });
+        const err: c.E = @fromBackingInt(@intCast(c._errno().*));
+        // nullfs's answer when the mount point already shows the directory, through an
+        // earlier nullfs mount of it or of a directory above it (null_vfsops.c).
+        if (err == .DEADLK) return error.AlreadyThere;
+        say("mount {s} at {s}: {t}", .{ fstype, fspath, err });
         return error.Mount;
     }
 }
@@ -161,7 +166,11 @@ fn mountP9(io: Io, tag: [:0]const u8, target: [:0]const u8) !void {
 fn bind(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) !void {
     try Io.Dir.cwd().createDirPath(io, path);
     const source = try gpa.printSentinel("{s}{s}", .{ host_mount, resolved }, 0);
-    try mount(source, try gpa.dupeSentinel(u8, path, 0), "nullfs", &.{}, 0);
+    // A directory under one bound before is already there, at the same path.
+    mount(source, try gpa.dupeSentinel(u8, path, 0), "nullfs", &.{}, 0) catch |err| switch (err) {
+        error.AlreadyThere => {},
+        else => |e| return e,
+    };
 }
 
 /// A directory the run writes its scratch files in: the machine's memory, so that

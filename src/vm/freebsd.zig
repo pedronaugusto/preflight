@@ -153,20 +153,22 @@ pub fn hostRefusal(io: Io) ?[]const u8 {
 /// whole console and `qemu_out` QEMU's side (its log of resets and guest errors, and
 /// what its monitor says of the processor when the deadline stops it), whatever the
 /// outcome, for the job's artifact.
-pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, console_out: []const u8, qemu_out: []const u8) !Outcome {
+/// `trace` (the branch's diagnosis, PREFLIGHT_VM_TRACE) runs one processor under TCG,
+/// where QEMU logs every exception with its address, which KVM keeps from it.
+pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, console_out: []const u8, qemu_out: []const u8, trace: bool) !Outcome {
     const cwd = Io.Dir.cwd();
-    const cpus = @min(std.Thread.getCpuCount() catch 1, max_cpus);
+    const cpus = if (trace) 1 else @min(std.Thread.getCpuCount() catch 1, max_cpus);
     const console_path = try gpa.print("{s}/console", .{run_path});
     const status_path = try gpa.print("{s}/status", .{run_path});
     const log_path = try gpa.print("{s}/qemu.log", .{run_path});
     const argv = [_][]const u8{
-        qemu,                        "-machine",                    "pc,accel=kvm",                             "-cpu",                                                                    "host",
-        "-smp",                      try gpa.print("{d}", .{cpus}), "-m",                                       memory,                                                                    "-nodefaults",
-        "-display",                  "none",                        "-no-reboot",                               "-kernel",                                                                 kernel,
-        "-append",                   kernel_environment,            "-drive",                                   try gpa.print("file={s},format=raw,if=none,id=root,readonly=on", .{root}), "-device",
-        "virtio-blk-pci,drive=root", "-serial",                     try gpa.print("file:{s}", .{console_path}), "-serial",                                                                 try gpa.print("file:{s}", .{status_path}),
+        qemu,                        "-machine",                    if (trace) "pc,accel=tcg" else "pc,accel=kvm", "-cpu",                                                                            if (trace) "max" else "host",
+        "-smp",                      try gpa.print("{d}", .{cpus}), "-m",                                          memory,                                                                            "-nodefaults",
+        "-display",                  "none",                        "-no-reboot",                                  "-kernel",                                                                         kernel,
+        "-append",                   kernel_environment,            "-drive",                                      try gpa.print("file={s},format=raw,if=none,id=root,readonly=on", .{root}),         "-device",
+        "virtio-blk-pci,drive=root", "-serial",                     try gpa.print("file:{s}", .{console_path}),    "-serial",                                                                         try gpa.print("file:{s}", .{status_path}),
         // The monitor on QEMU's own standard streams, for the deadline's questions.
-        "-monitor",                  "stdio",                       "-d",                                       "cpu_reset,guest_errors,unimp",                                            "-D",
+        "-monitor",                  "stdio",                       "-d",                                          if (trace) "int,cpu_reset,guest_errors,unimp" else "cpu_reset,guest_errors,unimp", "-D",
         log_path,
     };
     var child = std.process.spawn(io, .{ .argv = &argv, .stdin = .pipe, .stdout = .pipe, .stderr = .inherit }) catch |err| {

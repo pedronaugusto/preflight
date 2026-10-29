@@ -33,6 +33,9 @@ jobs:
           qemu-system-x86_64 --version
       - name: Boot FreeBSD to preflight's first process
         timeout-minutes: 10
+        env:
+          # Run 3 double-faulted early in the kernel: TCG names the faulting instruction.
+          PREFLIGHT_VM_TRACE: "1"
         run: zig build -Dvm-freebsd-boot vm-freebsd-boot
       - name: Keep the console
         if: always()

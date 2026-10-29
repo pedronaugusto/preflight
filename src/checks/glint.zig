@@ -23,6 +23,9 @@ pub const Inputs = struct {
     build: assembly.Build = .{},
     /// Apply the findings' fixes to the package's sources (`zig build fix`).
     fix: bool = false,
+    /// With `fix`, the escapes a lint before reported, by which an escape in the older form is
+    /// named (`zig build fix -- --escapes-before FILE`): glint's migration aid.
+    escapes_before: ?[]const u8 = null,
     /// The release tier's bar: every aegis-pack finding fails, the flow rules' too,
     /// which the default policy only reports while a landing reads them.
     release: bool = false,
@@ -36,6 +39,8 @@ const printed = 25;
 /// budget for, a site a gating rule could not decide, a suppression that
 /// suppresses nothing.
 pub fn check(c: *src.Context, inputs: Inputs) !void {
+    // Read before this run writes its own record over the one kept.
+    const before: []const glint.Fix.Escaped = if (inputs.escapes_before) |path| (try escapeRecord(c, path)) orelse return else &.{};
     const shipped = fetched.shippedPaths(c) catch |err| switch (err) {
         error.InvalidManifest => return,
         error.FileNotFound => {
@@ -67,7 +72,7 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
         },
     };
     defer report.deinit();
-    if (inputs.fix) try applyFixes(c, &assembled.project, &report);
+    if (inputs.fix) try applyFixes(c, &assembled.project, &report, before);
     judge(c, chosen, &assembled.project, &report, inputs.release);
     assertions(c, &assembled.project, &report);
 }
@@ -121,8 +126,8 @@ fn peerWriters(c: *src.Context, own: []const glint.Config.PeerWriter, modules: [
 /// Writes each source glint's fixes change (`zig build fix`): the deterministic answers, the
 /// escape for a reason written the older way, an unused escape gone. The run's report is the
 /// one before them; the next lint reads what is left.
-fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const glint.Report) !void {
-    const changed = try glint.Fix.apply(c.a, project, report);
+fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const glint.Report, before: []const glint.Fix.Escaped) !void {
+    const changed = try glint.Fix.apply(c.a, project, report, .{ .escapes_before = before });
     var made: usize = 0;
     for (changed) |file| {
         c.directory().writeFile(c.io, .{ .sub_path = project.inputs[file.file.raw()].name, .data = file.bytes }) catch |err| {
@@ -132,6 +137,22 @@ fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const gli
         made += file.edits;
     }
     c.report("preflight: glint: fixed {d} sites in {d} files; what follows is the run before them\n", .{ made, changed.len });
+}
+
+/// The escapes a lint before reported (its `escapes.txt`, kept), each with the rules it covered.
+fn escapeRecord(c: *src.Context, path: []const u8) !?[]const glint.Fix.Escaped {
+    const bytes = aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, c.a, .fromRaw(16 << 20)) catch |err| {
+        c.fail("glint: {s}: the escapes before were not read ({t})", .{ path, err });
+        return null;
+    };
+    // A record is a file another run wrote: input until parsed.
+    return aegis.input.Untrusted([]const u8).init(bytes).parse(c.a, glint.Fix.escapeRecord) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidEscapeRecord => {
+            c.fail("glint: {s}: a line names an escape and is not one", .{path});
+            return null;
+        },
+    };
 }
 
 /// glint's assertion counts, each call by the declaration it resolves to

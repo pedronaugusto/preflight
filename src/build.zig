@@ -378,6 +378,8 @@ const Steps = struct {
         fixing.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| fixing.addArgs(&.{ "--test-step", name });
         configurationOptions(b, fixing);
+        // `zig build fix -- --escapes-before FILE`: the record the escape rename reads.
+        fixing.addPassthruArgs();
         fixing.setCwd(package.path("."));
         fixing.has_side_effects = true;
         configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (std's assert as aegis's, older written reasons as escapes, unused escapes gone), then report what is left").dependOn(&fixing.step);

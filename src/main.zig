@@ -272,7 +272,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     }
     try config.object.put(a, "unrun_test_roots", .{ .array = unrun_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-    try lint(c, init.gpa, config, sources, code, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std, .package = try checks.manifest.name(c) }, try modules(a, args.module), .{ .fix = args.fix, .release = args.release }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, code, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std, .package = try checks.manifest.name(c) }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -353,14 +353,14 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, release: bool }, log: checks.phases.Log) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool }, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
     if (c.errors != 0) return;
     try checks.fuzz.summary(c, sources, config, c.summary_path);
     var timer = stage(c, "glint");
-    try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .release = mode.release });
+    try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
     timer.end(c.*, log);
     if (c.errors != 0) return;
     timer = stage(c, "namespace layout");

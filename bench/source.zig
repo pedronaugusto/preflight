@@ -21,7 +21,7 @@ const Context = struct {
                 else => return error.CheckFailed,
             };
             if (context.errors != 0) {
-                std.debug.print("{s}", .{held.written()});
+                std.debug.print("{s}", .{held.written()}); // glint-ignore: P005 -- a benchmark whose check failed shows what the check said
                 return error.UnexpectedFindings;
             }
             _ = c.scratch.reset(.retain_capacity);

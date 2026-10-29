@@ -403,7 +403,7 @@ test "named paths add to what the package ships, never narrow it, and fail when 
     policy = (try policy_module.parse(&c, config, test_shipped)).?;
     try std.testing.expectEqual(@as(?[]const []const u8, null), try select(&c, policy));
     try std.testing.expect(c.errors != 0);
-    for ([_][]const u8{ "glint_paths: missing: not found", "glint_paths: README.md: not a Zig file", "no Zig file is selected" }) |said| try std.testing.expect(std.mem.indexOf(u8, held.written(), said) != null);
+    for ([_][]const u8{ "glint_paths: missing: not found", "glint_paths: README.md: not a Zig file", "no Zig file is selected" }) |said| try std.testing.expect(std.mem.find(u8, held.written(), said) != null);
 }
 
 test "an import means what the configured build binds it to, in the module that compiles the file" {

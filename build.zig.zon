@@ -6,8 +6,8 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=soundness-0.7.6#ce446fc3b3cb27ea8776c35d079f95a0b2121ca8",
-            .hash = "glint-0.7.5-3jcpoQ5dGAAAe_cEBEL8HBUdqvvliyiROQVQ3ytXdfqx",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=soundness-0.7.6#eb723eaf7cf9c96c704a3438056a01ced3694f51",
+            .hash = "glint-0.7.5-3jcpoZxfGAC1RRJXZhST_dpIUtWvQpMHJurtQLNygnCD",
             .lazy = true,
         },
 

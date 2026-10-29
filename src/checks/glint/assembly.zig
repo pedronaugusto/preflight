@@ -48,10 +48,10 @@ pub const Assembly = struct {
 pub fn select(c: *src.Context, policy: Policy) !?[]const []const u8 {
     var found: std.array_hash_map.String(void) = .empty;
     const before = c.errors;
-    for (policy.shipped) |path| _ = try take(c, path, &found);
-    for (src.code_directories) |path| _ = try take(c, path, &found);
-    _ = try take(c, "build.zig", &found);
-    for (policy.paths orelse &.{}) |path| switch (try take(c, path, &found)) {
+    for (policy.shipped) |path| _ = try take(c, path, .ships, &found);
+    for (src.code_directories) |path| _ = try take(c, path, .kept, &found);
+    _ = try take(c, "build.zig", .ships, &found);
+    for (policy.paths orelse &.{}) |path| switch (try take(c, path, .kept, &found)) {
         .taken => {},
         .absent => c.fail("glint: glint_paths: {s}: not found", .{path}),
         .other => c.fail("glint: glint_paths: {s}: not a Zig file or a directory", .{path}),
@@ -70,9 +70,13 @@ pub fn select(c: *src.Context, policy: Policy) !?[]const []const u8 {
     return paths;
 }
 
-/// Adds the Zig files at `path`: the file, or those under the directory, a nested
-/// package's left to its own build.
-fn take(c: *src.Context, path: []const u8, found: *std.array_hash_map.String(void)) !enum { taken, absent, other } {
+/// Whether a path is what the package ships, or code the repository keeps beside it.
+const Scope = enum { ships, kept };
+
+/// Adds the Zig files at `path`: the file, or those under the directory. What ships is
+/// taken whole, since every file of it reaches the package's users, a nested
+/// `build.zig.zon` among them; beside it, a nested package is left to its own build.
+fn take(c: *src.Context, path: []const u8, scope: Scope, found: *std.array_hash_map.String(void)) !enum { taken, absent, other } {
     const clean = try normalize(c.a, path);
     // aegis: no-danger(A009): a path the package's own manifest or configuration names, or a default; its build already runs its author's code with these rights
     const stat = c.directory().statFile(c.io, clean, .{}) catch |err| switch (err) {
@@ -80,14 +84,14 @@ fn take(c: *src.Context, path: []const u8, found: *std.array_hash_map.String(voi
         else => return err,
     };
     if (stat.kind == .directory) {
-        if (!try nested(c, clean)) try collect(c, clean, found);
+        if (scope == .ships or !try nested(c, clean)) try collect(c, clean, scope, found);
     } else if (std.mem.endsWith(u8, clean, ".zig")) {
         try found.put(c.a, clean, {});
     } else return .other;
     return .taken;
 }
 
-fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(void)) !void {
+fn collect(c: *src.Context, root: []const u8, scope: Scope, found: *std.array_hash_map.String(void)) !void {
     // aegis: no-danger(A009): a directory the package's own configuration or the defaults name; its build already runs its author's code with these rights
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
@@ -95,7 +99,7 @@ fn collect(c: *src.Context, root: []const u8, found: *std.array_hash_map.String(
     defer walker.deinit();
     while (try walker.next(c.io)) |entry| {
         if (entry.kind == .directory) {
-            if (!configure.generated(entry.basename) and !try nested(c, try std.Io.Dir.path.join(c.a, &.{ root, entry.path }))) try walker.enter(c.io, entry);
+            if (!configure.generated(entry.basename) and (scope == .ships or !try nested(c, try std.Io.Dir.path.join(c.a, &.{ root, entry.path })))) try walker.enter(c.io, entry);
             continue;
         }
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
@@ -357,18 +361,19 @@ test "default selection is what the package ships and the directories a reposito
     for ([_][]const u8{ "bench/run.zig", "build.zig", "ci/layers.zig", "conformance/build.zig", "examples/use.zig", "src/a.zig", "src/deep/b.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
-test "a nested build's directory is its own package, left out of the default selection" {
+test "a nested build kept beside what ships is its own package, left out; one inside what ships is linted with it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/build.zig.zon", "conformance/main.zig", "bench/run.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
+    for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/build.zig.zon", "conformance/main.zig", "bench/run.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig", "src/vendor/build.zig.zon", "src/vendor/x.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
     const config = try parsed(c.a, "{}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
-    try std.testing.expectEqual(@as(usize, 2), paths.len);
-    for ([_][]const u8{ "bench/run.zig", "src/a.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
+    // A nested manifest inside `src` ships with it, so its files reach users (review-1029 M6).
+    try std.testing.expectEqual(@as(usize, 3), paths.len);
+    for ([_][]const u8{ "bench/run.zig", "src/a.zig", "src/vendor/x.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
 const test_shipped: []const []const u8 = &.{ "build.zig", "build.zig.zon", "src", "README.md" };

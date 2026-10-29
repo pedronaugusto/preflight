@@ -269,9 +269,10 @@ first 25 findings of each rule (every one in `.zig-cache/preflight-lint/findings
 there are more) and a line of findings, escapes and undecided sites by rule. `zig build fix` (`bay dev fix`) writes glint's deterministic fixes into the sources first: std's `assert` as aegis's `assert.invariant`, a reason written the older way (`// safe:`, `// unreachable:`) as the escape, an escape that covers nothing gone. What is left is the sites whose answer is a design choice. A danger rule's undecided sites
 count against `glint.unresolved`, a ceiling per rule (none by default): above it fails,
 since the count the reviews read may not grow, and below it the run asks for it to come
-down. The escapes hold to `glint.escapes`, a count per reason (none by default): one
-more than it holds fails, since a new escape is then a line in review, and one fewer fails
-until the count comes down, so it only falls. The danger rules' scope is what `build.zig.zon`'s `.paths` ships, `build.zig` among
+down. The findings the escapes cover hold to `glint.escapes`, a count per reason and rule
+(none by default): one more than it holds fails, since a new escape, or one widened to a
+rule it did not cover, is then a line in review, and one fewer fails until the count comes
+down, so it only falls. The danger rules' scope is what `build.zig.zon`'s `.paths` ships, `build.zig` among
 it, and no setting narrows it; tests and test support are not shipped, so they leave them out; a
 `vendored` file ships, and is held to them: while it is the copy its SHA-256 names, the
 upstream's verification is the reason its danger sites carry, and changed, it fails the run.
@@ -283,7 +284,7 @@ The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A0
 ```json
 "glint": {
   "rules": [{"id": "A004", "level": "gate"}, {"id": "Z006", "level": "gate"}],
-  "unresolved": {"A009": 3}, "escapes": {"boundary": 12, "no-danger": 4},
+  "unresolved": {"A009": 3}, "escapes": {"boundary": {"A019": 12}, "no-danger": {"A009": 3, "A010": 1}},
   "fact_budget": 4000000, "max_line_length": 100,
   "disallowed": [{"source": "src/io.zig", "declaration": "write", "reason": "...", "replacement": "..."}]
 }

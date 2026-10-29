@@ -365,8 +365,8 @@ test "a style rule is reported with its site and does not fail the gate" {
 }
 
 test "a danger site with the aegis escape passes, the escape listed with its rule and counted against the package's" {
-    const escaped = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: the kernel wrote a u32 there\n}\ntest {}\n";
-    const counted = "{\"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"glint\": {\"escapes\": {\"boundary\": 1}}}";
+    const escaped = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): the kernel wrote a u32 there\n}\ntest {}\n";
+    const counted = "{\"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"glint\": {\"escapes\": {\"boundary\": {\"A019\": 2}}}}";
     try lintSampleWith(escaped, "escape: src/sample.zig:2", false, &.{}, counted);
     try lintSampleWith(escaped, "above the 0 `glint.escapes` holds", true, &.{}, null);
 }

@@ -20,9 +20,9 @@
       "A011": 1
     },
     "escapes": {
-      "no-danger": 28,
-      "design": 38,
-      "boundary": 16
+      "no-danger": { "A009": 17, "A010": 6, "A011": 3, "A015": 1, "A019": 6 },
+      "design": { "A007": 24, "A011": 12, "A015": 3 },
+      "boundary": { "A019": 16 }
     },
     "rules": [
       {

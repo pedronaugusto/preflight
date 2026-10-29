@@ -163,6 +163,10 @@ pub const Limit = struct { pattern: *const gantry.rules.Pattern, lines: u32 };
 pub const Ceiling = struct { rule: glint.Rule, name: []const u8, sites: usize };
 /// The reasons an aegis escape gives, in glint's order.
 pub const escape_reasons = [_][]const u8{ "no-danger", "design", "hot-loop", "internal", "boundary" };
+/// How many of a rule's findings the package's escapes give one reason for. An escape widened
+/// to a rule it did not cover moves its own pair, as a new escape does: counting escapes
+/// alone let one cover a new rule unseen.
+pub const Escaped = struct { reason: usize, rule: glint.Rule, name: []const u8, findings: usize };
 pub const Exception = struct { path: []const u8, function: []const u8, lines: u32, reason: []const u8 };
 /// A file kept as its upstream wrote it: where it comes from, how the upstream's copy is
 /// verified, and the SHA-256 of that copy. While the file is the copy, its verification is the
@@ -176,9 +180,10 @@ pub const Policy = struct {
     findings: []const glint.Rule,
     /// Undecided sites a finding rule may leave, by rule; a rule not named may leave none.
     ceilings: []const Ceiling = &.{},
-    /// How many aegis escapes the package holds for each reason (`glint.escapes`, in
-    /// `escape_reasons`' order): the count the reviews read, which only falls.
-    escapes: [escape_reasons.len]usize = @splat(0),
+    /// How many findings the package's aegis escapes cover, by reason and rule
+    /// (`glint.escapes`): the count the reviews read, which only falls. A pair not
+    /// named covers none.
+    escapes: []const Escaped = &.{},
     function_limit: u32,
     /// Where function length is checked: the shipped `sources`, and any path
     /// a `function_limits` pattern names.
@@ -401,7 +406,7 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     policy.vendored = try parseVendored(c, src.get(config, "vendored"));
     policy.paths = try parsePaths(c, src.get(config, "glint_paths"));
     policy.ceilings = try parseCeilings(c, src.get(block, "unresolved"), findings.items);
-    policy.escapes = parseEscapes(c, src.get(block, "escapes"));
+    policy.escapes = try parseEscapes(c, src.get(block, "escapes"));
     policy.base.peer_writers = try parsePeerWriters(c, block);
     return if (c.errors == before) policy else null;
 }
@@ -527,27 +532,49 @@ fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule
     return out.items;
 }
 
-fn parseEscapes(c: *src.Context, value: src.Value) [escape_reasons.len]usize {
-    var out: [escape_reasons.len]usize = @splat(0);
-    if (value == .null) return out;
+fn parseEscapes(c: *src.Context, value: src.Value) ![]const Escaped {
+    if (value == .null) return &.{};
+    const shape = "glint: `escapes` maps an escape's reason to its rules, each to how many of its findings the package's escapes cover: {{\"boundary\": {{\"A019\": 2}}}}";
     if (value != .object) {
-        c.fail("glint: `escapes` maps an escape's reason to how many the package holds", .{});
-        return out;
+        c.fail(shape, .{});
+        return &.{};
     }
-    var entries = value.object.iterator();
-    while (entries.next()) |entry| {
-        const name = entry.key_ptr.*;
+    const definitions = ruleDefinitions();
+    var out: std.ArrayList(Escaped) = .empty;
+    var reasons = value.object.iterator();
+    while (reasons.next()) |by_reason| {
+        const reason_name = by_reason.key_ptr.*;
         const reason = for (escape_reasons, 0..) |known_reason, r| {
-            if (std.mem.eql(u8, name, known_reason)) break r;
+            if (std.mem.eql(u8, reason_name, known_reason)) break r;
         } else {
-            c.fail("glint: escapes: `{s}` is not an escape's reason (no-danger, design, hot-loop, internal, boundary)", .{name});
+            c.fail("glint: escapes: `{s}` is not an escape's reason (no-danger, design, hot-loop, internal, boundary)", .{reason_name});
             continue;
         };
-        const count = entry.value_ptr.*;
-        out[reason] = if (count == .integer and count.integer >= 1) std.math.cast(usize, count.integer) orelse 0 else 0;
-        if (out[reason] == 0) c.fail("glint: escapes: {s}: a positive count (a reason not named may have none)", .{name});
+        if (by_reason.value_ptr.* != .object) {
+            c.fail(shape, .{});
+            continue;
+        }
+        var rules = by_reason.value_ptr.object.iterator();
+        while (rules.next()) |by_rule| {
+            const name = by_rule.key_ptr.*;
+            const rule = glint.parseRule(name, &definitions) orelse {
+                c.fail("glint: escapes: {s}: `{s}` is not a rule glint has", .{ reason_name, name });
+                continue;
+            };
+            if (!inPack(rule)) {
+                c.fail("glint: escapes: {s}: {s} is not one of the aegis pack's rules, which alone take an escape", .{ reason_name, name });
+                continue;
+            }
+            const count = by_rule.value_ptr.*;
+            const findings: usize = if (count == .integer and count.integer >= 1) std.math.cast(usize, count.integer) orelse 0 else 0;
+            if (findings == 0) {
+                c.fail("glint: escapes: {s}: {s}: a positive count of findings (a pair not named covers none)", .{ reason_name, name });
+                continue;
+            }
+            try out.append(c.a, .{ .reason = reason, .rule = rule, .name = name, .findings = findings });
+        }
     }
-    return out;
+    return out.items;
 }
 
 /// A rule's id as a configuration writes it.
@@ -727,8 +754,11 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"glint\":{\"casts\":\"all\"}}",
         "{\"glint\":{\"cast_scope\":\"all\"}}",
         "{\"glint\":{\"unresolved\":{\"A007\":0}}}",
-        "{\"glint\":{\"escapes\":{\"fast\":1}}}",
-        "{\"glint\":{\"escapes\":{\"boundary\":0}}}",
+        "{\"glint\":{\"escapes\":{\"fast\":{\"A019\":1}}}}",
+        "{\"glint\":{\"escapes\":{\"boundary\":{\"A019\":0}}}}",
+        "{\"glint\":{\"escapes\":{\"boundary\":1}}}",
+        "{\"glint\":{\"escapes\":{\"boundary\":{\"A999\":1}}}}",
+        "{\"glint\":{\"escapes\":{\"boundary\":{\"Z006\":1}}}}",
         "{\"glint\":{\"escapes\":3}}",
         "{\"glint\":{\"unresolved\":{\"Z006\":3}}}",
         "{\"glint\":{\"rules\":[{\"id\":\"P001\",\"level\":\"gate\"}]}}",

@@ -32,7 +32,7 @@ const Package = struct {
         for ([_][2][]const u8{ .{ "user.name", "Preflight" }, .{ "user.email", "preflight@example.invalid" }, .{ "commit.gpgsign", "false" }, .{ "tag.gpgsign", "false" } }) |setting|
             try p.git(&.{ "config", setting[0], setting[1] });
         try p.write("build.zig.zon", ".{\n    .name = .pkg,\n    .version = \"0.1.0\",\n    .paths = .{\"\"},\n    .dev_dependencies = .{\n        .preflight = .{ .url = \"git+https://github.com/pedronaugusto/preflight#" ++ pin ++ "\", .hash = \"preflight-0.1.0-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\" },\n    },\n}\n");
-        try p.write("build.zig", "pub fn build(_: *@import(\"std\").Build) void {}\n");
+        try p.write("build.zig", "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", .{ .root_source_file = b.path(\"src/a.zig\") });\n}\n");
         try p.write("src/a.zig", "pub fn run(size: usize) void {\n    _ = size;\n}\n");
         try p.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- First.\n");
         const config = "{}\n";

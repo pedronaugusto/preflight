@@ -65,11 +65,12 @@ pub fn versionAgrees(c: *src.Context) !void {
 /// The CHANGELOG against the package's public API since its last tag: a change to the surface
 /// of `modules` (the modules the package exports, and its `build.zig`) needs an entry in
 /// `[Unreleased]` or in a release made since, and a removed or changed public declaration a
-/// breaking one (`### Breaking` or `### Removed`). Each failure names its fix. A package with
-/// no tag yet, or none in this clone's history, has no surface to compare with.
+/// breaking one (`### Breaking` or `### Removed`). Each failure names its fix. A package that
+/// has released nothing has no surface to compare with; one whose release tag this clone
+/// lacks fails (`lastTag`).
 pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !void {
     if (!try c.exists("CHANGELOG.md") or modules.len == 0) return;
-    const tag = (lastTag(c) catch |err| switch (err) {
+    const tag = (lastTag(c, try c.read("CHANGELOG.md")) catch |err| switch (err) {
         error.HistoryUnreadable => return,
         else => return err,
     }) orelse return;
@@ -95,12 +96,79 @@ pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !
         c.fail("CHANGELOG.md: since {s} the package removed or changed these public declarations, and no entry since says what breaks; name it under ### Breaking (`surface -- --since {s}` lists them):{s}", .{ tag, tag, try listed(c.a, gone) });
         return;
     }
+    // Each one is named where it breaks, so the CHANGELOG tells a user every one: one entry
+    // covered them all.
+    const breaking = try breakingSince(c.a, try c.read("CHANGELOG.md"), since);
+    var unnamed: std.ArrayList([]const u8) = .empty;
+    for (gone) |line| if (!namesWord(breaking, declarationName(line))) try unnamed.append(c.a, line);
+    if (unnamed.items.len != 0) {
+        c.fail("CHANGELOG.md: since {s} the package removed or changed these public declarations, and no ### Breaking or ### Removed entry since names them; name each there:{s}", .{ tag, try listed(c.a, unnamed.items) });
+        return;
+    }
     if (said != .none) return;
     const added = surfaceAdded(c, tag, modules) catch |err| switch (err) {
         error.SurfaceUnreadable, error.HistoryUnreadable => return,
         else => return err,
     };
     if (added.len != 0) c.fail("CHANGELOG.md: since {s} the package added these public declarations or changed these constants, and [Unreleased] names nothing; say what they are under ### Added or ### Changed:{s}", .{ tag, try listed(c.a, added) });
+}
+
+/// The entries under `### Breaking` and `### Removed` in `[Unreleased]` and in each release
+/// newer than `since`, as one text.
+fn breakingSince(a: std.mem.Allocator, text: []const u8, since: ?std.SemanticVersion) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var in_range = false;
+    var in_group = false;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "## [")) {
+            const end = std.mem.findScalar(u8, line, ']') orelse line.len;
+            const name = line["## [".len..end];
+            in_range = if (std.mem.eql(u8, name, "Unreleased")) true else if (changelog.parseVersion(name)) |version| (since == null or version.order(since.?) == .gt) else false;
+            in_group = false;
+        } else if (std.mem.startsWith(u8, line, "### ")) {
+            const heading = std.mem.trim(u8, line["### ".len..], " \t\r");
+            in_group = std.mem.eql(u8, heading, "Breaking") or std.mem.eql(u8, heading, "Removed");
+        } else if (in_range and in_group) {
+            try out.writer.print("{s}\n", .{line});
+        }
+    }
+    return out.toOwnedSlice();
+}
+
+/// The name a surface line declares: the last part of its first word (`pkg.S.run` is `run`).
+fn declarationName(line: []const u8) []const u8 {
+    const path = line[0 .. std.mem.findScalar(u8, line, ' ') orelse line.len];
+    return path[if (std.mem.findScalarLast(u8, path, '.')) |dot| dot + 1 else 0..];
+}
+
+/// Whether `name` stands in `text` as a word of its own, no identifier byte beside it.
+fn namesWord(text: []const u8, name: []const u8) bool {
+    if (name.len == 0) return false;
+    var from: usize = 0;
+    while (std.mem.findPos(u8, text, from, name)) |at| : (from = at + 1) {
+        const before = at == 0 or !identifierByte(text[at - 1]);
+        const after = at + name.len == text.len or !identifierByte(text[at + name.len]);
+        if (before and after) return true;
+    }
+    return false;
+}
+
+fn identifierByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_';
+}
+
+test "a breaking entry names a declaration by its name as a word of its own" {
+    try std.testing.expectEqualStrings("run", declarationName("pkg.run fn ( usize ) void"));
+    try std.testing.expectEqualStrings("x", declarationName("pkg.S.x u32"));
+    try std.testing.expect(namesWord("- `run` takes a size.\n", "run"));
+    try std.testing.expect(!namesWord("- `runner` takes a size.\n", "run"));
+    try std.testing.expect(!namesWord("- rerun it.\n", "run"));
+    const text = "# Changelog\n\n## [Unreleased]\n\n### Breaking\n\n- `a` is gone.\n\n### Added\n\n- `b`.\n\n## [0.2.0] - 2026-02-01\n\n### Removed\n\n- `c`.\n\n## [0.1.0] - 2026-01-01\n\n### Breaking\n\n- `d`.\n";
+    const said = try breakingSince(std.testing.allocator, text, changelog.parseVersion("0.1.0"));
+    defer std.testing.allocator.free(said);
+    for ([_][]const u8{ "a", "c" }) |name| try std.testing.expect(namesWord(said, name));
+    for ([_][]const u8{ "b", "d" }) |name| try std.testing.expect(!namesWord(said, name));
 }
 
 /// Up to 20 of `lines`, each on a line of its own, and how many more.
@@ -120,18 +188,57 @@ fn succeeded(result: std.process.RunResult) bool {
     return result.term == .exited and result.term.exited == 0;
 }
 
-/// The newest `v*` tag reachable from the commit, or null before the first release. A shallow
-/// clone, whose history may stop short of the tag, and git failing are errors, reported:
-/// either would compare the surface with nothing, which passes.
-pub fn lastTag(c: *src.Context) !?[]const u8 {
+/// The release tag the surface is compared with, as `CHANGELOG.md` (`text`) names it: the
+/// newest release's, once work follows it. A commit that releases the newest (its Unreleased
+/// section empty, its tag not made yet) is compared with the release before. Null before the
+/// first release. A release named there whose tag this clone's history lacks fails, as do a
+/// shallow clone and git failing, reported: each would compare the surface with nothing,
+/// which passes (a clone fetched without tags passed so).
+pub fn lastTag(c: *src.Context, text: []const u8) !?[]const u8 {
     const shallow = try must(c, &.{ "git", "rev-parse", "--is-shallow-repository" });
     if (std.mem.eql(u8, shallow, "true")) {
         c.fail("git: this clone is shallow, so the last release tag may be missing from its history: fetch it whole (`git fetch --unshallow`)", .{});
         return error.HistoryUnreadable;
     }
-    if ((try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", "v[0-9]*" })).len == 0) return null;
-    return try must(c, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*" });
+    var releases = releasesOf(text);
+    const newest = releases.next() orelse return null;
+    if (try tagOf(c, newest)) |tag| return tag;
+    var problem: changelog.Problem = undefined;
+    const releasing = if (changelog.unreleased(c.a, text, &problem)) |section| section.empty() else |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Not a release's text, so the newest release is behind it; changelogNamesChanges
+        // reports what is wrong with it.
+        error.NoUnreleased, error.Malformed => false,
+    };
+    const wanted = if (releasing) releases.next() orelse return null else newest;
+    if (try tagOf(c, wanted)) |tag| return tag;
+    c.fail("git: CHANGELOG.md's release {f} has no tag v{f} in this clone's history, so the surface has nothing to be compared with: fetch the tags (`git fetch --tags`)", .{ wanted, wanted });
+    return error.HistoryUnreadable;
 }
+
+/// `v<version>` when that tag is in the history of the commit, else null.
+fn tagOf(c: *src.Context, version: std.SemanticVersion) !?[]const u8 {
+    const tag = try c.a.print("v{f}", .{version});
+    return if ((try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", tag })).len == 0) null else tag;
+}
+
+/// The releases `CHANGELOG.md` records, newest first: its `## [X.Y.Z]` headings.
+fn releasesOf(text: []const u8) Releases {
+    return .{ .lines = std.mem.splitScalar(u8, text, '\n') };
+}
+
+const Releases = struct {
+    lines: std.mem.SplitIterator(u8, .scalar),
+
+    fn next(r: *Releases) ?std.SemanticVersion {
+        while (r.lines.next()) |line| {
+            if (!std.mem.startsWith(u8, line, "## [")) continue;
+            const end = std.mem.findScalar(u8, line, ']') orelse continue;
+            return changelog.parseVersion(line["## [".len..end]) orelse continue;
+        }
+        return null;
+    }
+};
 
 /// What git wrote, trimmed, when it succeeded; else what it said is reported, and the
 /// history is unreadable.
@@ -398,6 +505,28 @@ test "a module moved or gone since the tag is compared where the tag's build roo
     try changelogNamesChanges(&unsaid, &package_modules);
     try std.testing.expectEqual(@as(usize, 1), unsaid.errors);
     try std.testing.expect(std.mem.find(u8, f.held.written(), "where no `addModule` in it says so") != null);
+}
+
+test "a release whose tag the clone lacks fails; a commit that releases is compared with the release before" {
+    const f = try tagged();
+    defer f.deinit();
+    // Work after 0.1.0 in a clone without its tag: the removal would pass unseen (review-1029 M7).
+    try f.write("src/a.zig", "pub const a = 1;\n");
+    try f.unreleased("### Fixed\n\n- x.\n");
+    try f.commit("Remove run");
+    try f.git(&.{ "tag", "-d", "v0.1.0" });
+    var lacking = f.context();
+    try changelogNamesChanges(&lacking, &package_modules);
+    try std.testing.expectEqual(@as(usize, 1), lacking.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "release 0.1.0 has no tag v0.1.0 in this clone's history") != null);
+    // The commit that releases 0.2.0, before its tag is made, is compared with 0.1.0's.
+    try f.git(&.{ "tag", "v0.1.0", "HEAD~1" });
+    try f.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- x.\n\n## [0.1.0] - 2026-01-01\n\n- First.\n");
+    try f.commit("Release v0.2.0");
+    var releasing = f.context();
+    try changelogNamesChanges(&releasing, &package_modules);
+    try std.testing.expectEqual(@as(usize, 1), releasing.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "since v0.1.0 the package removed or changed") != null);
 }
 
 test "a shallow clone and a failing git are errors, never a surface compared with nothing" {

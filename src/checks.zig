@@ -60,6 +60,7 @@ test {
     _ = manifest;
     _ = release;
     _ = caller;
+    _ = @import("checks/actions.zig");
     _ = @import("checks/gate_test.zig");
     _ = @import("checks/local.zig");
     _ = lazy_import;

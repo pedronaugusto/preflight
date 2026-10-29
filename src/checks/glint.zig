@@ -322,32 +322,35 @@ fn ruleName(rule: glint.Rule) []const u8 {
 
 /// Every aegis escape, with the rules whose findings it covers: per rule a count by reason, then
 /// each escape, the first `printed` of a rule here and all of them in a file beside the
-/// incomplete sites. The reviews read each one, and their count by reason holds to
-/// `glint.escapes`: above it fails, since a new escape is a visible line there, and below it
-/// fails too, until the line comes down, so the count only falls.
+/// incomplete sites. The reviews read each one, and the findings they cover, by reason and
+/// rule, hold to `glint.escapes`: above it fails, since a new escape, or one widened to a rule
+/// it did not cover, is a visible line there, and below it fails too, until the line comes
+/// down, so each count only falls.
 fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report) void {
-    var totals: [policy.escape_reasons.len]usize = @splat(0);
-    for (report.escapes) |escape| for (policy.escape_reasons, 0..) |reason, r| {
-        if (std.mem.eql(u8, reason, escape.reason)) totals[r] += 1;
-    };
-    for (policy.escape_reasons, totals, chosen.escapes) |reason, count, ceiling| {
-        if (count > ceiling) {
-            c.fail("glint: {d} `{s}` escapes, above the {d} `glint.escapes` holds: a new escape is a line there, so set `glint.escapes.{s}` to {d} with it, or give the site aegis's type", .{ count, reason, ceiling, reason, count });
-        } else if (count < ceiling) c.fail("glint: {d} `{s}` escapes, below the {d} `glint.escapes` holds: lower `glint.escapes.{s}` to {d}, so the count only falls", .{ count, reason, ceiling, reason, count });
-    }
-    if (report.escapes.len == 0) return;
     var text: std.Io.Writer.Allocating = .init(c.a);
-    var counts: std.array_hash_map.String([5]usize) = .empty;
+    var counts: std.array_hash_map.String([policy.escape_reasons.len]usize) = .empty;
     const reasons = policy.escape_reasons;
+    for (report.escapes) |escape| for (escape.covered) |covered| {
+        const entry = counts.getOrPutValue(c.a, covered.name, @splat(0)) catch @panic("OOM");
+        for (reasons, 0..) |reason, r| if (std.mem.eql(u8, reason, escape.reason)) {
+            entry.value_ptr[r] += 1;
+        };
+    };
+    for (chosen.escapes) |held| _ = counts.getOrPutValue(c.a, held.name, @splat(0)) catch @panic("OOM");
+    var pairs = counts.iterator();
+    while (pairs.next()) |entry| for (reasons, entry.value_ptr.*, 0..) |reason, count, r| {
+        const rule = entry.key_ptr.*;
+        const ceiling = for (chosen.escapes) |held| {
+            if (held.reason == r and std.mem.eql(u8, held.name, rule)) break held.findings;
+        } else 0;
+        if (count > ceiling) {
+            c.fail("glint: `{s}` escapes cover {d} {s} findings, above the {d} `glint.escapes` holds: a new or widened escape is a line there, so set `glint.escapes.{s}.{s}` to {d} with it, or give the site aegis's type", .{ reason, count, rule, ceiling, reason, rule, count });
+        } else if (count < ceiling) c.fail("glint: `{s}` escapes cover {d} {s} findings, below the {d} `glint.escapes` holds: lower `glint.escapes.{s}.{s}` to {d}, so the count only falls", .{ reason, count, rule, ceiling, reason, rule, count });
+    };
+    if (report.escapes.len == 0) return;
     for (report.escapes) |escape| {
         text.writer.print("glint: escape: {s}:{d}:{d}: {s}: {s} (", .{ project.inputs[escape.span.file.raw()].name, escape.span.line, escape.span.column, escape.reason, escape.why }) catch @panic("OOM");
-        for (escape.covered, 0..) |covered, i| {
-            text.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", covered.name }) catch @panic("OOM");
-            const entry = counts.getOrPutValue(c.a, covered.name, @splat(0)) catch @panic("OOM");
-            for (reasons, 0..) |reason, r| if (std.mem.eql(u8, reason, escape.reason)) {
-                entry.value_ptr[r] += 1;
-            };
-        }
+        for (escape.covered, 0..) |covered, i| text.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", covered.name }) catch @panic("OOM");
         text.writer.writeAll(")\n") catch @panic("OOM");
     }
     var lines = std.mem.splitScalar(u8, text.written(), '\n');
@@ -361,6 +364,7 @@ fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project
     var summary: std.Io.Writer.Allocating = .init(c.a);
     var rules = counts.iterator();
     while (rules.next()) |entry| {
+        if (std.mem.allEqual(usize, entry.value_ptr, 0)) continue;
         summary.writer.print("{s}{s} ", .{ if (summary.written().len == 0) "" else ", ", entry.key_ptr.* }) catch @panic("OOM");
         var first = true;
         for (reasons, entry.value_ptr.*) |reason, n| if (n != 0) {
@@ -457,8 +461,8 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     // A pointer conversion is a danger site: it carries the aegis escape.
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger: the same type\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":1}}}", .{}));
+    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger(A019): the same type\n}\n");
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":1}}}}", .{}));
     // A discarded error fails unless its reason is written at the site; a repository cannot
     // lower it to a report.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
@@ -495,13 +499,26 @@ test "a danger site fails in production unless it carries the aegis escape; test
     const paths = "{\"glint_paths\":[\"src\"]}";
     try f.file("src/root.zig", cast);
     try std.testing.expect(try f.run(paths, .{}) != 0);
-    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: p points at a u32 the kernel wrote\n}\n");
-    // The package holds its escapes' count by reason: one more than `glint.escapes` holds fails, and
-    // one fewer fails until the count comes down.
+    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): p points at a u32 the kernel wrote\n}\n");
+    // The package holds the findings its escapes cover, by reason and rule: one more than
+    // `glint.escapes` holds fails, and one fewer fails until the count comes down.
+    const held = "{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2}}}}";
     try std.testing.expect(try f.run(paths, .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":1}}}", .{}));
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":2}}}", .{}) != 0);
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":1}}}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(held, .{}));
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":3}}}}", .{}) != 0);
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":2}}}}", .{}) != 0);
+    // An escape widened to a rule it did not cover is a new pair, however many escapes there
+    // are: here it would hide an input's conversion (review-1029 M3), which a landing reports
+    // and a release fails.
+    // The read is std's, so the input fact needs std itself.
+    const with_std: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
+    const read = "pub fn view(p: *u8, r: *@import(\"std\").Io.Reader) !*u32 {\n    const n = try r.takeInt(u64, .little);\n    if (@as(u32, @intCast(n)) == 7) return error.X; return @ptrCast(@alignCast(p)); // aegis: ";
+    try f.file("src/root.zig", read ++ "boundary(A019): p points at a u32 the kernel wrote\n}\n");
+    try std.testing.expectEqual(@as(usize, 0), try f.run(held, with_std));
+    try f.file("src/root.zig", read ++ "boundary(A019, A010): p points at a u32 the kernel wrote\n}\n");
+    try std.testing.expect(try f.run(held, with_std) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2,\"A010\":1}}}}", with_std));
+    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): p points at a u32 the kernel wrote\n}\n");
     // An escape needs one of the five reasons and a why, and the pack takes no other suppression.
     try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: fast: it is\n}\n");
     try std.testing.expect(try f.run(paths, .{}) != 0);

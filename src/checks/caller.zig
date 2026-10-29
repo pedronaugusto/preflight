@@ -6,6 +6,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const src = @import("source.zig");
+const actions = @import("actions.zig");
 const workflow = @import("workflow.zig");
 
 /// Adds `sdk_targets` to a gate configuration, read from the build in the gate's directory.
@@ -98,25 +99,17 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
         const text = try aegis.own.readFile(c.io, dir, entry.path, c.a, .fromRaw(16 * 1024 * 1024));
-        var lines = std.mem.splitScalar(u8, text, '\n');
-        var number: usize = 0;
-        while (lines.next()) |line| {
-            number += 1;
-            const used = usesOf(line) orelse continue;
-            if (!pinned(used)) c.fail("gate: .github/{s}:{d}: `uses: {s}` names no commit; pin it as `owner/repo@<commit>`, the tag in a comment beside it", .{ entry.path, number, used });
-        }
+        var problem: actions.Problem = undefined;
+        const used = actions.uses(c.a, text, &problem) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Unreadable => {
+                c.fail("gate: .github/{s}:{d}: {s}; the gate reads each `uses` from the workflow's YAML, and cannot read this one for certain", .{ entry.path, problem.line, problem.what });
+                continue;
+            },
+        };
+        for (used) |use| if (!pinned(use.value)) c.fail("gate: .github/{s}:{d}: `uses: {s}` names no commit; pin it as `owner/repo@<commit>`, the tag in a comment beside it", .{ entry.path, use.line, use.value });
     }
     if (c.errors != before) return error.CallerRefused;
-}
-
-/// What a `uses:` line names, its quotes and a trailing comment left out; null for any other line.
-fn usesOf(line: []const u8) ?[]const u8 {
-    var rest = std.mem.trimStart(u8, line, " \t");
-    if (std.mem.startsWith(u8, rest, "- ")) rest = std.mem.trimStart(u8, rest[2..], " \t");
-    if (!std.mem.startsWith(u8, rest, "uses:")) return null;
-    rest = rest["uses:".len..];
-    if (std.mem.find(u8, rest, " #")) |comment| rest = rest[0..comment];
-    return std.mem.trim(u8, std.mem.trim(u8, rest, " \t\r"), "\"'");
 }
 
 /// Whether `used` names a fixed revision: a path in this repository, a container image by
@@ -132,9 +125,6 @@ fn pinned(used: []const u8) bool {
 }
 
 test "a workflow's uses names a commit, a path here or an image's digest; a tag or a branch does not" {
-    try std.testing.expectEqualStrings("actions/checkout@11d5960a326750d5838078e36cf38b85af677262", usesOf("      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0").?);
-    try std.testing.expectEqualStrings("o/r/.github/workflows/zig.yml@main", usesOf("    uses: \"o/r/.github/workflows/zig.yml@main\"").?);
-    try std.testing.expectEqual(@as(?[]const u8, null), usesOf("      run: echo uses: x"));
     for ([_][]const u8{
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
         "o/r/.github/workflows/zig.yml@11d5960a326750d5838078e36cf38b85af677262",

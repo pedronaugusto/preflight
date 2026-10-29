@@ -150,7 +150,12 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     const config_path = args.config orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
     const config = try checks.workflow.configuration(c.*, config_path);
     const jobs = try checks.matrix.plan(c.a, config, .release);
-    const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch, .qemu = onPath(c.*, environ, "qemu-system-riscv64") };
+    const host: checks.local.Host = .{
+        .os = builtin.target.os.tag,
+        .arch = builtin.target.cpu.arch,
+        .qemu = onPath(c.*, environ, "qemu-system-riscv64"),
+        .kvm = onPath(c.*, environ, "qemu-system-x86_64") and kvmOpen(c.*),
+    };
     const portable = checks.local.Portable.from(environ) orelse {
         c.report("gate: PREFLIGHT_PORTABLE is here or elsewhere, not {s}\n", .{environ.get("PREFLIGHT_PORTABLE").?}); // safe: only a value set and unknown is refused
         return error.CheckFailed;
@@ -194,6 +199,14 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
 }
 
 /// Whether `name` is a program on the PATH.
+/// Whether KVM is open to this user, as the FreeBSD machine needs it.
+fn kvmOpen(c: src.Context) bool {
+    if (builtin.target.os.tag != .linux) return false;
+    const kvm = std.Io.Dir.cwd().openFile(c.io, "/dev/kvm", .{ .mode = .read_write }) catch return false;
+    kvm.close(c.io);
+    return true;
+}
+
 fn onPath(c: src.Context, environ: *const std.process.Environ.Map, name: []const u8) bool {
     const path = environ.get("PATH") orelse return false;
     var dirs = std.mem.tokenizeScalar(u8, path, std.Io.Dir.path.delimiter);

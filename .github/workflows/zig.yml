@@ -184,7 +184,7 @@ jobs:
       # riscv64 Linux runs on its own kernel under QEMU's system emulation (`-Dci-vm`). Ubuntu 26.04
       # ships qemu-system-riscv64 in a package of its own; 24.04 has it in qemu-system-misc.
       - name: Install QEMU's riscv64 system emulation
-        if: matrix.qemu
+        if: matrix.machine == 'riscv64'
         timeout-minutes: 5
         run: |
           sudo apt-get update -q
@@ -192,6 +192,18 @@ jobs:
           if apt-cache show qemu-system-riscv > /dev/null 2>&1; then package=qemu-system-riscv; fi
           sudo apt-get install -y -q --no-install-recommends "$package"
           command -v qemu-system-riscv64
+      # x86_64 FreeBSD runs on its own kernel under KVM (`-Dci-vm`): QEMU's x86_64 system
+      # emulation, and the runner's /dev/kvm opened to the job's user.
+      - name: Install QEMU's x86_64 system emulation and open KVM
+        if: matrix.machine == 'freebsd'
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          command -v qemu-system-x86_64
       - name: Set up test tools (attempt 1/3)
         id: tools1
         if: matrix.setup
@@ -245,6 +257,15 @@ jobs:
         with:
           name: timings-${{ matrix.cache_key }}
           path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-timings
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      # A FreeBSD machine that ended without its program's ending keeps its run, console among it.
+      - uses: actions/upload-artifact@v4
+        if: failure() && matrix.machine == 'freebsd'
+        with:
+          name: freebsd-runs-${{ matrix.cache_key }}
+          path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/tmp/preflight-vm-*
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

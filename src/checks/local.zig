@@ -7,7 +7,7 @@
 //! another of its machines (`PREFLIGHT_PORTABLE=elsewhere`): a gate on one Mac would
 //! otherwise release a package whose source checks no machine ran. What this machine cannot
 //! run is said, never skipped quietly: another system's suite, ThreadSanitizer off x86_64 and
-//! aarch64 Linux, riscv64 with no QEMU here.
+//! aarch64 Linux, riscv64 with no QEMU here, FreeBSD with no QEMU and KVM here.
 const std = @import("std");
 const matrix = @import("matrix.zig");
 
@@ -17,6 +17,8 @@ pub const Host = struct {
     arch: std.Target.Cpu.Arch,
     /// QEMU's riscv64 system emulation is on the PATH.
     qemu: bool,
+    /// QEMU's x86_64 system emulation is on the PATH and KVM is open to this user.
+    kvm: bool = false,
 };
 
 /// Where the jobs that say the same on any machine run: here, or on another machine of the
@@ -66,7 +68,11 @@ fn one(job: matrix.Job, host: Host, portable: Portable) Decision {
     if (std.mem.eql(u8, job.step, "hardened-fuzz") and (host.os == .windows or std.Target.ptrBitWidth_arch_abi(host.arch, .none) != 64)) {
         return .{ .elsewhere = "Zig's fuzzer runs on a 64-bit host that is not Windows" };
     }
-    if (job.qemu) return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-system-riscv64 on the PATH" } else .run;
+    switch (job.machine) {
+        .none => {},
+        .riscv64 => return if (host.os != .linux) .{ .elsewhere = "riscv64 runs under QEMU on Linux" } else if (!host.qemu) .{ .elsewhere = "no qemu-system-riscv64 on the PATH" } else .run,
+        .freebsd => return if (host.os != .linux or host.arch != .x86_64) .{ .elsewhere = "FreeBSD runs under KVM on x86_64 Linux" } else if (!host.kvm) .{ .elsewhere = "no qemu-system-x86_64 on the PATH with KVM open to this user" } else .run,
+    }
     if (anywhere(job)) return .run;
     if (sameAnywhere(job)) return switch (portable) {
         .here => .run,
@@ -135,15 +141,16 @@ test "a Mac runs its own suites, the hardened runs and the jobs that say the sam
         .{ .os = "windows-latest", .name = "SDK link (x86_64-windows-gnu)", .step = "ci-link", .operation = .link },
         .{ .os = "ubuntu-latest", .name = "hardened", .step = "hardened" },
         .{ .os = "ubuntu-latest", .name = "hardened-tsan", .step = "hardened-tsan" },
-        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
+        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .machine = .riscv64 },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
+        .{ .os = "ubuntu-latest", .name = "test (x86_64-freebsd on its kernel under KVM, Debug)", .machine = .freebsd },
     };
     const host: Host = .{ .os = .macos, .arch = .aarch64, .qemu = false };
     // The gate's one machine runs the source checks and the compiles of named targets: no
     // other machine would. ReleaseSmall's compile is for its runner's own system, Linux.
     const alone = try decide(a, &jobs, host, .here);
     defer a.free(alone);
-    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere };
+    const expected = [_]std.meta.Tag(Decision){ .elsewhere, .run, .elsewhere, .run, .run, .elsewhere, .elsewhere, .run, .run, .elsewhere, .elsewhere, .elsewhere };
     for (expected, alone) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
     // A machine whose gate's caller runs them on another machine names them as that machine's.
     const beside = try decide(a, &jobs, host, .elsewhere);
@@ -162,13 +169,28 @@ test "an ARM Linux machine runs the Linux suites once each, and riscv64 with QEM
         .{ .os = "ubuntu-latest", .name = "test (ubuntu-latest, ReleaseFast)", .args = "-Doptimize=fast" },
         .{ .os = "ubuntu-24.04-arm", .name = "test (ubuntu-24.04-arm, Debug)", .args = "-Doptimize=debug" },
         .{ .os = "macos-latest", .name = "native link for test (macos-latest, Debug)", .step = "ci-build", .operation = .link },
-        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .qemu = true },
+        .{ .os = "ubuntu-latest", .name = "test (riscv64-linux on its kernel under QEMU, Debug)", .machine = .riscv64 },
         .{ .os = "ubuntu-latest", .name = "conformance", .step = "conformance", .declared = true },
     };
     const decisions = try decide(a, &jobs, .{ .os = .linux, .arch = .aarch64, .qemu = true }, .here);
     defer a.free(decisions);
     const expected = [_]std.meta.Tag(Decision){ .run, .run, .covered, .elsewhere, .run, .run };
     for (expected, decisions) |want, got| try std.testing.expectEqual(want, std.meta.activeTag(got));
+}
+
+test "FreeBSD's suite runs where KVM does: x86_64 Linux with QEMU and /dev/kvm" {
+    const a = std.testing.allocator;
+    const jobs = [_]matrix.Job{.{ .os = "ubuntu-latest", .name = "test (x86_64-freebsd on its kernel under KVM, Debug)", .machine = .freebsd }};
+    for ([_]struct { host: Host, want: std.meta.Tag(Decision) }{
+        .{ .host = .{ .os = .linux, .arch = .x86_64, .qemu = false, .kvm = true }, .want = .run },
+        .{ .host = .{ .os = .linux, .arch = .x86_64, .qemu = true, .kvm = false }, .want = .elsewhere },
+        .{ .host = .{ .os = .linux, .arch = .aarch64, .qemu = true, .kvm = true }, .want = .elsewhere },
+        .{ .host = .{ .os = .macos, .arch = .x86_64, .qemu = true, .kvm = true }, .want = .elsewhere },
+    }) |case| {
+        const decisions = try decide(a, &jobs, case.host, .here);
+        defer a.free(decisions);
+        try std.testing.expectEqual(case.want, std.meta.activeTag(decisions[0]));
+    }
 }
 
 test "the fuzz campaign runs only where Zig's fuzzer does: a 64-bit host that is not Windows" {

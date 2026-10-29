@@ -25,6 +25,8 @@ const memory = "2G";
 const max_cpus = 8;
 /// How long a boot has to report its status before it is stopped and named a failure.
 pub const boot_deadline_seconds = 180;
+/// A traced boot's: TCG's interrupt log grows by gigabytes a minute.
+pub const traced_deadline_seconds = 90;
 
 /// The kernel's environment: its root, the machine's first process, the serial
 /// console, and a panic that ends the machine at once instead of waiting at the
@@ -175,7 +177,7 @@ pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8
         try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: starting {s}: {t}\n", .{ qemu, err }));
         return err;
     };
-    var deadline: Deadline = .{ .pid = child.id.?, .monitor = child.stdin.? };
+    var deadline: Deadline = .{ .pid = child.id.?, .monitor = child.stdin.?, .seconds = if (trace) traced_deadline_seconds else boot_deadline_seconds };
     const watch = try std.Thread.spawn(.{}, Deadline.watch, .{ &deadline, io });
     // The monitor's answers end when QEMU does; `wait` closes the pipes, so they are read first.
     var monitor_buffer: [4096]u8 = undefined;
@@ -185,13 +187,61 @@ pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8
     const fired = deadline.finish();
     watch.join();
 
-    const log = aegis.own.readFile(io, cwd, log_path, gpa, .fromRaw(16 * 1024 * 1024)) catch "";
+    const log = qemuLog(io, gpa, log_path, trace) catch "";
     const console = aegis.own.readFile(io, cwd, console_path, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
     for ([_][]const u8{ console_out, qemu_out }) |out| if (std.Io.Dir.path.dirname(out)) |dir| try cwd.createDirPath(io, dir);
     try cwd.writeFile(io, .{ .sub_path = console_out, .data = console });
-    try cwd.writeFile(io, .{ .sub_path = qemu_out, .data = try std.mem.concat(gpa, u8, &.{ "QEMU's log (-d cpu_reset,guest_errors,unimp):\n", log, "\nQEMU's monitor:\n", answers }) });
+    try cwd.writeFile(io, .{ .sub_path = qemu_out, .data = try std.mem.concat(gpa, u8, &.{ "QEMU's log (resets, guest errors; traced, the exceptions alone):\n", log, "\nQEMU's monitor:\n", answers }) });
     const status = std.mem.trim(u8, aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(4096)) catch "", "\r\n ");
     return classify(status, console, fired);
+}
+
+/// QEMU's log. A traced one logs every interrupt, the firmware's and the timer's,
+/// and runs to gigabytes: of it only the processor's exceptions (vectors below 32,
+/// each line with its address and CR2) are kept, in order, at most 4 MiB of them.
+fn qemuLog(io: Io, gpa: std.mem.Allocator, path: []const u8, trace: bool) ![]const u8 {
+    if (!trace) return aegis.own.readFile(io, Io.Dir.cwd(), path, gpa, .fromRaw(16 * 1024 * 1024));
+    const file = try Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var buffer: [64 * 1024]u8 = undefined;
+    var reader = file.readerStreaming(io, &buffer);
+    var kept: std.ArrayList(u8) = .empty;
+    while (kept.items.len < 4 * 1024 * 1024) {
+        const read = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+            // A line longer than the buffer is no exception's: passed over whole.
+            error.StreamTooLong => {
+                _ = reader.interface.discardDelimiterInclusive('\n') catch |e| switch (e) {
+                    error.EndOfStream => break,
+                    else => |other| return other,
+                };
+                continue;
+            },
+            else => |e| return e,
+        };
+        const line = read orelse break;
+        if (isException(line)) {
+            try kept.appendSlice(gpa, line);
+            try kept.append(gpa, '\n');
+        }
+    }
+    return kept.items;
+}
+
+/// Whether a line of QEMU's `-d int` log is an exception's: `v=NN` below 0x20, or a check of one.
+pub fn isException(line: []const u8) bool {
+    if (std.mem.find(u8, line, "check_exception") != null) return true;
+    const at = std.mem.find(u8, line, " v=") orelse return false;
+    if (line.len < at + 5) return false;
+    const vector = std.fmt.parseInt(u8, line[at + 3 .. at + 5], 16) catch return false;
+    return vector < 0x20;
+}
+
+test "the exceptions of a traced log are told from its interrupts" {
+    try std.testing.expect(isException("    12: v=0e e=0000 i=0 cpl=0 IP=0020:ffffffff80e2a1c4 pc=ffffffff80e2a1c4 SP=0028:ffffffff82051000 CR2=000000007ec072ff"));
+    try std.testing.expect(isException("check_exception old: 0xe new 0xe"));
+    try std.testing.expect(!isException("   331: v=20 e=0000 i=0 cpl=0 IP=0020:ffffffff80c3b0b2 pc=ffffffff80c3b0b2"));
+    try std.testing.expect(!isException("Servicing hardware INT=0x08"));
+    try std.testing.expect(!isException(" v=1"));
 }
 
 /// The outcome a status port's text, a console and the deadline say.
@@ -210,6 +260,7 @@ pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) O
 /// has not, ends it.
 const Deadline = struct {
     pid: std.posix.pid_t,
+    seconds: u32,
     monitor: Io.File,
     state: aegis.Atomic(State) = .init(.running),
 
@@ -217,7 +268,7 @@ const Deadline = struct {
     const questions = "info status\ninfo registers\nx/8i $pc\nquit\n";
 
     fn watch(d: *Deadline, io: Io) void {
-        if (d.waitDone(io, boot_deadline_seconds * 10)) return;
+        if (d.waitDone(io, d.seconds * 10)) return;
         if (d.state.cmpxchgStrong(.running, .fired, .acq_rel, .acquire) != null) return;
         // glint-ignore: Z026 -- a monitor that cannot be written to leaves the signal below to end QEMU
         d.monitor.writeStreamingAll(io, questions) catch {};

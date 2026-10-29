@@ -400,7 +400,8 @@ fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project
         summary.writer.writeByte(')') catch @panic("OOM");
     }
     const apart = if (older == 0) "" else c.a.print(" ({d} in the older form, naming no rule, so covering nothing: `zig build fix` names their rules)", .{older}) catch @panic("OOM");
-    const line = c.a.print("preflight: escapes: {d}{s}: {s}", .{ report.escapes.len, apart, summary.written() }) catch @panic("OOM");
+    const covered = if (summary.written().len == 0) "" else c.a.print(": {s}", .{summary.written()}) catch @panic("OOM");
+    const line = c.a.print("preflight: escapes: {d}{s}{s}", .{ report.escapes.len, apart, covered }) catch @panic("OOM");
     text.writer.print("{s}\n", .{line}) catch @panic("OOM");
     c.report("{s}; all of them: {s}\n", .{ line, writeList(c, escapes_path, text.written()) });
 }
@@ -563,7 +564,7 @@ test "a danger site fails in production unless it carries the aegis escape; test
     try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: p points at a u32 the kernel wrote\n}\n");
     try std.testing.expect(try f.run(held, .{}) != 0);
     try std.testing.expect(std.mem.find(u8, report.written(), "below the 2 `glint.escapes` holds") != null);
-    const older = "preflight: escapes: 1 (1 in the older form, naming no rule, so covering nothing: `zig build fix` names their rules): ";
+    const older = "preflight: escapes: 1 (1 in the older form, naming no rule, so covering nothing: `zig build fix` names their rules)";
     try std.testing.expect(std.mem.find(u8, report.written(), older) != null);
     try std.testing.expect(std.mem.find(u8, try f.c.read(escapes_path), older) != null);
     f.c.held = null;

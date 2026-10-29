@@ -151,12 +151,20 @@ pub fn hostRefusal(io: Io) ?[]const u8 {
     return null;
 }
 
+/// KVM's processor, with its TSC invariant. A PVH boot sets FreeBSD's early DELAY to
+/// Xen's, which reads Xen's shared page and faults on any other hypervisor (15.1's
+/// `xen_delay`); the console's first DELAY would fault, and its trap after it. DELAY
+/// takes the TSC instead when it is invariant and its frequency is known, which QEMU
+/// then reports under KVM at hypervisor leaf 0x40000010.
+const kvm_cpu = "host,+invtsc";
+
 /// Boots the machine on `root` and returns how it ended. `console_out` receives its
 /// whole console and `qemu_out` QEMU's side (its log of resets and guest errors, and
 /// what its monitor says of the processor when the deadline stops it), whatever the
 /// outcome, for the job's artifact.
 /// `trace` (the branch's diagnosis, PREFLIGHT_VM_TRACE) runs one processor under TCG,
-/// where QEMU logs every exception with its address, which KVM keeps from it.
+/// where QEMU logs every exception with its address, which KVM keeps from it; it
+/// knows no TSC frequency, so it reaches the console's first DELAY and no further.
 pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8, run_path: []const u8, console_out: []const u8, qemu_out: []const u8, trace: bool) !Outcome {
     const cwd = Io.Dir.cwd();
     const cpus = if (trace) 1 else @min(std.Thread.getCpuCount() catch 1, max_cpus);
@@ -164,7 +172,7 @@ pub fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8
     const status_path = try gpa.print("{s}/status", .{run_path});
     const log_path = try gpa.print("{s}/qemu.log", .{run_path});
     const argv = [_][]const u8{
-        qemu,                        "-machine",                    if (trace) "pc,accel=tcg" else "pc,accel=kvm", "-cpu",                                                                            if (trace) "max" else "host",
+        qemu,                        "-machine",                    if (trace) "pc,accel=tcg" else "pc,accel=kvm", "-cpu",                                                                            if (trace) "max" else kvm_cpu,
         "-smp",                      try gpa.print("{d}", .{cpus}), "-m",                                          memory,                                                                            "-nodefaults",
         "-display",                  "none",                        "-no-reboot",                                  "-kernel",                                                                         kernel,
         "-append",                   kernel_environment,            "-drive",                                      try gpa.print("file={s},format=raw,if=none,id=root,readonly=on", .{root}),         "-device",

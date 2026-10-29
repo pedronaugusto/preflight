@@ -168,7 +168,11 @@ There is no loader. The release's `base.txz`, the one archive holding `loader.ef
 cannot be a dependency (below), and pkgbase's `.pkg` files are not an archive type Zig
 fetches. QEMU starts the kernel at its PVH entry (`-kernel`; FreeBSD's amd64 kernel
 carries `XEN_ELFNOTE_PHYS32_ENTRY`) with its environment on the command line:
-`vfs.root.mountfrom`, `init_path`, the serial console. Without a loader no module is
+`vfs.root.mountfrom`, `init_path`, the serial console and the serial ports' hints. The
+processor's TSC is invariant (`-cpu host,+invtsc`): a PVH boot sets FreeBSD 15.1's early
+`DELAY` to Xen's, which reads Xen's shared page, NULL on KVM, so the console's first
+`DELAY` faulted and the boot ended in a double fault before printing; with an invariant
+TSC whose frequency QEMU reports, `DELAY` counts the TSC instead. Without a loader no module is
 preloaded, so the root is a file system GENERIC builds in: an ISO 9660 image with Rock
 Ridge (vm/iso9660.zig, cpio.zig's counterpart) that the host writes from the layer's
 members as they are (modes, owners, symbolic and hard links), the kernel and its modules

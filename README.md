@@ -569,16 +569,24 @@ what a release needs beside the jobs, each refusal naming its fix:
    surface needs an entry in `[Unreleased]` or in a release made since, and a removed or
    changed public declaration of a module the package exports (`b.addModule`), or of its
    `build.zig`, which a build depending on it imports, a breaking one (`### Breaking` or
-   `### Removed`), each declaration named. The surface is read with glint's project model from
-   the modules' root files, following their relative imports, the aliases they are spelled
-   with and the types a function returning `type` makes, at the last tag and now. A line per
+   `### Removed`), each declaration named. The modules are read from `build.zig`'s
+   `b.addModule("name", .{ .root_source_file = b.path("...") })` calls at the last tag and now,
+   so a module moved or no longer exported is compared too; a build that names a module or its
+   root through anything but a literal is refused, since what its tag exported cannot be read.
+   The surface is read with glint's project model from the modules' root files, following
+   their relative imports and the types a function returning `type` makes. A line per
    declaration: a function's parameter and return types, a field's type, the fields a struct
-   literal must name, what a public constant aliases; layout, comments, parameter names and
-   the values of literal constants are not part of it, and an addition is no break. `zig build
-   surface` lists the surface, `zig build surface -- --since <tag>` what changed (`-` removed
-   or changed, `+` added). What it cannot see: a module the package stopped exporting, and the
-   members of what another package's module declares. A change of behaviour it cannot see at
-   all: its author names it. CHANGELOG.md is read as bay reads it (bay's `changelog` module):
+   literal must name, what a public constant aliases, a constant's value, and an exhaustive
+   enum's tags and a tagged union's fields as one set, which every exhaustive switch names. A
+   type is written as what it names, a container by the public path it is listed under, so
+   respelling one through an alias is no change, and changing what a private alias names is.
+   Layout, comments and parameter names are not part of it; an addition is no break, nor is a
+   field given a default, and a constant's new value needs an entry, not a breaking one. `zig
+   build surface` lists the surface, `zig build surface -- --since <tag>` what changed (`-`
+   removed or changed, `+` added). A shallow clone, or git failing, fails the check rather than
+   compare with nothing. What it cannot see: an inferred error set (`!T`), which only the
+   compiler's analysis of both revisions knows, and the members of what another package's
+   module declares. A change of behaviour it cannot see at all: its author names it. CHANGELOG.md is read as bay reads it (bay's `changelog` module):
    an entry is a line under one of Keep a Changelog's groups or `### Breaking`.
 
 The lint checks 2 and 3 on every commit too. Then the gate runs, on this machine, the release

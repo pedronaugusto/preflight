@@ -69,7 +69,10 @@ pub fn versionAgrees(c: *src.Context) !void {
 /// no tag yet, or none in this clone's history, has no surface to compare with.
 pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !void {
     if (!try c.exists("CHANGELOG.md") or modules.len == 0) return;
-    const tag = try lastTag(c.*) orelse return;
+    const tag = (lastTag(c) catch |err| switch (err) {
+        error.HistoryUnreadable => return,
+        else => return err,
+    }) orelse return;
     const since = changelog.parseVersion(std.mem.trimStart(u8, tag, "v"));
     var problem: changelog.Problem = undefined;
     const said = changelog.changedSince(c.a, try c.read("CHANGELOG.md"), since, &problem) catch |err| switch (err) {
@@ -83,14 +86,21 @@ pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !
             return;
         },
     };
-    const gone = try surfaceRemoved(c, tag, modules);
+    // Reported where it was found.
+    const gone = surfaceRemoved(c, tag, modules) catch |err| switch (err) {
+        error.SurfaceUnreadable, error.HistoryUnreadable => return,
+        else => return err,
+    };
     if (gone.len != 0 and said != .breaking) {
         c.fail("CHANGELOG.md: since {s} the package removed or changed these public declarations, and no entry since says what breaks; name it under ### Breaking (`surface -- --since {s}` lists them):{s}", .{ tag, tag, try listed(c.a, gone) });
         return;
     }
     if (said != .none) return;
-    const added = try surfaceAdded(c, tag, modules);
-    if (added.len != 0) c.fail("CHANGELOG.md: since {s} the package added these public declarations, and [Unreleased] names nothing; say what they are under ### Added:{s}", .{ tag, try listed(c.a, added) });
+    const added = surfaceAdded(c, tag, modules) catch |err| switch (err) {
+        error.SurfaceUnreadable, error.HistoryUnreadable => return,
+        else => return err,
+    };
+    if (added.len != 0) c.fail("CHANGELOG.md: since {s} the package added these public declarations or changed these constants, and [Unreleased] names nothing; say what they are under ### Added or ### Changed:{s}", .{ tag, try listed(c.a, added) });
 }
 
 /// Up to 20 of `lines`, each on a line of its own, and how many more.
@@ -110,23 +120,67 @@ fn succeeded(result: std.process.RunResult) bool {
     return result.term == .exited and result.term.exited == 0;
 }
 
-/// The newest `v*` tag reachable from the commit, or null before the first release.
-pub fn lastTag(c: src.Context) !?[]const u8 {
-    const result = try git(c, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*" });
-    if (!succeeded(result)) return null;
-    return std.mem.trim(u8, result.stdout, " \r\n");
+/// The newest `v*` tag reachable from the commit, or null before the first release. A shallow
+/// clone, whose history may stop short of the tag, and git failing are errors, reported:
+/// either would compare the surface with nothing, which passes.
+pub fn lastTag(c: *src.Context) !?[]const u8 {
+    const shallow = try must(c, &.{ "git", "rev-parse", "--is-shallow-repository" });
+    if (std.mem.eql(u8, shallow, "true")) {
+        c.fail("git: this clone is shallow, so the last release tag may be missing from its history: fetch it whole (`git fetch --unshallow`)", .{});
+        return error.HistoryUnreadable;
+    }
+    if ((try must(c, &.{ "git", "tag", "--list", "--merged", "HEAD", "v[0-9]*" })).len == 0) return null;
+    return try must(c, &.{ "git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*" });
+}
+
+/// What git wrote, trimmed, when it succeeded; else what it said is reported, and the
+/// history is unreadable.
+fn must(c: *src.Context, argv: []const []const u8) ![]const u8 {
+    const result = try git(c.*, argv);
+    if (succeeded(result)) return std.mem.trim(u8, result.stdout, " \r\n");
+    c.fail("{s}: {s}", .{ try std.mem.join(c.a, " ", argv), std.mem.trim(u8, result.stderr, " \r\n") });
+    return error.HistoryUnreadable;
 }
 
 /// The lines of the public surface `tag` had that the working tree does not: the public
-/// declarations removed or changed since. The modules are the ones the package exports now,
-/// read at `tag` from the same root files.
-pub fn surfaceRemoved(c: *src.Context, tag: []const u8, modules: []const surface.Module) ![]const []const u8 {
-    return surface.removed(c.a, try surfaceAt(c, tag, modules), try surfaceOf(c, modules));
+/// declarations removed or changed since, each module read where `tag`'s `build.zig` rooted it,
+/// so a module moved or gone is compared too. `configured` is what the configured build
+/// exports now (`modulesSince`).
+pub fn surfaceRemoved(c: *src.Context, tag: []const u8, configured: []const surface.Module) ![]const []const u8 {
+    const modules = try modulesSince(c, tag, configured);
+    return surface.removed(c.a, try surfaceAt(c, tag, modules.then), try surfaceOf(c, modules.now));
 }
 
-/// The lines of the working tree's public surface that `tag`'s did not have: declarations added.
-pub fn surfaceAdded(c: *src.Context, tag: []const u8, modules: []const surface.Module) ![]const []const u8 {
-    return surface.removed(c.a, try surfaceOf(c, modules), try surfaceAt(c, tag, modules));
+/// The lines of the working tree's public surface that `tag`'s did not have: declarations added,
+/// and constants whose value changed.
+pub fn surfaceAdded(c: *src.Context, tag: []const u8, configured: []const surface.Module) ![]const []const u8 {
+    const modules = try modulesSince(c, tag, configured);
+    return surface.added(c.a, try surfaceAt(c, tag, modules.then), try surfaceOf(c, modules.now));
+}
+
+/// The modules the package exported at `tag` and exports now, each read from its `build.zig`
+/// (`surface.declaredModules`). Each module the configured build exports must be one the text
+/// says, or the text is not the whole of it, and the tag's cannot be read from its text either.
+fn modulesSince(c: *src.Context, tag: []const u8, configured: []const surface.Module) !struct { then: []const surface.Module, now: []const surface.Module } {
+    const literal = "`b.addModule(\"name\", .{ .root_source_file = b.path(\"src/root.zig\") })`";
+    const now = try surface.declaredModules(c.a, try c.read("build.zig")) orelse {
+        c.fail("build.zig: an `addModule` names its module or its root through other than a literal ({s}), so what {s} exported cannot be read beside it", .{ literal, tag });
+        return error.SurfaceUnreadable;
+    };
+    for (configured) |module| {
+        for (now) |said| {
+            if (std.mem.eql(u8, said.name, module.name) and std.mem.eql(u8, said.root, module.root)) break;
+        } else {
+            c.fail("build.zig exports {s} (rooted at {s}) where no `addModule` in it says so ({s}), so what {s} exported cannot be read from its text", .{ module.name, module.root, literal, tag });
+            return error.SurfaceUnreadable;
+        }
+    }
+    const text = try (Revision{ .c = c, .name = tag }).read(c.a, "build.zig") orelse return .{ .then = &.{}, .now = now };
+    const then = try surface.declaredModules(c.a, text) orelse {
+        c.fail("build.zig at {s}: an `addModule` names its module or its root through other than a literal ({s}), so what {s} exported cannot be read", .{ tag, literal, tag });
+        return error.SurfaceUnreadable;
+    };
+    return .{ .then = then, .now = now };
 }
 
 /// The working tree's public surface.
@@ -148,14 +202,19 @@ pub const Tree = struct {
     }
 };
 
-/// The package's files as a revision holds them.
+/// The package's files as a revision holds them. A file the revision does not hold is null; git
+/// failing otherwise is an error, reported, never a file that is not there.
 pub const Revision = struct {
-    c: *const src.Context,
+    c: *src.Context,
     name: []const u8,
 
     pub fn read(at: Revision, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
+        if ((try must(at.c, &.{ "git", "ls-tree", "--name-only", at.name, "--", path })).len == 0) return null;
         const result = try git(at.c.*, &.{ "git", "show", try a.print("{s}:./{s}", .{ at.name, path }) });
-        if (!succeeded(result)) return null;
+        if (!succeeded(result)) {
+            at.c.fail("git show {s}:./{s}: {s}", .{ at.name, path, std.mem.trim(u8, result.stderr, " \r\n") });
+            return error.HistoryUnreadable;
+        }
         return result.stdout;
     }
 };
@@ -180,7 +239,7 @@ const Fixture = struct {
         try f.env.put("GIT_CONFIG_GLOBAL", "/dev/null");
         try f.env.put("HOME", try f.tmp.dir.realPathFileAlloc(std.testing.io, ".", f.arena.allocator()));
         try f.write("build.zig.zon", try f.arena.allocator().print(".{{\n    .name = .pkg,\n    .version = \"{s}\",\n    .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"CHANGELOG.md\" }},\n}}\n", .{version}));
-        try f.write("build.zig", "pub fn build(_: *@import(\"std\").Build) void {}\n");
+        try f.write("build.zig", "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", .{ .root_source_file = b.path(\"src/a.zig\") });\n}\n");
         try f.write("src/a.zig", "pub const a = 1;\n");
         try f.write("bench/b.zig", "pub const b = 1;\n");
         try f.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n- First.\n\n[Unreleased]: https://github.com/o/r/compare/v0.1.0...HEAD\n[0.1.0]: https://github.com/o/r/releases/tag/v0.1.0\n");
@@ -312,4 +371,47 @@ test "a change inside a function, and a package with no tag, need nothing; an en
     var untagged = fresh.context();
     try changelogNamesChanges(&untagged, &package_modules);
     try std.testing.expectEqual(@as(usize, 0), untagged.errors);
+}
+
+test "a module moved or gone since the tag is compared where the tag's build rooted it" {
+    const f = try tagged();
+    defer f.deinit();
+    // The module's root moves, and `run` with it is gone.
+    try f.write("src/b.zig", "pub const a = 1;\n");
+    try f.write("build.zig", "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", .{ .root_source_file = b.path(\"src/b.zig\") });\n}\n");
+    try f.unreleased("### Changed\n\n- The root is b.zig.\n");
+    try f.commit("Move");
+    const moved = [_]surface.Module{.{ .name = "pkg", .root = "src/b.zig" }};
+    var c = f.context();
+    try changelogNamesChanges(&c, &moved);
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "pkg.run fn ( usize ) void") != null);
+    // The module no longer exported at all: each of its lines is gone.
+    try f.write("build.zig", "pub fn build(_: *@import(\"std\").Build) void {}\n");
+    try f.commit("Drop");
+    var dropped = f.context();
+    try changelogNamesChanges(&dropped, &.{.{ .name = "build.zig", .root = "build.zig" }});
+    try std.testing.expectEqual(@as(usize, 1), dropped.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "pkg.a const") != null);
+    // A module the configured build exports and the text does not say cannot be compared.
+    var unsaid = f.context();
+    try changelogNamesChanges(&unsaid, &package_modules);
+    try std.testing.expectEqual(@as(usize, 1), unsaid.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "where no `addModule` in it says so") != null);
+}
+
+test "a shallow clone and a failing git are errors, never a surface compared with nothing" {
+    const f = try tagged();
+    defer f.deinit();
+    const origin = try f.tmp.dir.realPathFileAlloc(std.testing.io, ".", f.arena.allocator());
+    try f.git(&.{ "clone", "--quiet", "--depth", "1", try f.arena.allocator().print("file://{s}", .{origin}), "shallow" });
+    var shallow = f.context();
+    shallow.dir = try f.tmp.dir.openDir(std.testing.io, "shallow", .{});
+    defer shallow.dir.?.close(std.testing.io);
+    try changelogNamesChanges(&shallow, &package_modules);
+    try std.testing.expectEqual(@as(usize, 1), shallow.errors);
+    try std.testing.expect(std.mem.find(u8, f.held.written(), "this clone is shallow") != null);
+    var c = f.context();
+    try std.testing.expectError(error.HistoryUnreadable, surfaceRemoved(&c, "v9.9.9", &package_modules));
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
 }

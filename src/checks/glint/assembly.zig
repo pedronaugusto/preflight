@@ -314,7 +314,7 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
                 error.ProjectBudgetExceeded => return budget(c),
                 else => return err,
             }) orelse continue;
-            try imports.append(c.a, .{ .from = .fromRaw(@intCast(cursor)), .spelling = name, .target = .fromRaw(found) });
+            try imports.append(c.a, .{ .from = cursor, .spelling = name, .target = found });
         }
         loader.inputs.items[cursor].absent = try absent.toOwnedSlice(c.a);
     }
@@ -441,12 +441,12 @@ test "an import means what the configured build binds it to, in the module that 
     try std.testing.expectEqual(@as(usize, 3), assembly.selected.len);
     const project = &assembly.project;
     // The selected files are the checked package's; what they import is not said.
-    for (project.inputs) |input| try std.testing.expectEqualStrings(if (input.selected) "pkg" else "", input.package);
+    for (project.sources) |source| try std.testing.expectEqualStrings(if (source.input.selected) "pkg" else "", source.input.package);
     var mapped: usize = 0;
     var other_mapped = false;
     for (project.imports) |import| {
-        const from = project.inputs[import.from.raw()].name;
-        const to = project.inputs[import.target.raw()].name;
+        const from = project.at(import.from).input.name;
+        const to = project.at(import.target).input.name;
         mapped += 1;
         if (std.mem.eql(u8, from, "src/root.zig") and std.mem.eql(u8, import.spelling, "lib")) try std.testing.expectEqualStrings("dep/lib.zig", to);
         if (std.mem.eql(u8, from, "src/root.zig") and std.mem.eql(u8, import.spelling, "std")) try std.testing.expectEqualStrings("stdlib/std.zig", to);
@@ -457,13 +457,15 @@ test "an import means what the configured build binds it to, in the module that 
     // lib, helper.zig, std and the files they bring: imports are recorded once per file and name.
     try std.testing.expect(mapped >= 8);
     var names: usize = 0;
-    for (project.inputs) |input| {
+    for (project.sources) |source| {
+        const input = source.input;
         if (std.mem.eql(u8, input.name, "stdlib/mem.zig") or std.mem.eql(u8, input.name, "dep/inner.zig")) names += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), names);
     // A name no module that compiles the file binds is a module this build does not have;
     // Zig's own names and a name bound two ways are not.
-    for (project.inputs) |input| {
+    for (project.sources) |source| {
+        const input = source.input;
         if (std.mem.eql(u8, input.name, "src/root.zig")) {
             try std.testing.expectEqual(@as(usize, 1), input.absent.len);
             try std.testing.expectEqualStrings("kernels", input.absent[0]);

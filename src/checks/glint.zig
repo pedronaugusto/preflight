@@ -57,7 +57,7 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     defer assembled.deinit();
     var files: std.ArrayList(glint.FileConfig) = .empty;
     for (assembled.selected, 0..) |file, index| {
-        try files.append(c.a, .{ .file = .fromRaw(@intCast(index)), .config = try chosen.forFile(c.a, file.path) });
+        try files.append(c.a, .{ .file = try assembled.project.fileAt(index), .config = try chosen.forFile(c.a, file.path) });
     }
     var report = glint.runConfigured(inputs.gpa, &assembled.project, chosen.base, .{
         .project_rules = &policy.project_rules,
@@ -130,8 +130,8 @@ fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const gli
     const changed = try glint.Fix.apply(c.a, project, report, .{ .escapes_before = before });
     var made: usize = 0;
     for (changed) |file| {
-        c.directory().writeFile(c.io, .{ .sub_path = project.inputs[file.file.raw()].name, .data = file.bytes }) catch |err| {
-            c.fail("glint: {s}: the fixed source was not written ({t})", .{ project.inputs[file.file.raw()].name, err });
+        c.directory().writeFile(c.io, .{ .sub_path = project.at(file.file).input.name, .data = file.bytes }) catch |err| {
+            c.fail("glint: {s}: the fixed source was not written ({t})", .{ project.at(file.file).input.name, err });
             continue;
         };
         made += file.edits;
@@ -169,7 +169,7 @@ fn assertions(c: *src.Context, project: *const glint.Project, report: *const gli
     for (metrics.files) |file| {
         const n = file.counts;
         if (n.functions == 0 and n.unresolved == 0) continue;
-        text.writer.print("| `{s}` | {d} | {d} | {d} | {d} |\n", .{ project.inputs[file.file.raw()].name, n.functions, n.asserted, n.total(), n.unresolved }) catch @panic("OOM");
+        text.writer.print("| `{s}` | {d} | {d} | {d} | {d} |\n", .{ project.at(file.file).input.name, n.functions, n.asserted, n.total(), n.unresolved }) catch @panic("OOM");
     }
     // glint-ignore: Z026 -- a summary that cannot be written leaves the line printed above
     appendTo(c.*, c.directory(), path, text.written()) catch {};
@@ -186,7 +186,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     const carried = c.a.alloc(usize, kept.len) catch @panic("OOM");
     @memset(carried, 0);
     for (report.diagnostics) |d| {
-        const file = project.inputs[d.span.file.raw()].name;
+        const file = project.at(d.span.file).input.name;
         all.writer.print("{s}: {s}:{d}:{d}: {s}", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
         // A danger site of an upstream's unchanged file carries the upstream's verification.
         if (policy.inPack(d.rule)) if (for (kept, 0..) |entry, i| {
@@ -227,7 +227,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     // Every incomplete site, where the run prints the first `printed`.
     var sites: std.Io.Writer.Allocating = .init(c.a);
     for (report.coverage) |note| {
-        const file = project.inputs[note.file.raw()].name;
+        const file = project.at(note.file).input.name;
         const gating = if (note.rule) |rule| chosen.base.level(rule) == .gate else false;
         const stops = switch (note.reason) {
             .parsed, .unsupported => false,
@@ -236,7 +236,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         };
         if (stops or (gating and note.reason != .parsed)) {
             const start = sites.written().len;
-            sites.writer.print("glint: incomplete: {s}:{d}: {s}{s}{s}: {s}\n", .{ file, lineAt(project.inputs[note.file.raw()].bytes, note.start), note.rule_name, if (note.rule_name.len != 0) " " else "", @tagName(note.reason), note.detail }) catch @panic("OOM");
+            sites.writer.print("glint: incomplete: {s}:{d}: {s}{s}{s}: {s}\n", .{ file, lineAt(project.at(note.file).input.bytes, note.start), note.rule_name, if (note.rule_name.len != 0) " " else "", @tagName(note.reason), note.detail }) catch @panic("OOM");
             if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
             unfinished += 1;
         } else if (note.reason == .unresolved) {
@@ -245,7 +245,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
                 const count = undecided.getOrPutValue(c.a, rule, 0) catch @panic("OOM");
                 count.value_ptr.* += 1;
                 const start = sites.written().len;
-                sites.writer.print("glint: undecided: {s}:{d}: {s}: {s}\n", .{ file, lineAt(project.inputs[note.file.raw()].bytes, note.start), note.rule_name, note.detail }) catch @panic("OOM");
+                sites.writer.print("glint: undecided: {s}:{d}: {s}: {s}\n", .{ file, lineAt(project.at(note.file).input.bytes, note.start), note.rule_name, note.detail }) catch @panic("OOM");
                 if (count.value_ptr.* <= printed) c.report("{s}", .{sites.written()[start..]});
             };
         }
@@ -254,13 +254,13 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     escapes(c, chosen, project, report);
     for (report.malformed) |entry| {
         const start = sites.written().len;
-        sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ project.inputs[entry.span.file.raw()].name, entry.span.line, entry.why }) catch @panic("OOM");
+        sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ project.at(entry.span.file).input.name, entry.span.line, entry.why }) catch @panic("OOM");
         if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
         unfinished += 1;
     }
     for (report.stale) |stale| {
         const start = sites.written().len;
-        sites.writer.print("glint: incomplete: {s}:{d}: {s} suppression suppresses nothing\n", .{ project.inputs[stale.span.file.raw()].name, stale.span.line, stale.name }) catch @panic("OOM");
+        sites.writer.print("glint: incomplete: {s}:{d}: {s} suppression suppresses nothing\n", .{ project.at(stale.span.file).input.name, stale.span.line, stale.name }) catch @panic("OOM");
         if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
         unfinished += 1;
     }
@@ -271,7 +271,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     if (!report.complete) {
         c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} of them suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
     }
-    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.inputs.len, failing, warned, report.suppressed, unfinished, unresolved });
+    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.count(), failing, warned, report.suppressed, unfinished, unresolved });
     byRule(c, report, shown, undecided);
 }
 
@@ -361,7 +361,7 @@ fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project
     var counts: std.array_hash_map.String([5]usize) = .empty;
     const reasons = policy.escape_reasons;
     for (report.escapes) |escape| {
-        text.writer.print("glint: escape: {s}:{d}:{d}: {s}: {s} (", .{ project.inputs[escape.span.file.raw()].name, escape.span.line, escape.span.column, escape.reason, escape.why }) catch @panic("OOM");
+        text.writer.print("glint: escape: {s}:{d}:{d}: {s}: {s} (", .{ project.at(escape.span.file).input.name, escape.span.line, escape.span.column, escape.reason, escape.why }) catch @panic("OOM");
         for (escape.covered, 0..) |covered, i| {
             text.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", covered.name }) catch @panic("OOM");
             const entry = counts.getOrPutValue(c.a, covered.name, @splat(0)) catch @panic("OOM");

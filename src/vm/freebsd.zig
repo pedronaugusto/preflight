@@ -67,8 +67,9 @@ pub fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
         try root.add(.{ .name = try gpa.print("boot/kernel/{s}", .{file.name}), .kind = .file, .mode = 0o555, .data = data });
     }
     try root.add(.{ .name = "preflight/init", .kind = .file, .mode = 0o555, .data = try aegis.own.readFile(io, cwd, paths.init, gpa, .fromRaw(limit)) });
-    // Where the first process makes the program's root, in the machine's memory.
-    try root.add(.{ .name = "preflight/root", .kind = .directory, .mode = 0o755 });
+    // Where the first process makes the program's root, in the machine's memory, and
+    // mounts the run's description and the host's file system, outside that root.
+    for ([_][]const u8{ "preflight/root", "preflight/run", "preflight/host" }) |name| try root.add(.{ .name = name, .kind = .directory, .mode = 0o755 });
 
     const out = try cwd.createFile(io, paths.root, .{});
     defer out.close(io);
@@ -133,9 +134,10 @@ fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
     return decompress.reader.allocRemaining(gpa, .limited(limit));
 }
 
-/// Why the machine cannot run here, or null: it needs KVM, which only a Linux host gives.
+/// Why the machine cannot run here, or null: it is x86_64 under KVM, which only an
+/// x86_64 Linux host gives.
 pub fn hostRefusal(io: Io) ?[]const u8 {
-    if (builtin.os.tag != .linux) return "the FreeBSD machine runs under KVM, which only a Linux host has; ci-vm=freebsd runs on the nightly's Linux runner";
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return "the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; ci-vm=freebsd runs on the nightly's x86_64 Linux runner";
     const kvm = Io.Dir.cwd().openFile(io, "/dev/kvm", .{ .mode = .read_write }) catch return "/dev/kvm cannot be opened read-write: KVM is missing or not open to this user (the runner's job sets its udev rule)";
     kvm.close(io);
     return null;
@@ -221,7 +223,9 @@ pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) O
     var lines = std.mem.tokenizeAny(u8, whole(status), "\r\n");
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "exited ")) if (std.fmt.parseInt(u8, line["exited ".len..], 10)) |code| return .{ .ending = .{ .exited = code } } else |_| {};
-        if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10)) |sig| return .{ .ending = .{ .signal = sig } } else |_| {};
+        if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10)) |sig| {
+            if (sig >= 1 and sig <= max_signal) return .{ .ending = .{ .signal = sig } };
+        } else |_| {};
         if (std.mem.startsWith(u8, line, "failed ")) return .{ .failed = line["failed ".len..] };
     }
     if (std.mem.find(u8, console, "panic: ")) |at| {
@@ -244,6 +248,10 @@ fn whole(status: []const u8) []const u8 {
     const end = std.mem.findScalarLast(u8, status, '\n') orelse return "";
     return status[0 .. end + 1];
 }
+
+/// FreeBSD's largest signal, SIGRTMAX (sys/signal.h): a process ends by none above it,
+/// and 128 plus it is still an exit code.
+pub const max_signal = 126;
 
 /// FreeBSD's number for a signal as Linux numbers it, for the host to end by, or
 /// null for one Linux has not (SIGEMT, SIGINFO, SIGTHR, SIGLIBRT and the real-time
@@ -317,6 +325,10 @@ test "a run's ending is named from its status, a failure, a panic on the console
     try std.testing.expectEqualStrings("panic: page fault", classify("started\n", "panic: page fault\n", false).panic);
     try std.testing.expectEqual(Outcome.deadline, classify("", "mountroot> ", true));
     try std.testing.expectEqual(Outcome.ended, classify("started\n", "Copyright (c) 1992-2026 The FreeBSD Project.\n", false));
+    // A signal no process ends by is no ending.
+    try std.testing.expectEqual(Outcome.ended, classify("started\nsignal 127\n", "", false));
+    try std.testing.expectEqual(Outcome.ended, classify("started\nsignal 0\n", "", false));
+    try std.testing.expectEqual(Outcome{ .ending = .{ .signal = max_signal } }, classify("started\nsignal 126\n", "", false));
     // A status cut short names no ending.
     try std.testing.expectEqual(Outcome.ended, classify("started\nexited 30", "", false));
     try std.testing.expectEqual(Outcome.ended, classify("started\nexite", "", false));
@@ -342,7 +354,7 @@ test "a FreeBSD signal ends the host by Linux's number for it, or by none" {
     try std.testing.expectEqual(@as(?u32, null), linuxSignal(0));
 }
 
-test "the machine is refused by name on a host without KVM" {
-    if (builtin.os.tag == .linux) return;
+test "the machine is refused by name on a host other than x86_64 Linux" {
+    if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) return;
     try std.testing.expect(std.mem.find(u8, hostRefusal(std.testing.io).?, "Linux host") != null);
 }

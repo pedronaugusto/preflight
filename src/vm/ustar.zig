@@ -47,7 +47,12 @@ pub const Reader = struct {
             const header = r.bytes[r.at..][0..header_len];
             if (std.mem.allEqual(u8, header, 0)) return null;
             try checksum(header);
-            const size = size_override orelse try octal(u64, header[124..136]);
+            // A pax `size` is the member's: an extended header after it keeps its own.
+            const extended = switch (header[156]) {
+                'x', 'g', 'L', 'K' => true,
+                else => false,
+            };
+            const size = (if (extended) null else size_override) orelse try octal(u64, header[124..136]);
             const start = r.at + header_len;
             if (size > r.bytes.len - start) return error.Truncated;
             const body = r.bytes[start..][0..@intCast(size)]; // safe: at most the archive's length, checked above
@@ -191,6 +196,27 @@ test "an archive's files, links and directories are read, a hard link with its t
     try std.testing.expectEqual(Kind.symlink, sym.kind);
     try std.testing.expectEqualStrings("libc.so.7", sym.link);
     try std.testing.expectEqualStrings("usr/share/a-long-name", (try r.next()).?.name);
+    try std.testing.expectEqual(@as(?Entry, null), try r.next());
+}
+
+test "a pax size is the member's, not that of the extended header after it" {
+    var archive: std.ArrayList(u8) = .empty;
+    defer archive.deinit(std.testing.allocator);
+    const a = std.testing.allocator;
+    const size = "10 size=5\n";
+    try archive.appendSlice(a, &testHeader("PaxHeader", 'x', size.len, ""));
+    try archive.appendSlice(a, size ++ @as([512 - size.len]u8, @splat(0)));
+    const path = "30 path=usr/share/a-long-name\n";
+    try archive.appendSlice(a, &testHeader("PaxHeader", 'x', path.len, ""));
+    try archive.appendSlice(a, path ++ @as([512 - path.len]u8, @splat(0)));
+    try archive.appendSlice(a, &testHeader("short", '0', 0, ""));
+    try archive.appendSlice(a, "test\n" ++ @as([507]u8, @splat(0)));
+    try archive.appendSlice(a, &@as([1024]u8, @splat(0)));
+
+    var r: Reader = .{ .bytes = archive.items };
+    const file = (try r.next()).?;
+    try std.testing.expectEqualStrings("usr/share/a-long-name", file.name);
+    try std.testing.expectEqualStrings("test\n", file.data);
     try std.testing.expectEqual(@as(?Entry, null), try r.next());
 }
 

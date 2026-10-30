@@ -5,7 +5,7 @@
 //! Alpine Linux's kernel and root file system, with preflight's own first process
 //! (vm/guest.zig) and host side (vm/host.zig). x86_64 FreeBSD's is FreeBSD's
 //! kernel and runtime image under KVM, with vm/freebsd/guest.zig and
-//! vm/freebsd.zig (`ci-vm=freebsd`, a Linux host's only). Each machine is pinned
+//! vm/freebsd.zig (`ci-vm=freebsd`, an x86_64 Linux host's only). Each machine is pinned
 //! by hash in preflight's manifest and fetched only by a build that runs on it.
 const std = @import("std");
 
@@ -18,7 +18,7 @@ pub const slowdown = 10;
 /// Puts a machine in front of each run under `tests` of an artifact built for a
 /// target no runner is: riscv64 Linux's (vm/host.zig), or x86_64 FreeBSD's
 /// (vm/freebsd.zig), which runs under KVM and so is refused by name on a host
-/// other than Linux. `pkg` is the preflight whose sources and pins the machines
+/// other than x86_64 Linux. `pkg` is the preflight whose sources and pins the machines
 /// come from, each fetched only when a run needs it; `packages` are the Alpine
 /// packages installed on the riscv64 machine beside its minimal system. Called
 /// after every other part of the gate has added its runs.
@@ -35,8 +35,8 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Bui
         for (runs.get(.riscv64_linux).items) |run| machine.wrap(b, run);
     }
     if (runs.get(.x86_64_freebsd).items.len > 0) {
-        if (host.result.os.tag != .linux) {
-            tests.dependOn(&b.addFail("ci-vm=freebsd: the FreeBSD machine runs under KVM, which only a Linux host has; it runs on the nightly's Linux runner").step);
+        if (host.result.os.tag != .linux or host.result.cpu.arch != .x86_64) {
+            tests.dependOn(&b.addFail("ci-vm=freebsd: the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; it runs on the nightly's x86_64 Linux runner").step);
             return;
         }
         const machine = freebsdMachine(b, pkg, host) orelse return;

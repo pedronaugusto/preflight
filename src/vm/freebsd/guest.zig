@@ -7,8 +7,10 @@
 //! The machine's root is the ISO 9660 image, which cannot be written, so the
 //! program's root is the machine's memory (tmpfs at /preflight/root): FreeBSD's
 //! system directories in it read-only (nullfs), its own devices and /tmp, and the
-//! host's directories at their host paths, over the host's 9p share; the first
-//! process takes it as its root before it reads the run.
+//! host's directories at their host paths, bound from the host's 9p share. That share
+//! and the run's are mounted outside the program's root (/preflight/host and
+//! /preflight/run), which the first process takes as its root once it is made, so
+//! the program reaches only the directories bound into it.
 //!
 //! The run is described by the host (vm/host.zig) in files on the `run` share, as
 //! for the riscv64 machine: `argv`, `environ`, `binds` (each machine path, then the
@@ -57,8 +59,10 @@ const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "nullfs" };
 /// at their paths.
 const system_dirs = [_][]const u8{ "bin", "boot", "etc", "lib", "libexec", "sbin", "usr" };
 const new_root = "/preflight/root";
-const run_mount = "/run/preflight";
-const host_mount = "/run/host";
+/// The run's description and the host's file system, at directories of the ISO image
+/// outside the program's root: it reaches only what is bound into that root.
+const run_mount = "/preflight/run";
+const host_mount = "/preflight/host";
 const guest_path = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
 
 pub fn main(init: std.process.Init) void {
@@ -79,6 +83,7 @@ const Ending = union(enum) {
 };
 
 fn run(io: Io, gpa: std.mem.Allocator) !Ending {
+    try holdStandardFds();
     for (modules) |name| {
         // A module GENERIC already holds is loaded: EEXIST.
         if (kldload(name) < 0 and c._errno().* != @backingInt(c.E.EXIST)) {
@@ -87,10 +92,7 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
         }
     }
     try makeRoot(io, gpa);
-    try check(chroot(new_root), error.Root);
-    try check(c.chdir("/"), error.Root);
-
-    try mountP9(io, "run", run_mount);
+    try mount("run", run_mount, "p9fs", &.{}, 0);
     const argv = try readList(io, gpa, run_mount ++ "/argv");
     const environ = try readList(io, gpa, run_mount ++ "/environ");
     const binds = try readList(io, gpa, run_mount ++ "/binds");
@@ -102,15 +104,31 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     // Made before the host's directories are bound, so that it is the machine's own
     // even when the host's HOME holds one of them.
     const home = try makeHome(io, gpa, environ, user);
-    try mountP9(io, "host", host_mount);
+    try mount("host", host_mount, "p9fs", &.{}, 0);
     if (binds.len % 2 != 0) return error.UnpairedBind;
     var pair: usize = 0;
     while (pair < binds.len) : (pair += 2) try bind(io, gpa, binds[pair], binds[pair + 1]);
     for (scratch) |path| try mountScratch(io, gpa, path);
+    try check(chroot(new_root), error.Root);
+    try check(c.chdir("/"), error.Root);
 
     const ports = try openPorts(io);
     try writeAll(ports.status, "started\n");
     return try launch(gpa, .{ .argv = argv, .environ = environ, .cwd = cwd, .user = user, .home = home }, ports);
+}
+
+/// The kernel starts the first process with no descriptors: /dev/null takes 0, 1 and 2,
+/// so that every port and pipe opened after is above them, and the child's dup2 onto
+/// each always moves it (a dup2 onto itself would leave it closed on exec).
+fn holdStandardFds() !void {
+    while (true) {
+        const fd = c.open("/dev/null", .{ .ACCMODE = .RDWR, .NOCTTY = true });
+        if (fd < 0) return error.StandardFds;
+        if (fd > 2) {
+            closeFd(fd);
+            return;
+        }
+    }
 }
 
 /// The program's root in the machine's memory, at `new_root` (a directory of the
@@ -156,18 +174,20 @@ fn entry(text: [:0]const u8) c.iovec {
     return .{ .base = @constCast(text.ptr), .len = text.len + 1 }; // aegis: boundary(A019): nmount(2) only reads its options; C's iovec has no const pointer
 }
 
-fn mountP9(io: Io, tag: [:0]const u8, target: [:0]const u8) !void {
-    try Io.Dir.cwd().createDirPath(io, target);
-    try mount(tag, target, "p9fs", &.{}, 0);
+/// The program's path `path` in its root, before the first process takes that root.
+fn inRoot(gpa: std.mem.Allocator, path: []const u8) ![:0]u8 {
+    if (!std.fs.path.isAbsolute(path)) return error.RelativePath;
+    return gpa.printSentinel("{s}{s}", .{ new_root, path }, 0);
 }
 
-/// The host's directory `resolved`, at `path` in the machine: the path the program
-/// has for it, which on the host may pass through links.
+/// The host's directory `resolved`, at `path` in the program's root: the path the
+/// program has for it, which on the host may pass through links.
 fn bind(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) !void {
-    try Io.Dir.cwd().createDirPath(io, path);
+    const target = try inRoot(gpa, path);
+    try Io.Dir.cwd().createDirPath(io, target);
     const source = try gpa.printSentinel("{s}{s}", .{ host_mount, resolved }, 0);
     // A directory under one bound before is already there, at the same path.
-    mount(source, try gpa.dupeSentinel(u8, path, 0), "nullfs", &.{}, 0) catch |err| switch (err) {
+    mount(source, target, "nullfs", &.{}, 0) catch |err| switch (err) {
         error.AlreadyThere => {},
         else => |e| return e,
     };
@@ -176,8 +196,9 @@ fn bind(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) 
 /// A directory the run writes its scratch files in: the machine's memory, so that
 /// they behave as files on a local file system, not a share.
 fn mountScratch(io: Io, gpa: std.mem.Allocator, path: []const u8) !void {
-    try Io.Dir.cwd().createDirPath(io, path);
-    try mount("tmpfs", try gpa.dupeSentinel(u8, path, 0), "tmpfs", &.{.{ "mode", "1777" }}, 0);
+    const target = try inRoot(gpa, path);
+    try Io.Dir.cwd().createDirPath(io, target);
+    try mount("tmpfs", target, "tmpfs", &.{.{ "mode", "1777" }}, 0);
 }
 
 const Ports = struct { io: c.fd_t, err: c.fd_t, status: c.fd_t };
@@ -382,8 +403,9 @@ fn makeHome(io: Io, gpa: std.mem.Allocator, environ: []const [:0]const u8, user:
     const home = for (environ) |item| {
         if (std.mem.startsWith(u8, item, "HOME=") and item.len > "HOME=/".len) break item["HOME=".len..];
     } else "/home/user";
-    try Io.Dir.cwd().createDirPath(io, home);
-    try check(c.fchownat(c.AT.FDCWD, try gpa.dupeSentinel(u8, home, 0), user.uid, user.gid, 0), error.HomeOwner);
+    const target = try inRoot(gpa, home);
+    try Io.Dir.cwd().createDirPath(io, target);
+    try check(c.fchownat(c.AT.FDCWD, target, user.uid, user.gid, 0), error.HomeOwner);
     return home;
 }
 

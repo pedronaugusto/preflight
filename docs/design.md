@@ -178,7 +178,7 @@ seed, and lint prints all it held when it fails.
 ## The FreeBSD test machine
 
 A program built for x86_64 FreeBSD runs on FreeBSD's own kernel under QEMU with KVM, on
-a Linux host only (vm/freebsd.zig refuses any other by name); it is the nightly tier's,
+an x86_64 Linux host only (vm/freebsd.zig refuses any other by name); it is the nightly tier's,
 for what no hosted runner is and a cross-compile cannot show: FreeBSD's kernel TLS and
 its sockets. The machine is FreeBSD's own release files, pinned by hash in preflight's
 manifest and fetched only by a build that asks for it, as the riscv64 machine's Alpine
@@ -212,13 +212,14 @@ directory, its user), and the program's stdin and stdout are a virtio port, its 
 another, its ending a third. The ISO root cannot be written, so the program's root is the
 machine's memory: the first process mounts a tmpfs, nullfs-mounts FreeBSD's system
 directories into it read-only (`bin`, `boot`, `etc`, `lib`, `libexec`, `sbin`, `usr`),
-gives it its own devfs, `/tmp` and `/var/tmp`, and takes it as its root; the host's
-directories are then made at their host paths and bound there from the host's share
-(one inside another already bound is there already: nullfs refuses it, `EDEADLK`),
-and the scratch directory is a tmpfs of its own. The share stays mounted at `/run/host`
-beneath the binds, where the riscv64 machine detaches it (FreeBSD unmounts no file system
-with mounts on it), so the program can reach the host's files there, as the build's own
-programs can on the host. FreeBSD's virtio ports are terminals,
+and gives it its own devfs, `/tmp` and `/var/tmp`. The run's share and the host's are
+mounted outside it, at directories of the ISO image (`/preflight/run`,
+`/preflight/host`); the host's directories are made at their host paths in it and bound
+there from the host's share (one inside another already bound is there already: nullfs
+refuses it, `EDEADLK`), and the scratch directory is a tmpfs of its own. Only then does
+the first process take it as its root, so the program reaches the host's directories
+it names and no other, as on the riscv64 machine, which detaches its share.
+FreeBSD's virtio ports are terminals,
 which drop what arrives before they are opened and mangle it until they are set raw, so
 the first process opens them raw and writes `started` to the status port, and the host
 sends the program's input only after it. `started` ends the one deadline the machine
@@ -228,7 +229,7 @@ or signal (FreeBSD's number, which the host ends by under Linux's number for tha
 signal, or by 128 plus it for one Linux has not), the first process's error, a panic
 on the console, the deadline, or QEMU ending without any of them; for all but the
 first, the run's directory is kept, its console among it, and the console's last lines
-are written to the build's output. A FreeBSD run on a host other than Linux is refused
+are written to the build's output. A FreeBSD run on a host other than x86_64 Linux is refused
 when the build is configured, naming `ci-vm=freebsd`, and one on a Linux host without
 KVM open to its user when it runs. vm/freebsd/probe_test.zig is the machine's own
 proof: tests built for FreeBSD and run on it through this path (`zig build

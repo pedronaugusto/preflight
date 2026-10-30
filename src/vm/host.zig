@@ -171,7 +171,7 @@ fn freebsdRun(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Enviro
     cwd.deleteTree(io, run_path) catch {};
     switch (ending) {
         .exited => |code| return code,
-        .signal => |sig| if (freebsd.linuxSignal(sig)) |linux_sig| raiseOwn(linux_sig) else std.process.exit(@truncate(128 +% sig)), // safe: an exit code is a byte, as a shell takes 128 + a signal
+        .signal => |sig| if (freebsd.linuxSignal(sig)) |linux_sig| raiseOwn(linux_sig) else std.process.exit(@intCast(128 + sig)), // safe: classify takes no signal above freebsd.max_signal, 126, so 128 + it is a byte, as a shell's exit code for it
     }
 }
 

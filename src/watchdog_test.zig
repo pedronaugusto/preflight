@@ -59,6 +59,10 @@ test "a job's deadline sooner than the test's limit bounds the wait, and names i
     try std.testing.expectEqual(watchdog.Bound{ .limit = .fromSeconds(30), .job = true }, watchdog.bound(io, limit, 1_030));
     // Already past: no wait at all.
     try std.testing.expectEqual(watchdog.Bound{ .limit = .fromSeconds(0), .job = true }, watchdog.bound(io, limit, 900));
+    // Each says how its test ended: past its limit, cut off by the job, or never started.
+    try std.testing.expectEqual(watchdog.Ending.over_limit, watchdog.ending(watchdog.bound(io, limit, null)));
+    try std.testing.expectEqual(watchdog.Ending.job_ran_out, watchdog.ending(watchdog.bound(io, limit, 1_030)));
+    try std.testing.expectEqual(watchdog.Ending.not_started, watchdog.ending(watchdog.bound(io, limit, 900)));
 }
 
 test "a job's deadline is whole seconds, or unset" {

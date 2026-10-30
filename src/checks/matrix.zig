@@ -1,5 +1,6 @@
 const std = @import("std");
 const src = @import("source.zig");
+const preflight_order = @import("preflight_order");
 
 pub const hosts = [_][]const u8{ "ubuntu-latest", "macos-latest", "windows-latest" };
 /// The `shards` keys of `ci/workflow.json`, in `hosts` order.
@@ -80,9 +81,10 @@ const workflow_options = [_][]const u8{
     "cross_seconds",    "compile_once",        "portable_hosts",     "hardened",
     "compile_step",     "setup_step",          "before_tests_step",  "windows_git_latest",
     "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout",
-    // `ci/costs.json`, which the planner reads beside the configuration, and the macOS
-    // targets whose build links a framework, which `plan` and `gate` read from the build.
-    "measured",         "sdk_targets",
+    // The seconds of tests a riscv64 job holds; then `ci/costs.json` and `ci/durations.json`,
+    // which the planner reads beside the configuration, and the macOS targets whose build
+    // links a framework, which `plan` and `gate` read from the build.
+    "riscv64_seconds",  "measured",            "durations",          "sdk_targets",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -331,10 +333,10 @@ fn linuxHost(host: []const u8) bool {
 /// runner, static with musl, and run on a riscv64 Linux kernel QEMU emulates (`-Dci-vm`), so
 /// that what a kernel does (reaping, pidfds, io_uring, file maps) is a kernel's, not a
 /// user-mode emulator's. Emulated, a suite takes several times as long as on a runner, so
-/// it splits into `shards.riscv64` jobs; its durations, QEMU's, are a column of their own,
-/// which balances them.
+/// it splits into as many jobs as `emulatedCount` says; its durations, QEMU's, are a column
+/// of their own, which balances them.
 fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
-    const count = try shardCount(src.get(src.get(config, "shards"), emulated_host_name));
+    const count = try emulatedCount(a, config);
     for (0..count) |i| {
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
@@ -347,6 +349,39 @@ fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Jo
             .job_timeout = try minutes(config, "test_job_timeout"),
         });
     }
+}
+
+/// The `ci/durations.json` column the riscv64 suite records, as its test runner names it.
+const emulated_column = "linux-riscv64-debug";
+
+/// How many jobs the riscv64 suite takes: `shards.riscv64` when it fixes the count, else as
+/// few as hold `riscv64_seconds` of tests each, half the job's time when that does not say
+/// (the other half builds the suite, boots the kernel and is the margin). The seconds are
+/// the last run's record (`ci/durations.json`): a test the riscv64 column has none of
+/// weighs its Linux Debug time scaled as the tests both recorded ran (`order.estimate`), so
+/// a suite whose emulated run never finished is still sized by what it did run. With no
+/// record to go by, one job, whose record sizes the next plan.
+fn emulatedCount(a: std.mem.Allocator, config: src.Value) !usize {
+    const fixed = src.get(src.get(config, "shards"), emulated_host_name);
+    if (fixed != .null) return shardCount(fixed);
+    const budget_value = src.get(config, "riscv64_seconds");
+    if (budget_value != .null and !((number(budget_value) orelse 0) > 0)) return error.InvalidEmulatedSeconds;
+    const budget = number(budget_value) orelse (@as(f64, @floatFromInt(try minutes(config, "test_job_timeout") * 60)) / 2);
+    const durations = src.get(config, "durations");
+    if (durations == .null) return 1;
+    const tests = src.get(durations, "tests");
+    if (tests != .object) return error.InvalidDurations;
+    const names = tests.object.keys();
+    const estimate = preflight_order.estimate(a, durations, names, emulated_column) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidDurations => return error.InvalidDurations,
+    };
+    if (estimate.recorded == 0) return 1;
+    var total: f64 = 0;
+    for (estimate.weights) |seconds| total += seconds;
+    // A job holds at least one test, so no more jobs than tests.
+    const needed = std.math.lossyCast(usize, @ceil(total / budget));
+    return std.math.clamp(needed, 1, names.len);
 }
 
 /// The Debug suite on x86_64 FreeBSD, which no hosted runner is: built for it on the Linux
@@ -897,6 +932,36 @@ test "the riscv64 job on its emulated kernel splits into its shards" {
     };
     try std.testing.expectEqual(@as(usize, 2), shards);
     try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":0}}", .{})).value, .release));
+}
+
+test "the riscv64 suite takes as many jobs as hold half a job of its recorded tests, those it never ran weighed by Linux Debug" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A 20-minute job holds 600 s of tests. `ran` took ten times its Linux time emulated;
+    // `killed`, never run there, weighs 10 x 40 s; `new` was not recorded at all and weighs
+    // the mean of the two: 200 + 400 + 300 s, two jobs.
+    const recorded =
+        \\{"durations":{"keys":["linux-debug","linux-riscv64-debug"],"tests":{"ran":[20,200],"killed":[40,null],"new":[null,null]}}}
+    ;
+    for ([_]struct { text: []const u8, jobs: usize }{
+        .{ .text = recorded, .jobs = 2 },
+        // `riscv64_seconds` sets the share; `shards.riscv64` fixes the count.
+        .{ .text = "{\"riscv64_seconds\":300," ++ recorded[1..], .jobs = 3 },
+        .{ .text = "{\"shards\":{\"riscv64\":4}," ++ recorded[1..], .jobs = 4 },
+        // No record of the column or of Linux to scale: one job, whose record sizes the next.
+        .{ .text = "{\"durations\":{\"keys\":[\"linux-debug\"],\"tests\":{\"a\":[null]}}}", .jobs = 1 },
+        .{ .text = "{}", .jobs = 1 },
+    }) |case| {
+        const config = (try std.json.parseFromSlice(src.Value, a, case.text, .{})).value;
+        var count: usize = 0;
+        for (try plan(a, config, .release)) |job| if (job.machine == .riscv64) {
+            count += 1;
+        };
+        try std.testing.expectEqual(case.jobs, count);
+    }
+    const bad = (try std.json.parseFromSlice(src.Value, a, "{\"riscv64_seconds\":0}", .{})).value;
+    try std.testing.expectError(error.InvalidEmulatedSeconds, plan(a, bad, .release));
 }
 
 test "named weighted cases are refused, naming the per-test shards that replace them" {

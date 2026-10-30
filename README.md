@@ -396,6 +396,10 @@ A tier records the durations of every host and mode it executes, through Zig's
 test protocol. In the merge and release tiers, the profile job folds the records
 into `ci/durations.json`, keeping the columns the run did not measure. It uploads
 the result as the proof artifact, `preflight-merge-<sha>` or `preflight-release-<sha>`.
+A run that went red is folded too (`profile --partial`), every test it did not record
+keeping its earlier durations, and uploaded as `records-merge-<sha>` or
+`records-release-<sha>`, which proves nothing: a job that ran out of time still leaves
+the record that sizes its shards in the next plan.
 `gh run download <run> -n preflight-merge-<sha> -D ci` refreshes the package's
 copy. From a package root, `zig build --build-file <preflight>/build.zig
 -Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
@@ -523,7 +527,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   it. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
 - `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
-  `compile_once`, `portable_hosts`, `hardened`: what the tiers build and run, described below.
+  `riscv64_seconds`, `compile_once`, `portable_hosts`, `hardened`: what the tiers build and
+  run, described below.
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
   with three attempts of five minutes; `before_tests_step`: a step run before the tests.
@@ -721,16 +726,23 @@ path filter.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
 jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, `riscv64` for the
-riscv64 job on its emulated kernel, which runs a suite several times as long, and `tsan` for
-the hardened ThreadSanitizer run). The hardened runs take `test_job_timeout`; `hardened` splits
+riscv64 job on its emulated kernel, and `tsan` for the hardened ThreadSanitizer run). The
+riscv64 suite, several times as long emulated, is otherwise sized by its record: as few jobs
+as hold `riscv64_seconds` of its tests each (half of `test_job_timeout` by default; the other
+half builds the suite and boots the kernel), by the seconds `ci/durations.json` holds, a test
+the riscv64 column has none of weighed by its Linux Debug record times the ratio of the two
+columns over the tests both recorded. With no record of either, it is one job, whose record
+sizes the next plan; `shards.riscv64` fixes the count instead. The hardened runs take `test_job_timeout`; `hardened` splits
 as the Linux jobs do, `hardened-tsan` by `tsan` (else as they do), and the fuzz campaign is one
 job. Every job compiles the whole suite once, or downloads it with
 `compile_once`, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`, a column per system, architecture and mode, and one more for a
 ThreadSanitizer build (`linux-debug-tsan`), which a declared job records with
-`-Dci-timings=true` in its `args`. A test with no record weighs the mean of those with one;
-without records the split is by count. Every shard computes the same split, so
+`-Dci-timings=true` in its `args`. A test with no record in its column weighs its Linux
+Debug record (`linux-debug`) times the ratio of the two columns over the tests both
+recorded, and failing that the mean of those with one; without records the split is by
+count. Every shard computes the same split, so
 each test runs exactly once. A package's own jobs are declared in `ci/workflow.json`
 `jobs` and run in the tiers they name (see the options below).
 Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) of

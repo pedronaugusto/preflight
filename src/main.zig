@@ -72,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
 /// `profile`: the jobs' timing records summarized beside the durations and costs so far.
 fn profileCommand(c: src.Context, args: @FieldType(Command, "profile")) !void {
     const previous = if (try c.exists(args.durations)) try c.json(args.durations) else .null;
-    const summary = try checks.profile.summarize(c, args.input, previous);
+    const summary = try checks.profile.summarize(c, args.input, previous, args.partial);
     try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.output orelse args.durations, .data = try checks.profile.render(c.a, summary) });
     // The phases the jobs timed, beside the test durations.
     const measured = try checks.profile.measure(c, args.input, if (try c.exists(args.costs)) try c.json(args.costs) else .null);

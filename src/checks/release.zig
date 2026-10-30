@@ -410,7 +410,7 @@ const Fixture = struct {
     }
 
     fn context(f: *Fixture) src.Context {
-        return .{ .a = f.arena.allocator(), .io = std.testing.io, .dir = f.tmp.dir, .environ_map = &f.env, .held = &f.held };
+        return .{ .a = f.arena.allocator(), .io = std.testing.io, .dir = .{ .data = f.tmp.dir }, .environ_map = &f.env, .held = &f.held };
     }
 
     fn read(f: *Fixture, path: []const u8) ![]const u8 {
@@ -593,8 +593,9 @@ test "the newest tag in history is the base whatever the headings say, and a CHA
     try f.write("sample/CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- A sample.\n");
     try f.commit("Sample");
     var sample = f.context();
-    sample.dir = try f.tmp.dir.openDir(std.testing.io, "sample", .{});
-    defer sample.dir.?.close(std.testing.io);
+    const sample_dir = try f.tmp.dir.openDir(std.testing.io, "sample", .{});
+    defer sample_dir.close(std.testing.io);
+    sample.dir = .{ .data = sample_dir };
     try changelogNamesChanges(&sample, &package_modules);
     try std.testing.expectEqual(@as(usize, 0), sample.errors);
 }
@@ -605,8 +606,9 @@ test "a shallow clone and a failing git are errors, never a surface compared wit
     const origin = try f.tmp.dir.realPathFileAlloc(std.testing.io, ".", f.arena.allocator());
     try f.git(&.{ "clone", "--quiet", "--depth", "1", try f.arena.allocator().print("file://{s}", .{origin}), "shallow" });
     var shallow = f.context();
-    shallow.dir = try f.tmp.dir.openDir(std.testing.io, "shallow", .{});
-    defer shallow.dir.?.close(std.testing.io);
+    const shallow_dir = try f.tmp.dir.openDir(std.testing.io, "shallow", .{});
+    defer shallow_dir.close(std.testing.io);
+    shallow.dir = .{ .data = shallow_dir };
     try changelogNamesChanges(&shallow, &package_modules);
     try std.testing.expectEqual(@as(usize, 1), shallow.errors);
     try std.testing.expect(std.mem.find(u8, f.held.written(), "this clone is shallow") != null);

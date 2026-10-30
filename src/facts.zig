@@ -591,11 +591,11 @@ test "build protocol chunked transport cancellation child status and output faul
     const FaultIo = @import("shakedown").FaultIo;
     const faults = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .processSpawn, .n = 1 } }, .fault = .{ .fail = error.Canceled } }} });
     defer faults.deinit();
-    try std.testing.expectError(error.Canceled, capture(.{ .a = a, .io = faults.io(), .dir = tmp.dir }, &.{ "zig", "build", "--listen=-" }));
+    try std.testing.expectError(error.Canceled, capture(.{ .a = a, .io = faults.io(), .dir = .{ .data = tmp.dir } }, &.{ "zig", "build", "--listen=-" }));
     try std.testing.expectEqual(@as(u64, 1), faults.count(.processSpawn));
     const write_fault = try FaultIo.init(std.testing.allocator, std.testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .file_write_streaming, .n = 1 } }, .fault = .{ .fail = error.InputOutput } }} });
     defer write_fault.deinit();
-    try std.testing.expectError(error.WriteFailed, capture(.{ .a = a, .io = write_fault.io(), .dir = tmp.dir }, &.{ "zig", "build", "--listen=-" }));
+    try std.testing.expectError(error.WriteFailed, capture(.{ .a = a, .io = write_fault.io(), .dir = .{ .data = tmp.dir } }, &.{ "zig", "build", "--listen=-" }));
     var writer = Io.Writer.failing;
     const fixture = @import("facts_test.zig");
     const seed = try fixture.seed(a);

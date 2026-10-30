@@ -577,7 +577,7 @@ test "signature check: the Zig 0.17 table matches Zig 0.17's std" {
     const io = std.testing.io;
     var dir = try std.Io.Dir.cwd().openDir(io, test_options.zig_std, .{});
     defer dir.close(io);
-    var lib: library.Library = .{ .a = arena.allocator(), .io = io, .dir = dir };
+    var lib: library.Library = .{ .a = arena.allocator(), .io = io, .dir = .{ .data = dir } };
     const release = table.find(.{ .major = 0, .minor = 17, .patch = 0 }).?;
     for (release.entries) |entry| {
         const status = try table.check(&lib, entry);

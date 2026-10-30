@@ -1244,7 +1244,7 @@ test "a dispatched run compares the branch with main, so a docs-only last commit
     try fixtureGit(a, work, &.{ "commit", "-m", "Docs" });
     var env = try std.testing.environ.createMap(a);
     try withoutUserGit(&env);
-    const c: src.Context = .{ .a = a, .io = io, .dir = work, .environ_map = &env };
+    const c: src.Context = .{ .a = a, .io = io, .dir = .{ .data = work }, .environ_map = &env };
     // The last commit alone is documentation; the branch is not.
     try std.testing.expect(try paths.run(c, "HEAD^"));
     try std.testing.expect(!try paths.run(c, null));

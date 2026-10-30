@@ -15,7 +15,7 @@ const Context = struct {
         for (0..units) |_| {
             // What the check says is held: a run prints nothing per unit.
             var held: std.Io.Writer.Allocating = .init(c.scratch.allocator());
-            var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io, .dir = c.dir, .held = &held };
+            var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io, .dir = .{ .data = c.dir }, .held = &held };
             checks.glint.check(&context, .{ .gpa = c.gpa, .config = c.config }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.CheckFailed,

@@ -401,7 +401,7 @@ test "named paths add to what the package ships, never narrow it, and fail when 
     // A selection that finds nothing is an error, not a pass over nothing.
     var bare = std.testing.tmpDir(.{});
     defer bare.cleanup();
-    c.dir = bare.dir;
+    c.dir = .{ .data = bare.dir };
     c.errors = 0;
     config = try parsed(c.a, "{}");
     try bare.dir.createDirPath(std.testing.io, "src");

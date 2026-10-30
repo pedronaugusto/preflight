@@ -12,8 +12,8 @@
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=glint-0.7.5-3jcpoYpLGQB5x517oTRk1gU2uy-YLsv83MKBkG54t5w7#c7c46fd7038d8808d333a47c2fd7a2d40d45618f",
-            .hash = "gantry-0.3.4-1iNrkYvNDACYplxm47zJBnoMbBkHdSE6IxKQjsGFqmVq",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=review-0.3.5#be2d76019267f4993a019ed8198fed15f9647a99",
+            .hash = "gantry-0.3.4-1iNrkdXWDADAw3YnyOGOsyfL0o04HkOi7RDPyESdMVpO",
             .lazy = true,
         },
 

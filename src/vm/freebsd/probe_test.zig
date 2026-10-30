@@ -4,13 +4,10 @@
 //! FreeBSD's kernel with kernel TLS, the build's user and directory, scratch files
 //! of its own, a child's exit code and signal, and the loopback interface. The test
 //! runner's protocol over the `io` port is its standard streams' check. Elsewhere
-//! they are compiled and skipped: they say what FreeBSD's machine is.
+//! they are skipped as they compile, so a host without libc never analyzes FreeBSD's C
+//! calls: they say what FreeBSD's machine is.
 const std = @import("std");
 const builtin = @import("builtin");
-
-fn onMachine() !void {
-    if (builtin.os.tag != .freebsd) return error.SkipZigTest;
-}
 
 fn sysctl(comptime T: type, name: [*:0]const u8) !T {
     var value: T = undefined;
@@ -20,7 +17,7 @@ fn sysctl(comptime T: type, name: [*:0]const u8) !T {
 }
 
 test "the machine runs FreeBSD's kernel, with kernel TLS on" {
-    try onMachine();
+    if (builtin.os.tag != .freebsd) return error.SkipZigTest;
     var name: [32]u8 = undefined;
     var len: usize = name.len;
     try std.testing.expectEqual(@as(c_int, 0), std.c.sysctlbyname("kern.ostype", &name, &len, null, 0));
@@ -29,13 +26,13 @@ test "the machine runs FreeBSD's kernel, with kernel TLS on" {
 }
 
 test "the program runs in the build's directory as the build's user" {
-    try onMachine();
+    if (builtin.os.tag != .freebsd) return error.SkipZigTest;
     try std.Io.Dir.cwd().access(std.testing.io, "build.zig.zon", .{});
     try std.testing.expect(std.c.getuid() != 0);
 }
 
 test "scratch files are the machine's own" {
-    try onMachine();
+    if (builtin.os.tag != .freebsd) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "probe", .data = "machine" });
@@ -44,7 +41,7 @@ test "scratch files are the machine's own" {
 }
 
 test "a child's exit code and signal reach its parent" {
-    try onMachine();
+    if (builtin.os.tag != .freebsd) return error.SkipZigTest;
     const io = std.testing.io;
     var exited = try std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", "exit 3" } });
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 3 }, try exited.wait(io));
@@ -53,7 +50,7 @@ test "a child's exit code and signal reach its parent" {
 }
 
 test "the loopback interface takes connections on 127.0.0.1 and ::1" {
-    try onMachine();
+    if (builtin.os.tag != .freebsd) return error.SkipZigTest;
     const io = std.testing.io;
     for ([_][]const u8{ "127.0.0.1", "::1" }) |text| {
         const address: std.Io.net.IpAddress = try .parse(text, 0);

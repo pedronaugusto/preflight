@@ -779,7 +779,7 @@ const Supervisor = struct {
             } else false;
             if (!holds) continue;
             var line: [512]u8 = undefined;
-            const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch "";
+            const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch line[0..0];
             for (command) |*byte| if (byte.* == 0) {
                 byte.* = ' ';
             };

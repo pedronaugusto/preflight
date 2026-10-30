@@ -212,7 +212,7 @@ fn makeRoot(io: Io, gpa: std.mem.Allocator) !void {
 fn mount(from: [:0]const u8, fspath: [:0]const u8, fstype: [:0]const u8, options: []const [2][:0]const u8, flags: c_int) !void {
     const max_options = 2;
     if (options.len > max_options) return error.MountOptions;
-    var iov: [2 * (3 + max_options)]c.iovec = undefined;
+    var iov: [2 * (3 + max_options)]c.iovec = std.mem.zeroes([2 * (3 + max_options)]c.iovec);
     const pairs = [_][2][:0]const u8{ .{ "fstype", fstype }, .{ "fspath", fspath }, .{ "from", from } };
     for (pairs, 0..) |pair, i| iov[2 * i ..][0..2].* = .{ entry(pair[0]), entry(pair[1]) };
     for (options, pairs.len..) |pair, i| iov[2 * i ..][0..2].* = .{ entry(pair[0]), entry(pair[1]) };
@@ -290,7 +290,7 @@ fn openPort(io: Io, path: [*:0]const u8) !c.fd_t {
         }
         try io.sleep(.fromMilliseconds(10), .awake);
     };
-    var mode: c.termios = undefined;
+    var mode: c.termios = std.mem.zeroes(c.termios);
     try check(c.tcgetattr(fd, &mode), error.PortMode);
     cfmakeraw(&mode);
     try check(c.tcsetattr(fd, .NOW, &mode), error.PortMode);
@@ -326,7 +326,7 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
     // is only counted, and the program gets it unblocked.
     var chld: c.sigset_t = std.mem.zeroes(c.sigset_t);
     chld.__bits[0] = @as(u32, 1) << (@backingInt(c.SIG.CHLD) - 1);
-    var unblocked: c.sigset_t = undefined;
+    var unblocked: c.sigset_t = std.mem.zeroes(c.sigset_t);
     try check(sigprocmask(sig_block, &chld, &unblocked), error.SignalMask);
 
     const stdin = try pipe();
@@ -360,16 +360,16 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
         event(@intCast(child), c.EVFILT.PROC, c.NOTE.EXIT), // safe: a parent's fork result is the child's id
         event(@backingInt(c.SIG.CHLD), c.EVFILT.SIGNAL, 0),
     };
-    var none: [0]c.Kevent = undefined;
+    var none: [0]c.Kevent = .{};
     if (c.kevent(kq, &watch, watch.len, &none, 0, null) < 0) return error.Kqueue;
 
     var input: Frames = .{ .to = stdin[1] };
     var open = [_]bool{ true, true, true };
-    var buffer: [64 * 1024]u8 = undefined;
+    var buffer: [64 * 1024]u8 = @splat(0);
     var status: ?c_int = null;
     var exited = false;
     while (!exited) {
-        var events: [8]c.Kevent = undefined;
+        var events: [8]c.Kevent = std.mem.zeroes([8]c.Kevent);
         const n = c.kevent(kq, &watch, 0, &events, events.len, null);
         if (n < 0) {
             if (c._errno().* == @backingInt(c.E.INTR)) continue;
@@ -434,7 +434,7 @@ fn event(ident: usize, filter: i16, fflags: u32) c.Kevent {
 /// Stops watching a stream that has ended.
 fn unwatch(kq: c.fd_t, fd: c.fd_t) !void {
     const change = [_]c.Kevent{.{ .ident = descriptor(fd), .filter = c.EVFILT.READ, .flags = c.EV.DELETE, .fflags = 0, .data = 0, .udata = 0 }};
-    var none: [0]c.Kevent = undefined;
+    var none: [0]c.Kevent = .{};
     if (c.kevent(kq, &change, change.len, &none, 0, null) < 0) return error.Kqueue;
 }
 
@@ -520,7 +520,7 @@ fn reap(child: c.pid_t, status: *?c_int) void {
 }
 
 fn pipe() ![2]c.fd_t {
-    var fds: [2]c.fd_t = undefined;
+    var fds: [2]c.fd_t = @splat(-1);
     if (c.pipe2(&fds, .{ .CLOEXEC = true }) != 0) return error.Pipe;
     return fds;
 }

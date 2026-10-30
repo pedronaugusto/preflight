@@ -80,7 +80,7 @@ const Manifest = struct {
 };
 
 pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
-    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     const manifest = try std.zon.parse.fromSlice(Manifest, .{
         .gpa = c.a,
         .arena = c.a,
@@ -312,7 +312,7 @@ test "caller generation validates pins and output paths before replacing files" 
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(c.io, .{ .sub_path = "kept.yml", .data = "kept\n" });
     for ([_][]const u8{ "../kept.yml", "/kept.yml", ".git/kept.yml", "kept.txt", "sub//kept.yml" }) |path| try std.testing.expectError(error.InvalidWorkflowPath, write(c, path, "changed"));
     try std.testing.expectEqualStrings("kept\n", try c.read("kept.yml"));
@@ -344,7 +344,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     }
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     for ([_][]const u8{ "main", "924b6b5", "9AF905ED85CAB6DBB19D9431C65EE3F41FBAA74D" }) |bad| {
         try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .dependencies = .{{ .preflight = .{{ .url = \"{s}#{s}\" }} }} }}", .{ repository, bad }) });
         try std.testing.expectError(error.InvalidPreflightPin, pinned(c, "build.zig.zon"));
@@ -378,7 +378,7 @@ test "caller output refuses symlink files and directories and propagates write f
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
-    const c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(io, .{ .sub_path = "kept.yml", .data = "kept" });
     try tmp.dir.symLink(io, "kept.yml", "link.yml", .{});
     try std.testing.expectError(error.SymLinkLoop, write(c, "link.yml", "changed"));
@@ -389,7 +389,7 @@ test "caller output refuses symlink files and directories and propagates write f
     try std.testing.expectEqualStrings("kept", try c.read("kept.yml"));
     const faults = try FaultIo.init(std.testing.allocator, io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .fileWritePositional, .n = 1 } }, .fault = .{ .fail = error.NoSpaceLeft } }} });
     defer faults.deinit();
-    const faulted: src.Context = .{ .a = c.a, .io = faults.io(), .dir = tmp.dir };
+    const faulted: src.Context = .{ .a = c.a, .io = faults.io(), .dir = .{ .data = tmp.dir } };
     try std.testing.expectError(error.WriteFailed, write(faulted, "new.yml", "changed"));
     try std.testing.expectEqual(@as(u64, 1), faults.count(.fileWritePositional));
 }

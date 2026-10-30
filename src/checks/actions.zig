@@ -276,7 +276,7 @@ fn isFlow(c: u8) bool {
 fn expectUses(text: []const u8, want: []const []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var problem: Problem = undefined;
+    var problem: Problem = .{ .line = 0, .what = "" };
     const got = try uses(arena.allocator(), text, &problem);
     try std.testing.expectEqual(want.len, got.len);
     for (want, got) |value, use| try std.testing.expectEqualStrings(value, use.value);
@@ -285,7 +285,7 @@ fn expectUses(text: []const u8, want: []const []const u8) !void {
 fn expectUnreadable(text: []const u8, what: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var problem: Problem = undefined;
+    var problem: Problem = .{ .line = 0, .what = "" };
     try std.testing.expectError(error.Unreadable, uses(arena.allocator(), text, &problem));
     try std.testing.expect(std.mem.find(u8, problem.what, what) != null);
 }

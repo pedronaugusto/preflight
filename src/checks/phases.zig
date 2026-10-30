@@ -75,7 +75,7 @@ test "a phase is added to the summary and the record, after what the files hold"
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(c.io, .{ .sub_path = "summary.md", .data = "kept\n" });
     const log: Log = .{ .summary = "summary.md", .record = "cache/phases-job.ndjson" };
     Timer.begin(c, "lint").end(c, log);

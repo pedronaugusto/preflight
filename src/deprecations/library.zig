@@ -69,8 +69,8 @@ const max_depth = 24;
 pub const Library = struct {
     a: Allocator,
     io: std.Io,
-    /// The `std` directory of a Zig installation.
-    dir: std.Io.Dir,
+    /// The `std` directory of a Zig installation, the caller's.
+    dir: aegis.own.Lent(std.Io.Dir),
     files: std.StringHashMapUnmanaged(*File) = .empty,
     /// Replacements a release's table names, by joined old path.
     renames: std.StringHashMapUnmanaged(Path) = .empty,
@@ -78,7 +78,7 @@ pub const Library = struct {
 
     fn load(lib: *Library, path: []const u8) !?*File {
         if (lib.files.get(path)) |file| return file;
-        const text = aegis.own.readFile(lib.io, lib.dir, path, lib.a, .fromRaw(64 * 1024 * 1024)) catch |err| switch (err) {
+        const text = aegis.own.readFile(lib.io, lib.dir.get(), path, lib.a, .fromRaw(64 * 1024 * 1024)) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
         };

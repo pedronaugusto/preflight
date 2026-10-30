@@ -470,7 +470,7 @@ const Fixture = struct {
         const self = try std.testing.allocator.create(Fixture);
         self.arena = .init(std.testing.allocator);
         self.tmp = std.testing.tmpDir(.{});
-        self.c = .{ .a = self.arena.allocator(), .io = std.testing.io, .dir = self.tmp.dir };
+        self.c = .{ .a = self.arena.allocator(), .io = std.testing.io, .dir = .{ .data = self.tmp.dir } };
         // What a package of the tests ships: the danger rules' scope.
         try self.tmp.dir.writeFile(self.c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .fixture, .version = \"0.0.0\", .paths = .{ \"build.zig\", \"build.zig.zon\", \"src\" } }\n" });
         return self;

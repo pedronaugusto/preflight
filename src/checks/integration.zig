@@ -38,7 +38,7 @@ fn shakedownPin(a: std.mem.Allocator) !Pin {
     const path = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
     const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), path, a, .fromRaw(1024 * 1024));
     const Manifest = struct { dev_dependencies: struct { shakedown: Pin } };
-    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     const manifest = try std.zon.parse.fromSlice(Manifest, .{ .gpa = a, .arena = a, .source = try a.dupeSentinel(u8, text, 0), .diagnostics = &diagnostics, .ignore_unknown_fields = true });
     return manifest.dev_dependencies.shakedown;
 }

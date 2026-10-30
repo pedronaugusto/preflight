@@ -85,7 +85,7 @@ fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Comman
     defer std_dir.close(io);
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &buffer);
-    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = std_dir, .write = args.write, .paths = args.paths }, &out.interface);
+    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = .{ .data = std_dir }, .write = args.write, .paths = args.paths }, &out.interface);
     try out.interface.flush();
 }
 
@@ -107,8 +107,9 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(
 fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerror!void {
     if (config.* != .object) return;
     var gate = c.*;
-    gate.dir = try c.directory().openDir(c.io, directory, .{});
-    defer gate.dir.?.close(c.io);
+    var job_dir = try c.directory().openDir(c.io, directory, .{});
+    defer job_dir.close(c.io);
+    gate.dir = .{ .data = job_dir };
     // The gate's build is developed with bay or not on its own account (preflight's sample is not).
     gate.bay = if (gate.developedWithBay()) c.bay orelse "bay" else null;
     var linking: std.json.Array = .init(c.a);
@@ -175,8 +176,9 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
             const directory = if (job.directory.len != 0) job.directory else working;
             const moved = !std.mem.eql(u8, directory, ".");
             // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
-            if (moved) w.dir = try c.directory().openDir(c.io, directory, .{});
-            defer if (moved) w.dir.?.close(c.io);
+            const job_dir: ?std.Io.Dir = if (moved) try c.directory().openDir(c.io, directory, .{}) else null;
+            defer if (job_dir) |dir| dir.close(c.io);
+            if (job_dir) |dir| w.dir = .{ .data = dir };
             // The package there builds as it is developed: with bay only if its manifest says so.
             if (moved) w.bay = w.bayFor(&env);
             try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));
@@ -419,7 +421,7 @@ fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
     const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "zig", "env" } });
     if (result.term != .exited or result.term.exited != 0) return error.ZigEnvironmentFailed;
     const Env = struct { global_cache_dir: []const u8 };
-    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     const zig_env = try std.zon.parse.fromSlice(Env, .{
         .gpa = c.a,
         .arena = c.a,

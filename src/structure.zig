@@ -63,7 +63,7 @@ pub fn main(init: std.process.Init) !void {
     };
     var paths = try gantry.walk(a, init.io, .cwd(), try source.roots(a, config), keep);
     defer paths.deinit();
-    const reader: gantry.DirReader = .{ .dir = .cwd() };
+    const reader: gantry.DirReader = .{ .dir = .{ .data = .cwd() } };
     var diagnostic = gantry.Diagnostics.init(a);
     defer diagnostic.deinit();
     var options = structure.options(d);

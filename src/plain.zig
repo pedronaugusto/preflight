@@ -15,8 +15,8 @@ pub const Conflict = struct { package: []const u8, revisions: []const Revision }
 
 /// Where the walk finds each pinned package as published.
 pub const Packages = struct {
-    /// Zig's global cache, whose `p/<hash>` is the package as fetched.
-    global: std.Io.Dir,
+    /// Zig's global cache, whose `p/<hash>` is the package as fetched: the caller's.
+    global: aegis.own.Lent(std.Io.Dir),
     /// The Zig that fetches a pin the cache lacks, or null to fetch nothing.
     zig: ?[]const u8 = null,
 };
@@ -60,7 +60,7 @@ pub fn conflicts(a: std.mem.Allocator, io: std.Io, root: []const u8, name: []con
 /// the pin is not lazy; null when it is not there.
 fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.Pin) !?[]const u8 {
     const path = try std.Io.Dir.path.join(a, &.{ "p", pin.hash, "build.zig.zon" });
-    if (aegis.own.readFile(io, packages.global, path, a, .fromRaw(1024 * 1024))) |text| return text else |err| switch (err) {
+    if (aegis.own.readFile(io, packages.global.get(), path, a, .fromRaw(1024 * 1024))) |text| return text else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
@@ -68,7 +68,7 @@ fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.P
     if (pin.lazy) return null;
     const fetched = try std.process.run(a, io, .{ .argv = &.{ zig, "fetch", pin.url } });
     if (fetched.term != .exited or fetched.term.exited != 0) return error.FetchFailed;
-    return aegis.own.readFile(io, packages.global, path, a, .fromRaw(1024 * 1024)) catch |err| switch (err) {
+    return aegis.own.readFile(io, packages.global.get(), path, a, .fromRaw(1024 * 1024)) catch |err| switch (err) {
         // A package with no manifest pins nothing.
         error.FileNotFound => null,
         else => err,
@@ -133,15 +133,15 @@ test "two packages that pin a third at two revisions are a conflict; one revisio
         try tmp.dir.writeFile(io, .{ .sub_path = try std.Io.Dir.path.join(a, &.{ dir, "build.zig.zon" }), .data = package[1] });
     }
     const root = ".{ .name = .bay, .dependencies = .{ .aegis = .{ .url = \"git+https://e.invalid/aegis#5\", .hash = \"" ++ aegis5 ++ "\" }, .ensign = .{ .url = \"git+https://e.invalid/ensign#1\", .hash = \"" ++ ensign ++ "\" } } }";
-    const found = try conflicts(a, io, root, "bay", .{ .global = tmp.dir });
+    const found = try conflicts(a, io, root, "bay", .{ .global = .{ .data = tmp.dir } });
     try std.testing.expectEqual(@as(usize, 1), found.len);
     try std.testing.expectEqualStrings("aegis", found[0].package);
     var text: std.Io.Writer.Allocating = .init(a);
     try describe(&text.writer, found);
     try std.testing.expectEqualStrings("aegis is in the graph plain zig builds at 2 revisions: aegis-0.1.5, pinned by bay; aegis-0.1.4, pinned by ensign-0.2.1. bay builds one; a consumer building without bay links each: pin one revision throughout\n", text.written());
     const agreeing = try std.mem.replaceOwned(u8, a, root, aegis5, aegis4);
-    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, io, agreeing, "bay", .{ .global = tmp.dir })).len);
+    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, io, agreeing, "bay", .{ .global = .{ .data = tmp.dir } })).len);
     // 0.1.4 and 0.1.5 are one line, so naming aegis to coexist does not allow them.
     const named = try std.mem.replaceOwned(u8, a, root, ".name = .bay,", ".name = .bay, .coexist = .{.aegis},");
-    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, io, named, "bay", .{ .global = tmp.dir })).len);
+    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, io, named, "bay", .{ .global = .{ .data = tmp.dir } })).len);
 }

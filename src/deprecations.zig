@@ -10,8 +10,8 @@ const rewrite = @import("deprecations/rewrite.zig");
 const configure = @import("configure.zig");
 
 pub const Options = struct {
-    /// The `std` directory of the Zig that builds the package.
-    std_dir: std.Io.Dir,
+    /// The `std` directory of the Zig that builds the package, the caller's.
+    std_dir: aegis.own.Lent(std.Io.Dir),
     /// The release whose table applies: the Zig that built preflight.
     version: std.SemanticVersion = builtin.zig_version,
     write: bool = false,

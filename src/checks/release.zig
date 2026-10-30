@@ -13,7 +13,7 @@ const surface = @import("surface.zig");
 const Manifest = struct { version: []const u8 };
 
 fn parseManifest(c: *src.Context, text: []const u8) !Manifest {
-    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     return std.zon.parse.fromSlice(
         Manifest,
         .{
@@ -75,7 +75,7 @@ pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module) !
         else => return err,
     }) orelse return;
     const since = changelog.parseVersion(std.mem.trimStart(u8, tag, "v"));
-    var problem: changelog.Problem = undefined;
+    var problem: changelog.Problem = .{ .line = 0, .what = "" };
     const said = changelog.changedSince(c.a, try c.read("CHANGELOG.md"), since, &problem) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.NoUnreleased => {
@@ -237,7 +237,7 @@ pub fn lastTag(c: *src.Context, text: []const u8) !?[]const u8 {
     const tag = newest orelse {
         const named = releases.next() orelse return null;
         // The commit that makes the first release, before its tag: Unreleased empty, one release.
-        var problem: changelog.Problem = undefined;
+        var problem: changelog.Problem = .{ .line = 0, .what = "" };
         const releasing = if (changelog.unreleased(c.a, text, &problem)) |section| section.empty() else |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             // changelogNamesChanges reports what is wrong with it.

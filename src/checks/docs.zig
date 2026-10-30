@@ -140,7 +140,7 @@ test "documentation matches examples and refuses drift and missing markers" {
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    var c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(c.io, .{ .sub_path = "usage.zig", .data = "const example = @import(\"example\");\nfn main() void {\n // --- README:usage ---\n const x = 1;\n // --- README:usage ---\n}\n" });
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"docs\":{\"usage\":{\"source\":\"usage.zig\",\"region\":\"usage\",\"module\":\"example\"}}}", .{})).value;
     const wanted = try snippet(c, src.get(src.get(config, "docs"), "usage"));

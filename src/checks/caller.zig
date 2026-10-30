@@ -99,7 +99,7 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
         const text = try aegis.own.readFile(c.io, dir, entry.path, c.a, .fromRaw(16 * 1024 * 1024));
-        var problem: actions.Problem = undefined;
+        var problem: actions.Problem = .{ .line = 0, .what = "" };
         const used = actions.uses(c.a, text, &problem) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Unreadable => {
@@ -172,7 +172,7 @@ fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, e
 /// `c` reading and writing from `top`, the repository's top opened.
 fn atTop(c: *src.Context, top: std.Io.Dir) src.Context {
     var at_top = c.*;
-    at_top.dir = top;
+    at_top.dir = .{ .data = top };
     return at_top;
 }
 

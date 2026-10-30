@@ -157,7 +157,7 @@ test "a refresh replaces the columns it measured, keeps the rest, and takes the 
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     // Fixed fixture weights exercise arithmetic, not a machine's timing.
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-1of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"windows-Debug\"}\n{\"name\":\"first\",\"seconds\":4.5,\"status\":\"pass\",\"key\":\"windows-Debug\"}\n" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-Debug-all.ndjson", .data = "{\"name\":\"second\",\"seconds\":0.25,\"status\":\"skip\",\"key\":\"linux-Debug\"}\n{\"name\":\"untargeted\",\"seconds\":1,\"status\":\"pass\"}\n" });
@@ -185,7 +185,7 @@ test "a refresh replaces the columns it measured, keeps the rest, and takes the 
 test "restored timings are discarded before a gate records this run" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = std.testing.allocator, .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = std.testing.allocator, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.createDirPath(c.io, "cache/preflight-timings");
     try tmp.dir.writeFile(c.io, .{ .sub_path = "cache/preflight-timings/previous.ndjson", .data = "old run" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "cache/compiled", .data = "keep" });
@@ -201,7 +201,7 @@ test "a test recorded on two shards of one column fails the refresh" {
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-1of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"windows-Debug\",\"shard\":\"1/2\"}\n" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-macos-Debug-2of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"macos-Debug\",\"shard\":\"2/2\"}\n" });
     _ = try summarize(c, ".", .null);
@@ -216,7 +216,7 @@ test "a record that is not JSON, or has no seconds, fails the refresh naming its
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     var held: std.Io.Writer.Allocating = .init(a);
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir, .held = &held };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir }, .held = &held };
     // Two downloads writing one file at once leave a record cut into by another.
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"key\":\"linux-debug\"}\n\n{\"name\":\"sec{\"name\":\"first\",\"seconds\":3}\n" });
     try std.testing.expectError(error.SyntaxError, summarize(c, ".", .null));
@@ -288,7 +288,7 @@ test "a refresh of the phase costs takes the longest record and keeps the phases
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(c.io, .{ .sub_path = "phases-cross-objects-0.ndjson", .data = "{\"phase\":\"compile x86_64-macos\",\"seconds\":61.5}\n{\"phase\":\"compile x86_64-macos\",\"seconds\":70}\n{\"phase\":\"compile aarch64-macos\",\"seconds\":3}\n" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"name\":\"second\",\"seconds\":0.25,\"status\":\"skip\",\"key\":\"linux-debug\"}\n" });
     const previous = (try std.json.parseFromSlice(src.Value, a,

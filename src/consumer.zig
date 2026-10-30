@@ -136,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
     var global = try cwd.openDir(io, args[7], .{});
     defer global.close(io);
     const package_manifest = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
-    const found = try plain.conflicts(a, io, try aegis.own.readFile(io, cwd, package_manifest, a, .fromRaw(1024 * 1024)), shape.package, .{ .global = global, .zig = args[1] });
+    const found = try plain.conflicts(a, io, try aegis.own.readFile(io, cwd, package_manifest, a, .fromRaw(1024 * 1024)), shape.package, .{ .global = .{ .data = global }, .zig = args[1] });
     if (found.len != 0) {
         var buffer: [1024]u8 = undefined;
         var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);

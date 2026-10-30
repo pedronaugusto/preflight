@@ -161,6 +161,8 @@ const fixture = [_][2][]const u8{
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
     tmp: std.testing.TmpDir,
+    /// The fixture std, which the fixture opens and closes and the library borrows.
+    std_dir: std.Io.Dir,
     lib: library.Library,
     entries: []const table.Entry,
 
@@ -175,7 +177,8 @@ const Fixture = struct {
             try f.tmp.dir.createDirPath(io, "std");
             try f.tmp.dir.writeFile(io, .{ .sub_path = try std.mem.concat(f.arena.allocator(), u8, &.{ "std/", pair[0] }), .data = text });
         }
-        f.lib = .{ .a = f.arena.allocator(), .io = io, .dir = try f.tmp.dir.openDir(io, "std", .{}) };
+        f.std_dir = try f.tmp.dir.openDir(io, "std", .{});
+        f.lib = .{ .a = f.arena.allocator(), .io = io, .dir = .{ .data = f.std_dir } };
         f.entries = table.releases[0].entries;
         for (f.entries) |entry| switch (entry) {
             .rename => |r| try f.lib.addRename(r.old, r.new),
@@ -185,7 +188,7 @@ const Fixture = struct {
     }
 
     fn deinit(f: *Fixture) void {
-        f.lib.dir.close(std.testing.io);
+        f.std_dir.close(std.testing.io);
         f.tmp.cleanup();
         f.arena.deinit();
         f.* = undefined;

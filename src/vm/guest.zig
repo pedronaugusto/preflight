@@ -53,7 +53,7 @@ const Ending = union(enum) {
 fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try mountSystem();
     try loopbackUp();
-    var uts: linux.utsname = undefined;
+    var uts: linux.utsname = std.mem.zeroes(linux.utsname);
     if (linux.errno(linux.uname(&uts)) != .SUCCESS) return error.Uname;
     const release = std.mem.sliceTo(&uts.release, 0);
 
@@ -399,7 +399,7 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
     // gone, not a zombie its parent's death left to the first process.
     var chld = linux.sigemptyset();
     linux.sigaddset(&chld, .CHLD);
-    var unblocked: linux.sigset_t = undefined;
+    var unblocked: linux.sigset_t = std.mem.zeroes(linux.sigset_t);
     try check(linux.sigprocmask(linux.SIG.BLOCK, &chld, &unblocked), error.SignalMask);
     const child_ended = linux.signalfd(-1, &chld, linux.SFD.CLOEXEC | linux.SFD.NONBLOCK);
     if (linux.errno(child_ended) != .SUCCESS) return error.SignalFd;
@@ -439,7 +439,7 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
         .{ .fd = @intCast(ended), .events = linux.POLL.IN, .revents = 0 }, // safe: a successful pidfd_open returns a descriptor
         .{ .fd = @intCast(child_ended), .events = linux.POLL.IN, .revents = 0 }, // safe: a successful signalfd returns a descriptor
     };
-    var buffer: [64 * 1024]u8 = undefined;
+    var buffer: [64 * 1024]u8 = @splat(0);
     var status: ?u32 = null;
     while (fds[3].revents == 0) {
         const rc = linux.poll(&fds, fds.len, -1);
@@ -458,7 +458,7 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
             if (n == 0) fds[index].fd = -1 else try writeAll(if (index == 1) ports.io else ports.err, buffer[0..n]);
         };
         if (fds[4].revents != 0) {
-            var info: [@sizeOf(linux.signalfd_siginfo) * 16]u8 = undefined;
+            var info: [@sizeOf(linux.signalfd_siginfo) * 16]u8 = @splat(0);
             _ = linux.read(fds[4].fd, &info, info.len); // safe: the signals only say to reap, which follows
         }
         reap(child, &status);
@@ -574,7 +574,7 @@ fn reap(child: linux.pid_t, status: *?u32) void {
 }
 
 fn pipe() ![2]linux.fd_t {
-    var fds: [2]linux.fd_t = undefined;
+    var fds: [2]linux.fd_t = @splat(-1);
     try check(linux.pipe2(&fds, .{ .CLOEXEC = true }), error.Pipe);
     return fds;
 }

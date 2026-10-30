@@ -302,11 +302,7 @@ fn writePathTables(out: *std.Io.Writer, nodes: []const Node, layout: Layout) std
         var written: usize = 0;
         for (layout.dirs) |d| {
             const id = nodes[d].id;
-            var entry: [8]u8 = undefined;
-            entry[0] = @intCast(id.len); // safe: an identifier is at most ten bytes
-            entry[1] = 0;
-            std.mem.writeInt(u32, entry[2..6], nodes[d].lba, endian);
-            std.mem.writeInt(u16, entry[6..8], nodes[nodes[d].parent].number, endian);
+            const entry = [2]u8{ @intCast(id.len), 0 } ++ bytesIn(u32, nodes[d].lba, endian) ++ bytesIn(u16, nodes[nodes[d].parent].number, endian); // safe: an identifier is at most ten bytes
             try out.writeAll(&entry);
             try out.writeAll(id);
             if (id.len % 2 == 1) try out.writeByte(0);
@@ -333,8 +329,7 @@ fn writeDirectories(a: std.mem.Allocator, out: *std.Io.Writer, nodes: []const No
             const target = &nodes[r.node];
             const flags: Flags = if (target.kind == .directory) .directory else .file;
             const su = if (r.spill) |spilled| blk: {
-                var ce: [28]u8 = undefined;
-                continuationEntry(&ce, layout.continuation_lba + spilled.block, spilled.offset, @intCast(spilled.bytes.len)); // safe: a continuation area fits in one block
+                const ce = continuationEntry(layout.continuation_lba + spilled.block, spilled.offset, @intCast(spilled.bytes.len)); // safe: a continuation area fits in one block
                 break :blk try std.mem.concat(a, u8, &.{ r.inline_su, &ce });
             } else r.inline_su;
             at += writeRecord(sector[at..], target.lba, target.size, flags, r.id, su);
@@ -432,14 +427,17 @@ fn both16(out: *[4]u8, value: u16) void {
 }
 
 fn both32(out: *[8]u8, value: u32) void {
-    std.mem.writeInt(u32, out[0..4], value, .little);
-    std.mem.writeInt(u32, out[4..8], value, .big);
+    out.* = both32Bytes(value);
 }
 
+/// `value` little-endian, then big-endian, as ISO 9660 records a 32-bit number.
 fn both32Bytes(value: u32) [8]u8 {
-    var out: [8]u8 = undefined;
-    both32(&out, value);
-    return out;
+    return bytesIn(u32, value, .little) ++ bytesIn(u32, value, .big);
+}
+
+/// `value`'s bytes in `endian` order.
+fn bytesIn(comptime T: type, value: T, endian: std.builtin.Endian) [@sizeOf(T)]u8 {
+    return std.mem.toBytes(std.mem.nativeTo(T, value, endian));
 }
 
 /// PX: the member's type and permission bits, links, owner and group (RRIP 1.09's 36 bytes).
@@ -514,19 +512,12 @@ const er_source = "PLEASE CONTACT DISC PUBLISHER FOR SPECIFICATION SOURCE.  SEE 
 
 /// ER: the extension the image's system use follows, Rock Ridge 1.09.
 fn extensionReference() [8 + er_id.len + er_descriptor.len + er_source.len]u8 {
-    var out: [8 + er_id.len + er_descriptor.len + er_source.len]u8 = undefined;
-    out[0..8].* = .{ 'E', 'R', out.len, 1, er_id.len, er_descriptor.len, er_source.len, 1 };
-    @memcpy(out[8..][0..er_id.len], er_id);
-    @memcpy(out[8 + er_id.len ..][0..er_descriptor.len], er_descriptor);
-    @memcpy(out[8 + er_id.len + er_descriptor.len ..], er_source);
-    return out;
+    const len = 8 + er_id.len + er_descriptor.len + er_source.len;
+    return [8]u8{ 'E', 'R', len, 1, er_id.len, er_descriptor.len, er_source.len, 1 } ++ er_id.* ++ er_descriptor.* ++ er_source.*;
 }
 
-fn continuationEntry(out: *[28]u8, lba: u32, offset: u32, len: u32) void {
-    out[0..4].* = .{ 'C', 'E', 28, 1 };
-    both32(out[4..12], lba);
-    both32(out[12..20], offset);
-    both32(out[20..28], len);
+fn continuationEntry(lba: u32, offset: u32, len: u32) [28]u8 {
+    return [4]u8{ 'C', 'E', 28, 1 } ++ both32Bytes(lba) ++ both32Bytes(offset) ++ both32Bytes(len);
 }
 
 /// What a reader finds in an image: each member by its Rock Ridge path, for the tests.

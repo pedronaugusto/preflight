@@ -657,8 +657,8 @@ const Supervisor = struct {
         /// read end alone.
         fn open() !Lifeline {
             if (builtin.target.os.tag == .windows) {
-                var read: std.os.windows.HANDLE = undefined;
-                var write: std.os.windows.HANDLE = undefined;
+                var read: std.os.windows.HANDLE = std.os.windows.INVALID_HANDLE_VALUE;
+                var write: std.os.windows.HANDLE = std.os.windows.INVALID_HANDLE_VALUE;
                 if (CreatePipe(&read, &write, null, 0) == .FALSE) return error.LifelineUnopened;
                 return .{ .read = file(read), .write = file(write) };
             }
@@ -779,7 +779,7 @@ const Supervisor = struct {
             } else false;
             if (!holds) continue;
             var line: [512]u8 = undefined;
-            const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch line[0..0];
+            const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch "";
             for (command) |*byte| if (byte.* == 0) {
                 byte.* = ' ';
             };
@@ -813,18 +813,18 @@ const Supervisor = struct {
 
         fn listHolders(output: std.Io.File, w: *std.Io.Writer) !void {
             const own = pipeOf(std.c.getpid(), output.handle) orelse return error.PipeUnnamed;
-            var pids: [8192]c_int = undefined;
+            var pids: [8192]c_int = @splat(0);
             const count = proc_listallpids(&pids, @sizeOf(@TypeOf(pids)));
             if (count <= 0) return error.ProcessesUnlisted;
             for (pids[0..@min(@as(usize, @intCast(count)), pids.len)]) |pid| {
                 if (pid == std.c.getpid() or !holds(pid, own.handle)) continue;
-                var arguments: [1024]u8 = undefined;
+                var arguments: [1024]u8 = @splat(0);
                 try w.print("  pid {d}: {s}\n", .{ pid, commandLine(pid, &arguments) });
             }
         }
 
         fn holds(pid: c_int, handle: u64) bool {
-            var fds: [512]FdInfo = undefined;
+            var fds: [512]FdInfo = std.mem.zeroes([512]FdInfo);
             const size = proc_pidinfo(pid, list_fds, 0, &fds, @sizeOf(@TypeOf(fds)));
             if (size <= 0) return false;
             for (fds[0..@min(@as(usize, @intCast(size)) / @sizeOf(FdInfo), fds.len)]) |fd| {
@@ -836,7 +836,7 @@ const Supervisor = struct {
         }
 
         fn pipeOf(pid: c_int, fd: c_int) ?PipeFdInfo {
-            var info: PipeFdInfo = undefined;
+            var info: PipeFdInfo = std.mem.zeroes(PipeFdInfo);
             if (proc_pidfdinfo(pid, fd, pipe_info, &info, @sizeOf(PipeFdInfo)) != @sizeOf(PipeFdInfo)) return null;
             return info;
         }

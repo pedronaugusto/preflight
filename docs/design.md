@@ -218,8 +218,10 @@ mounted outside it, at directories of the ISO image (`/preflight/run`,
 there from the host's share (one inside another already bound is there already: nullfs
 refuses it, `EDEADLK`), and the scratch directory is a tmpfs of its own. Only then does
 the first process take it as its root, so the program reaches the host's directories
-it names and no other, as on the riscv64 machine, which detaches its share.
-FreeBSD's virtio ports are terminals,
+it names and no other, as on the riscv64 machine, which detaches its share. The
+loopback interface is up with `127.0.0.1/8` (and `::1`, which bringing it up gives), as
+rc makes it on any running system: tests listen on it. FreeBSD's virtio ports are
+terminals,
 which drop what arrives before they are opened and mangle it until they are set raw, so
 the first process opens them raw and writes `started` to the status port, and the host
 sends the program's input only after it. `started` ends the one deadline the machine

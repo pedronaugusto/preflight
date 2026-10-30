@@ -91,6 +91,7 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
             return error.Module;
         }
     }
+    try loopbackUp();
     try makeRoot(io, gpa);
     try mount("run", run_mount, "p9fs", &.{}, 0);
     const argv = try readList(io, gpa, run_mount ++ "/argv");
@@ -129,6 +130,63 @@ fn holdStandardFds() !void {
             return;
         }
     }
+}
+
+/// net/if.h's struct ifreq: its name, then a union of 16 bytes (a sockaddr, or two
+/// pointer-sized words) that begins with the flags.
+const InterfaceRequest = extern struct {
+    name: [16]u8,
+    flags: [2]c_short = .{ 0, 0 },
+    rest: [12]u8 = @splat(0),
+};
+/// net/if.h's struct ifaliasreq with IPv4 addresses.
+const AliasRequest = extern struct {
+    name: [16]u8,
+    addr: c.sockaddr.in,
+    broadaddr: c.sockaddr.in,
+    mask: c.sockaddr.in,
+    vhid: c_int = 0,
+};
+/// sys/ioccom.h's _IOW and _IOWR, and sys/sockio.h's requests.
+fn ioctlRequest(direction: u32, number: u8, size: usize) c_int {
+    return @bitCast(direction | (@as(u32, @intCast(size)) << 16) | (@as(u32, 'i') << 8) | number); // safe: an ioctl's size is under 8 KiB
+}
+const ioc_in = 0x80000000;
+const ioc_inout = 0xc0000000;
+const set_flags = ioctlRequest(ioc_in, 16, @sizeOf(InterfaceRequest));
+const get_flags = ioctlRequest(ioc_inout, 17, @sizeOf(InterfaceRequest));
+const add_address = ioctlRequest(ioc_in, 43, @sizeOf(AliasRequest));
+/// net/if.h's IFF_UP.
+const interface_up = 0x1;
+
+comptime {
+    std.debug.assert(@sizeOf(InterfaceRequest) == 32);
+    std.debug.assert(@sizeOf(AliasRequest) == 68);
+}
+
+/// The loopback interface up with 127.0.0.1/8, as rc's netif makes it on any running
+/// system: tests listen on it. Bringing it up gives it ::1 (in6_ifattach).
+fn loopbackUp() !void {
+    const fd = c.socket(c.AF.INET, c.SOCK.DGRAM | c.SOCK.CLOEXEC, 0);
+    if (fd < 0) return error.LoopbackSocket;
+    defer closeFd(fd);
+    var request: InterfaceRequest = .{ .name = interfaceName("lo0") };
+    try check(c.ioctl(fd, get_flags, &request), error.LoopbackUp);
+    request.flags[0] |= interface_up;
+    try check(c.ioctl(fd, set_flags, &request), error.LoopbackUp);
+    var alias: AliasRequest = .{
+        .name = interfaceName("lo0"),
+        .addr = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) },
+        .broadaddr = std.mem.zeroes(c.sockaddr.in),
+        .mask = .{ .port = 0, .addr = std.mem.nativeToBig(u32, 0xff000000) },
+    };
+    try check(c.ioctl(fd, add_address, &alias), error.LoopbackAddress);
+}
+
+fn interfaceName(comptime text: []const u8) [16]u8 {
+    var buffer: [16]u8 = @splat(0);
+    @memcpy(buffer[0..text.len], text);
+    return buffer;
 }
 
 /// The program's root in the machine's memory, at `new_root` (a directory of the

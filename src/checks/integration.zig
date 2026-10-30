@@ -1671,8 +1671,12 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\" }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) }) });
     // The fixture runs from its own directory, so bay is named by its absolute path.
     const bay = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("test_options").bay, a);
-    // One development build runs the gate and the benchmarks, as a runner would.
-    const developed = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "ci", "bench-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    // One development build runs the gate and the benchmarks, as a runner would: with the
+    // cache outside the package, where `ZIG_LOCAL_CACHE_DIR` names the workspace's.
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("ZIG_LOCAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ package_root, ".zig-cache", "fixtures" }));
+    const developed = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "ci", "bench-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(developed)) std.debug.print("bay dev:\n{s}", .{developed.stderr});
     try std.testing.expect(command.succeeded(developed));
     // The consumer check is wired from dev too; building one is its own test's work.

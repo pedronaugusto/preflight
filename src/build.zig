@@ -236,7 +236,7 @@ const Steps = struct {
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
-        const counted = record.add(b, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
+        const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);

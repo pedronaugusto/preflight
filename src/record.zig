@@ -52,9 +52,11 @@ pub const TestTimeout = union(enum) {
 /// `roots`: the test step and the step the package fuzzes, whose test runs
 /// all take the runner, one way. `checker` is preflight's command program,
 /// which refuses a shard at run time for a test runner that cannot honour one,
-/// and counts the tests step's tests per root after its runs (`counts`).
-pub fn add(b: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) Counted {
-    const durations = configure.read(b, options.durations, 64 * 1024 * 1024) orelse "";
+/// and counts the tests step's tests per root after its runs (`counts`). The
+/// durations are `package`'s, read from its repository: with bay, `b` is the
+/// development build, whose root is no repository.
+pub fn add(b: *std.Build, package: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) Counted {
+    const durations = configure.read(package, options.durations, 64 * 1024 * 1024) orelse "";
     var state: State = .{ .context = .{ .pkg = pkg, .checker = checker, .options = options, .durations = durations } };
     for (roots, 0..) |root, index| visit(b, root, &state, index == 0);
     return .{ .names = state.counted.keys(), .runs = state.runs.items };

@@ -20,16 +20,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `riscv64_seconds` in `ci/workflow.json`: the seconds of tests one riscv64 job holds, half of `test_job_timeout` by default. `profile --partial` folds the records of a run that did not finish, every test they do not record keeping its earlier durations, and a red merge or release run's profile job uploads that fold as `records-<tier>-<sha>`, which proves nothing; only a green run's is `preflight-<tier>-<sha>`.
 - `zig build fix -- --escapes-before FILE` (`preflight lint --fix --escapes-before FILE`): glint names an escape in the older form from the escapes a lint before reported (its `.zig-cache/preflight-lint/escapes.txt`, kept before re-pinning), with only the rules listed for it there that find something now. A migration aid for glint 0.8.0's named escapes; it goes once the family is re-pinned.
 - `-Dci-vm` runs what a build makes for x86_64 FreeBSD on FreeBSD's own kernel under KVM, as it runs riscv64 Linux on its kernel: FreeBSD 15.1's kernel set and runtime image, pinned by hash and fetched only by a build that runs on the machine, with preflight's own first process. The program runs as the build's user with the host's directories it names at their paths, its scratch directory and `/tmp` in the machine's memory, loopback up (`127.0.0.1`, `::1`), its standard streams as pipes, and ends as it ended there, by its exit code or its signal. A host other than x86_64 Linux is refused by name (`ci-vm=freebsd`), and one without KVM open to its user when the run starts. A run that ends otherwise is named (a panic, a boot that has not started the program in 180 seconds, QEMU ending) and keeps its directory and console.
 - The release tier runs every package's Debug suite on x86_64 FreeBSD's kernel (`test (x86_64-freebsd on its kernel under KVM, Debug)`; the runner installs `qemu-system-x86` and opens KVM; `shards.freebsd` splits it), and keeps a failed job's machine runs as its artifact. It is a VM leg, the nightly's: a gate at hand names it and runs it nowhere, as it does riscv64's.
 
 ### Changed
 
+- The riscv64 suite under QEMU is sized by its record, as cross targets are by theirs: as few jobs as hold `riscv64_seconds` of its tests each, by `ci/durations.json` (which the planner now reads beside `ci/costs.json`), where it was one job unless `shards.riscv64` said otherwise, and a 20-minute job ran out of time with most of a suite unstarted (xenoglyph and strand among them on the 2026-10-30 nightly); `shards.riscv64` still fixes the count. A test with no record in its column, there or on any shard, weighs its Linux Debug record times the ratio of the two columns over the tests both recorded, and only failing that the mean of the column's own: a suite measured on Linux is weighed under emulation before its first full run there. The planner and the runner weigh through one function, `order.estimate`.
 - Internal, no consumer's: the checks' `alignNested`, which nothing has called since `land` left preflight, is gone, and so is the escape on the runner's pipe `file`, which glint 0.7.5 reads as handing over no owner (a literal naming the handle it is given).
 
 ### Fixed
 
+- A red run's timing records reach the next plan: the profile job ran only when every job passed, so a riscv64 job that ran out of time never left the record its shards are sized by (relic had 1 of 2010 tests recorded there).
+- The watchdog says a test did not start when the job's time had run out before its turn, where it said the test was running when the time ran out, "0 ms into it".
 - A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu).
 - The VM host's input forwarding ends at once on a cancel; it read a cancel as the end of the input and sent the program an end-of-input frame first.
 

@@ -23,9 +23,13 @@ pub fn reset(c: src.Context, root: []const u8) !void {
 }
 
 /// Reads every `.ndjson` record under `root`. A column this run measured
-/// replaces the one in `previous`; columns it did not measure are kept. A
-/// test that two shards of one column both ran fails: the split is broken.
-pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Durations {
+/// replaces the one in `previous`; columns it did not measure are kept. With
+/// `partial`, the records are of a run that did not finish (a job that failed
+/// or ran out of time), and every test they do not record keeps its earlier
+/// cell, so the tests a killed job never reached keep what an earlier run
+/// measured of them. A test that two shards of one column both ran fails: the
+/// split is broken.
+pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial: bool) !Durations {
     var result: Durations = .{};
     // The shard that recorded each test, by name and column.
     var shards: std.StringHashMapUnmanaged([]const u8) = .empty;
@@ -66,7 +70,9 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value) !Duratio
             const cells = try src.items(row.value_ptr.*);
             if (cells.len != keys.len) return error.InvalidDurations;
             for (keys, cells) |column, cell| {
-                if (column != .string or measured.contains(column.string) or cell == .null) continue;
+                if (column != .string or cell == .null) continue;
+                const replaced = if (partial) shards.contains(try c.a.print("{s}\x00{s}", .{ row.key_ptr.*, column.string })) else measured.contains(column.string);
+                if (replaced) continue;
                 try result.put(c.a, row.key_ptr.*, column.string, try number(cell));
             }
         }
@@ -164,7 +170,7 @@ test "a refresh replaces the columns it measured, keeps the rest, and takes the 
     const previous = (try std.json.parseFromSlice(src.Value, a,
         \\{"keys":["macos-Debug","windows-Debug"],"tests":{"first":[2,9],"gone":[1,1],"kept":[3,null]}}
     , .{})).value;
-    const durations = try summarize(c, ".", previous);
+    const durations = try summarize(c, ".", previous, false);
     try std.testing.expectEqual(@as(usize, 4), durations.records);
     try std.testing.expectEqualStrings(
         \\{
@@ -179,7 +185,44 @@ test "a refresh replaces the columns it measured, keeps the rest, and takes the 
         \\
     , try render(a, durations));
     try tmp.dir.writeFile(c.io, .{ .sub_path = "bad.ndjson", .data = "{\"name\":\"x\",\"seconds\":-1,\"key\":\"k\"}\n" });
-    try std.testing.expectError(error.InvalidTestDuration, summarize(c, ".", .null));
+    try std.testing.expectError(error.InvalidTestDuration, summarize(c, ".", .null, false));
+}
+
+test "a run that did not finish refreshes what it recorded and keeps every test it never reached" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
+    // The emulated job ran `first` before its time ran out; `reached` never started.
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-riscv64-debug-all.ndjson", .data = "{\"name\":\"first\",\"seconds\":30,\"status\":\"pass\",\"key\":\"linux-riscv64-debug\"}\n" });
+    const previous = (try std.json.parseFromSlice(src.Value, a,
+        \\{"keys":["linux-debug","linux-riscv64-debug"],"tests":{"first":[3,20],"reached":[4,40],"gone":[1,null]}}
+    , .{})).value;
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  "keys": ["linux-debug","linux-riscv64-debug"],
+        \\  "tests": {
+        \\    "first": [3.00, 30.00],
+        \\    "gone": [1.00, null],
+        \\    "reached": [4.00, 40.00]
+        \\  }
+        \\}
+        \\
+    , try render(a, try summarize(c, ".", previous, true)));
+    // A finished run's column is the run's alone: `reached`, unrecorded, is gone from it.
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  "keys": ["linux-debug","linux-riscv64-debug"],
+        \\  "tests": {
+        \\    "first": [3.00, 30.00],
+        \\    "gone": [1.00, null],
+        \\    "reached": [4.00, null]
+        \\  }
+        \\}
+        \\
+    , try render(a, try summarize(c, ".", previous, false)));
 }
 
 test "restored timings are discarded before a gate records this run" {
@@ -204,9 +247,9 @@ test "a test recorded on two shards of one column fails the refresh" {
     const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-1of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"windows-Debug\",\"shard\":\"1/2\"}\n" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-macos-Debug-2of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"status\":\"pass\",\"key\":\"macos-Debug\",\"shard\":\"2/2\"}\n" });
-    _ = try summarize(c, ".", .null);
+    _ = try summarize(c, ".", .null, false);
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-windows-Debug-2of2.ndjson", .data = "{\"name\":\"first\",\"seconds\":2,\"status\":\"pass\",\"key\":\"windows-Debug\",\"shard\":\"2/2\"}\n" });
-    try std.testing.expectError(error.TestOnTwoShards, summarize(c, ".", .null));
+    try std.testing.expectError(error.TestOnTwoShards, summarize(c, ".", .null, false));
 }
 
 test "a record that is not JSON, or has no seconds, fails the refresh naming its file and line" {
@@ -219,7 +262,7 @@ test "a record that is not JSON, or has no seconds, fails the refresh naming its
     const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir }, .held = &held };
     // Two downloads writing one file at once leave a record cut into by another.
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"name\":\"first\",\"seconds\":3,\"key\":\"linux-debug\"}\n\n{\"name\":\"sec{\"name\":\"first\",\"seconds\":3}\n" });
-    try std.testing.expectError(error.SyntaxError, summarize(c, ".", .null));
+    try std.testing.expectError(error.SyntaxError, summarize(c, ".", .null, false));
     try std.testing.expectError(error.SyntaxError, measure(c, ".", .null));
     const cut = "profile: ./tests-linux-debug-all.ndjson:3: not a JSON record (SyntaxError)\n";
     try std.testing.expectEqualStrings(cut ++ cut, held.written());
@@ -306,6 +349,6 @@ test "a refresh of the phase costs takes the longest record and keeps the phases
         \\
     , try renderCosts(a, costs));
     // The durations refresh passes the phase records over.
-    const durations = try summarize(c, ".", .null);
+    const durations = try summarize(c, ".", .null, false);
     try std.testing.expectEqual(@as(usize, 1), durations.records);
 }

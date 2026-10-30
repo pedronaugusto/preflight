@@ -485,10 +485,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+  # A run that went red is profiled too, its records folded as a run that did not
+  # finish: a job that ran out of time leaves the record that sizes the next plan's
+  # shards. Only a green run's fold is the proof artifact.
   profile:
     needs: [toolchain, gate, compile, execute]
-    if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped')
+    if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.gate.result == 'success'
     runs-on: ubuntu-latest
+    env:
+      FINISHED: ${{ (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -505,10 +510,10 @@ jobs:
       - name: Refresh the per-test durations the shards balance by
         run: |
           chmod +x .preflight-bin/linux/preflight
-          .preflight-bin/linux/preflight profile --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json --costs "${{ inputs.working-directory }}/ci/costs.json" --costs-output .preflight-timings/costs.json
+          .preflight-bin/linux/preflight profile ${{ env.FINISHED != 'true' && '--partial' || '' }} --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json --costs "${{ inputs.working-directory }}/ci/costs.json" --costs-output .preflight-timings/costs.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: preflight-${{ inputs.tier }}-${{ github.sha }}
+          name: ${{ env.FINISHED == 'true' && 'preflight' || 'records' }}-${{ inputs.tier }}-${{ github.sha }}
           path: |
             .preflight-timings/durations.json
             .preflight-timings/costs.json

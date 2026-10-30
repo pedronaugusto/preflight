@@ -90,7 +90,8 @@ pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedT
         .root_source_file = pkg.path("src/main.zig"),
         .target = target,
         .optimize = .safe,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis } },
+        // The planner weighs tests as the runner does, through its order module, which links std alone.
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = pkg.path("src/order.zig") }) } },
     });
 }
 

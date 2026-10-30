@@ -203,7 +203,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = optimize }) catch unreachable).module("glint"); // unreachable: dev returns before addCi if glint is not available
     const changelog = (package.dependencyLazy("bay", .{ .target = target, .optimize = optimize }) catch unreachable).module("changelog"); // unreachable: dev returns before addCi if bay is not available
     const aegis = package.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
-    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis } };
+    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = package.path("src/order.zig") }) } };
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = package.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },

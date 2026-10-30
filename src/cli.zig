@@ -175,9 +175,11 @@ const Profile = struct {
     output: ?[]const u8 = null,
     costs: []const u8 = "ci/costs.json",
     costs_output: ?[]const u8 = null,
+    partial: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The jobs' timing records summarized: the tests' durations and the phases' costs",
         .options = .{
+            .partial = .{ .help = "The records are of a run that did not finish: a test they do not record keeps its earlier durations" },
             .input = .{ .value_name = "DIR", .hint = .directory, .help = "The timing records the jobs left" },
             .durations = .{ .value_name = "FILE", .hint = .file, .help = "The durations so far" },
             .output = .{ .value_name = "FILE", .hint = .file, .help = "Where the durations go; over --durations by default" },

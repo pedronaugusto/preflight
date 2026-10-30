@@ -107,11 +107,15 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
 }
 
 /// The configuration at `path`, with what the last merge or release run measured
-/// (`costs.json` beside it) as `measured`.
+/// beside it: the phases' costs (`costs.json`) as `measured`, and each test's
+/// seconds (`durations.json`) as `durations`.
 pub fn configuration(c: src.Context, path: []const u8) !src.Value {
     var config = try c.options(path);
-    const costs = try std.Io.Dir.path.join(c.a, &.{ std.Io.Dir.path.dirname(path) orelse ".", "costs.json" });
-    if (config == .object and try c.exists(costs)) try config.object.put(c.a, "measured", try c.json(costs));
+    const directory = std.Io.Dir.path.dirname(path) orelse ".";
+    for ([_][]const u8{ "costs.json", "durations.json" }, [_][]const u8{ "measured", "durations" }) |file, name| {
+        const recorded = try std.Io.Dir.path.join(c.a, &.{ directory, file });
+        if (config == .object and try c.exists(recorded)) try config.object.put(c.a, name, try c.json(recorded));
+    }
     return config;
 }
 

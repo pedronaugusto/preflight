@@ -316,12 +316,13 @@ const Watchdog = struct {
         // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
         const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
         const phase = watchdog.phase.load(.acquire);
-        if (wait.job) {
+        switch (bound.ending(wait)) {
             // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
-            text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {d} ms into it; phase {t}; seed {d}\n", .{ name, wait.limit.toMilliseconds(), phase, testing.random_seed }) catch {};
-        } else {
+            .not_started => text.print("\npreflight: watchdog: {s} did not start: the job's time had run out before its turn; seed {d}\n", .{ name, testing.random_seed }) catch {},
             // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
-            text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch {};
+            .job_ran_out => text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {d} ms into it; phase {t}; seed {d}\n", .{ name, wait.limit.toMilliseconds(), phase, testing.random_seed }) catch {},
+            // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
+            .over_limit => text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch {},
         }
         var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         // glint-ignore: Z026 -- the process ends next either way; a lost line cannot be reported anywhere else

@@ -29,6 +29,22 @@ pub const Bound = struct {
     job: bool,
 };
 
+/// What an expired wait says of its test.
+pub const Ending = enum {
+    /// It outlasted its own limit.
+    over_limit,
+    /// It was running when the job's time ran out.
+    job_ran_out,
+    /// The job's time had run out before its turn: it never ran.
+    not_started,
+};
+
+/// The ending of a test whose wait `b` expired.
+pub fn ending(b: Bound) Ending {
+    if (!b.job) return .over_limit;
+    return if (b.limit.nanoseconds == 0) .not_started else .job_ran_out;
+}
+
 /// `job_deadline` is the job's, in seconds of `io`'s real clock, or null for a
 /// job with none.
 pub fn bound(io: std.Io, limit: std.Io.Duration, job_deadline: ?i64) Bound {

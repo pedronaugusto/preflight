@@ -68,6 +68,29 @@ test "durations weigh recorded tests, the mean weighs new ones, and no record sp
     try std.testing.expectError(error.InvalidDurations, weigh(a, "[]", &names, "k"));
 }
 
+test "a test its column never recorded weighs its Linux Debug time, scaled as the tests both recorded ran" {
+    const a = std.testing.allocator;
+    const names = [_][]const u8{ "ran", "killed", "new" };
+    // `ran` took ten times as long emulated; `killed` never finished there.
+    const json =
+        \\{"keys":["linux-debug","linux-riscv64-debug"],"tests":{"ran":[2,20],"killed":[30,null]}}
+    ;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const emulated = try order.estimate(a, try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), json, .{}), &names, "linux-riscv64-debug");
+    defer a.free(emulated.weights);
+    try std.testing.expectEqualSlices(f64, &.{ 20, 300, 160 }, emulated.weights);
+    try std.testing.expectEqual(@as(usize, 2), emulated.recorded);
+    // The reference column is its own reference: nothing scales it.
+    const linux = try weigh(a, json, &names, "linux-debug");
+    defer a.free(linux);
+    try std.testing.expectEqualSlices(f64, &.{ 2, 30, 16 }, linux);
+    // No test recorded in both: no ratio, so the mean of the column's own.
+    const apart = try weigh(a, "{\"keys\":[\"linux-debug\",\"x\"],\"tests\":{\"ran\":[null,5],\"killed\":[30,null]}}", &names, "x");
+    defer a.free(apart);
+    try std.testing.expectEqualSlices(f64, &.{ 5, 5, 5 }, apart);
+}
+
 test "unmeasured binaries split by count, and their single tests spread over the shards" {
     const a = std.testing.allocator;
     var firsts: [4]bool = @splat(false);

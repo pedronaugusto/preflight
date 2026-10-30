@@ -97,9 +97,8 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     return selected;
 }
 
-/// Each test's recorded seconds in `column`. A test without a record weighs
-/// the mean of those with one; with no records every test weighs the same,
-/// so the shards split by count.
+/// Each test's seconds in `column`, as `estimate` reads them from the text
+/// of `ci/durations.json`.
 pub fn weigh(gpa: std.mem.Allocator, json: []const u8, names: []const []const u8, column: []const u8) WeighError![]f64 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
@@ -107,41 +106,92 @@ pub fn weigh(gpa: std.mem.Allocator, json: []const u8, names: []const []const u8
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidDurations,
     };
-    if (value != .object) return error.InvalidDurations;
-    const index: ?usize = if (value.object.get("keys")) |keys| position: {
-        if (keys != .array) return error.InvalidDurations;
-        for (keys.array.items, 0..) |item, i| if (item == .string and std.mem.eql(u8, item.string, column)) break :position i;
-        break :position null;
-    } else null;
-    const tests = value.object.get("tests");
+    return (try estimate(gpa, value, names, column)).weights;
+}
+
+/// The column a test with no record in its own is weighed by: Linux Debug on
+/// x86_64, which every tier records.
+pub const reference_column = "linux-debug";
+
+/// What `estimate` makes of a column: each test's seconds, the caller's to
+/// free, and how many of them came from a record rather than the mean.
+pub const Estimate = struct { weights: []f64, recorded: usize };
+
+/// Each test's seconds in `column` of `durations`, a parsed `ci/durations.json`.
+/// A test that column has no record of weighs its `reference_column` record
+/// times the ratio of the two columns over the tests both recorded, so a
+/// suite measured on Linux is weighed under emulation before its first full
+/// run there. A test with neither record, or no ratio to scale by, weighs
+/// the mean of the others; with no records every test weighs the same, so
+/// the shards split by count.
+pub fn estimate(gpa: std.mem.Allocator, durations: std.json.Value, names: []const []const u8, column: []const u8) WeighError!Estimate {
+    if (durations != .object) return error.InvalidDurations;
+    const own = try position(durations, column);
+    const reference = if (std.mem.eql(u8, column, reference_column)) null else try position(durations, reference_column);
+    const tests = durations.object.get("tests");
     if (tests != null and tests.? != .object) return error.InvalidDurations;
     const weights = try gpa.alloc(f64, names.len);
     errdefer gpa.free(weights);
-    var known: f64 = 0;
-    var count: usize = 0;
-    for (names, weights) |name, *weight| {
+    const referenced = try gpa.alloc(f64, names.len);
+    defer gpa.free(referenced);
+    // The ratio of `column` to the reference, over the tests both recorded.
+    var both_own: f64 = 0;
+    var both_reference: f64 = 0;
+    for (names, weights, referenced) |name, *weight, *other| {
         weight.* = -1;
-        const column_index = index orelse continue;
+        other.* = -1;
         const row = (tests orelse continue).object.get(name) orelse continue;
-        if (row != .array or row.array.items.len <= column_index) return error.InvalidDurations;
-        const seconds: f64 = switch (row.array.items[column_index]) {
-            .null => continue,
-            .integer => |integer| @floatFromInt(integer),
-            .float => |float| float,
-            else => return error.InvalidDurations,
+        if (row != .array) return error.InvalidDurations;
+        if (own) |i| if (try cell(row, i)) |seconds| {
+            weight.* = @max(seconds, floor_seconds);
         };
-        if (!(seconds >= 0)) return error.InvalidDurations;
-        weight.* = @max(seconds, floor_seconds);
-        known += weight.*;
-        count += 1;
+        if (reference) |i| if (try cell(row, i)) |seconds| {
+            other.* = @max(seconds, floor_seconds);
+        };
+        if (weight.* >= 0 and other.* >= 0) {
+            both_own += weight.*;
+            both_reference += other.*;
+        }
     }
-    // `count` is solely the number of recorded tests and cannot exceed names.len;
-    // floating-point seconds stay one domain.
-    const mean = if (count == 0) 1 else known / @as(f64, @floatFromInt(count));
+    const ratio: ?f64 = if (both_reference > 0) both_own / both_reference else null;
+    var known: f64 = 0;
+    var recorded: usize = 0;
+    for (weights, referenced) |*weight, other| {
+        if (weight.* < 0 and other >= 0) if (ratio) |r| {
+            weight.* = other * r;
+        };
+        if (weight.* < 0) continue;
+        known += weight.*;
+        recorded += 1;
+    }
+    // `recorded` counts tests and cannot exceed names.len; floating-point
+    // seconds stay one domain.
+    const mean = if (recorded == 0) 1 else known / @as(f64, @floatFromInt(recorded));
     for (weights) |*weight| if (weight.* < 0) {
         weight.* = mean;
     };
-    return weights;
+    return .{ .weights = weights, .recorded = recorded };
+}
+
+/// Where `column` is among `durations`' keys, or null when it has none.
+fn position(durations: std.json.Value, column: []const u8) WeighError!?usize {
+    const keys = durations.object.get("keys") orelse return null;
+    if (keys != .array) return error.InvalidDurations;
+    for (keys.array.items, 0..) |item, i| if (item == .string and std.mem.eql(u8, item.string, column)) return i;
+    return null;
+}
+
+/// A row's seconds in column `index`, or null where it has none.
+fn cell(row: std.json.Value, index: usize) WeighError!?f64 {
+    if (row.array.items.len <= index) return error.InvalidDurations;
+    const seconds: f64 = switch (row.array.items[index]) {
+        .null => return null,
+        .integer => |integer| @floatFromInt(integer),
+        .float => |float| float,
+        else => return error.InvalidDurations,
+    };
+    if (!(seconds >= 0)) return error.InvalidDurations;
+    return seconds;
 }
 
 pub const AssignError = std.mem.Allocator.Error || error{ InvalidShard, InvalidWeights };

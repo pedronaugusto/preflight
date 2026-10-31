@@ -47,10 +47,9 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: [
             if (!std.mem.endsWith(u8, spelling, ".zig")) continue;
             const target = normalize(a, std.Io.Dir.path.dirname(paths.items[next]) orelse "", spelling) catch continue;
             const id = (try load(a, reader, target, &paths, &texts, &index)) orelse continue;
-            const from: glint.Project.FileId = .fromRaw(@intCast(next)); // safe: the loop stops past max_files files, which fit u32
             for (edges.items) |edge| {
-                if (edge.from.eql(from) and std.mem.eql(u8, edge.spelling, spelling)) break;
-            } else try edges.append(a, .{ .from = from, .spelling = spelling, .target = .fromRaw(id) });
+                if (edge.from == next and std.mem.eql(u8, edge.spelling, spelling)) break;
+            } else try edges.append(a, .{ .from = next, .spelling = spelling, .target = id });
         }
         if (paths.items.len > max_files) return error.SurfaceTooLarge;
     }
@@ -67,8 +66,8 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: [
         walk.lines = .empty;
         for (modules) |module| {
             const root = try normalize(a, "", module.root);
-            const id = index.get(root) orelse continue;
-            try walk.container(module.name, id, .root, 0);
+            const position = index.get(root) orelse continue;
+            try walk.container(module.name, try project.fileAt(position), .root, 0);
         }
     }
     const lines = walk.lines.items;
@@ -223,18 +222,18 @@ const Walk = struct {
     project: *const glint.Project,
     lines: std.ArrayList([]const u8),
     /// The containers being listed, so a container that reaches itself ends there.
-    open: std.ArrayList(struct { file: u32, node: Ast.Node.Index }),
+    open: std.ArrayList(struct { file: glint.Project.FileId, node: Ast.Node.Index }),
     /// The public path each container is listed under: the shortest, the first in order of
     /// those as short. A signature names a container by it.
     names: std.AutoHashMapUnmanaged(Place, []const u8) = .empty,
     /// Whether this walk learns `names`, its lines then not yet the surface's.
     naming: bool,
 
-    fn handle(w: *Walk, file: u32) glint.Project.Handle {
-        return w.project.handle(.fromRaw(file)) catch unreachable; // unreachable: file indexes come from the project
+    fn handle(w: *Walk, file: glint.Project.FileId) glint.Project.Handle {
+        return w.project.handle(file);
     }
 
-    fn tree(w: *Walk, file: u32) *const Ast {
+    fn tree(w: *Walk, file: glint.Project.FileId) *const Ast {
         return w.project.syntax(w.handle(file)) catch unreachable; // unreachable: file indexes come from the project
     }
 
@@ -243,15 +242,15 @@ const Walk = struct {
     }
 
     /// The scope glint's model gives the container at `node` (the file's own at the root).
-    fn scopeOf(w: *Walk, file: u32, node: Ast.Node.Index) ?u32 {
-        if (node == .root) return 0;
-        const scopes = w.project.scopes(w.handle(file)) catch unreachable; // unreachable: file indexes come from the project
-        for (scopes, 0..) |scope, s| if (scope.kind == .container and scope.node == node) return @intCast(s); // safe: glint's scope count fits u32
+    fn scopeOf(w: *Walk, file: glint.Project.FileId, node: Ast.Node.Index) ?glint.Scope.Id {
+        const scopes = w.project.scopes(w.handle(file)) catch unreachable; // unreachable: the handle is the project's own
+        if (node == .root) return scopes[0].id;
+        for (scopes) |scope| if (scope.kind == .container and scope.node == node) return scope.id;
         return null;
     }
 
     /// Lists the public declarations and the fields of the container at `node` in `file`.
-    fn container(w: *Walk, prefix: []const u8, file: u32, node: Ast.Node.Index, depth: usize) anyerror!void {
+    fn container(w: *Walk, prefix: []const u8, file: glint.Project.FileId, node: Ast.Node.Index, depth: usize) anyerror!void {
         if (depth > max_depth) return;
         for (w.open.items) |open| if (open.file == file and open.node == node) return;
         try w.open.append(w.a, .{ .file = file, .node = node });
@@ -324,7 +323,7 @@ const Walk = struct {
     /// The members of the type a function that returns one makes (`pub fn List(comptime T:
     /// type) type { return struct { ... }; }`), under `path`: what each of its `return`s
     /// gives, as far as the project shows it.
-    fn made(w: *Walk, path: []const u8, file: u32, proto_node: Ast.Node.Index, depth: usize) !void {
+    fn made(w: *Walk, path: []const u8, file: glint.Project.FileId, proto_node: Ast.Node.Index, depth: usize) !void {
         const t = w.tree(file);
         var buffer: [1]Ast.Node.Index = undefined;
         const proto = t.fullFnProto(&buffer, proto_node) orelse return;
@@ -347,7 +346,7 @@ const Walk = struct {
         }
     }
 
-    fn variable(w: *Walk, prefix: []const u8, file: u32, node: Ast.Node.Index, depth: usize) !void {
+    fn variable(w: *Walk, prefix: []const u8, file: glint.Project.FileId, node: Ast.Node.Index, depth: usize) !void {
         const t = w.tree(file);
         const decl = t.fullVarDecl(node) orelse return;
         const name = t.tokenSlice(decl.ast.mut_token + 1);
@@ -370,7 +369,7 @@ const Walk = struct {
     /// struct), else `= ` and the expression it comes to, followed through the names it is
     /// spelled with, so a renamed alias or a moved file is no change. A comptime choice
     /// between two (`if (linux) A else B`) lists the members of both.
-    fn describe(w: *Walk, path: []const u8, file: u32, node: Ast.Node.Index, depth: usize) anyerror![]const u8 {
+    fn describe(w: *Walk, path: []const u8, file: glint.Project.FileId, node: Ast.Node.Index, depth: usize) anyerror![]const u8 {
         if (depth > max_depth) return "= ...";
         switch (w.resolve(file, node, depth)) {
             .container => |place| {
@@ -399,7 +398,7 @@ const Walk = struct {
         return w.span(place.file, t, t.firstToken(place.node), last, &.{}, 0);
     }
 
-    const Place = struct { file: u32, node: Ast.Node.Index };
+    const Place = struct { file: glint.Project.FileId, node: Ast.Node.Index };
     const Resolved = union(enum) {
         /// A container the project holds: a container expression, or a file.
         container: Place,
@@ -409,7 +408,7 @@ const Walk = struct {
 
     /// Follows an expression through the names it is spelled with to a container, or to the
     /// expression they come to.
-    fn resolve(w: *Walk, file: u32, node: Ast.Node.Index, depth: usize) Resolved {
+    fn resolve(w: *Walk, file: glint.Project.FileId, node: Ast.Node.Index, depth: usize) Resolved {
         const here: Resolved = .{ .expression = .{ .file = file, .node = node } };
         if (depth > max_depth) return here;
         const t = w.tree(file);
@@ -417,15 +416,15 @@ const Walk = struct {
         switch (t.nodeTag(node)) {
             .builtin_call_two, .builtin_call_two_comma => {
                 const spelling = importSpelling(t, node) orelse return here;
-                const target = w.project.imported(.fromRaw(file), spelling) orelse return here;
-                return .{ .container = .{ .file = target.raw(), .node = .root } };
+                const target = w.project.imported(file, spelling) orelse return here;
+                return .{ .container = .{ .file = target, .node = .root } };
             },
             .identifier => {
                 const name = t.tokenSlice(t.nodeMainToken(node));
                 const scopes = w.project.scopes(w.handle(file)) catch return here;
-                var scope: ?u32 = w.scopeAt(file, t.nodeMainToken(node));
-                while (scope) |s| : (scope = scopes[s].parent) {
-                    const index = scopes[s].names.get(name) orelse continue;
+                var scope = w.scopeAt(file, t.nodeMainToken(node));
+                while (scope) |s| : (scope = scopes[@backingInt(s)].parent) {
+                    const index = scopes[@backingInt(s)].names.get(name) orelse continue;
                     return w.declared(file, index, depth) orelse here;
                 }
                 return here;
@@ -438,7 +437,7 @@ const Walk = struct {
                 };
                 const scope = w.scopeOf(outer.file, outer.node) orelse return here;
                 const scopes = w.project.scopes(w.handle(outer.file)) catch return here;
-                const index = scopes[scope].names.get(t.tokenSlice(member)) orelse return here;
+                const index = scopes[@backingInt(scope)].names.get(t.tokenSlice(member)) orelse return here;
                 return w.declared(outer.file, index, depth) orelse here;
             },
             else => return here,
@@ -446,9 +445,9 @@ const Walk = struct {
     }
 
     /// What the constant a name binds comes to; null for any other declaration.
-    fn declared(w: *Walk, file: u32, index: u32, depth: usize) ?Resolved {
+    fn declared(w: *Walk, file: glint.Project.FileId, index: glint.Declaration.Id, depth: usize) ?Resolved {
         const declarations = w.project.declarations(w.handle(file)) catch return null;
-        const declaration = declarations[index];
+        const declaration = declarations[@backingInt(index)];
         if (declaration.kind != .variable) return null;
         const t = w.tree(file);
         const decl = t.fullVarDecl(declaration.node) orelse return null;
@@ -457,18 +456,18 @@ const Walk = struct {
         return w.resolve(file, init, depth + 1);
     }
 
-    fn scopeAt(w: *Walk, file: u32, token: Ast.TokenIndex) u32 {
-        const scopes = w.project.scopes(w.handle(file)) catch return 0;
-        var best: u32 = 0;
-        for (scopes, 0..) |scope, s| {
-            if (scope.first <= token and token <= scope.last and scope.first >= scopes[best].first and scope.last <= scopes[best].last) best = @intCast(s); // safe: glint's scope count fits u32
+    fn scopeAt(w: *Walk, file: glint.Project.FileId, token: Ast.TokenIndex) ?glint.Scope.Id {
+        const scopes = w.project.scopes(w.handle(file)) catch return null;
+        var best = &scopes[0];
+        for (scopes) |*scope| {
+            if (scope.first <= token and token <= scope.last and scope.first >= best.first and scope.last <= best.last) best = scope;
         }
-        return best;
+        return best.id;
     }
 
     /// The tokens of `node`, one space apart, doc comments left out, each name as `canonical`
     /// gives it.
-    fn tokens(w: *Walk, file: u32, t: *const Ast, node: Ast.Node.Index) ![]const u8 {
+    fn tokens(w: *Walk, file: glint.Project.FileId, t: *const Ast, node: Ast.Node.Index) ![]const u8 {
         return w.span(file, t, t.firstToken(node), t.lastToken(node), &.{}, 0);
     }
 
@@ -476,7 +475,7 @@ const Walk = struct {
     /// left out. Once the walk knows `names`, a name a declaration binds is written as what it
     /// comes to (`canonical`), so respelling a type through an alias changes no line, and
     /// changing what a private alias names does.
-    fn span(w: *Walk, file: u32, t: *const Ast, first: Ast.TokenIndex, last: Ast.TokenIndex, skipped: []const Ast.TokenIndex, depth: usize) anyerror![]const u8 {
+    fn span(w: *Walk, file: glint.Project.FileId, t: *const Ast, first: Ast.TokenIndex, last: Ast.TokenIndex, skipped: []const Ast.TokenIndex, depth: usize) anyerror![]const u8 {
         var out: std.Io.Writer.Allocating = .init(w.a);
         var token = first;
         while (token <= last) : (token += 1) {
@@ -496,7 +495,7 @@ const Walk = struct {
     /// The name `first..last` of `file` spells (`a`, `a.b.C`, `@This()`), as a signature
     /// means it: a container by the public path it is listed under, a constant by the
     /// expression it comes to, and anything the package does not declare as it is spelled.
-    fn canonical(w: *Walk, file: u32, t: *const Ast, first: Ast.TokenIndex, last: Ast.TokenIndex, depth: usize) ![]const u8 {
+    fn canonical(w: *Walk, file: glint.Project.FileId, t: *const Ast, first: Ast.TokenIndex, last: Ast.TokenIndex, depth: usize) ![]const u8 {
         const spelled = try w.span(file, t, first, last, &.{}, max_depth + 1);
         if (depth > max_depth) return spelled;
         if (t.tokenTag(first) == .builtin) {
@@ -514,18 +513,18 @@ const Walk = struct {
     }
 
     /// The container `@This()` at `token` of `file` names: the innermost one around it.
-    fn enclosing(w: *Walk, file: u32, token: Ast.TokenIndex) ?Place {
+    fn enclosing(w: *Walk, file: glint.Project.FileId, token: Ast.TokenIndex) ?Place {
         const scopes = w.project.scopes(w.handle(file)) catch return null;
-        var scope: ?u32 = w.scopeAt(file, token);
-        while (scope) |s| : (scope = scopes[s].parent) {
-            if (s == 0) return .{ .file = file, .node = .root };
-            if (scopes[s].kind == .container) return .{ .file = file, .node = scopes[s].node };
+        var scope = w.scopeAt(file, token);
+        while (scope) |s| : (scope = scopes[@backingInt(s)].parent) {
+            if (s == scopes[0].id) return .{ .file = file, .node = .root };
+            if (scopes[@backingInt(s)].kind == .container) return .{ .file = file, .node = scopes[@backingInt(s)].node };
         }
         return null;
     }
 
     /// `fn (types) return`: the prototype without its name and the names of its parameters.
-    fn signature(w: *Walk, file: u32, t: *const Ast, proto: Ast.full.FnProto) ![]const u8 {
+    fn signature(w: *Walk, file: glint.Project.FileId, t: *const Ast, proto: Ast.full.FnProto) ![]const u8 {
         var skipped: std.ArrayList(Ast.TokenIndex) = .empty;
         if (proto.name_token) |token| try skipped.append(w.a, token);
         var it = proto.iterate(t);

@@ -6,14 +6,14 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=soundness-0.7.6#487bcc0a9664f5bdd9a036ae5a593f05500c7be6",
-            .hash = "glint-0.7.5-3jcpoYpLGQB5x517oTRk1gU2uy-YLsv83MKBkG54t5w7",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=strict-1029b#dc82fc67fe0d3bac4f9eda30264297d84f77fb9c",
+            .hash = "glint-0.7.5-3jcpoY5CJwCq9yIqIUvmt8g3wkH2nr4awN1M_R4-LfTZ",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=review-0.3.5#be2d76019267f4993a019ed8198fed15f9647a99",
-            .hash = "gantry-0.3.4-1iNrkdXWDADAw3YnyOGOsyfL0o04HkOi7RDPyESdMVpO",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=review-0.3.5#75e28caa310ea8aa96c6e908c014a7a324c799a7",
+            .hash = "gantry-0.3.4-1iNrkV7aDAB3X4_3Fy9cdXpXcXrfisMmxqt3XEK5uBWW",
             .lazy = true,
         },
 

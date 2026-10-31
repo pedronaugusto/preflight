@@ -14,23 +14,25 @@ pub const project_rules = glint.AegisPack.rules;
 /// a fraction of it; a run that spends it is incomplete, never green.
 pub const fact_budget: usize = 4_000_000;
 
-/// The family's one door for durability: only airlock makes the raw sync calls, because only
-/// airlock says what a sync reached (its levels, the refusals std turns into panics). Every
-/// package's production code is held to it by what a reference resolves to (P006, gated):
-/// std's raw sync declarations and the symbols every `extern` declaration of them binds. The
-/// entries name their owners, which carry no suppression for them: airlock, the door itself,
-/// and reactor, whose `Io` backends implement `fileSync`. A sync through an `Io`
-/// (`std.Io.File.sync`, an atomic file's commit) is the designed path, not a raw call, and is
-/// not governed. Any other site that must make the call says why with
+/// The family's one door for durability: only airlock makes a file durable, because only
+/// airlock says what a sync reached (its levels, the refusals std turns into panics). Under the
+/// family's policy every package's production code is held to it by what a reference resolves
+/// to (P006, gated): std's raw sync declarations and the symbols every `extern` declaration of
+/// them binds, and std's `Io` publish and sync, an atomic file's creation, its link or replace
+/// and a file's `sync`, which say nothing of what reached the disk. The entries name their
+/// owners, which carry no suppression for them: airlock, the door itself, and reactor, whose
+/// `Io` backends implement `fileSync`. Any other site that must make the call says why with
 /// `// glint-ignore: P006 -- <reason>`; a governed name that does not resolve is undecided, and
-/// an undecided site does not pass a gate.
+/// an undecided site does not pass a gate. A project outside the family is held to neither
+/// door: airlock and aegis are the family's.
 pub const durability = blk: {
     const reason = "durability belongs to airlock: only it says what a sync reached";
     const replacement = "airlock.syncFile, airlock.syncDir or an airlock commit";
     const owners: []const []const u8 = &.{ "airlock", "reactor" };
     const std_paths = [_][]const u8{
-        "posix.syncfs",       "posix.fdatasync",        "os.linux.syncfs", "os.linux.fsync",
-        "os.linux.fdatasync", "os.linux.IoUring.fsync", "c.F.FULLFSYNC",   "c.F.BARRIERFSYNC",
+        "posix.syncfs",            "posix.fdatasync",        "os.linux.syncfs",     "os.linux.fsync",
+        "os.linux.fdatasync",      "os.linux.IoUring.fsync", "c.F.FULLFSYNC",       "c.F.BARRIERFSYNC",
+        "Io.Dir.createFileAtomic", "Io.File.sync",           "Io.File.Atomic.link", "Io.File.Atomic.replace",
     };
     // A whole-system `sync` is no file's durability, and is not governed.
     const symbols = [_][]const u8{ "fsync", "fdatasync", "syncfs", "FlushFileBuffers", "NtFlushBuffersFile", "NtFlushBuffersFileEx" };
@@ -179,6 +181,9 @@ pub const Policy = struct {
     base: glint.Config,
     /// Rules whose findings fail the run although glint reports them.
     findings: []const glint.Rule,
+    /// When the aegis pack runs: where the program imports aegis, as glint finds it by aegis's
+    /// identity, or always, under the family's policy.
+    aegis: enum { imported, forced },
     /// Undecided sites a finding rule may leave, by rule; a rule not named may leave none.
     ceilings: []const Ceiling = &.{},
     /// How many findings the package's aegis escapes cover, by reason and rule
@@ -233,6 +238,19 @@ pub const Policy = struct {
     pub fn fails(policy: Policy, rule: glint.Rule) bool {
         for (policy.findings) |named| if (named == rule) return true;
         return false;
+    }
+
+    /// The policy with the aegis pack off, for a program that imports no aegis: none of its
+    /// rules runs, fails or holds a ceiling or an escape count.
+    pub fn withoutPack(policy: Policy, a: std.mem.Allocator) std.mem.Allocator.Error!Policy {
+        var out = policy;
+        for (project_rules) |rule| out.base = try withLevel(a, out.base, rule.definition.id, .off);
+        var findings: std.ArrayList(glint.Rule) = .empty;
+        for (policy.findings) |rule| if (!inPack(rule)) try findings.append(a, rule);
+        out.findings = findings.items;
+        out.ceilings = &.{};
+        out.escapes = &.{};
+        return out;
     }
 
     /// glint's configuration for one file: the base, its function ceilings
@@ -386,9 +404,9 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
         for (defaults) |entry| named = named or entry.rule == amendment.rule;
         if (!named) try all.append(a, amendment);
     }
-    // The family's durability door and its whole-file read hold in every repository, before what
-    // it disallows itself.
-    base.disallowed = try std.mem.concat(a, glint.Config.Disallowed, &.{ &durability, &whole_reads, base.disallowed });
+    // The family's durability door and its whole-file read hold under the family's policy,
+    // before what the repository disallows itself.
+    if (policy_kind == .family) base.disallowed = try std.mem.concat(a, glint.Config.Disallowed, &.{ &durability, &whole_reads, base.disallowed });
     base.selections = try all.toOwnedSlice(a);
     base.validate() catch {
         c.fail("glint: the `glint` setting is not valid: a rule is listed twice, or a disallowed declaration lacks its reason or replacement, or names a symbol with dots", .{});
@@ -399,6 +417,7 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     var policy: Policy = .{
         .base = base,
         .findings = findings.items,
+        .aegis = if (policy_kind == .family) .forced else .imported,
         .function_limit = 120,
         .sources = try src.roots(a, config),
         .limits = &.{},
@@ -705,9 +724,15 @@ test "the default policy gates correctness, weighs the danger rules as findings,
     for ([_]glint.Rule{ .P003, .Z011, .P005, .Z012, .Z016, .Z001, .Z006, .Z032, .D001 }) |rule| try std.testing.expectEqual(.report, policy.base.level(rule));
     try std.testing.expectEqual(.off, policy.base.level(.Z024));
     try std.testing.expect(policy.base.metrics);
-    // The durability door and the whole-file read gate in every repository.
+    // The durability door and the whole-file read are the family's, and gate under its policy
+    // alone; so does the aegis pack whatever the program imports, which the default runs
+    // where the program imports aegis.
     try std.testing.expectEqual(.gate, policy.base.level(.P006));
-    try std.testing.expectEqual(durability.len + whole_reads.len, policy.base.disallowed.len);
+    try std.testing.expectEqual(@as(usize, 0), policy.base.disallowed.len);
+    try std.testing.expectEqual(.imported, policy.aegis);
+    const family_policy = (try parse(&c, try parsed(c.a, "{\"policy\":\"family\"}"), test_shipped)).?;
+    try std.testing.expectEqual(durability.len + whole_reads.len, family_policy.base.disallowed.len);
+    try std.testing.expectEqual(.forced, family_policy.aegis);
     try std.testing.expect(policy.fails(.Z011) and policy.fails(.P005));
     try std.testing.expect(!policy.fails(.Z012) and !policy.fails(.Z001));
     // Every pack rule runs; all but those that read a flow fact fail the run on a finding.

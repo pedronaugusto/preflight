@@ -55,6 +55,13 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     const paths = (try assembly.select(c, chosen)) orelse return;
     var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
     defer assembled.deinit();
+    // The aegis pack's rules hold a program to aegis's types: a program that imports no aegis
+    // has none of them to use, unless the family's policy holds it to them.
+    if (chosen.aegis == .imported and try glint.AegisPack.importer(inputs.gpa, &assembled.project) == null) {
+        const stated = chosen.ceilings.len + chosen.escapes.len;
+        chosen = try chosen.withoutPack(c.a);
+        c.report("glint: aegis pack: off, no file imports aegis{s}\n", .{if (stated != 0) ": `glint.unresolved` and `glint.escapes` are not read" else ""});
+    }
     var files: std.ArrayList(glint.FileConfig) = .empty;
     for (assembled.selected, 0..) |file, index| {
         try files.append(c.a, .{ .file = try assembled.project.fileAt(index), .config = try chosen.forFile(c.a, file.path) });
@@ -507,10 +514,10 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     const f = try Fixture.init();
     defer f.deinit();
     try f.file("src/root.zig", "pub fn answer() u32 {\n    return 42;\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}));
     // A pointer conversion is a danger site: it carries the aegis escape.
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger(A019): the same type\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":1}}}}", .{}));
     // A discarded error fails unless its reason is written at the site; under the family's
@@ -524,6 +531,20 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
 }
 
+test "the aegis pack holds a program that imports aegis, or any under the family's policy: without either, a danger site is no finding" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    var report: std.Io.Writer.Allocating = .init(f.c.a);
+    f.c.held = &report;
+    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    try std.testing.expect(std.mem.find(u8, report.written(), "glint: aegis pack: off, no file imports aegis\n") != null);
+    // A count the repository states for the pack is not read while the pack is off, and says so.
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":1}}}}", .{}));
+    try std.testing.expect(std.mem.find(u8, report.written(), "`glint.unresolved` and `glint.escapes` are not read") != null);
+}
+
 test "a clean run leaves its lists empty, not as the run before it wrote them" {
     const f = try Fixture.init();
     defer f.deinit();
@@ -533,10 +554,10 @@ test "a clean run leaves its lists empty, not as the run before it wrote them" {
     try dirty.writer.writeAll("pub fn same(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger: the same type\n}\n");
     try dirty.writer.writeAll("pub fn plain() u32 {\n    return 1; // aegis: no-danger: nothing here\n}\n");
     try f.file("src/root.zig", dirty.written());
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
     for ([_][]const u8{ findings_path, sites_path, escapes_path }) |path| try std.testing.expect((try f.c.read(path)).len != 0);
     try f.file("src/root.zig", "pub fn answer() u32 {\n    return 42;\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}));
     for ([_][]const u8{ findings_path, sites_path, escapes_path }) |path| try std.testing.expectEqualStrings("", try f.c.read(path));
 }
 
@@ -563,17 +584,17 @@ test "a danger site fails in production unless it carries the aegis escape; test
     const f = try Fixture.init();
     defer f.deinit();
     const cast = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\n";
-    const paths = "{\"glint_paths\":[\"src\"]}";
+    const paths = "{\"policy\":\"family\",\"glint_paths\":[\"src\"]}";
     try f.file("src/root.zig", cast);
     try std.testing.expect(try f.run(paths, .{}) != 0);
     try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): p points at a u32 the kernel wrote\n}\n");
     // The package holds the findings its escapes cover, by reason and rule: one more than
     // `glint.escapes` holds fails, and one fewer fails until the count comes down.
-    const held = "{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2}}}}";
+    const held = "{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2}}}}";
     try std.testing.expect(try f.run(paths, .{}) != 0);
     try std.testing.expectEqual(@as(usize, 0), try f.run(held, .{}));
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":3}}}}", .{}) != 0);
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":2}}}}", .{}) != 0);
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":3}}}}", .{}) != 0);
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":2}}}}", .{}) != 0);
     // An escape widened to a rule it did not cover is a new pair, however many escapes there
     // are: here it would hide an input's conversion (review-1029 M3), which a landing reports
     // and a release fails.
@@ -584,7 +605,7 @@ test "a danger site fails in production unless it carries the aegis escape; test
     try std.testing.expectEqual(@as(usize, 0), try f.run(held, with_std));
     try f.file("src/root.zig", read ++ "boundary(A019, A010): p points at a u32 the kernel wrote\n}\n");
     try std.testing.expect(try f.run(held, with_std) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2,\"A010\":1}}}}", with_std));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2,\"A010\":1}}}}", with_std));
     // An escape in the older form names no rule, so it covers nothing it is held to: counted
     // apart in the report and in the file, never against `glint.escapes` (review-1029b m-b).
     var report: std.Io.Writer.Allocating = .init(f.c.a);
@@ -612,7 +633,7 @@ test "a danger site fails in production unless it carries the aegis escape; test
     // while it is the copy the entry's SHA-256 names, and an undecided site is still undecided.
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(cast, &digest, .{});
-    const entry = "{{\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}";
+    const entry = "{{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}";
     var buffer: [512]u8 = undefined;
     var vendored: std.Io.Writer = .fixed(&buffer);
     try vendored.print(entry, .{&digest});
@@ -641,7 +662,7 @@ test "the list of every finding names a vendored file's carried sites as carried
     try f.file("src/root.zig", own.written());
     var buffer: [512]u8 = undefined;
     var config: std.Io.Writer = .fixed(&buffer);
-    try config.print("{{\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}", .{&digest});
+    try config.print("{{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}", .{&digest});
     try std.testing.expect(try f.run(config.buffered(), .{}) != 0);
     const list = try f.tmp.dir.readFileAlloc(f.c.io, findings_path, f.c.a, .limited(1 << 20));
     var lines = std.mem.splitScalar(u8, list, '\n');
@@ -665,10 +686,10 @@ test "a finding rule's undecided sites count against the repository's ceiling, w
     defer f.deinit();
     // `@setRuntimeSafety` with a computed argument: A019 cannot decide it.
     try f.file("src/root.zig", "pub fn run(comptime on: bool) void {\n    @setRuntimeSafety(on);\n}\n");
-    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":1}}}", .{}));
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":1}}}", .{}));
     // A ceiling above the count passes and asks to come down.
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":3}}}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":3}}}", .{}));
 }
 
 test "function length: the limit, a per-path ceiling and a reasoned exception that cannot grow or go stale" {
@@ -692,11 +713,11 @@ test "function length: the limit, a per-path ceiling and a reasoned exception th
     try std.testing.expect(try f.run("{" ++ paths ++ ",\"function_exceptions\":{\"src/root.zig:gone\":{\"lines\":200,\"reason\":\"a table\"}}}", .{}) != 0);
 }
 
-test "a debug print and a deprecated call are findings the standard library's declarations decide" {
+test "a debug print, a deprecated call and, under the family's policy, a file's sync are findings the standard library's declarations decide" {
     const f = try Fixture.init();
     defer f.deinit();
-    // The standard library of the Zig that builds these tests: the durability door and the
-    // danger rules name its declarations, as they do in every repository.
+    // The standard library of the Zig that builds these tests: the debug print, the deprecated
+    // calls and, under the family's policy, the durability door name its declarations.
     const build: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
     const paths = "{\"glint_paths\":[\"src\"]}";
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{});\n}\n");
@@ -707,6 +728,11 @@ test "a debug print and a deprecated call are findings the standard library's de
     try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOfScalar(u8, text, 'x');\n}\n");
     try std.testing.expect(try f.run(paths, build) != 0);
+    // A file's own sync says nothing of what reached the disk: under the family's policy it is
+    // airlock's, and a stranger's project is held to no such door.
+    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn flush(file: std.Io.File, io: std.Io) !void {\n    try file.sync(io);\n}\n");
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", build) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
     try f.file("src/root_test.zig", "const std = @import(\"std\");\ntest {\n    std.debug.print(\"in a test\", .{});\n}\n");
     try f.file("src/root.zig", "pub const x = 1;\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));

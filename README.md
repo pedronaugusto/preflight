@@ -259,8 +259,9 @@ shipping.
 relative file is itself. A named module is what the configured build binds the
 name to in each module that compiles the file; two modules that bind one name
 differently leave it unresolved, and so does a name the build does not bind.
-That is how glint recognizes aegis in a package: by the module the build gives
-it, at any revision that keeps its public names.
+Each file is the package of the nearest `build.zig.zon` above it, by name and
+fingerprint. That is how glint recognizes aegis in a program: by its identity,
+under whatever name the build gives it, at any revision that keeps its public names.
 
 **Policy.** preflight's default, which a repository amends:
 
@@ -268,12 +269,12 @@ it, at any revision that keeps its public names.
 |---|---|
 | Z003 syntax, Z013 dead import, Z026 discarded error | gate |
 | Z011 deprecated call, P005 debug print | finding: any finding fails, and a call glint cannot resolve is counted, not a verdict |
-| the aegis pack: A001-A005 (aegis's types used as their contracts say) and the danger rules A007-A019 | finding, with a ceiling on undecided sites |
+| the aegis pack: A001-A005 (aegis's types used as their contracts say) and the danger rules A007-A019 | finding, with a ceiling on undecided sites, where the program imports aegis; under the family's policy, always |
 | A006, A009, A010, A012, A013, A018, A020, A021: the rules that read the input or peer fact, and lock order | report on a landing; the release tier (`-Dci-release`, `lint --release`) fails on them as findings |
 | P003 function length, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
 | Z024 line length | off |
 | D001 dead declarations | report |
-| P006 disallowed declarations | gate: the durability door (airlock's) in every repository, and what `disallowed` adds |
+| P006 disallowed declarations | gate: what `disallowed` adds, and under the family's policy the durability door (airlock's: std's raw syncs, its `Io` atomic files and `File.sync`) and the whole-file read (aegis's) |
 
 `gate` is glint's: a finding fails the run, and so does any site the rule could
 not decide. A *finding* rule fails on what glint finds and does not fail on the

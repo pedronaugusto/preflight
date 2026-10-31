@@ -230,7 +230,7 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         for ([_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run }, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
             if (tier == .fast and suffix.len != 0) continue;
-            try matrices.writer.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try std.json.Stringify.valueAlloc(a, .{ .include = group }, .{}) });
+            try matrices.writer.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try matrix.include(a, group) });
         }
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
@@ -338,7 +338,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         for ([_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run }, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
             if (tier == .fast and suffix.len != 0) continue;
-            const block = try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try std.json.Stringify.valueAlloc(a, .{ .include = group }, .{}) });
+            const block = try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try matrix.include(a, group) });
             try std.testing.expect(std.mem.find(u8, second, block) != null);
         }
     }

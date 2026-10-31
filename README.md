@@ -464,7 +464,9 @@ The gate has four tiers, each holding everything the one before it checks:
   status check of a pull request.
 - **release**: the full matrix, nightly and before a cut: every mode on every host
   (Debug, ReleaseSafe and ReleaseFast, ARM Linux and Windows included), the Debug suite on a
-  riscv64 Linux kernel under QEMU, ReleaseSmall compiled on each system, every cross
+  riscv64 Linux kernel under QEMU, the Debug suite of each configured target a runner
+  executes on an ABI not its own (msvc on the Windows runners, musl on the Linux ones),
+  ReleaseSmall compiled on each system, every cross
   target with the ReleaseFast benchmarks, the links of every macOS and Windows target
   (a macOS one on a Mac only when its build links a framework), TSan and the hardened
   checks where configured, and the Debug suite on Linux with Zig master.

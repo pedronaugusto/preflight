@@ -218,13 +218,13 @@ fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     try sdkTargets(c, &config, ".");
     const jobs = try checks.matrix.plan(a, config, args.tier);
     const tiers = try checks.matrix.split(a, config, jobs, args.tier);
-    const value = try std.json.Stringify.valueAlloc(a, .{ .include = tiers.native }, .{});
+    const value = try checks.matrix.include(a, tiers.native);
     const output = args.output orelse init.environ_map.get("GITHUB_OUTPUT");
     if (output) |path| {
         try append(c.*, path, try a.print("matrix={s}\n", .{value}));
         try append(c.*, path, try a.print("compile_matrix={s}\nrun_matrix={s}\nportable={s}\n", .{
-            try std.json.Stringify.valueAlloc(a, .{ .include = tiers.compile }, .{}),
-            try std.json.Stringify.valueAlloc(a, .{ .include = tiers.run }, .{}),
+            try checks.matrix.include(a, tiers.compile),
+            try checks.matrix.include(a, tiers.run),
             if (tiers.compile.len > 0) "true" else "false",
         }));
     } else try stdout(c.*, value);

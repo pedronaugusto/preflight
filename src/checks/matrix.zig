@@ -61,6 +61,9 @@ pub const Job = struct {
     /// A job of the package's own that names no runner: the package's on any machine, which
     /// the hosted gate runs on Linux and a gate at hand runs wherever it is.
     any_host: bool = false,
+    /// The configured target a test job builds and runs on its runner, when it is not the
+    /// runner's own (`ownTargetJobs`); null for the runner's own.
+    target: ?[]const u8 = null,
 };
 
 /// A target no hosted runner is, whose tests run on its own kernel under QEMU.
@@ -95,12 +98,21 @@ fn shardName(a: std.mem.Allocator, index: usize, count: usize) ![]const u8 {
     return if (count > 1) a.print("{d}/{d}", .{ index + 1, count }) else "";
 }
 
+/// A field left at null is no field, so a job that sets none is written, and keyed, as it
+/// was before the field was.
+const job_json: std.json.Stringify.Options = .{ .emit_null_optional_fields = false };
+
+/// `jobs` as a hosted caller's matrix.
+pub fn include(a: std.mem.Allocator, jobs: []const Job) ![]const u8 {
+    return std.json.Stringify.valueAlloc(a, .{ .include = jobs }, job_json);
+}
+
 /// A job's cache scope: everything that changes what it builds and runs.
 fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
     var plain = job;
     plain.cache_key = "";
     plain.artifact = "";
-    const text = try std.json.Stringify.valueAlloc(a, plain, .{});
+    const text = try std.json.Stringify.valueAlloc(a, plain, job_json);
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(text, &hash, .{});
     return a.print("{x}", .{hash[0..8]});
@@ -280,6 +292,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     for (hosts ++ arm_hosts, host_names ++ arm_host_names) |host, host_name| try hostJobs(a, config, &jobs, host, host_name, &.{ .debug, .safe, .fast });
     try emulatedJobs(a, config, &jobs);
     try freebsdJobs(a, config, &jobs);
+    try ownTargetJobs(a, config, &jobs);
     try jobs.append(a, try lintJob(a, config, .release));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
@@ -369,10 +382,54 @@ fn freebsdJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
     }
 }
 
+/// The hosted runners by the system and architecture each one is, and its `shards` key.
+const runners = [_]struct { os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch, host: []const u8, name: []const u8 }{
+    .{ .os = .linux, .arch = .x86_64, .host = hosts[0], .name = host_names[0] },
+    .{ .os = .macos, .arch = .aarch64, .host = hosts[1], .name = host_names[1] },
+    .{ .os = .windows, .arch = .x86_64, .host = hosts[2], .name = host_names[2] },
+    .{ .os = .linux, .arch = .aarch64, .host = arm_hosts[0], .name = arm_host_names[0] },
+    .{ .os = .windows, .arch = .aarch64, .host = arm_hosts[1], .name = arm_host_names[1] },
+};
+
+/// The Debug suite of each configured target a hosted runner executes as it is, but whose
+/// ABI is not the runner's own: msvc on the Windows runners, musl on the Linux ones. Built
+/// and run there (`-Dtarget`), in the runner's shards, so a target a package ships on is a
+/// suite's evidence, not only a link's. The runner's own ABI (gnu, and macOS's one) is its
+/// test jobs'. A target's durations share its runner's column: its system, architecture and
+/// mode are the runner's, and a column keeps each test's longest time.
+fn ownTargetJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
+    for (try src.items(src.get(config, "targets"))) |target| {
+        const name = try targetName(target);
+        const query = std.Target.Query.parse(.{ .arch_os_abi = name }) catch return error.InvalidCrossTarget;
+        const abi = query.abi orelse continue;
+        const runner = for (runners) |runner| {
+            if (query.os_tag == runner.os and query.cpu_arch == runner.arch) break runner;
+        } else continue;
+        if (runner.os == .macos or abi == .gnu) continue;
+        var options: std.Io.Writer.Allocating = .init(a);
+        defer options.deinit();
+        for (try crossOptions(a, config, target)) |arg| try options.writer.print(" {s}", .{arg});
+        const count = try shardCount(src.get(src.get(config, "shards"), runner.name));
+        for (0..count) |i| {
+            const shard = try shardName(a, i, count);
+            try jobs.append(a, .{
+                .os = runner.host,
+                .name = try a.print("test ({s} on {s}, Debug){s}{s}", .{ name, runner.host, if (count > 1) " shard " else "", shard }),
+                .args = try a.print("-Doptimize=debug -Dci-timings=true{s}", .{options.written()}),
+                .shard = shard,
+                .setup = true,
+                .target = name,
+                .job_timeout = try minutes(config, if (windowsHost(runner.host)) "windows_job_timeout" else "test_job_timeout"),
+            });
+        }
+    }
+}
+
 pub const Tiers = struct { native: []Job, compile: []Job, run: []Job };
 
 /// Portable hosts link once on their SDK runner per host and mode; every shard of
-/// that host and mode runs the same binaries.
+/// that host and mode runs the same binaries. A job of a configured target builds
+/// where it runs.
 pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: Tier) !Tiers {
     var native: std.ArrayList(Job) = .empty;
     var compile: std.ArrayList(Job) = .empty;
@@ -384,7 +441,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         for (try src.items(portable_hosts)) |host| if (std.mem.eql(u8, try src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (tier == .fast or job.declared or job.machine != .none or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
+        if (tier == .fast or job.declared or job.machine != .none or job.target != null or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
             try native.append(a, job);
             continue;
         }
@@ -882,6 +939,45 @@ test "the FreeBSD job on its kernel splits into its shards, and runs where KVM i
     // Only the release tier runs it.
     for ([_]Tier{ .fast, .merge }) |tier| for (try plan(a, config, tier)) |job| try std.testing.expect(job.machine == .none);
     try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":0}}", .{})).value, .release));
+}
+
+test "a configured target a runner executes, on an ABI not its own, runs its Debug suite there" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"compile_once":true,"shards":{"windows":2},"build_args":["-Dfeature=true"],"targets":[
+        \\"x86_64-windows-msvc",{"target":"aarch64-windows-msvc","args":["-Dsdk=true"]},"x86_64-linux-musl",
+        \\"x86_64-windows-gnu","x86_64-windows",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"},"aarch64-macos","x86_64-macos","riscv64-linux-musl"]}
+    , .{})).value;
+    const jobs = try plan(a, config, .release);
+    var names: std.ArrayList([]const u8) = .empty;
+    for (jobs) |job| if (job.target) |target| {
+        try names.append(a, job.name);
+        try std.testing.expectEqualStrings("ci", job.step);
+        try std.testing.expect(job.setup);
+        try std.testing.expect(std.mem.find(u8, job.args, try a.print("-Dtarget={s}", .{target})) != null);
+        try std.testing.expect(std.mem.startsWith(u8, job.args, "-Doptimize=debug -Dci-timings=true -Dci-lint=false"));
+        try std.testing.expect(std.mem.find(u8, job.args, "-Dfeature=true") != null);
+    };
+    try std.testing.expectEqual(@as(usize, 4), names.items.len);
+    try std.testing.expectEqualStrings("test (x86_64-windows-msvc on windows-latest, Debug) shard 1/2", names.items[0]);
+    try std.testing.expectEqualStrings("test (x86_64-windows-msvc on windows-latest, Debug) shard 2/2", names.items[1]);
+    try std.testing.expectEqualStrings("test (aarch64-windows-msvc on windows-11-arm, Debug)", names.items[2]);
+    try std.testing.expectEqualStrings("test (x86_64-linux-musl on ubuntu-latest, Debug)", names.items[3]);
+    for (jobs) |job| if (std.mem.eql(u8, job.name, names.items[2])) {
+        try std.testing.expectEqualStrings(arm_hosts[1], job.os);
+        try std.testing.expect(std.mem.endsWith(u8, job.args, "-Dsdk=true"));
+    };
+    // Each builds where it runs, outside the compile-once split.
+    const tiers = try split(a, config, jobs, .release);
+    for ([_][]Job{ tiers.compile, tiers.run }) |part| for (part) |job| try std.testing.expect(job.target == null);
+    var native: usize = 0;
+    for (tiers.native) |job| native += @intFromBool(job.target != null);
+    try std.testing.expectEqual(@as(usize, 4), native);
+    // Only the release tier runs them, and a job that sets no target is written, and keyed, as before.
+    for ([_]Tier{ .fast, .merge }) |tier| for (try plan(a, config, tier)) |job| try std.testing.expect(job.target == null);
+    try std.testing.expect(std.mem.find(u8, try include(a, &.{.{ .os = hosts[0], .name = "x" }}), "\"target\"") == null);
 }
 
 test "the riscv64 job on its emulated kernel splits into its shards" {

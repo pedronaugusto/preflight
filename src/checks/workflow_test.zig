@@ -111,7 +111,7 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
         for (groups, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
             if (tier == .fast and suffix.len != 0) continue;
             try contains(caller, try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{
-                tier, suffix, try std.json.Stringify.valueAlloc(a, .{ .include = group }, .{}),
+                tier, suffix, try matrix.include(a, group),
             }));
         }
     }

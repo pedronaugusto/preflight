@@ -2,6 +2,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const configure = @import("configure.zig");
+const family = @import("family.zig");
 
 /// A repository's benchmark programs and their package modules.
 pub const Bench = struct {
@@ -14,27 +15,29 @@ pub const Bench = struct {
 };
 pub const smoke_flag = "--smoke";
 
-/// The step that builds the benchmarks, or null when there are none.
-pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench, smoke: bool) ?*std.Build.Step {
+/// The step that builds the benchmarks, or null when there are none. With shakedown the programs
+/// measure through `shakedown.bench` and `bench-ab` compares two revisions; without it they are
+/// built, smoke-run and run, and nothing is compared. The family's policy requires shakedown.
+pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Build.Step, bench: ?Bench, smoke: bool, policy: family.Policy) ?*std.Build.Step {
     const given = bench orelse {
         if (configure.exists(package, "bench")) tests.dependOn(&b.addFail("bench/: give addCi its .bench").step);
         return null;
     };
-    // The programs measure through shakedown.bench, and the comparison reads what they write: both are the
-    // package's own shakedown, never a copy of preflight's.
-    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return null) orelse {
-        tests.dependOn(&b.addFail("addCi .bench: benchmarks measure through shakedown.bench; declare shakedown: a dev dependency with bay, else a lazy one").step);
+    // With shakedown, the programs measure through shakedown.bench and the comparison reads what they
+    // write: both are the package's own shakedown, never a copy of preflight's.
+    const shakedown = configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .fast }) catch return null;
+    if (shakedown == null and policy == .family) {
+        tests.dependOn(&b.addFail("addCi .bench: under the family's policy benchmarks measure through shakedown.bench; declare shakedown: a dev dependency with bay, else a lazy one").step);
         return null;
-    };
-    const comparison = dep.artifact("shakedown-bench-compare");
-    const build = configure.claim(b, "bench-build", "Build benchmarks and shakedown comparison in ReleaseFast; execute nothing");
-    const step = configure.claim(b, "bench", "Build and manually measure benchmark rows through shakedown");
+    }
+    const build = configure.claim(b, "bench-build", "Build the benchmarks in ReleaseFast, and shakedown's comparison when shakedown is declared; execute nothing");
+    const step = configure.claim(b, "bench", "Build and run the timed benchmark programs; with shakedown, measure their rows");
     step.dependOn(build);
-    build.dependOn(&b.addInstallArtifact(comparison, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
+    if (shakedown) |dep| build.dependOn(&b.addInstallArtifact(dep.artifact("shakedown-bench-compare"), .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
     var previous: ?*std.Build.Step = null;
     const commit = provenance(package);
     for (given.programs) |program| {
-        const compile = executable(b, package, given, program, .fast, commit);
+        const compile = executable(b, package, given, program, .fast, commit, shakedown != null);
         build.dependOn(&b.addInstallArtifact(compile, .{ .dest_dir = .{ .override = .{ .custom = "bench" } } }).step);
         if (program.timed) {
             const run = b.addRunArtifact(compile);
@@ -45,7 +48,7 @@ pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Buil
             step.dependOn(&run.step);
         }
         if (smoke) {
-            const run = b.addRunArtifact(executable(b, package, given, program, given.optimize, commit));
+            const run = b.addRunArtifact(executable(b, package, given, program, given.optimize, commit, shakedown != null));
             run.addArg(smoke_flag);
             run.setCwd(b.tmpPath());
             run.has_side_effects = true;
@@ -53,6 +56,9 @@ pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tests: *std.Buil
             tests.dependOn(&run.step);
         }
     }
+    // Two revisions compared is shakedown's measurement: without it there is no `bench-ab`.
+    const dep = shakedown orelse return build;
+    const comparison = dep.artifact("shakedown-bench-compare");
     // The caller types the driver's arguments after `--`; ensign reads them, as preflight's own.
     // Configured as shakedown is, so the two share one aegis.
     const ensign = pkg.dependencyLazy("ensign", .{ .target = b.graph.host, .optimize = .fast }) catch return null;
@@ -104,15 +110,17 @@ fn provenance(b: *std.Build) []const u8 {
     return std.mem.trim(u8, result.stdout, "\r\n");
 }
 
-fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8) *std.Build.Step.Compile {
+fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8, measured: bool) *std.Build.Step.Compile {
     const mod = b.createModule(.{ .root_source_file = package.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
     // A benchmark measures through the shakedown the package declares, the one its tests
     // link; `imports` gives the package's own modules, and one way is the only way.
     if (mod.import_table.contains("shakedown")) std.debug.panic("bench.imports gives `shakedown`: preflight adds the one the package declares; leave it out of the list", .{});
-    const found = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
-    // unreachable: `add` fetched it first, and refused a package that declares none
-    const dep = (found catch unreachable).?;
-    mod.addImport("shakedown", dep.module("shakedown"));
+    if (measured) {
+        const found = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
+        // unreachable: `add` fetched it first, and says `measured` only for a package that declares it
+        const dep = (found catch unreachable).?;
+        mod.addImport("shakedown", dep.module("shakedown"));
+    }
     const metadata = b.addOptions();
     metadata.addOption([]const u8, "commit", commit);
     const root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, package.root.toString(b.allocator) catch @panic("OOM"), b.allocator) catch @panic("benchmark root unavailable");

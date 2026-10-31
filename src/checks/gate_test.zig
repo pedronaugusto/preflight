@@ -16,6 +16,11 @@ const Package = struct {
     env: std.process.Environ.Map,
 
     fn init() !*Package {
+        return start(.bay);
+    }
+
+    /// A package developed with bay, its tools dev dependencies, or one built with zig build alone.
+    fn start(developed: enum { bay, zig }) !*Package {
         const p = try std.testing.allocator.create(Package);
         p.arena = .init(std.testing.allocator);
         p.tmp = std.testing.tmpDir(.{});
@@ -31,14 +36,14 @@ const Package = struct {
         try p.git(&.{ "init", "-q", "-b", "main" });
         for ([_][2][]const u8{ .{ "user.name", "Preflight" }, .{ "user.email", "preflight@example.invalid" }, .{ "commit.gpgsign", "false" }, .{ "tag.gpgsign", "false" } }) |setting|
             try p.git(&.{ "config", setting[0], setting[1] });
-        try p.write("build.zig.zon", ".{\n    .name = .pkg,\n    .version = \"0.1.0\",\n    .paths = .{\"\"},\n    .dev_dependencies = .{\n        .preflight = .{ .url = \"git+https://github.com/pedronaugusto/preflight#" ++ pin ++ "\", .hash = \"preflight-0.1.0-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\" },\n    },\n}\n");
+        try p.write("build.zig.zon", if (developed == .bay) ".{\n    .name = .pkg,\n    .version = \"0.1.0\",\n    .paths = .{\"\"},\n    .dev_dependencies = .{\n        .preflight = .{ .url = \"git+https://github.com/pedronaugusto/preflight#" ++ pin ++ "\", .hash = \"preflight-0.1.0-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\" },\n    },\n}\n" else ".{\n    .name = .pkg,\n    .version = \"0.1.0\",\n    .paths = .{\"\"},\n    .dependencies = .{\n        .preflight = .{ .url = \"git+https://github.com/pedronaugusto/preflight#" ++ pin ++ "\", .hash = \"preflight-0.1.0-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\", .lazy = true },\n    },\n}\n");
         try p.write("build.zig", "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", .{ .root_source_file = b.path(\"src/a.zig\") });\n}\n");
         try p.write("src/a.zig", "pub fn run(size: usize) void {\n    _ = size;\n}\n");
         try p.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- First.\n");
         const config = "{}\n";
         try p.write("ci/workflow.json", config);
         const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
-        try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, "ci/workflow.json: bay generate"));
+        try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, if (developed == .bay) "ci/workflow.json: bay generate" else "ci/workflow.json: zig build generate"));
         try p.git(&.{ "add", "-A" });
         try p.git(&.{ "commit", "-q", "-m", "First" });
         try p.git(&.{ "tag", "v0.1.0" });
@@ -103,4 +108,12 @@ test "the gate refuses a caller that is not what generate makes for the package'
     try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
     try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
     try refusedBeforeJobs(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `bay generate`");
+}
+
+test "a package without bay is told to run `zig build generate`, the command it has" {
+    const p = try Package.start(.zig);
+    defer p.deinit();
+    try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
+    try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
+    try refusedBeforeJobs(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `zig build generate`");
 }

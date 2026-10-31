@@ -47,8 +47,9 @@ which bay makes whatever revisions the two pin.
 Without bay, preflight is a lazy dependency, and `build` adds the gate over its own package:
 pin it with `zig fetch --save=preflight git+https://github.com/pedronaugusto/preflight#<commit>`,
 add `.lazy = true` to the entry, then
-`@setEvalBranchQuota(100_000); if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });`
-after creating the test step, and `zig build generate`. A
+`@setEvalBranchQuota(100_000); if (b.pkg_hash.len == 0) if (b.lazyImport(@This(), "preflight")) |preflight| preflight.addCi(b, b, .{ .tests = test_step });`
+after creating the test step, and `zig build generate`. The `pkg_hash` guard keeps a build of
+the package as a dependency from asking for preflight, so its consumers fetch none of it. A
 package preflight is built from (aegis, sweep, glint, gantry, shakedown) uses bay: as a
 dependency it would make a cycle with preflight.
 
@@ -139,6 +140,27 @@ repository check program, runs its tests, then runs it from the repository root
 as step `name`.
 
 ## Design
+
+### The family's policy
+
+preflight works on any Zig project, adapting to what it has. A project opts into the family's
+bar with one key, `"policy": "family"` in `ci/preflight.json`, which the build and the checks
+both read. Under it:
+
+- the hardened profile runs for every package, on shakedown's quarantine (`"hardened": false`
+  is refused, and so is a hardened run with no shakedown declared);
+- `rules` may only raise a rule;
+- what the build installs is ReleaseSafe unless `Config.release_fast` says why;
+- the CHANGELOG is checked in bay's format (it is too for a package developed with bay);
+- benchmarks measure through shakedown.
+
+Without it, the release tier runs the hardened profile when `ci/workflow.json` says
+`"hardened": true`, on shakedown's quarantine when shakedown is declared and on std's allocator
+otherwise. A rule may be set below its default, `off` included, and the lint shows each one so
+set. ReleaseFast installs are the project's choice. The CHANGELOG is the project's own, unless
+it releases with bay. Benchmarks without shakedown are built, smoke-run and run, with nothing
+compared. Any other value of `policy` is refused by name. Messages name the command the project
+has: `bay generate` under bay, `zig build generate` without it.
 
 ### Repository facts
 
@@ -290,9 +312,10 @@ The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A0
 }
 ```
 
-`rules` raises a rule to `report` or `gate` above its default weight; a level below it
-(`off` for a reported rule, `off` or `report` for a finding) fails by name, since a
-repository may only raise the family's bar. An unknown or removed id fails, and P001, P002, P004 and E001, folded into the
+`rules` raises a rule to `report` or `gate` above its default weight. Under the family's
+policy a level below it (`off` for a reported rule, `off` or `report` for a finding) fails by
+name, since a repository may only raise the family's bar; without it the level is the
+project's, and the lint names each rule set below its default. An unknown or removed id fails, and P001, P002, P004 and E001, folded into the
 danger rules, say where their sites went. There is no profile:
 the default policy is preflight's, and a deviation is a visible line. `function_limit`
 (120), `function_limits` (a lower ceiling by path) and `function_exceptions` (an exact
@@ -358,11 +381,11 @@ with the reason: `"fuzz": { "trusted": { "parseCache": "the package's own cache 
 
 ### Hardened profile
 
-Every package runs the hardened profile (aegis's design §7); only a configuration that runs no native tests (a freestanding target) sets `Config.hardened = null`, visibly. `Config.hardened` chooses its steps: `.{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, by default `test` for both. A package with nothing to fuzz says so, `.fuzz_step = null`, and its campaign has nothing to run. The planner schedules the hardened jobs in the release tier for every package; `"hardened"` in `ci/workflow.json` may only be `true`. Dedicated steps must execute tests. A package whose fuzz step finds no fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign. The fuzz step's tests run on preflight's runner, as `tests` do. A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build (one that skips when `builtin.fuzz` is set) fails the campaign by name: the build found it a fuzz test in the unfuzzed build, and the fuzzer would select it forever. A property that is not the fuzzer's says so where it is written (shakedown's `.fuzz = false`).
+Under the family's policy every package runs the hardened profile (aegis's design §7), and without it a package that says `"hardened": true` in `ci/workflow.json` (see "The family's policy"); only a configuration that runs no native tests (a freestanding target) sets `Config.hardened = null`, visibly. `Config.hardened` chooses its steps: `.{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, by default `test` for both. A package with nothing to fuzz says so, `.fuzz_step = null`, and its campaign has nothing to run. Under the family's policy the planner schedules the hardened jobs in the release tier for every package, and `"hardened"` in `ci/workflow.json` may only be `true`. Dedicated steps must execute tests. A package whose fuzz step finds no fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign. The fuzz step's tests run on preflight's runner, as `tests` do. A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build (one that skips when `builtin.fuzz` is set) fails the campaign by name: the build found it a fuzz test in the unfuzzed build, and the fuzzer would select it forever. A property that is not the fuzzer's says so where it is written (shakedown's `.fuzz = false`).
 
-**What ships is ReleaseSafe.** `bay install` builds a package's programs ReleaseSafe. An installed artifact the build itself makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with the measurement that says why (`.{ .artifact = "decoder", .reason = "..." }`). A name that matches no such artifact fails too.
+**What ships is ReleaseSafe.** `bay install` builds a package's programs ReleaseSafe. Under the family's policy, an installed artifact the build itself makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with the measurement that says why (`.{ .artifact = "decoder", .reason = "..." }`). A name that matches no such artifact fails too.
 
-`zig build hardened` runs the ordinary suite with `-Dci-hardened=true`; its test modules use Debug or ReleaseSafe with the LLVM backend selected explicitly for native sanitizer and fuzz instrumentation. Its `std.testing.allocator` takes its memory from the package's shakedown's quarantine (`shakedown.alloc.Quarantine`, a mapping per block with an inaccessible page after it, no address handed out twice), so a read or write after free of a block std's allocator takes whole faults at the line, in every run; a package with a hardened run declares shakedown. Normal build modes remain caller-selected. A measured source loop can explicitly disable safety at its boundary, with its reason and matched measurements; this batch adds no such exceptions. Source-site rules belong to glint, architectural rules to gantry. No startup-allocation policy is forced on a consumer.
+`zig build hardened` runs the ordinary suite with `-Dci-hardened=true`; its test modules use Debug or ReleaseSafe with the LLVM backend selected explicitly for native sanitizer and fuzz instrumentation. Its `std.testing.allocator` takes its memory from the package's shakedown's quarantine (`shakedown.alloc.Quarantine`, a mapping per block with an inaccessible page after it, no address handed out twice), so a read or write after free of a block std's allocator takes whole faults at the line, in every run. Under the family's policy a package with a hardened run declares shakedown; without it, one that declares none runs on std's allocator. Normal build modes remain caller-selected. A measured source loop can explicitly disable safety at its boundary, with its reason and matched measurements; this batch adds no such exceptions. Source-site rules belong to glint, architectural rules to gantry. No startup-allocation policy is forced on a consumer.
 
 `zig build hardened-fuzz` executes the installed Zig 0.17 bounded native fuzzer, with caller options forwarded. The current compiler supports native 64-bit non-Windows hosts; foreign targets and unsupported backends must fail execution. Seed corpora belong in `std.testing.fuzz` options. Zig reports campaign counts and instrumented coverage, retains corpus/coverage beneath `.zig-cache/v`, and reports failing inputs and reproduction details. Hosted jobs retain the actual configured local-cache v directory, including on failure, for seven days. Preserve those files and the printed test seed when reproducing; accumulated coverage is not a coverage guarantee.
 

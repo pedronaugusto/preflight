@@ -2,6 +2,7 @@
 //! cache so that creating, changing or deleting one configures the build again.
 const std = @import("std");
 const aegis = @import("aegis");
+const family = @import("family.zig");
 
 /// Whether `sub_path`, relative to the build root, exists. The root and each
 /// directory on the way are declared, so the answer cannot go stale.
@@ -27,6 +28,16 @@ pub fn read(b: *std.Build, sub_path: []const u8, limit: u64) ?[]const u8 {
     const path = b.root.join(b.allocator, sub_path) catch @panic("OOM");
     return aegis.own.readFile(b.graph.io, path.root_dir.handle, path.sub_path, b.allocator, .fromRaw(limit)) catch |err|
         std.debug.panic("{s}: {t}", .{ sub_path, err });
+}
+
+/// The policy the configuration at `sub_path` names (`family.key`), read as the build
+/// configures; adapting when there is no configuration. Null for one that names no policy, or
+/// is no JSON object, which the caller refuses.
+pub fn policy(b: *std.Build, sub_path: []const u8) ?family.Policy {
+    const text = read(b, sub_path, 64 * 1024 * 1024) orelse return .adapt;
+    const config = std.json.parseFromSliceLeaky(std.json.Value, b.allocator, text, .{}) catch return null;
+    if (config != .object) return null;
+    return family.of(config.object.get(family.key) orelse .null) catch null;
 }
 
 /// The directories a build makes beside its manifest -- its outputs and the

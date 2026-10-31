@@ -6,6 +6,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const configure = @import("configure.zig");
+const family = @import("family.zig");
 const Tool = @import("tool.zig").Tool;
 
 pub const Options = struct {
@@ -16,8 +17,11 @@ pub const Options = struct {
     /// The package's recorded durations, repository-relative.
     durations: []const u8,
     /// The hardened run: `std.testing.allocator` is backed by the package's own
-    /// shakedown's quarantine, which the runner imports as `preflight_quarantine`.
+    /// shakedown's quarantine, which the runner imports as `preflight_quarantine`, or by
+    /// std's allocator in a package with no shakedown outside the family's policy.
     quarantine: bool = false,
+    /// The family's policy refuses a hardened run without shakedown's quarantine.
+    policy: family.Policy,
 };
 
 /// A package keeps the default bound unless it says why not.
@@ -162,8 +166,8 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         runner.addOption([]const u8, "artifact", artifact.name);
         runner.addOption(bool, "filtered", artifact.filters.len != 0);
         runner.addOption([]const u8, "durations", context.durations);
-        runner.addOption(bool, "quarantine", options.quarantine);
-        if (options.quarantine) quarantine(b, run, artifact);
+        const quarantined = options.quarantine and quarantine(b, run, artifact, options.policy);
+        runner.addOption(bool, "quarantine", quarantined);
         artifact.root_module.addOptions("preflight_runner_options", runner);
     }
     if (state.ours.contains(artifact)) {
@@ -246,9 +250,9 @@ test "timeout rejects nanoseconds that cannot fit the runner option" {
 
 /// The hardened run's runner imports the package's shakedown, for its quarantine, as
 /// `preflight_quarantine`: the shakedown the test module's graph holds already, so it is
-/// the one copy, or else the one the package declares. A package that declares none is
-/// refused by name.
-fn quarantine(b: *std.Build, run: *std.Build.Step.Run, artifact: *std.Build.Step.Compile) void {
+/// the one copy, or else the one the package declares. Whether it did: a package that
+/// declares none runs on std's allocator, and under the family's policy is refused by name.
+fn quarantine(b: *std.Build, run: *std.Build.Step.Run, artifact: *std.Build.Step.Compile, policy: family.Policy) bool {
     const root = artifact.root_module;
     var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
     graph.put(b.allocator, root, {}) catch @panic("OOM");
@@ -257,11 +261,14 @@ fn quarantine(b: *std.Build, run: *std.Build.Step.Run, artifact: *std.Build.Step
         const module = graph.keys()[next];
         if (module.import_table.get("shakedown")) |found| {
             root.addImport("preflight_quarantine", found);
-            return;
+            return true;
         }
         for (module.import_table.values()) |imported| graph.put(b.allocator, imported, {}) catch @panic("OOM");
     }
-    const dep = (configure.declared(b, "shakedown", .{ .target = root.resolved_target.?, .optimize = root.optimize orelse .debug }) catch return) orelse
-        return refuse("{s}: the hardened run backs std.testing.allocator with shakedown's quarantine; declare shakedown: a dev dependency with bay, else a lazy one", b, run, .{artifact.name});
+    const dep = (configure.declared(b, "shakedown", .{ .target = root.resolved_target.?, .optimize = root.optimize orelse .debug }) catch return false) orelse {
+        if (policy == .family) refuse("{s}: under the family's policy the hardened run backs std.testing.allocator with shakedown's quarantine; declare shakedown: a dev dependency with bay, else a lazy one", b, run, .{artifact.name});
+        return false;
+    };
     root.addImport("preflight_quarantine", dep.module("shakedown"));
+    return true;
 }

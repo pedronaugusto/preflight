@@ -581,6 +581,32 @@ test "the compile check compiles a C library of several sources and no Zig root 
     try std.testing.expect(command.succeeded(result));
 }
 
+test "the compile check compiles an installed C library of several sources and no Zig root for COFF, which the tests step depends on" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // zrecast's shape: a C library no module links, installed, and built by the tests step.
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
+    const sourced = try std.mem.replaceOwned(u8, a, build, "    const step = b.step(\"test\", \"Run the sample tests\");",
+        \\    const lib = b.addLibrary(.{ .name = "crepro", .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true }) });
+        \\    lib.root_module.addCSourceFiles(.{ .files = &.{ "src/one.c", "src/two.c" } });
+        \\    b.installArtifact(lib);
+        \\    const step = b.step("test", "Run the sample tests");
+        \\    step.dependOn(&lib.step);
+    );
+    try std.testing.expect(!std.mem.eql(u8, build, sourced));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = sourced });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/one.c", .data = "int one(int x) { return x + 1; }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/two.c", .data = "int two(int x) { return x * 2; }\n" });
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 test "check compiles the tests for every target of the fast tier, where a test behind another system's branch fails" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

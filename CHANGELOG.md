@@ -30,7 +30,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu).
+- A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu, and zrecast's C++ libraries, which no module links and the tests step builds).
 - The VM host's input forwarding ends at once on a cancel; it read a cancel as the end of the input and sent the program an end-of-input frame first.
 - A package developed with bay balances its shards by its own `ci/durations.json`, read from its repository; it was looked for in the development build's root, which holds none. The development build's configuration no longer depends on that root, so it configures with the cache outside the package (a hosted job's `ZIG_LOCAL_CACHE_DIR`), where Zig 0.17 failed it with `configuration failed: FileSystemFailure`.
 

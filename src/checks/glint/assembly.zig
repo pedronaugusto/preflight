@@ -498,7 +498,7 @@ test "an options module the build generates whole is read as its module's file, 
         // Written only as the build runs (an option naming a path): no text to read.
         .{ .root = null, .imports = &.{} },
     };
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .{ .data = tmp.dir } };
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;

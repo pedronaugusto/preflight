@@ -3,16 +3,16 @@
 const std = @import("std");
 // Compiled into every package's test binaries: std alone, as order.zig.
 
-/// Waits until `done` is nonzero or `limit` has passed on `io`'s awake
-/// clock, from when this is called. Returns whether the limit passed first.
-/// A wake that leaves `done` at zero waits on for what is left.
-// std owns clock-tagged waits; `done` is an atomic completion flag, with one publisher and
-// one observer. It protects no borrowed data, and cannot be replaced by a spin guard.
-pub fn expired(io: std.Io, done: *std.atomic.Value(u32), limit: std.Io.Duration) bool {
+/// Waits until `done` is set or `limit` has passed on `io`'s awake clock,
+/// from when this is called. Returns whether the limit passed first. A wake
+/// that leaves `done` unset waits on for what is left.
+pub fn expired(io: std.Io, done: *std.Io.Event, limit: std.Io.Duration) bool {
     const deadline: std.Io.Clock.Timestamp = .fromNow(io, .{ .raw = limit, .clock = .awake });
-    while (done.load(.acquire) == 0) {
+    while (!done.isSet()) {
         if (std.Io.Clock.Timestamp.compare(.now(io, .awake), .gte, deadline)) return true;
-        io.futexWaitTimeout(u32, &done.raw, 0, .{ .deadline = deadline }) catch |err| switch (err) {
+        done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            // The deadline, or a wake that left the test running: the clock says which.
+            error.Timeout => {},
             // Nothing but the watched test may end the watch.
             error.Canceled => return false,
         };

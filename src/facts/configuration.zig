@@ -91,7 +91,18 @@ const Guard = struct {
         defer g.depth -= 1;
         switch (@typeInfo(T)) {
             .@"struct" => |info| {
+                // A field's storage reads the flags field its type names (`F.flags`) of the
+                // struct it is in: Zig's configuration declares and writes the flags first, and
+                // a field decoded before its flags would read them undefined.
+                comptime for (info.field_types, 0..) |F, at| {
+                    if (@typeInfo(F) != .@"struct" or !@hasDecl(F, "flags")) continue;
+                    const flags_at = for (info.field_names, 0..) |name, n| {
+                        if (std.mem.eql(u8, name, @tagName(F.flags))) break n;
+                    } else @compileError(@typeName(T) ++ "." ++ info.field_names[at] ++ " reads flags it has no field for");
+                    if (flags_at >= at) @compileError(@typeName(T) ++ "." ++ info.field_names[at] ++ " is decoded before the flags it reads");
+                };
                 var result: T = undefined;
+                // aegis: no-danger(A019): each field's storage reads only flags its struct decodes before it, as the assertion above holds at compile time
                 inline for (info.field_names, info.field_types) |name, F| @field(result, name) = try g.field(F, i, &result);
                 return result;
             },

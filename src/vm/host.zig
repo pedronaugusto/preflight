@@ -404,7 +404,7 @@ fn addBind(io: Io, gpa: std.mem.Allocator, binds: *std.ArrayList(u8), bound: *st
 /// to QEMU stays open after it: a port whose host end closes stalls the machine's
 /// writes to it.
 fn forwardInput(io: Io, to: Io.File) void {
-    var chunk: [16 * 1024]u8 = undefined;
+    var chunk: [16 * 1024]u8 = @splat(0);
     var out_buffer: [16 * 1024 + 4]u8 = undefined;
     var output = to.writerStreaming(io, &out_buffer);
     const stdin = Io.File.stdin();

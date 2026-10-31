@@ -227,11 +227,13 @@ const Fuzzing = if (builtin.fuzz) struct {
 
     export fn runner_futex_wait(ptr: *const u32, expected: u32) bool {
         @disableInstrumentation();
+        // aegis: boundary(A007): the fuzzer's own ABI: std's fuzzer waits on a word of its own through this export, which its runner gives
         return threaded.io().futexWait(u32, ptr, expected) == error.Canceled;
     }
 
     export fn runner_futex_wake(ptr: *const u32, waiters: u32) void {
         @disableInstrumentation();
+        // aegis: boundary(A007): the fuzzer's own ABI: std's fuzzer wakes a word of its own through this export, which its runner gives
         threaded.io().futexWake(u32, ptr, waiters);
     }
 
@@ -284,8 +286,7 @@ const Watchdog = struct {
     name: []const u8,
     // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     phase: std.atomic.Value(Phase) = .init(.body),
-    // aegis: design(A007): std alone, as the test runner and build module every package compiles (aegis's own too) must be
-    done: std.atomic.Value(u32) = .init(0),
+    done: std.Io.Event = .unset,
     thread: ?std.Thread = null,
 
     const Phase = enum(u8) { body, io_teardown, reporting };
@@ -298,8 +299,7 @@ const Watchdog = struct {
 
     fn stop(watchdog: *Watchdog) void {
         const thread = watchdog.thread orelse return;
-        watchdog.done.store(1, .release);
-        io.futexWake(u32, &watchdog.done.raw, 1);
+        watchdog.done.set(io);
         thread.join();
     }
 
@@ -715,7 +715,7 @@ const Supervisor = struct {
     /// yields a read that completed as it was canceled, and the write that
     /// follows is never canceled.
     fn pump(sio: std.Io, from: std.Io.File, to: std.Io.File, quiet: std.Io.Timeout) !Pumped {
-        var buffer: [4096]u8 = undefined;
+        var buffer: [4096]u8 = @splat(0);
         var storage: [1]std.Io.Operation.Storage = undefined;
         var batch: std.Io.Batch = .init(&storage);
         defer batch.cancel(sio);
@@ -773,12 +773,12 @@ const Supervisor = struct {
             defer fds.close(sio);
             var descriptors = fds.iterate();
             const holds = while (descriptors.next(sio) catch null) |fd| {
-                var target: [64]u8 = undefined;
+                var target: [64]u8 = @splat(0);
                 const len = fds.readLink(sio, fd.name, &target) catch continue;
                 if (std.mem.eql(u8, target[0..len], pipe)) break true;
             } else false;
             if (!holds) continue;
-            var line: [512]u8 = undefined;
+            var line: [512]u8 = @splat(0);
             const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch line[0..0];
             for (command) |*byte| if (byte.* == 0) {
                 byte.* = ' ';
@@ -918,7 +918,9 @@ const Supervisor = struct {
 /// their stdout, where what they and their processes write reaches the build
 /// as a test's output.
 const Protocol = struct {
+    // aegis: design(A015): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     in: std.Io.File,
+    // aegis: design(A015): std alone, as the test runner and build module every package compiles (aegis's own too) must be
     out: std.Io.File,
 
     fn claim() !Protocol {

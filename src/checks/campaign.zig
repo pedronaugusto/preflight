@@ -36,9 +36,8 @@ pub fn state(io: std.Io, cache: std.Io.Dir) !State {
         defer file.close(io);
         var buffer: [@sizeOf(std.Build.abi.fuzz.SeenPcsHeader)]u8 = undefined;
         var reader = file.reader(io, &buffer);
-        var header: std.Build.abi.fuzz.SeenPcsHeader = undefined;
         // A file the fuzzer is still creating holds no header yet, and counts no runs.
-        reader.interface.readSliceAll(std.mem.asBytes(&header)) catch continue;
+        const header = (reader.interface.takeStructPointer(std.Build.abi.fuzz.SeenPcsHeader) catch continue).*;
         found.runs += header.n_runs;
     }
     return found;

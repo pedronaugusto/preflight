@@ -30,6 +30,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Pins glint 0.8.0 and gantry 0.4.0.
 - Internal, no consumer's: the checks' `alignNested`, which nothing has called since `land` left preflight, is gone, and so is the escape on the runner's pipe `file`, which glint 0.7.5 reads as handing over no owner (a literal naming the handle it is given).
+- Internal, no consumer's: glint 0.8's findings on preflight's own code. The test runner's watchdog waits on std's `Io.Event`, its buffers read by std calls start zeroed, the fuzz header is taken whole from its reader, and the configuration decoder asserts at compile time that each field's flags come before it.
 
 ### Fixed
 

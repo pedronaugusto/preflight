@@ -144,6 +144,12 @@ const Loader = struct {
     fn read(self: *Loader, path: []const u8) !?[]const u8 {
         const entry = try self.bytes.getOrPut(self.c.a, path);
         if (entry.found_existing) return entry.value_ptr.*;
+        // A module the build generates whole as it configures: its text, which is on no disk.
+        for (self.build.modules) |module| if (module.contents) |contents| if (module.root) |root| {
+            if (!std.mem.eql(u8, try normalize(self.c.a, root), path)) continue;
+            entry.value_ptr.* = contents;
+            return contents;
+        };
         entry.value_ptr.* = aegis.own.readFile(self.c.io, self.c.directory(), path, self.c.a, .fromRaw(max_file)) catch |err| switch (err) {
             error.FileNotFound => null,
             else => {
@@ -477,4 +483,40 @@ test "an import means what the configured build binds it to, in the module that 
         }
         if (std.mem.eql(u8, input.name, "src/helper.zig")) try std.testing.expectEqual(@as(usize, 0), input.absent.len);
     }
+}
+
+test "an options module the build generates whole is read as its module's file, beside the package's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try write(tmp.dir, "src/root.zig", "const release = @import(\"release\");\nconst later = @import(\"later\");\npub const version = release.version;\n");
+    const bindings = [_]src.BuildModule.Binding{ .{ .name = "release", .module = 1 }, .{ .name = "later", .module = 2 } };
+    const modules = [_]src.BuildModule{
+        .{ .root = "src/root.zig", .imports = &bindings },
+        .{ .root = ".preflight-generated/0/options.zig", .imports = &.{}, .contents = "pub const version: []const u8 = \"1.0.0\";\n" },
+        // Written only as the build runs (an option naming a path): no text to read.
+        .{ .root = null, .imports = &.{} },
+    };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .package = "pkg" })).?;
+    defer assembly.deinit();
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    const project = &assembly.project;
+    var release = false;
+    var later = false;
+    for (project.imports) |import| {
+        if (std.mem.eql(u8, import.spelling, "later")) later = true;
+        if (!std.mem.eql(u8, import.spelling, "release")) continue;
+        release = true;
+        const input = project.at(import.target).input;
+        try std.testing.expectEqualStrings(".preflight-generated/0/options.zig", input.name);
+        try std.testing.expectEqualStrings("pub const version: []const u8 = \"1.0.0\";\n", input.bytes);
+        try std.testing.expect(!input.selected);
+    }
+    try std.testing.expect(release);
+    try std.testing.expect(!later);
 }

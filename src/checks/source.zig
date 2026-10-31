@@ -168,9 +168,13 @@ pub fn strings(a: std.mem.Allocator, v: Value) ![]const []const u8 {
 /// each name its code imports leads to (an index into the same list).
 pub const BuildModule = struct {
     /// The root file, relative to the repository or absolute; null when the
-    /// build generates it.
+    /// build generates it, unless the configuration holds all of it (`contents`).
     root: ?[]const u8,
     imports: []const Binding,
+    /// The root's text where the build generates it whole as it configures: an options
+    /// module (`b.addOptions`), its declarations constants. Lint reads it as the module's
+    /// file, so what imports it names a file the program holds.
+    contents: ?[]const u8 = null,
     pub const Binding = struct { name: []const u8, module: usize };
 };
 

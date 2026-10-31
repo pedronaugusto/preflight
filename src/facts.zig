@@ -380,8 +380,28 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
             binding.* = .{ .name = name.slice(c), .module = indices.getIndex(imported).? };
         }
         module.* = .{ .root = try rootPath(a, c, snapshot.package, configured.root_source_file), .imports = bindings };
+        if (module.root == null) if (optionsOf(c, configured.root_source_file)) |contents| {
+            const generated = configured.root_source_file.unwrap().?.get(c).generated;
+            module.root = try named(a, try a.print(".preflight-generated/{d}/options.zig", .{@backingInt(generated.index)}));
+            module.contents = contents;
+        };
     }
     return out;
+}
+
+/// The text an options step (`b.addOptions`) writes at `index`, the root of a module, where the
+/// configuration holds all of it: no option names a file or directory, whose path the step
+/// writes only as it runs.
+fn optionsOf(c: *const C, index: C.LazyPath.OptionalIndex) ?[]const u8 {
+    const path = (index.unwrap() orelse return null).get(c);
+    if (path != .generated or path.generated.flags.up != 0) return null;
+    for (c.steps) |step| {
+        const options = step.extended.cast(c, C.Step.Options) orelse continue;
+        if (options.generated_file != path.generated.index) continue;
+        if (options.flags.files or options.flags.directories or options.flags.untracked_paths) return null;
+        return options.contents.slice(c);
+    }
+    return null;
 }
 
 /// Where a module's root file is, relative to the repository's root: the checked

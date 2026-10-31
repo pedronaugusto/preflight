@@ -9,6 +9,7 @@ const glint = @import("glint");
 const configure = @import("../../configure.zig");
 const src = @import("../source.zig");
 const policy_module = @import("policy.zig");
+const manifest = @import("../manifest.zig");
 const Policy = policy_module.Policy;
 
 /// Files and bytes one project holds: glint's own bounds.
@@ -24,9 +25,6 @@ pub const Build = struct {
     modules: []const src.BuildModule = &.{},
     /// Zig's `lib/std`; without it `std` stays unresolved.
     std_dir: ?[]const u8 = null,
-    /// The package the selected files are, as its `build.zig.zon` names it: the package a
-    /// policy's owners are matched against.
-    package: []const u8 = "",
 };
 
 pub const Selected = struct { path: []const u8, kind: Policy.Kind };
@@ -139,6 +137,8 @@ const Loader = struct {
     names: std.StringHashMapUnmanaged([]const []const u8) = .empty,
     inputs: std.ArrayList(glint.Project.Input) = .empty,
     index: std.StringHashMapUnmanaged(u32) = .empty,
+    /// The identity a directory's own `build.zig.zon` gives; null where it has none.
+    manifests: std.StringHashMapUnmanaged(?manifest.Identity) = .empty,
     total: usize = 0,
 
     fn read(self: *Loader, path: []const u8) !?[]const u8 {
@@ -213,13 +213,40 @@ const Loader = struct {
         return std.mem.startsWith(u8, path, dir) and path.len > dir.len and path[dir.len] == '/';
     }
 
+    /// The package whose tree holds `path`: the identity of the nearest `build.zig.zon` above
+    /// it, the checked package's own included. None for std's files, and none where no
+    /// directory up to the package's (or, outside it, the filesystem's root) has one.
+    fn packageOf(self: *Loader, path: []const u8) !manifest.Identity {
+        if (self.insideStd(path)) return .{};
+        const outside = std.mem.startsWith(u8, path, "..") or std.Io.Dir.path.isAbsolute(path);
+        var dir = std.Io.Dir.path.dirname(path);
+        while (dir) |at| : (dir = std.Io.Dir.path.dirname(at)) {
+            if (try self.manifestOf(at)) |found| return found;
+        }
+        if (!outside) if (try self.manifestOf("")) |found| return found;
+        return .{};
+    }
+
+    fn manifestOf(self: *Loader, dir: []const u8) !?manifest.Identity {
+        const entry = try self.manifests.getOrPut(self.c.a, dir);
+        if (entry.found_existing) return entry.value_ptr.*;
+        const path = try std.Io.Dir.path.join(self.c.a, &.{ dir, "build.zig.zon" });
+        entry.value_ptr.* = if (aegis.own.readFile(self.c.io, self.c.directory(), path, self.c.a, .fromRaw(max_file))) |bytes|
+            try manifest.identity(self.c.a, bytes)
+        else |err| switch (err) {
+            error.FileNotFound, error.NotDir => null,
+            else => {
+                _ = self.manifests.remove(dir);
+                return err;
+            },
+        };
+        return entry.value_ptr.*;
+    }
+
     /// Adds a file to the project, once; null when it is not there.
     fn load(self: *Loader, path: []const u8, selected: bool, kind: Policy.Kind) !?u32 {
         if (self.index.get(path)) |known| {
-            if (selected) {
-                self.inputs.items[known].selected = true;
-                self.inputs.items[known].package = self.build.package;
-            }
+            if (selected) self.inputs.items[known].selected = true;
             return known;
         }
         const bytes = (try self.read(path)) orelse return null;
@@ -227,13 +254,15 @@ const Loader = struct {
         self.total += bytes.len;
         const id: u32 = @intCast(self.inputs.items.len);
         const base = std.Io.Dir.path.basename(path);
+        const package = try self.packageOf(path);
         try self.inputs.append(self.c.a, .{
             .name = path,
             .bytes = bytes,
             .stem = if (std.mem.endsWith(u8, base, ".zig")) base[0 .. base.len - 4] else base,
             .selected = selected,
             .classification = if (kind == .production) .production else .@"test",
-            .package = if (selected) self.build.package else "",
+            .package = package.name,
+            .fingerprint = package.fingerprint,
         });
         try self.index.put(self.c.a, path, id);
         return id;
@@ -431,6 +460,8 @@ test "an import means what the configured build binds it to, in the module that 
     try write(tmp.dir, "dep/other2.zig", "pub const y = 3;\n");
     try write(tmp.dir, "stdlib/std.zig", "pub const mem = @import(\"mem.zig\");\nconst self = @import(\"std\");\n");
     try write(tmp.dir, "stdlib/mem.zig", "pub fn eql() void {}\n");
+    try write(tmp.dir, "build.zig.zon", ".{ .name = .pkg, .version = \"0.1.0\", .fingerprint = 0x1c0ffee, .paths = .{\"src\"} }\n");
+    try write(tmp.dir, "dep/build.zig.zon", ".{ .name = .lib, .version = \"0.1.0\", .fingerprint = 0x5e23831cba68ccae, .paths = .{\"\"} }\n");
     const bindings = [_]src.BuildModule.Binding{ .{ .name = "lib", .module = 1 }, .{ .name = "other", .module = 2 } };
     const second = [_]src.BuildModule.Binding{ .{ .name = "other", .module = 3 }, .{ .name = "lib", .module = 1 } };
     const modules = [_]src.BuildModule{
@@ -446,13 +477,19 @@ test "an import means what the configured build binds it to, in the module that 
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
-    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .std_dir = "stdlib", .package = "pkg" })).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .std_dir = "stdlib" })).?;
     defer assembly.deinit();
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqual(@as(usize, 3), assembly.selected.len);
     const project = &assembly.project;
-    // The selected files are the checked package's; what they import is not said.
-    for (project.sources) |source| try std.testing.expectEqualStrings(if (source.input.selected) "pkg" else "", source.input.package);
+    // Each file is the package of the nearest manifest above it, by name and fingerprint: the
+    // checked package's, a dependency's in its own tree, and none for std's.
+    for (project.sources) |source| {
+        const input = source.input;
+        const name, const fingerprint: ?u64 = if (std.mem.startsWith(u8, input.name, "src/")) .{ "pkg", 0x1c0ffee } else if (std.mem.startsWith(u8, input.name, "dep/")) .{ "lib", 0x5e23831cba68ccae } else .{ "", null };
+        try std.testing.expectEqualStrings(name, input.package);
+        try std.testing.expectEqual(fingerprint, input.fingerprint);
+    }
     var mapped: usize = 0;
     var other_mapped = false;
     for (project.imports) |import| {
@@ -502,7 +539,7 @@ test "an options module the build generates whole is read as its module's file, 
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
-    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules, .package = "pkg" })).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules })).?;
     defer assembly.deinit();
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     const project = &assembly.project;

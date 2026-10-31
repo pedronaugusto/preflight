@@ -46,25 +46,50 @@ pub fn coexist(c: *src.Context) ![]const []const u8 {
     return names;
 }
 
+/// A package by its identity: the name and fingerprint its `build.zig.zon` gives, each where
+/// written. glint knows a library (aegis) by both, under whatever name a program imports it.
+pub const Identity = struct { name: []const u8 = "", fingerprint: ?u64 = null };
+
+/// The identity `text`, a `build.zig.zon`, gives; null where it is not one.
+pub fn identity(a: std.mem.Allocator, text: []const u8) !?Identity {
+    const manifest = (try parse(a, text)) orelse return null;
+    var found: Identity = .{};
+    if (field(manifest, "name")) |value| if (value == .enum_literal) {
+        found.name = try a.dupe(u8, value.enum_literal.get(manifest.zoir));
+    };
+    if (field(manifest, "fingerprint")) |value| if (value == .int_literal) {
+        found.fingerprint = switch (value.int_literal) {
+            .small => |small| std.math.cast(u64, small),
+            .big => |big| big.toInt(u64) catch null,
+        };
+    };
+    return found;
+}
+
 const Parsed = struct { zoir: *const std.zig.Zoir, root: std.zig.Zoir.Node };
 
 fn parsed(c: *src.Context) !Parsed {
-    const source = (try zon.source(c.a, try c.read("build.zig.zon"))) orelse {
+    const text = try c.read("build.zig.zon");
+    if (try zon.source(c.a, text) == null) {
         c.fail("build.zig.zon: not UTF-8", .{});
         return error.InvalidManifest;
-    };
-    const ast = try std.zig.Ast.parse(c.a, source, .{ .mode = .zon });
-    const zoir = try c.a.create(std.zig.Zoir);
-    zoir.* = try std.zig.ZonGen.generate(c.a, ast, .{});
-    if (ast.errors.len != 0 or zoir.hasCompileErrors()) {
+    }
+    return (try parse(c.a, text)) orelse {
         c.fail("build.zig.zon: not valid ZON", .{});
         return error.InvalidManifest;
-    }
-    const root = std.zig.Zoir.Node.Index.root.get(zoir);
-    if (root != .struct_literal) return error.InvalidManifest;
-    return .{ .zoir = zoir, .root = root };
+    };
 }
 
+fn parse(a: std.mem.Allocator, text: []const u8) !?Parsed {
+    const source = (try zon.source(a, text)) orelse return null;
+    const ast = try std.zig.Ast.parse(a, source, .{ .mode = .zon });
+    const zoir = try a.create(std.zig.Zoir);
+    zoir.* = try std.zig.ZonGen.generate(a, ast, .{});
+    if (ast.errors.len != 0 or zoir.hasCompileErrors()) return null;
+    const root = std.zig.Zoir.Node.Index.root.get(zoir);
+    if (root != .struct_literal) return null;
+    return .{ .zoir = zoir, .root = root };
+}
 fn field(manifest: Parsed, wanted: []const u8) ?std.zig.Zoir.Node {
     for (manifest.root.struct_literal.names, 0..) |each, i| {
         if (std.mem.eql(u8, each.get(manifest.zoir), wanted)) return manifest.root.struct_literal.vals.at(@intCast(i)).get(manifest.zoir);

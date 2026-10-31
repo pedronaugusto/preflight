@@ -185,7 +185,10 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     }
 
     for (kept, carried) |entry, count| c.report("preflight: vendored: {s}: {d} danger sites, their reason {s}'s verification: {s}\n", .{ entry.path, count, entry.upstream, entry.verification });
-    if (held) c.report("glint: every finding: {s}\n", .{writeList(c, findings_path, all.written())});
+    // Every list is the run's own, written whether or not the run prints all of it: a list
+    // an earlier run left would read as this run's.
+    const findings_at = writeList(c, findings_path, all.written());
+    if (held) c.report("glint: every finding: {s}\n", .{findings_at});
 
     var unfinished: usize = 0;
     var unresolved: usize = 0;
@@ -231,9 +234,10 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
         unfinished += 1;
     }
+    const sites_at = writeList(c, sites_path, sites.written());
     if (unfinished > printed) {
-        const where = listSites(c, sites.written());
-        c.report("glint: {d} more incomplete sites; all {d}: {s}\n", .{ unfinished - printed, unfinished, where });
+        summarizeSites(c, sites.written());
+        c.report("glint: {d} more incomplete sites; all {d}: {s}\n", .{ unfinished - printed, unfinished, sites_at });
     }
     if (!report.complete) {
         c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} of them suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
@@ -312,7 +316,10 @@ fn ruleName(rule: glint.Rule) []const u8 {
 /// each escape, the first `printed` of a rule here and all of them in a file beside the
 /// incomplete sites. The reviews read each one.
 fn escapes(c: *src.Context, project: *const glint.Project, report: *const glint.Report) void {
-    if (report.escapes.len == 0) return;
+    if (report.escapes.len == 0) {
+        _ = writeList(c, escapes_path, "");
+        return;
+    }
     var text: std.Io.Writer.Allocating = .init(c.a);
     var counts: std.array_hash_map.String([5]usize) = .empty;
     const reasons = [_][]const u8{ "no-danger", "design", "hot-loop", "internal", "boundary" };
@@ -349,31 +356,35 @@ fn escapes(c: *src.Context, project: *const glint.Project, report: *const glint.
     c.report("preflight: escapes: {d}: {s}; all of them: {s}\n", .{ report.escapes.len, summary.written(), writeList(c, escapes_path, text.written()) });
 }
 
-/// Every aegis escape of a lint, relative to the package.
+/// Every aegis escape of a lint, relative to the package; empty after a run with none.
 pub const escapes_path = ".zig-cache/preflight-lint/escapes.txt";
 
-/// Where the whole list of incomplete sites is, the run's report holding the
-/// first `printed`: a file in the package's cache, and in a hosted job the
-/// job's summary too. Says why when the file cannot be written.
-fn listSites(c: *src.Context, sites: []const u8) []const u8 {
+/// In a hosted job, the whole list of incomplete sites in the job's summary too,
+/// when the run's report holds only the first `printed`.
+fn summarizeSites(c: *src.Context, sites: []const u8) void {
     const dir = c.directory();
-    // glint-ignore: Z026 -- a summary that cannot be written leaves the file, named below
+    // glint-ignore: Z026 -- a summary that cannot be written leaves the file, named in the report
     if (c.summary_path) |path| appendTo(c.*, dir, path, c.a.print("<details><summary>glint: every incomplete site</summary>\n\n```\n{s}```\n</details>\n", .{sites}) catch @panic("OOM")) catch {};
-    return writeList(c, sites_path, sites);
 }
 
-/// Writes a list in the package's cache: its path, or why it was not written.
+/// Writes a list in the package's cache, whole, empty when the run has none: its path,
+/// or why it was not written, which is reported, since the list an earlier run left stays.
 fn writeList(c: *src.Context, path: []const u8, text: []const u8) []const u8 {
     const dir = c.directory();
-    dir.createDirPath(c.io, std.Io.Dir.path.dirname(path).?) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
-    dir.writeFile(c.io, .{ .sub_path = path, .data = text }) catch |err| return c.a.print("not written ({t})", .{err}) catch @panic("OOM");
-    return path;
+    const why = why: {
+        dir.createDirPath(c.io, std.Io.Dir.path.dirname(path).?) catch |err| break :why err;
+        dir.writeFile(c.io, .{ .sub_path = path, .data = text }) catch |err| break :why err;
+        return path;
+    };
+    const said = c.a.print("not written ({t})", .{why}) catch @panic("OOM");
+    c.report("preflight: {s}: {s}\n", .{ path, said });
+    return said;
 }
 
-/// The whole list of a lint's incomplete sites, relative to the package.
+/// The whole list of a lint's incomplete sites, relative to the package; empty after a run with none.
 pub const sites_path = ".zig-cache/preflight-lint/incomplete.txt";
 
-/// Every finding of a lint whose rules found more than the run prints, relative to the package.
+/// Every finding of a lint, relative to the package; empty after a run with none.
 pub const findings_path = ".zig-cache/preflight-lint/findings.txt";
 
 fn appendTo(c: src.Context, dir: std.Io.Dir, path: []const u8, text: []const u8) !void {
@@ -441,6 +452,22 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try std.testing.expectEqual(@as(usize, 0), try f.run(reported, .{}));
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    // glint-ignore: Z026 -- cleanup after a failure the caller already gets\n    f() catch {};\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+}
+
+test "a clean run leaves its lists empty, not as the run before it wrote them" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    // More findings than the run prints, an escape, and an escape that covers nothing.
+    var dirty: std.Io.Writer.Allocating = .init(f.c.a);
+    for (0..printed + 1) |i| try dirty.writer.print("pub fn view{d}(p: *u8) *u32 {{\n    return @ptrCast(@alignCast(p));\n}}\n", .{i});
+    try dirty.writer.writeAll("pub fn same(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger: the same type\n}\n");
+    try dirty.writer.writeAll("pub fn plain() u32 {\n    return 1; // aegis: no-danger: nothing here\n}\n");
+    try f.file("src/root.zig", dirty.written());
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
+    for ([_][]const u8{ findings_path, sites_path, escapes_path }) |path| try std.testing.expect((try f.c.read(path)).len != 0);
+    try f.file("src/root.zig", "pub fn answer() u32 {\n    return 42;\n}\n");
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    for ([_][]const u8{ findings_path, sites_path, escapes_path }) |path| try std.testing.expectEqualStrings("", try f.c.read(path));
 }
 
 test "style is reported and does not fail; a repository may gate it" {

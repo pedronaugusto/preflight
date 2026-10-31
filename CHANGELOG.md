@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu, and zrecast's C++ libraries, which no module links and the tests step builds).
+- The lint writes its lists (`.zig-cache/preflight-lint/findings.txt`, `incomplete.txt`, `escapes.txt`) on every run, whole and empty when the run has none, where each was written only when the run printed less than all of it (or held an escape) and otherwise kept the list an earlier run wrote: a clean run after a failing one still listed 126 findings. A list that cannot be written is reported.
 
 ## [0.18.5] - 2026-10-28
 

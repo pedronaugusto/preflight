@@ -5,6 +5,7 @@ const std = @import("std");
 const gantry = @import("gantry");
 const glint = @import("glint");
 const src = @import("../source.zig");
+const family = @import("../../family.zig");
 
 /// The rules a program can adopt beyond the default: glint's aegis pack.
 pub const project_rules = glint.AegisPack.rules;
@@ -322,6 +323,10 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     const a = c.a;
     const before = c.errors;
     for (retired) |entry| if (src.get(config, entry.key) != .null) c.fail("glint: `{s}` is retired: {s}", .{ entry.key, entry.instead });
+    const policy_kind = family.of(src.get(config, family.key)) catch fail: {
+        c.fail("{s}", .{family.refusal});
+        break :fail .family;
+    };
 
     var base: glint.Config = glint.Config.none();
     base.strict_suppressions = true;
@@ -355,16 +360,23 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     for (defaults) |entry| {
         var weight = entry.weight;
         for (chosen.items) |amendment| if (amendment.rule == entry.rule) {
-            // A repository may only raise a rule: a lower level would be a hole in the
-            // family's bar, and `report` on a finding rule would read as a choice and do nothing.
+            // Under the family's policy a repository may only raise a rule: a lower level would
+            // be a hole in the family's bar. Without it a project sets any level, and the lint
+            // shows each one below the default, so the choice is seen.
             const asked: Weight = switch (amendment.level) {
                 .gate => .gate,
                 .report => .report,
                 .off => .off,
             };
-            if (rank(asked) < rank(entry.weight)) {
-                c.fail("glint: {s} is {t} in preflight's default policy, and a repository may only raise a rule, not set it to {t}", .{ nameOf(entry.rule), entry.weight, amendment.level });
-            } else weight = asked;
+            if (rank(asked) >= rank(entry.weight)) {
+                weight = asked;
+            } else if (policy_kind == .family) {
+                c.fail("glint: {s} is {t} in preflight's default policy, and under the family's policy a repository may only raise a rule, not set it to {t}", .{ nameOf(entry.rule), entry.weight, amendment.level });
+            } else {
+                c.report("glint: {s} is set to {t}, below preflight's default ({t})\n", .{ nameOf(entry.rule), amendment.level, entry.weight });
+                c.notes += 1;
+                weight = asked;
+            }
         };
         if (weight == .finding) try findings.append(a, entry.rule);
         try all.append(a, .{ .rule = entry.rule, .level = levelOf(weight) });
@@ -736,14 +748,15 @@ test "a repository amends the policy by rule and cannot swap it for another prof
     try std.testing.expectEqual(@as(usize, 2), amended.ceilings[0].sites);
     try std.testing.expect(amended.base.strict_suppressions);
     for ([_][]const u8{
-        // A repository may only raise a rule: nothing turns one off or lowers it, and
-        // `report` on a finding rule, which used to do nothing in silence, fails by name.
-        "{\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"}]}}",
-        "{\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}}",
-        "{\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}",
-        "{\"glint\":{\"rules\":[{\"id\":\"Z011\",\"level\":\"report\"}]}}",
-        "{\"glint\":{\"rules\":[{\"id\":\"A002\",\"level\":\"report\"}]}}",
-        "{\"glint\":{\"rules\":[{\"id\":\"A009\",\"level\":\"off\"}]}}",
+        // Under the family's policy a repository may only raise a rule: nothing turns one off
+        // or lowers it, and `report` on a finding rule, which used to do nothing in silence,
+        // fails by name.
+        "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"P005\",\"level\":\"off\"}]}}",
+        "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}}",
+        "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}",
+        "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"Z011\",\"level\":\"report\"}]}}",
+        "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"A002\",\"level\":\"report\"}]}}",
+        "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"A009\",\"level\":\"off\"}]}}",
         "{\"glint\":{\"strict_suppressions\":false}}",
         "{\"glint\":{\"profile\":\"none\"}}",
         "{\"glint\":{\"rule\":[]}}",
@@ -779,11 +792,32 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"debug_print_exceptions\":\"ci/d.json\"}",
         "{\"ziglint_paths\":[\"src\"]}",
         "{\"glint_config\":\"ci/glint.json\"}",
+        // A policy misspelt holds the project to none.
+        "{\"policy\":\"famliy\"}",
     }) |text| {
         c.errors = 0;
         try std.testing.expectEqual(@as(?Policy, null), try parse(&c, try parsed(c.a, text), test_shipped));
         try std.testing.expect(c.errors != 0);
     }
+}
+
+test "without the family's policy a project lowers a rule, even to off, and the lint shows each one lowered" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
+    var held: std.Io.Writer.Allocating = .init(c.a);
+    c.held = &held;
+    const lowered = (try parse(&c, try parsed(c.a,
+        \\{"glint":{"rules":[{"id":"P005","level":"off"},{"id":"Z011","level":"report"},{"id":"Z006","level":"gate"}]}}
+    ), test_shipped)).?;
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    try std.testing.expectEqual(.off, lowered.base.level(.P005));
+    try std.testing.expect(!lowered.fails(.P005) and !lowered.fails(.Z011));
+    try std.testing.expectEqual(.gate, lowered.base.level(.Z006));
+    // Two lowered, each shown; the raised one is no note.
+    try std.testing.expectEqual(@as(usize, 2), c.notes);
+    try std.testing.expect(std.mem.find(u8, held.written(), "glint: P005 is set to off, below preflight's default") != null);
+    try std.testing.expect(std.mem.find(u8, held.written(), "glint: Z011 is set to report, below preflight's default") != null);
 }
 
 test "a file is configured by its path: ceilings, exceptions, vendored forks and test support" {

@@ -402,6 +402,32 @@ test "a manifest whose version is not the changelog's newest release fails the l
     try std.testing.expect(std.mem.find(u8, result.stderr, "build.zig.zon: .version is 0.0.0 and CHANGELOG.md's newest release is 0.1.0") != null);
 }
 
+/// The fixture with no shakedown among its dependencies.
+fn withoutShakedown(a: std.mem.Allocator, dir: std.Io.Dir) !void {
+    const shakedown = try shakedownPin(a);
+    try edit(a, dir, "build.zig.zon", try a.print(", .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\", .lazy = true }}", .{ std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) }), "");
+}
+
+/// The fixture as a stranger's project: its configuration names no policy.
+fn adapting(a: std.mem.Allocator, dir: std.Io.Dir) !void {
+    try edit(a, dir, "ci/preflight.json", "\"policy\": \"family\", ", "");
+}
+
+test "without the family's policy, a project that doesn't release with bay keeps its CHANGELOG its own" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try adapting(a, tmp.dir);
+    // The same CHANGELOG the family's policy refuses (the test before): not bay's to read here.
+    try edit(a, tmp.dir, "CHANGELOG.md", "## [Unreleased]\n", "## [Unreleased]\n\n## [0.1.0] - 2026-10-21\n\n### Added\n\n- The sample.\n");
+    const result = try lintFixture(a, tmp.dir);
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+}
+
 test "a test the default build compiles ReleaseFast passes the lint, and a program it installs ReleaseFast fails it by name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -429,6 +455,32 @@ test "a test the default build compiles ReleaseFast passes the lint, and a progr
     try std.testing.expect(!command.succeeded(installed));
     try std.testing.expect(std.mem.find(u8, installed.stderr, "release: sample-tool is installed fast although no mode was chosen") != null);
     try std.testing.expect(std.mem.find(u8, installed.stderr, "sample-fast") == null);
+}
+
+test "without the family's policy, a program the build installs ReleaseFast is the project's choice" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try adapting(a, tmp.dir);
+    const anchor = "    b.step(\"check\", \"Compile the sample\").dependOn(&tests.step);\n";
+    try tmp.dir.createDirPath(std.testing.io, "tool");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tool/main.zig", .data = "pub fn main() void {}\n" });
+    // The program the family's policy refuses (the test before).
+    try edit(a, tmp.dir, "build.zig", anchor, anchor ++
+        \\    b.installArtifact(b.addExecutable(.{ .name = "sample-tool", .root_module = b.createModule(.{ .root_source_file = b.path("tool/main.zig"), .target = target, .optimize = .fast }) }));
+        \\
+    );
+    const installed = try lintFixture(a, tmp.dir);
+    if (!command.succeeded(installed)) std.debug.print("{s}\n", .{installed.stderr});
+    try std.testing.expect(command.succeeded(installed));
+    // A policy misspelt is refused by name, never read as none.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = "{\"policy\": \"famliy\", \"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"]}\n" });
+    const misspelt = try lintFixture(a, tmp.dir);
+    try std.testing.expect(!command.succeeded(misspelt));
+    try std.testing.expect(std.mem.find(u8, misspelt.stderr, "the one policy is \"family\"") != null);
 }
 
 test "hosted output appends to existing records" {
@@ -1006,6 +1058,34 @@ test "the consumer check builds the package as a dependency with nothing fetched
     try std.testing.expect(std.mem.find(u8, broken.stderr, "no member named 'missing'") != null);
 }
 
+test "a package wired without bay, as sample/zero is, asks its consumers to fetch no preflight" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "zero/src", "app" }) |path| try tmp.dir.createDirPath(io, path);
+    for ([_][]const u8{ "build.zig", "src/zero.zig" }) |path| {
+        const input = try std.Io.Dir.path.join(a, &.{ root, "sample/zero", path });
+        try tmp.dir.writeFile(io, .{ .sub_path = try std.Io.Dir.path.join(a, &.{ "zero", path }), .data = try aegis.own.readFile(io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024)) });
+    }
+    // preflight pinned where nothing can fetch it: a consumer that asked for it would fail.
+    try tmp.dir.writeFile(io, .{ .sub_path = "zero/build.zig.zon", .data = ".{ .name = .zero, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0xabdef192ebc14a5a, .paths = .{ \"build.zig\", \"build.zig.zon\", \"src\" }, .dependencies = .{ .preflight = .{ .url = \"https://invalid.invalid/preflight.tar.gz\", .hash = \"preflight-0.0.0-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\", .lazy = true } } }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "app/build.zig.zon", .data = ".{ .name = .app, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0xc96e70cf9c44da0e, .paths = .{\"\"}, .dependencies = .{ .zero = .{ .path = \"../zero\" } } }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "app/build.zig", .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void {\n    _ = b.dependency(\"zero\", .{}).module(\"zero\");\n}\n" });
+    var app = try tmp.dir.openDir(io, "app", .{});
+    defer app.close(io);
+    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a) }, .cwd = .{ .dir = app } });
+    if (!command.succeeded(built)) std.debug.print("{s}\n", .{built.stderr});
+    try std.testing.expect(command.succeeded(built));
+    // Unguarded, the dependency's build asks for its lazy preflight, and the consumer fetches it.
+    try edit(a, tmp.dir, "zero/build.zig", "if (b.pkg_hash.len == 0) ", "");
+    const fetching = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a) }, .cwd = .{ .dir = app } });
+    try std.testing.expect(!command.succeeded(fetching));
+    try std.testing.expect(std.mem.find(u8, fetching.stderr, "invalid.invalid") != null);
+}
+
 fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u8, to: []const u8) !void {
     const io = std.testing.io;
     const text = try aegis.own.readFile(io, dir, path, a, .fromRaw(1024 * 1024));
@@ -1356,6 +1436,37 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "pub fn main() !void {\n    return error.Broken;\n}\n" });
     const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(broken));
+}
+
+test "without shakedown a stranger's benchmarks are built, smoke-run and run, with nothing compared; the family's policy refuses them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try withoutShakedown(a, tmp.dir);
+    try tmp.dir.createDirPath(io, "bench");
+    try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "const sample = @import(\"preflight_sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
+    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = imports, .target = target, .optimize = optimize }";
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
+    const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(refused));
+    try std.testing.expect(std.mem.find(u8, refused.stderr, "under the family's policy benchmarks measure through shakedown.bench") != null);
+    try adapting(a, tmp.dir);
+    const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(tested)) std.debug.print("{s}\n", .{tested.stderr});
+    try std.testing.expect(command.succeeded(tested));
+    const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(timed)) std.debug.print("{s}\n", .{timed.stderr});
+    try std.testing.expect(command.succeeded(timed));
+    try tmp.dir.access(io, if (builtin.target.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
+    // Two revisions compared is shakedown's: there is no comparison step to run.
+    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(command.succeeded(listed));
+    try std.testing.expect(std.mem.find(u8, listed.stdout, "bench-build") != null);
+    try std.testing.expect(std.mem.find(u8, listed.stdout, "bench-ab") == null);
 }
 
 test "owner cross objects retain SDK declarations and validate every artifact" {
@@ -1773,6 +1884,23 @@ test "the hardened run backs the test allocator with shakedown's quarantine: a r
         try std.testing.expect(faulted);
         try std.testing.expect(std.mem.find(u8, bad.stderr, "sample.zig:8") != null);
     }
+}
+
+test "without shakedown a stranger's hardened run is on std's allocator; the family's policy refuses it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try withoutShakedown(a, tmp.dir);
+    const refused = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(refused));
+    try std.testing.expect(std.mem.find(u8, refused.stderr, "under the family's policy the hardened run backs std.testing.allocator with shakedown's quarantine") != null);
+    try adapting(a, tmp.dir);
+    const ran = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(ran)) std.debug.print("{s}", .{ran.stderr});
+    try std.testing.expect(command.succeeded(ran));
 }
 
 test "toolchain facts come from the configured build including options and generated test roots" {

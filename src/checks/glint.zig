@@ -513,12 +513,13 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger(A019): the same type\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":1}}}}", .{}));
-    // A discarded error fails unless its reason is written at the site; a repository cannot
-    // lower it to a report.
+    // A discarded error fails unless its reason is written at the site; under the family's
+    // policy a repository cannot lower it to a report, and without it the report is its choice.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
     const reported = "{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}";
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expect(try f.run(reported, .{}) != 0);
+    try std.testing.expect(try f.run("{\"policy\":\"family\"," ++ reported[1..], .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(reported, .{}));
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    // glint-ignore: Z026 -- cleanup after a failure the caller already gets\n    f() catch {};\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
 }

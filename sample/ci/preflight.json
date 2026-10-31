@@ -1,1 +1,1 @@
-{"sources": ["src"], "test_roots": ["src/sample.zig"]}
+{"policy": "family", "sources": ["src"], "test_roots": ["src/sample.zig"]}

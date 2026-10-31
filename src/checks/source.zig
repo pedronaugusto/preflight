@@ -3,6 +3,7 @@ const aegis = @import("aegis");
 const Io = std.Io;
 const gantry = @import("gantry");
 const configure = @import("../configure.zig");
+const family = @import("../family.zig");
 
 pub const Value = std.json.Value;
 pub const Context = struct {
@@ -34,6 +35,12 @@ pub const Context = struct {
     pub fn buildCommand(c: Context) []const []const u8 {
         if (c.bay) |bay| return c.a.dupe([]const u8, &.{ bay, "dev" }) catch @panic("OOM");
         return c.a.dupe([]const u8, &.{ c.zig, "build" }) catch @panic("OOM");
+    }
+
+    /// How the project runs `step` of its build, for a message to name: `bay <step>` when it is
+    /// developed with bay, else `zig build <step>`.
+    pub fn stepCommand(c: Context, step: []const u8) []const u8 {
+        return c.a.print("{s} {s}", .{ if (c.bay != null) "bay" else "zig build", step }) catch @panic("OOM");
     }
 
     /// bay, when the manifest here declares `.dev_dependencies`: `BAY`, which bay
@@ -120,6 +127,12 @@ pub const Context = struct {
         return true;
     }
 };
+
+/// The policy `config` names, the family's for one it misnames: the build and the lint
+/// refuse that by name, and nothing they would have held passes meanwhile.
+pub fn policy(config: Value) family.Policy {
+    return family.of(get(config, family.key)) catch .family;
+}
 
 pub fn get(v: Value, key: []const u8) Value {
     return if (v == .object) v.object.get(key) orelse .null else .null;

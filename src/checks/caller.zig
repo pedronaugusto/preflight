@@ -158,7 +158,7 @@ const own_ref = "preflight-ref: ${{ github.sha }}\n";
 /// `generate` makes it now for the package's pins and configuration.
 fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: ?[]const u8, own: bool, manifest: []const u8, drops: []const []const u8) ![]const u8 {
     const given = if (std.mem.eql(u8, found.config, "ci/workflow.json")) null else found.config;
-    const label = try workflow.heading(c.a, given, path, found.working_directory, own);
+    const label = try workflow.heading(c.a, given, path, found.working_directory, own, c.stepCommand("generate"));
     var config = try workflow.configuration(c.*, found.config);
     if (sdk) |add| try add(c, &config, found.gate);
     return workflow.generate(c.*, config, manifest, found.gate, own, label, existing, drops) catch |err| {
@@ -188,7 +188,7 @@ fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     const existing = try at_top.read(path);
     const own = std.mem.find(u8, existing, own_ref) != null;
     if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}))) return;
-    c.fail("{s} is not what generate makes for this package's pins and {s}: run `bay generate` and commit it", .{ path, found.config });
+    c.fail("{s} is not what generate makes for this package's pins and {s}: run `{s}` and commit it", .{ path, found.config, c.stepCommand("generate") });
     return error.CallerRefused;
 }
 

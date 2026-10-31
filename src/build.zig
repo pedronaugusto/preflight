@@ -10,6 +10,7 @@ const bench = @import("bench.zig");
 const fuzz = @import("fuzz.zig");
 const hardened = @import("hardened.zig");
 const vm = @import("vm.zig");
+const family = @import("family.zig");
 const Tool = @import("tool.zig").Tool;
 
 pub const Config = struct {
@@ -36,8 +37,9 @@ pub const Config = struct {
     /// that runs no native tests (a freestanding target), and visibly so.
     hardened: ?Hardened = .{},
     /// Installed artifacts the build makes ReleaseFast or ReleaseSmall although the caller
-    /// chose no mode, each with the measurement that says why: any other one fails the lint,
-    /// since what the family ships is ReleaseSafe.
+    /// chose no mode, each with the measurement that says why: under the family's policy
+    /// (`ci/preflight.json`) any other one fails the lint, since what the family ships is
+    /// ReleaseSafe.
     release_fast: []const ReleaseFast = &.{},
     /// Continuous fuzzing: the step `zig build fuzz` fuzzes, one whose every
     /// test binary has a `check` property or a fuzz test, since the fuzzer
@@ -215,6 +217,12 @@ const Steps = struct {
         // The structure program reads its configuration through preflight's own aegis.
         const aegis = pkg.dependency("aegis", .{ .target = host, .optimize = .debug }).module("aegis");
         const executable = steps.checksTool(b, pkg, host) orelse return;
+        // What the project holds itself to, from its configuration: a policy misspelt is refused,
+        // and held to the family's meanwhile, so nothing it would have caught passes.
+        const policy = configure.policy(package, config.config) orelse refused: {
+            config.tests.dependOn(&b.addFail(b.fmt("{s}: {s}", .{ config.config, family.refusal })).step);
+            break :refused .family;
+        };
         const timeout = config.test_timeout.duration() orelse fail: {
             config.tests.dependOn(&b.addFail("test_timeout: a bound needs its reason and must fit u64 nanoseconds; off needs its reason").step);
             break :fail std.Io.Duration.zero;
@@ -236,8 +244,8 @@ const Steps = struct {
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
-        const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active });
-        const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke);
+        const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy });
+        const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         // `check` compiles what the fast tier's cross-compile jobs do, for each target they
@@ -316,7 +324,7 @@ const Steps = struct {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
         steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
-        releaseModes(b, config);
+        if (policy == .family) releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
         if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
@@ -431,8 +439,8 @@ fn exported(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
     }
 }
 
-/// Each installed artifact the build makes ReleaseFast or ReleaseSmall while the caller chose no
-/// mode fails the lint, unless `Config.release_fast` names it with its measurement; a name that
+/// Under the family's policy, each installed artifact the build makes ReleaseFast or ReleaseSmall
+/// while the caller chose no mode fails the lint, unless `Config.release_fast` names it with its measurement; a name that
 /// matches no such artifact fails too, so an exception cannot outlive its artifact. Installed is
 /// what an install step below the default one copies out: a test the default build only compiles
 /// in another mode (shuttle's suite again in ReleaseFast) ships nothing.

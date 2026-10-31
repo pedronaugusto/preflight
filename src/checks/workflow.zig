@@ -4,6 +4,7 @@ const std = @import("std");
 const src = @import("source.zig");
 const zon = @import("../zon.zig");
 const matrix = @import("matrix.zig");
+const family = @import("../family.zig");
 
 const template = @embedFile("caller.yml");
 /// The line every generated caller starts with, up to how it was generated: the
@@ -16,24 +17,26 @@ comptime {
 /// The caller's usual place, from the repository's top.
 pub const default_path = ".github/workflows/ci.yml";
 /// How a caller was generated, as its first line records it after `header`:
-/// `<config>: bay generate`, then after ` -- ` what `generate` was given beyond its
-/// defaults (`--self`, `--workflow <path>`, `--config <config>`, `--working-directory <directory>`).
-pub fn heading(a: std.mem.Allocator, config: ?[]const u8, path: []const u8, working_directory: ?[]const u8, own: bool) ![]const u8 {
+/// `<config>: <generator>`, the project's own command (`bay generate`, or `zig build generate`
+/// without bay), then after ` -- ` what `generate` was given beyond its defaults (`--self`,
+/// `--workflow <path>`, `--config <config>`, `--working-directory <directory>`).
+pub fn heading(a: std.mem.Allocator, config: ?[]const u8, path: []const u8, working_directory: ?[]const u8, own: bool, generator: []const u8) ![]const u8 {
     var flags: std.Io.Writer.Allocating = .init(a);
     if (own) try flags.writer.writeAll(" --self");
     if (!std.mem.eql(u8, path, default_path)) try flags.writer.print(" --workflow {s}", .{path});
     if (config) |given| try flags.writer.print(" --config {s}", .{given});
     if (working_directory) |given| try flags.writer.print(" --working-directory {s}", .{given});
     const given = flags.written();
-    return a.print("{s}: bay generate{s}{s}", .{ config orelse "ci/workflow.json", if (given.len == 0) "" else " --", given });
+    return a.print("{s}: {s}{s}{s}", .{ config orelse "ci/workflow.json", generator, if (given.len == 0) "" else " --", given });
 }
 
 /// What a caller's first line says it was generated with; null for a file preflight did not generate.
 pub const Planned = struct { config: []const u8, working_directory: ?[]const u8 };
 
-/// The commands a caller's first line has named: `generate`'s, and `plan --workflow`'s before
-/// it (preflight 0.16.0 and earlier), so a caller from then is found and generated again.
-const commands = [_][]const u8{ ": bay generate", ": zig build plan -- " };
+/// The commands a caller's first line has named: `generate`'s under bay and without it, and
+/// `plan --workflow`'s before it (preflight 0.16.0 and earlier), so a caller from then is found
+/// and generated again.
+const commands = [_][]const u8{ ": bay generate", ": zig build generate", ": zig build plan -- " };
 
 pub fn planned(text: []const u8) ?Planned {
     if (!std.mem.startsWith(u8, text, header)) return null;
@@ -54,12 +57,12 @@ test "a caller's first line says how it was generated, with no flags or with the
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const plain = try heading(a, null, default_path, null, false);
+    const plain = try heading(a, null, default_path, null, false, "bay generate");
     try std.testing.expectEqualStrings("ci/workflow.json: bay generate", plain);
     const read = planned(try std.mem.concat(a, u8, &.{ header, plain, "\nname: CI\n" })).?;
     try std.testing.expectEqualStrings("ci/workflow.json", read.config);
     try std.testing.expect(read.working_directory == null);
-    const elsewhere = try heading(a, "sample/ci/workflow.json", default_path, "sample", true);
+    const elsewhere = try heading(a, "sample/ci/workflow.json", default_path, "sample", true, "bay generate");
     try std.testing.expectEqualStrings("sample/ci/workflow.json: bay generate -- --self --config sample/ci/workflow.json --working-directory sample", elsewhere);
     const there = planned(try std.mem.concat(a, u8, &.{ header, elsewhere, "\n" })).?;
     try std.testing.expectEqualStrings("sample/ci/workflow.json", there.config);
@@ -69,6 +72,12 @@ test "a caller's first line says how it was generated, with no flags or with the
     try std.testing.expectEqualStrings("sample/ci/workflow.json", old.config);
     try std.testing.expectEqualStrings("sample", old.working_directory.?);
     try std.testing.expect(planned("name: CI\n") == null);
+    // A project without bay generates with zig build, and its caller says so.
+    const plain_zig = try heading(a, null, default_path, "sample", false, "zig build generate");
+    try std.testing.expectEqualStrings("ci/workflow.json: zig build generate -- --working-directory sample", plain_zig);
+    const read_zig = planned(try std.mem.concat(a, u8, &.{ header, plain_zig, "\n" })).?;
+    try std.testing.expectEqualStrings("ci/workflow.json", read_zig.config);
+    try std.testing.expectEqualStrings("sample", read_zig.working_directory.?);
 }
 
 const repository = "git+https://github.com/pedronaugusto/preflight";
@@ -110,8 +119,24 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
 /// (`costs.json` beside it) as `measured`.
 pub fn configuration(c: src.Context, path: []const u8) !src.Value {
     var config = try c.options(path);
-    const costs = try std.Io.Dir.path.join(c.a, &.{ std.Io.Dir.path.dirname(path) orelse ".", "costs.json" });
+    const directory = std.Io.Dir.path.dirname(path) orelse ".";
+    const costs = try std.Io.Dir.path.join(c.a, &.{ directory, "costs.json" });
     if (config == .object and try c.exists(costs)) try config.object.put(c.a, "measured", try c.json(costs));
+    // The project's policy, which the planner holds the hardened jobs to, is the source checks'
+    // configuration's, beside this one: one key, read by the build and the checks alike.
+    if (config == .object) {
+        if (config.object.contains(family.key)) {
+            c.report("{s}: `{s}` is set in preflight.json beside it, not here\n", .{ path, family.key });
+            return error.InvalidWorkflowConfig;
+        }
+        const preflight = try std.Io.Dir.path.join(c.a, &.{ directory, "preflight.json" });
+        const policy = src.get(try c.options(preflight), family.key);
+        _ = family.of(policy) catch {
+            c.report("{s}: {s}\n", .{ preflight, family.refusal });
+            return error.InvalidWorkflowConfig;
+        };
+        if (policy != .null) try config.object.put(c.a, family.key, policy);
+    }
     return config;
 }
 

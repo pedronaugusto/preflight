@@ -144,8 +144,10 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
         error.CallerRefused => return error.CheckFailed,
         else => return err,
     };
-    try checks.release.versionAgrees(c);
-    try checks.release.changelogNamesChanges(c, try modules(c.a, args.module));
+    if (checks.release.held(c, src.policy(try c.options("ci/preflight.json")))) {
+        try checks.release.versionAgrees(c);
+        try checks.release.changelogNamesChanges(c, try modules(c.a, args.module));
+    }
     if (c.errors != 0) return error.CheckFailed;
     const working = args.working_directory orelse planned orelse ".";
     const config_path = args.config orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
@@ -370,14 +372,16 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     try checks.manifest.paths(c, config);
     timer.end(c.*, log);
     if (c.errors != 0) return;
-    timer = stage(c, "release version");
-    try checks.release.versionAgrees(c);
-    timer.end(c.*, log);
-    if (c.errors != 0) return;
-    timer = stage(c, "changelog");
-    try checks.release.changelogNamesChanges(c, exported);
-    timer.end(c.*, log);
-    if (c.errors != 0) return;
+    if (checks.release.held(c, src.policy(config))) {
+        timer = stage(c, "release version");
+        try checks.release.versionAgrees(c);
+        timer.end(c.*, log);
+        if (c.errors != 0) return;
+        timer = stage(c, "changelog");
+        try checks.release.changelogNamesChanges(c, exported);
+        timer.end(c.*, log);
+        if (c.errors != 0) return;
+    }
     for (try src.items(src.get(config, "extra_checks"))) |command| {
         const argv = try checks.docs.zigCommand(c.a, c.buildCommand(), command);
         timer = stage(c, try std.mem.join(c.a, " ", argv));

@@ -1,5 +1,6 @@
 const std = @import("std");
 const src = @import("source.zig");
+const family = @import("../family.zig");
 
 pub const hosts = [_][]const u8{ "ubuntu-latest", "macos-latest", "windows-latest" };
 /// The `shards` keys of `ci/workflow.json`, in `hosts` order.
@@ -83,9 +84,10 @@ const workflow_options = [_][]const u8{
     "cross_seconds",    "compile_once",        "portable_hosts",     "hardened",
     "compile_step",     "setup_step",          "before_tests_step",  "windows_git_latest",
     "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout",
-    // `ci/costs.json`, which the planner reads beside the configuration, and the macOS
-    // targets whose build links a framework, which `plan` and `gate` read from the build.
-    "measured",         "sdk_targets",
+    // `ci/costs.json`, which the planner reads beside the configuration, the macOS
+    // targets whose build links a framework, which `plan` and `gate` read from the build,
+    // and the policy, read from `ci/preflight.json` beside it.
+    "measured",         "sdk_targets",         "policy",
 };
 
 fn shardCount(value: src.Value) !usize {
@@ -147,11 +149,20 @@ pub const Tier = enum {
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.appendSlice(a, try basePlan(a, config, tier));
-    // The hardened profile is every package's (aegis's design §7): there is no opting out,
-    // and a package with nothing to fuzz says so in its build's profile.
+    const policy = family.of(src.get(config, family.key)) catch {
+        problem = family.refusal;
+        return error.UnknownPolicy;
+    };
+    // Under the family's policy the hardened profile is every package's (aegis's design §7):
+    // there is no opting out, and a package with nothing to fuzz says so in its build's
+    // profile. Without it a package runs the profile when it says `"hardened": true`.
     const hardened = src.get(config, "hardened");
-    if (hardened != .null and !(hardened == .bool and hardened.bool)) return error.InvalidHardenedProfile;
-    if (tier == .release) {
+    if (hardened != .null and hardened != .bool) return error.InvalidHardenedProfile;
+    const planned = switch (policy) {
+        .family => if (hardened == .null or hardened.bool) true else return error.InvalidHardenedProfile,
+        .adapt => hardened == .bool and hardened.bool,
+    };
+    if (tier == .release and planned) {
         // Each runs the suite as the Linux test jobs do, so each has their time limit; the suite and its
         // ThreadSanitizer run split into shards as those jobs do, and a fuzz campaign is one job.
         const shards = src.get(config, "shards");
@@ -1102,7 +1113,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"],\"policy\":\"family\"}", .{})).value;
     const jobs = try plan(a, config, .release);
     const expected = [_][]const u8{
         "test (ubuntu-latest, Debug)",                          "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
@@ -1113,7 +1124,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
         "source checks and documented snippets",                "compile (ubuntu-latest, ReleaseSmall)", "compile (macos-latest, ReleaseSmall)",
         "compile (windows-latest, ReleaseSmall)",               "Cross compile",                         "test (riscv64-linux on its kernel under QEMU, Debug)",
         "test (x86_64-freebsd on its kernel under KVM, Debug)",
-        // The hardened profile is every package's.
+        // Under the family's policy the hardened profile is every package's.
         "hardened",                              "hardened-fuzz",
         "hardened-tsan",
     };
@@ -1226,6 +1237,36 @@ test "a macOS link that needs no framework runs on Linux; one that links a frame
     try std.testing.expectError(error.InvalidSdkTargets, plan(a, wrong, .release));
 }
 
+test "the hardened jobs are every package's under the family's policy, and without it a package's that says hardened" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Case = struct { []const u8, ?usize };
+    for ([_]Case{
+        // The family's: planned with or without the key, and no opting out.
+        .{ "{\"policy\":\"family\"}", 3 },
+        .{ "{\"policy\":\"family\",\"hardened\":true}", 3 },
+        .{ "{\"policy\":\"family\",\"hardened\":false}", null },
+        // A stranger's: only when asked for.
+        .{ "{}", 0 },
+        .{ "{\"hardened\":false}", 0 },
+        .{ "{\"hardened\":true}", 3 },
+        .{ "{\"hardened\":\"yes\"}", null },
+    }) |case| {
+        const config = (try std.json.parseFromSlice(src.Value, a, case[0], .{})).value;
+        const want = case[1] orelse {
+            try std.testing.expectError(error.InvalidHardenedProfile, plan(a, config, .release));
+            continue;
+        };
+        var found: usize = 0;
+        for (try plan(a, config, .release)) |job| {
+            if (std.mem.startsWith(u8, job.step, "hardened")) found += 1;
+        }
+        try std.testing.expectEqual(want, found);
+    }
+    try std.testing.expectError(error.UnknownPolicy, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"policy\":\"famliy\"}", .{})).value, .release));
+}
+
 test "hardened planner schedules native execution with no portable sanitizer replay" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1246,7 +1287,7 @@ test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitiz
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":45,\"shards\":{\"linux\":2,\"tsan\":8}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":45,\"shards\":{\"linux\":2,\"tsan\":8},\"policy\":\"family\"}", .{})).value;
     try validate(a, config);
     var counts = [_]usize{ 0, 0, 0 };
     for (try plan(a, config, .release)) |job| for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, &counts) |step, *count| {
@@ -1257,7 +1298,7 @@ test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitiz
     };
     try std.testing.expectEqual([_]usize{ 2, 1, 8 }, counts);
     // Without a count of its own, ThreadSanitizer's run splits as the suite does.
-    const plain = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"linux\":3}}", .{})).value;
+    const plain = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"linux\":3},\"policy\":\"family\"}", .{})).value;
     var tsan: usize = 0;
     for (try plan(a, plain, .release)) |job| if (std.mem.eql(u8, job.step, "hardened-tsan")) {
         tsan += 1;

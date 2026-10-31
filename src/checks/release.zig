@@ -7,6 +7,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const changelog = @import("changelog");
 const src = @import("source.zig");
+const family = @import("../family.zig");
 const zon = @import("../zon.zig");
 const surface = @import("surface.zig");
 
@@ -50,6 +51,13 @@ pub fn declared(c: *src.Context) !std.SemanticVersion {
 /// in every gate, before its tag is made or after (uplink 0.9.0 and 0.9.1
 /// were tagged with the manifest at 0.8.7). A package that has released
 /// nothing yet has nothing to match.
+/// Whether the CHANGELOG is held to bay's format (`versionAgrees`, `changelogNamesChanges`): the
+/// project releases with bay, or holds itself to the family's policy. Otherwise it is the
+/// project's own, and preflight doesn't read it.
+pub fn held(c: *const src.Context, policy: family.Policy) bool {
+    return c.bay != null or policy == .family;
+}
+
 pub fn versionAgrees(c: *src.Context) !void {
     if (!try c.exists("CHANGELOG.md")) return;
     const newest = changelog.newestReleased(try c.read("CHANGELOG.md")) orelse return;
@@ -59,7 +67,7 @@ pub fn versionAgrees(c: *src.Context) !void {
         else => return err,
     };
     if (version.order(newest) == .eq) return;
-    c.fail("build.zig.zon: .version is {f} and CHANGELOG.md's newest release is {f}; a tag of this commit names the one the manifest declares, so set them to one release (`bay release` sets both)", .{ version, newest });
+    c.fail("build.zig.zon: .version is {f} and CHANGELOG.md's newest release is {f}; a tag of this commit names the one the manifest declares, so set them to one release{s}", .{ version, newest, if (c.bay != null) " (`bay release` sets both)" else "" });
 }
 
 /// The CHANGELOG against the package's public API since its last tag: a change to the surface

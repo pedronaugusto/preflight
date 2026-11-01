@@ -71,7 +71,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
                 run.addArg(arg);
                 continue;
             };
-            if (lib.directory) run.addDirectoryArg(b.graph.path(.zig_lib, arg)) else run.addFileArg(b.graph.path(.zig_lib, arg));
+            if (lib.directory) run.addDirectoryArg2(b.graph.path(.zig_lib, arg), .{}) else run.addFileArg2(b.graph.path(.zig_lib, arg), .{});
         }
         run.setCwd(if (command.scratch) b.tmpPath() else package.path(command.cwd orelse "."));
         run.has_side_effects = true;

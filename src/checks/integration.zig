@@ -214,6 +214,54 @@ test "a program the build makes for the host replays on another CPU: it is built
     try std.testing.expect(command.succeeded(executed));
 }
 
+test "a test given a path in its package and one in Zig's library replays with the replaying runner's own; any other path is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A program the tests run reads a file of the package and std, as a checker of sources does.
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
+        \\    step.dependOn(&b.addRunArtifact(tests).step);
+        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
+        \\    const reads = b.addRunArtifact(tool);
+        \\    reads.addFileArg(b.path("src/data.txt"));
+        \\    reads.addDirectoryArg(b.graph.path(.zig_lib, "std"));
+        \\    step.dependOn(&reads.step);
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/data.txt", .data = "replayed\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data =
+        \\const std = @import("std");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
+        \\    const data = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], init.arena.allocator(), .limited(64));
+        \\    if (!std.mem.eql(u8, data, "replayed\n")) return error.WrongFile;
+        \\    var lib = try std.Io.Dir.cwd().openDir(init.io, args[2], .{});
+        \\    defer lib.close(init.io);
+        \\    try lib.access(init.io, "std.zig", .{});
+        \\}
+        \\
+    });
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
+    try std.testing.expect(command.succeeded(compiled));
+    // The manifest names the package's file from the package root and std from Zig's library.
+    const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
+    try std.testing.expect(std.mem.find(u8, manifest, "\"src/data.txt\"") != null);
+    try std.testing.expect(std.mem.find(u8, manifest, "\"zig_lib\":[{\"index\":2,\"directory\":true}]") != null);
+    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
+    try std.testing.expect(command.succeeded(executed));
+    // A path outside the package and Zig's library is the building runner's own.
+    try edit(a, tmp.dir, "build.zig", "reads.addFileArg(b.path(\"src/data.txt\"));", "reads.addFileArg(.{ .cwd_relative = \"/\" });");
+    const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(refused));
+    try std.testing.expect(std.mem.find(u8, refused.stderr, "must not name a path the building runner has alone") != null);
+}
+
 /// The one Zig cache every fixture's build shares: each fixture is a fresh directory, and a
 /// cache of its own would build preflight's checks, its runner and its tools from cold, about
 /// a minute each time. Zig's cache is content-addressed and safe to share; what a fixture

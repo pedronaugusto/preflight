@@ -14,7 +14,13 @@ pub const Command = struct {
     /// The programs the tests run (`addProgram`), from the package root: an
     /// artifact upload drops their permission to run as it drops the tests'.
     programs: []const []const u8 = &.{},
+    /// The arguments (positions in `argv`) that are paths in Zig's library, each its path from
+    /// the library: the replaying runner's own Zig names them in its own.
+    zig_lib: []const ZigLib = &.{},
 };
+
+/// A path argument in Zig's library: `argv[index]`, a directory (`addDirectoryArg`) or a file.
+pub const ZigLib = struct { index: usize, directory: bool };
 
 const manifest_path = "zig-out/preflight/tests.json";
 /// Where `addProgram` installs, under the install prefix: inside what a
@@ -57,7 +63,16 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
         executable.addArg(command.argv[0]);
         for (command.programs) |program| executable.addArg(program);
         const run = b.addRunFile(package.path(command.argv[0]));
-        run.addArgs(command.argv[1..]);
+        for (command.argv[1..], 1..) |arg, index| {
+            const library = for (command.zig_lib) |path| {
+                if (path.index == index) break path;
+            } else null;
+            const lib = library orelse {
+                run.addArg(arg);
+                continue;
+            };
+            if (lib.directory) run.addDirectoryArg(b.graph.path(.zig_lib, arg)) else run.addFileArg(b.graph.path(.zig_lib, arg));
+        }
         run.setCwd(if (command.scratch) b.tmpPath() else package.path(command.cwd orelse "."));
         run.has_side_effects = true;
         // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; the recorded command needs .zig_test
@@ -158,6 +173,32 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) []const []const u8 {
     return programs.items;
 }
 
+/// A path argument as the replaying runner names its own copy of it: from the run's working
+/// directory `cwd` (from the package root; null for a fresh temporary one) where it is in the
+/// package or a dependency the package fetches into it, or from Zig's library. Any other path
+/// is the building runner's own.
+fn portablePath(b: *std.Build, package: *std.Build, path: std.Build.LazyPath, cwd: ?[]const u8) union(enum) { relative: []const u8, zig_lib: []const u8 } {
+    const absolute = switch (path) {
+        .relative => |relative| {
+            if (relative.base == .zig_lib) return .{ .zig_lib = relative.sub_path };
+            @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library");
+        },
+        .src_path => |source| source.owner.root.joinString(b.allocator, source.sub_path) catch @panic("OOM"),
+        .dependency => |dependency| dependency.dependency.builder.root.joinString(b.allocator, dependency.sub_path) catch @panic("OOM"),
+        else => @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library"),
+    };
+    const from = cwd orelse @panic("portable tests in a fresh temporary directory must not name a path in the package");
+    const io = b.graph.io;
+    const base = std.Io.Dir.cwd().realPathFileAlloc(io, package.root.joinString(b.allocator, from) catch @panic("OOM"), b.allocator) catch |err| std.debug.panic("portable tests: the run's directory: {t}", .{err});
+    const target = std.Io.Dir.cwd().realPathFileAlloc(io, absolute, b.allocator) catch |err| std.debug.panic("portable tests: {s}: {t}", .{ absolute, err });
+    const root = std.Io.Dir.cwd().realPathFileAlloc(io, package.root.joinString(b.allocator, ".") catch @panic("OOM"), b.allocator) catch |err| std.debug.panic("portable tests: the package root: {t}", .{err});
+    const inside = std.Io.Dir.path.relativeAlloc(b.allocator, root, null, root, target) catch @panic("OOM");
+    if (std.mem.startsWith(u8, inside, "..") or std.Io.Dir.path.isAbsolute(inside))
+        @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library");
+    const relative = std.Io.Dir.path.relativeAlloc(b.allocator, base, null, base, target) catch @panic("OOM");
+    return .{ .relative = if (relative.len == 0) "." else relative };
+}
+
 /// Whether `step` makes a fresh temporary directory, as `b.tmpPath()` does.
 fn temporary(step: *std.Build.Step) bool {
     const write = step.cast(std.Build.Step.WriteFile) orelse return false;
@@ -178,20 +219,6 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
         const name = b.fmt("test-{d}{s}", .{ commands.items.len, if (artifact.root_module.resolved_target.?.result.os.tag == .windows) ".exe" else "" });
         const install = b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "preflight/bin" } }, .dest_sub_path = name });
         compile.dependOn(&install.step);
-        var argv: std.ArrayList([]const u8) = .empty;
-        argv.append(b.allocator, b.fmt("zig-out/preflight/bin/{s}", .{name})) catch @panic("OOM");
-        for (run.argv.items[1..]) |arg| switch (arg) {
-            .bytes => |bytes| {
-                if (!std.mem.eql(u8, bytes, "--listen=-") and !std.mem.startsWith(u8, bytes, "--seed=")) argv.append(b.allocator, bytes) catch @panic("OOM");
-            },
-            .lazy_path => |path| {
-                if (!std.mem.eql(u8, path.prefix, "--cache-dir=")) @panic("portable tests must not contain absolute arguments");
-            },
-            .decorated_directory => |path| {
-                if (!std.mem.eql(u8, path.prefix, "--cache-dir=")) @panic("portable tests must not contain absolute arguments");
-            },
-            else => @panic("portable tests must not contain generated arguments"),
-        };
         var scratch = false;
         const cwd = if (run.cwd) |path| switch (path) {
             .src_path => |source| if (source.owner == package) source.sub_path else @panic("portable tests must use a repository-relative directory"),
@@ -202,7 +229,29 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
             },
             else => @panic("portable tests must use a repository-relative directory"),
         } else null;
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = programs }) catch @panic("OOM");
+        var argv: std.ArrayList([]const u8) = .empty;
+        var zig_lib: std.ArrayList(ZigLib) = .empty;
+        argv.append(b.allocator, b.fmt("zig-out/preflight/bin/{s}", .{name})) catch @panic("OOM");
+        for (run.argv.items[1..]) |arg| switch (arg) {
+            .bytes => |bytes| {
+                if (!std.mem.eql(u8, bytes, "--listen=-") and !std.mem.startsWith(u8, bytes, "--seed=")) argv.append(b.allocator, bytes) catch @panic("OOM");
+            },
+            inline .lazy_path, .decorated_directory => |path, kind| {
+                // The test runner's cache, which the replaying runner gives it anew.
+                if (std.mem.eql(u8, path.prefix, "--cache-dir=")) continue;
+                if (path.prefix.len != 0 or path.suffix.len != 0) @panic("portable tests must not decorate a path argument");
+                const directory = kind == .decorated_directory;
+                switch (portablePath(b, package, path.lazy_path, if (scratch) null else cwd orelse ".")) {
+                    .relative => |relative| argv.append(b.allocator, relative) catch @panic("OOM"),
+                    .zig_lib => |sub_path| {
+                        zig_lib.append(b.allocator, .{ .index = argv.items.len, .directory = directory }) catch @panic("OOM");
+                        argv.append(b.allocator, sub_path) catch @panic("OOM");
+                    },
+                }
+            },
+            else => @panic("portable tests must not contain generated arguments"),
+        };
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = programs, .zig_lib = zig_lib.items }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }

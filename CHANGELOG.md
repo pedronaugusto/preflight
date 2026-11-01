@@ -39,6 +39,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The test step runs the suite beside the lint, not after it: a red lint skipped every unit test, so a gate on a package whose lint fails reported without its tests having run. Both run now, and the step reports and fails on each.
 - The lint gives glint each file's package by the nearest `build.zig.zon` above it, by name and fingerprint: the checked package's own, a dependency's in its own tree, none for std's. Only the selected files had one, by name alone, so glint could not know aegis imported as a dependency by its identity.
 - The README's wiring without bay, and `sample/zero`, guard `lazyImport` with `b.pkg_hash.len == 0`: built as a dependency, a package wired so asked for its lazy preflight, and its consumers fetched it.
 - The lint reads an options module the build generates whole as it configures (`b.addOptions`, no option naming a path) as its module's file, its text from the configuration: an import of it, `release` in most of the family, named a module glint was told nothing of, so every site reading it was undecided.

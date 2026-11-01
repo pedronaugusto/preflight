@@ -392,7 +392,9 @@ const Steps = struct {
         fixing.has_side_effects = true;
         configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (std's assert as aegis's, older written reasons as escapes, unused escapes gone), then report what is left").dependOn(&fixing.step);
         if (steps.lint_enabled) {
-            orderTests(config.tests, steps.lint);
+            // The lint is beside the tests, not before them: a red lint still runs the suite,
+            // and the step reports and fails on each.
+            config.tests.dependOn(steps.lint);
             steps.ci.dependOn(steps.lint);
         }
     }
@@ -405,15 +407,6 @@ fn forceTests(step: *std.Build.Step) void {
         return;
     }
     for (step.dependencies.items) |dependency| forceTests(dependency);
-}
-
-// Only run steps acquire the lint prerequisite. Test compilation may overlap it.
-fn orderTests(step: *std.Build.Step, lint: *std.Build.Step) void {
-    if (step.tag == .run) {
-        step.dependOn(lint);
-        return;
-    }
-    for (step.dependencies.items) |dependency| orderTests(dependency, lint);
 }
 
 fn configurationOptions(b: *std.Build, run: *std.Build.Step.Run) void {

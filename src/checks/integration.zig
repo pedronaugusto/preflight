@@ -340,6 +340,27 @@ fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []
     if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
 }
 
+test "a red lint and a failing unit test are each reported: the suite runs whatever the lint gives" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A debug print the lint gates (P005), and a unit test that fails.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest \"the sample's own check\" {\n    try std.testing.expect(false);\n}\n" });
+    const format = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(format)) return error.FixtureFormatFailed;
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    _ = env.swapRemove("GITHUB_STEP_SUMMARY");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (std.mem.find(u8, result.stderr, "P005") == null or std.mem.find(u8, result.stderr, "the sample's own check") == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the build output it did not find both failures in
+    try std.testing.expect(result.term == .exited and result.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "P005") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "the sample's own check") != null);
+}
+
 test "the default policy reports a flow rule's site and does not fail the gate: an error input makes unreachable (A013)" {
     try lintSample("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", false);
 }

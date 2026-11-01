@@ -593,6 +593,9 @@ test "a danger site fails in production unless it carries the aegis escape; test
     const held = "{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2}}}}";
     try std.testing.expect(try f.run(paths, .{}) != 0);
     try std.testing.expectEqual(@as(usize, 0), try f.run(held, .{}));
+    // The escape covers both sites on its line, the cast and the alignment, so it counts 2:
+    // a second site under one escape is held as one more finding, never silent (pre-7 e01).
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":1}}}}", .{}) != 0);
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":3}}}}", .{}) != 0);
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":2}}}}", .{}) != 0);
     // An escape widened to a rule it did not cover is a new pair, however many escapes there

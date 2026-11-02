@@ -251,16 +251,16 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             unfinished += 1;
         } else if (note.reason == .unresolved) {
             unresolved += 1;
-            if (note.rule) |rule| if (chosen.fails(rule) and policy.inPack(rule)) {
+            if (note.rule) |rule| {
                 const count = undecided.getOrPutValue(c.a, rule, 0) catch @panic("OOM");
                 count.value_ptr.* += 1;
                 const start = sites.written().len;
                 sites.writer.print("glint: undecided: {s}:{d}: {s}: {s}\n", .{ file, lineAt(project.at(note.file).input.bytes, note.start), note.rule_name, note.detail }) catch @panic("OOM");
                 if (count.value_ptr.* <= printed) c.report("{s}", .{sites.written()[start..]});
-            };
+            }
         }
     }
-    ceilings(c, chosen, report, undecided);
+    ceilings(c, chosen, undecided);
     escapes(c, chosen, project, report);
     for (report.malformed) |entry| {
         const start = sites.written().len;
@@ -307,7 +307,8 @@ fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendore
     return out.items;
 }
 
-/// Each rule's findings and undecided sites, counted: the line a sizing or a review reads.
+/// Each rule's findings and undecided sites, counted: the line a sizing or a review reads. The
+/// pack's rules first, with what its escapes cover, then any other rule a site is undecided for.
 fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
     var line: std.Io.Writer.Allocating = .init(c.a);
     for (policy.project_rules) |rule| {
@@ -321,29 +322,27 @@ fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUn
         if (found == 0 and open == 0 and escaped == 0) continue;
         line.writer.print("{s}{s} {d}/{d}/{d}", .{ if (line.written().len == 0) "" else ", ", rule.definition.name, found, escaped, open }) catch @panic("OOM");
     }
+    for (undecided.keys(), undecided.values()) |rule, open| {
+        if (policy.inPack(rule)) continue;
+        line.writer.print("{s}{s} {d}/0/{d}", .{ if (line.written().len == 0) "" else ", ", ruleName(rule), shown.get(rule) orelse 0, open }) catch @panic("OOM");
+    }
     if (line.written().len != 0) c.report("preflight: glint: by rule (findings/escaped/undecided): {s}\n", .{line.written()});
 }
 
-/// A finding rule's undecided sites against the repository's ceiling (`glint.unresolved`, none
-/// by default): above it fails, since the count the reviews read may not grow; below it asks
-/// for the ceiling to come down to what is left.
-fn ceilings(c: *src.Context, chosen: policy.Policy, report: *const glint.Report, undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
-    for (chosen.findings) |rule| {
-        if (!policy.inPack(rule)) continue;
-        const count = undecided.get(rule) orelse 0;
+/// Each reporting rule's undecided sites against the repository's ceiling for it
+/// (`glint.unresolved`, none by default): above it fails, since the count the reviews read may
+/// not grow; below it asks for the ceiling to come down to what is left.
+fn ceilings(c: *src.Context, chosen: policy.Policy, undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
+    for (undecided.keys(), undecided.values()) |rule, count| {
         var ceiling: usize = 0;
-        var name: []const u8 = "";
         for (chosen.ceilings) |entry| if (entry.rule == rule) {
             ceiling = entry.sites;
-            name = entry.name;
         };
-        if (count > ceiling) {
-            for (report.diagnostics) |d| if (d.rule == rule) {
-                name = d.name;
-            };
-            if (name.len == 0) name = ruleName(rule);
-            c.fail("glint: {s} leaves {d} sites undecided, above the {d} `glint.unresolved` allows: the count may not grow", .{ name, count, ceiling });
-        } else if (count < ceiling) c.report("glint: {s} leaves {d} sites undecided, below its ceiling of {d}: lower `glint.unresolved.{s}` to {d}\n", .{ name, count, ceiling, name, count });
+        if (count > ceiling) c.fail("glint: {s} leaves {d} sites undecided, above the {d} `glint.unresolved` allows: the count may not grow", .{ ruleName(rule), count, ceiling });
+    }
+    for (chosen.ceilings) |entry| {
+        const count = undecided.get(entry.rule) orelse 0;
+        if (count < entry.sites) c.report("glint: {s} leaves {d} sites undecided, below its ceiling of {d}: lower `glint.unresolved.{s}` to {d}\n", .{ entry.name, count, entry.sites, entry.name, count });
     }
 }
 
@@ -684,15 +683,21 @@ test "the list of every finding names a vendored file's carried sites as carried
     try std.testing.expect(failing > printed);
 }
 
-test "a finding rule's undecided sites count against the repository's ceiling, which may not grow" {
+test "a reporting rule's undecided sites count against the repository's ceiling, which may not grow" {
     const f = try Fixture.init();
     defer f.deinit();
-    // `@setRuntimeSafety` with a computed argument: A019 cannot decide it.
+    // `@setRuntimeSafety` with a computed argument: A019, a finding, cannot decide it.
     try f.file("src/root.zig", "pub fn run(comptime on: bool) void {\n    @setRuntimeSafety(on);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":1}}}", .{}));
     // A ceiling above the count passes and asks to come down.
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":3}}}", .{}));
+    // A rule that only reports holds its undecided sites to a ceiling as a finding does: Z012
+    // cannot tell whether a type it cannot resolve is private.
+    try f.file("src/root.zig", "const dep = @import(\"dep\");\npub fn run() dep.T {\n    return undefined;\n}\n");
+    // The findings A007 and A015 leave the same site undecided, each held to its own ceiling.
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A007\":1,\"A015\":1}}}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A007\":1,\"A015\":1,\"Z012\":1}}}", .{}));
 }
 
 test "function length: the limit, a per-path ceiling and a reasoned exception that cannot grow or go stale" {

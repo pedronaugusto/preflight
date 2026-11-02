@@ -289,8 +289,9 @@ aegis's type or carries the one escape, `// aegis: <reason>: <why>`, whose reaso
 `no-danger`, `design`, `hot-loop`, `internal` or `boundary`. The run prints every escape
 with the rules it covers (all of them in `.zig-cache/preflight-lint/escapes.txt`), the
 first 25 findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when
-there are more) and a line of findings, escapes and undecided sites by rule. `zig build fix` (`bay dev fix`) writes glint's deterministic fixes into the sources first: std's `assert` as aegis's `assert.invariant`, a reason written the older way (`// safe:`, `// unreachable:`) as the escape, an escape that covers nothing gone. What is left is the sites whose answer is a design choice. A danger rule's undecided sites
-count against `glint.unresolved`, a ceiling per rule (none by default): above it fails,
+there are more) and a line of findings, escapes and undecided sites by rule. `zig build fix` (`bay dev fix`) writes glint's deterministic fixes into the sources first: std's `assert` as aegis's `assert.invariant`, a reason written the older way (`// safe:`, `// unreachable:`) as the escape, an escape that covers nothing gone. What is left is the sites whose answer is a design choice. The undecided sites of every
+rule that reports, a danger rule or any other, count against `glint.unresolved`, a ceiling per
+rule (none by default; a gating rule's undecided site stops the run instead): above it fails,
 since the count the reviews read may not grow, and below it the run asks for it to come
 down. The findings the escapes cover hold to `glint.escapes`, a count per reason and rule
 (none by default): one more than it holds fails, since a new escape, or one widened to a

@@ -70,9 +70,9 @@ const Entry = struct { rule: glint.Rule, weight: Weight };
 /// preflight's default policy, for any project with no configuration. Correctness gates, and so
 /// does a debug print the project forbids (P005). The aegis pack's danger rules
 /// (designs/aegis.md §7) weigh as findings in every package: each finds a site where a danger
-/// exists, and the site uses aegis's type or carries `// aegis: <reason>: <why>`; a site a rule
-/// cannot decide is counted against the repository's `unresolved` ceiling for it, which may
-/// not grow. A001-A005, which check aegis's types used wrongly, weigh the same. The rules that
+/// exists, and the site uses aegis's type or carries `// aegis: <reason>: <why>`. A site any
+/// rule that reports cannot decide is counted against the repository's `unresolved` ceiling
+/// for it, which may not grow (a gating rule's stops the run). A001-A005, which check aegis's types used wrongly, weigh the same. The rules that
 /// read the input or peer fact (A006 recursion on input, A009 input, A010 integers, A012
 /// bounded work, A013 contracts input reaches, A018 diagnostics, A020 cancellation) are
 /// reported until a fresh sample of each shows its noise near zero (designs/aegis.md §7). The
@@ -119,7 +119,7 @@ const pack = blk: {
 /// until a sample of its hits is read.
 const flow_rules = [_]glint.Rule{ glint.AegisPack.recursion, glint.AegisPack.untrusted_input, glint.AegisPack.integers, glint.AegisPack.bounded_work, glint.AegisPack.contracts, glint.AegisPack.diagnostics, glint.AegisPack.cancellation, glint.AegisPack.lock_order };
 
-/// Whether a rule is the aegis pack's: those whose undecided sites count against a ceiling.
+/// Whether a rule is the aegis pack's.
 pub fn inPack(id: glint.Rule) bool {
     for (glint.AegisPack.rules) |rule| if (rule.definition.id == id) return true;
     return false;
@@ -161,8 +161,8 @@ const retired_glint = [_]struct { key: []const u8, instead: []const u8 }{
 };
 
 pub const Limit = struct { pattern: *const gantry.rules.Pattern, lines: u32 };
-/// How many sites a rule may leave undecided in this repository: the count the reviews read,
-/// which may not grow.
+/// How many sites a rule that reports may leave undecided in this repository: the count the
+/// reviews read, which may not grow.
 pub const Ceiling = struct { rule: glint.Rule, name: []const u8, sites: usize };
 /// The reasons an aegis escape gives, in glint's order.
 pub const escape_reasons = [_][]const u8{ "no-danger", "design", "hot-loop", "internal", "boundary" };
@@ -184,7 +184,8 @@ pub const Policy = struct {
     /// When the aegis pack runs: where the program imports aegis, as glint finds it by aegis's
     /// identity, or always, under the family's policy.
     aegis: enum { imported, forced },
-    /// Undecided sites a finding rule may leave, by rule; a rule not named may leave none.
+    /// Undecided sites a rule that reports (a finding or a report) may leave, by rule; a rule
+    /// not named may leave none.
     ceilings: []const Ceiling = &.{},
     /// How many findings the package's aegis escapes cover, by reason and rule
     /// (`glint.escapes`): the count the reviews read, which only falls. A pair not
@@ -241,14 +242,16 @@ pub const Policy = struct {
     }
 
     /// The policy with the aegis pack off, for a program that imports no aegis: none of its
-    /// rules runs, fails or holds a ceiling or an escape count.
+    /// rules runs, fails or holds a ceiling or an escape count; the other rules keep theirs.
     pub fn withoutPack(policy: Policy, a: std.mem.Allocator) std.mem.Allocator.Error!Policy {
         var out = policy;
         for (project_rules) |rule| out.base = try withLevel(a, out.base, rule.definition.id, .off);
         var findings: std.ArrayList(glint.Rule) = .empty;
         for (policy.findings) |rule| if (!inPack(rule)) try findings.append(a, rule);
         out.findings = findings.items;
-        out.ceilings = &.{};
+        var ceilings: std.ArrayList(Ceiling) = .empty;
+        for (policy.ceilings) |ceiling| if (!inPack(ceiling.rule)) try ceilings.append(a, ceiling);
+        out.ceilings = ceilings.items;
         out.escapes = &.{};
         return out;
     }
@@ -436,7 +439,7 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     policy.exceptions = try parseExceptions(c, src.get(config, "function_exceptions"));
     policy.vendored = try parseVendored(c, src.get(config, "vendored"));
     policy.paths = try parsePaths(c, src.get(config, "glint_paths"));
-    policy.ceilings = try parseCeilings(c, src.get(block, "unresolved"), findings.items);
+    policy.ceilings = try parseCeilings(c, src.get(block, "unresolved"), policy.base);
     policy.escapes = try parseEscapes(c, src.get(block, "escapes"));
     policy.base.peer_writers = try parsePeerWriters(c, block);
     return if (c.errors == before) policy else null;
@@ -530,8 +533,9 @@ pub fn parsePeerWriters(c: *src.Context, block: src.Value) ![]const glint.Config
     return out.items;
 }
 
-/// `unresolved`: each finding rule's ceiling of undecided sites, by its name.
-fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule) ![]const Ceiling {
+/// `unresolved`: the ceiling of undecided sites of each rule that reports, by its name. A gating
+/// rule holds none (a site it leaves undecided stops the run), nor one that does not run.
+fn parseCeilings(c: *src.Context, value: src.Value, base: glint.Config) ![]const Ceiling {
     if (value == .null) return &.{};
     if (value != .object) {
         c.fail("glint: `unresolved` maps a rule to how many sites it may leave undecided", .{});
@@ -547,11 +551,16 @@ fn parseCeilings(c: *src.Context, value: src.Value, findings: []const glint.Rule
             c.fail("glint: unresolved: `{s}` is not a rule glint has", .{name});
             continue;
         };
-        var finding = false;
-        for (findings) |named| finding = finding or named == rule;
-        if (!finding or !inPack(rule)) {
-            c.fail("glint: unresolved: {s} is not one of the aegis pack's findings, so its undecided sites are not counted against a ceiling", .{name});
-            continue;
+        switch (base.level(rule)) {
+            .report => {},
+            .gate => {
+                c.fail("glint: unresolved: {s} gates, so a site it leaves undecided stops the run: it holds no ceiling", .{name});
+                continue;
+            },
+            .off => {
+                c.fail("glint: unresolved: {s} does not run, so it leaves no site undecided", .{name});
+                continue;
+            },
         }
         const count: usize = if (sites == .integer and sites.integer >= 1) std.math.cast(usize, sites.integer) orelse 0 else 0;
         if (count == 0) {
@@ -798,7 +807,8 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"glint\":{\"escapes\":{\"boundary\":{\"A999\":1}}}}",
         "{\"glint\":{\"escapes\":{\"boundary\":{\"Z006\":1}}}}",
         "{\"glint\":{\"escapes\":3}}",
-        "{\"glint\":{\"unresolved\":{\"Z006\":3}}}",
+        "{\"glint\":{\"unresolved\":{\"Z003\":3}}}",
+        "{\"glint\":{\"unresolved\":{\"Z024\":3}}}",
         "{\"glint\":{\"rules\":[{\"id\":\"P001\",\"level\":\"gate\"}]}}",
         "{\"glint\":{\"fact_budget\":0}}",
         "{\"glint\":{\"disallowed\":[{\"source\":\"src/a.zig\",\"declaration\":\"x\",\"reason\":\"\",\"replacement\":\"y\"}]}}",

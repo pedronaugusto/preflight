@@ -214,7 +214,7 @@ test "a program the build makes for the host replays on another CPU: it is built
     try std.testing.expect(command.succeeded(executed));
 }
 
-test "a test given a path in its package and one in Zig's library replays with the replaying runner's own; any other path is refused" {
+test "a test given a path in its package, one in Zig's library and Zig itself replays with the replaying runner's own; any other path is refused" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -222,13 +222,15 @@ test "a test given a path in its package and one in Zig's library replays with t
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    // A program the tests run reads a file of the package and std, as a checker of sources does.
+    // A program the tests run reads a file of the package and std and runs Zig, as a checker of
+    // sources that compiles them does.
     try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
         \\    step.dependOn(&b.addRunArtifact(tests).step);
         \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
         \\    const reads = b.addRunArtifact(tool);
         \\    reads.addFileArg(b.path("src/data.txt"));
         \\    reads.addDirectoryArg(b.graph.path(.zig_lib, "std"));
+        \\    reads.addFileArg(.zig_exe);
         \\    step.dependOn(&reads.step);
         \\
     );
@@ -242,6 +244,8 @@ test "a test given a path in its package and one in Zig's library replays with t
         \\    var lib = try std.Io.Dir.cwd().openDir(init.io, args[2], .{});
         \\    defer lib.close(init.io);
         \\    try lib.access(init.io, "std.zig", .{});
+        \\    const version = try std.process.run(init.arena.allocator(), init.io, .{ .argv = &.{ args[3], "version" } });
+        \\    if (version.term != .exited or version.term.exited != 0) return error.NoZig;
         \\}
         \\
     });
@@ -252,6 +256,7 @@ test "a test given a path in its package and one in Zig's library replays with t
     const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
     try std.testing.expect(std.mem.find(u8, manifest, "\"src/data.txt\"") != null);
     try std.testing.expect(std.mem.find(u8, manifest, "\"zig_lib\":[{\"index\":2,\"directory\":true}]") != null);
+    try std.testing.expect(std.mem.find(u8, manifest, "\"zig_exe\":[3]") != null);
     const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
     try std.testing.expect(command.succeeded(executed));

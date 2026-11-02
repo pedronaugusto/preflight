@@ -17,6 +17,9 @@ pub const Command = struct {
     /// The arguments (positions in `argv`) that are paths in Zig's library, each its path from
     /// the library: the replaying runner's own Zig names them in its own.
     zig_lib: []const ZigLib = &.{},
+    /// The arguments (positions in `argv`) that are the Zig executable: the replaying runner
+    /// names its own Zig there, as it names its own library.
+    zig_exe: []const usize = &.{},
 };
 
 /// A path argument in Zig's library: `argv[index]`, a directory (`addDirectoryArg`) or a file.
@@ -67,6 +70,10 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
             const library = for (command.zig_lib) |path| {
                 if (path.index == index) break path;
             } else null;
+            if (std.mem.findScalar(usize, command.zig_exe, index) != null) {
+                run.addFileArg2(.zig_exe, .{});
+                continue;
+            }
             const lib = library orelse {
                 run.addArg(arg);
                 continue;
@@ -175,12 +182,13 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) []const []const u8 {
 
 /// A path argument as the replaying runner names its own copy of it: from the run's working
 /// directory `cwd` (from the package root; null for a fresh temporary one) where it is in the
-/// package or a dependency the package fetches into it, or from Zig's library. Any other path
-/// is the building runner's own.
-fn portablePath(b: *std.Build, package: *std.Build, path: std.Build.LazyPath, cwd: ?[]const u8) union(enum) { relative: []const u8, zig_lib: []const u8 } {
+/// package or a dependency the package fetches into it, from Zig's library, or the Zig
+/// executable itself. Any other path is the building runner's own.
+fn portablePath(b: *std.Build, package: *std.Build, path: std.Build.LazyPath, cwd: ?[]const u8) union(enum) { relative: []const u8, zig_lib: []const u8, zig_exe } {
     const absolute = switch (path) {
         .relative => |relative| {
             if (relative.base == .zig_lib) return .{ .zig_lib = relative.sub_path };
+            if (relative.base == .zig_exe) return .zig_exe;
             @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library");
         },
         .src_path => |source| source.owner.root.joinString(b.allocator, source.sub_path) catch @panic("OOM"),
@@ -231,6 +239,7 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
         } else null;
         var argv: std.ArrayList([]const u8) = .empty;
         var zig_lib: std.ArrayList(ZigLib) = .empty;
+        var zig_exe: std.ArrayList(usize) = .empty;
         argv.append(b.allocator, b.fmt("zig-out/preflight/bin/{s}", .{name})) catch @panic("OOM");
         for (run.argv.items[1..]) |arg| switch (arg) {
             .bytes => |bytes| {
@@ -247,11 +256,15 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
                         zig_lib.append(b.allocator, .{ .index = argv.items.len, .directory = directory }) catch @panic("OOM");
                         argv.append(b.allocator, sub_path) catch @panic("OOM");
                     },
+                    .zig_exe => {
+                        zig_exe.append(b.allocator, argv.items.len) catch @panic("OOM");
+                        argv.append(b.allocator, "zig") catch @panic("OOM");
+                    },
                 }
             },
             else => @panic("portable tests must not contain generated arguments"),
         };
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = programs, .zig_lib = zig_lib.items }) catch @panic("OOM");
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = programs, .zig_lib = zig_lib.items, .zig_exe = zig_exe.items }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }

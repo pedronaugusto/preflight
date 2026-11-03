@@ -31,6 +31,13 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = manifest });
 }
 
+/// A consumer that names none of the sample's declarations, for a fixture whose test writes
+/// the sample's source anew: the sample's own consumer calls `sum`, which that source need not
+/// have, and a consumer program naming a declaration its package lacks is no program.
+fn bareConsumer(dir: std.Io.Dir) !void {
+    try dir.writeFile(std.testing.io, .{ .sub_path = "ci/consumer.zig", .data = "const sample = @import(\"preflight_sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
+}
+
 const Pin = struct { url: []const u8, hash: []const u8 };
 
 /// The shakedown preflight's own manifest pins as a dev dependency.
@@ -131,6 +138,7 @@ test "format checks owned sources and ignores extracted dependency packages" {
     const valid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     if (valid.term != .exited or valid.term.exited != 0) std.debug.print("{s}", .{valid.stderr});
     try std.testing.expect(valid.term == .exited and valid.term.exited == 0);
+    try bareConsumer(tmp.dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\nconst value=1;\n" });
     const invalid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(invalid.term == .exited and invalid.term.exited != 0);
@@ -430,7 +438,10 @@ fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    if (text) |source| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = source });
+    if (text) |source| {
+        try bareConsumer(tmp.dir);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = source });
+    }
     if (config) |settings| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = settings });
     const result = try lintFixtureWith(a, tmp.dir, options);
     if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the lint output it did not find the rule in
@@ -630,6 +641,7 @@ test "compiled caches never skip a second CI execution" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
+    try bareConsumer(tmp.dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
         \\test "runs each time" {
         \\    const std = @import("std");
@@ -2175,6 +2187,8 @@ test "toolchain hosted runner refuses a test that joined the tests after addCi r
 /// naming every root file of `src/`.
 fn rootsFixture(a: std.mem.Allocator, dir: std.Io.Dir, build: []const u8, files: []const [2][]const u8) !void {
     try fixture(a, dir);
+    // The build compiles no consumer: the sample's consumer program is no file of it.
+    try dir.deleteFile(std.testing.io, "ci/consumer.zig");
     try dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = build });
     for (files) |file| try dir.writeFile(std.testing.io, .{ .sub_path = file[0], .data = file[1] });
     const input = try std.Io.Dir.path.join(a, &.{ root, "sample/ci/layers.zig" });

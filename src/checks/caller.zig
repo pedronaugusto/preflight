@@ -172,7 +172,7 @@ fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, e
 /// `c` reading and writing from `top`, the repository's top opened.
 fn atTop(c: *src.Context, top: std.Io.Dir) src.Context {
     var at_top = c.*;
-    at_top.dir = .{ .data = top };
+    at_top.dir = top;
     return at_top;
 }
 

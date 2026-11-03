@@ -178,7 +178,7 @@ const Fixture = struct {
             try f.tmp.dir.writeFile(io, .{ .sub_path = try std.mem.concat(f.arena.allocator(), u8, &.{ "std/", pair[0] }), .data = text });
         }
         f.std_dir = try f.tmp.dir.openDir(io, "std", .{});
-        f.lib = .{ .a = f.arena.allocator(), .io = io, .dir = .{ .data = f.std_dir } };
+        f.lib = .{ .a = f.arena.allocator(), .io = io, .dir = f.std_dir };
         f.entries = table.releases[0].entries;
         for (f.entries) |entry| switch (entry) {
             .rename => |r| try f.lib.addRename(r.old, r.new),
@@ -577,7 +577,7 @@ test "signature check: the Zig 0.17 table matches Zig 0.17's std" {
     const io = std.testing.io;
     var dir = try std.Io.Dir.cwd().openDir(io, test_options.zig_std, .{});
     defer dir.close(io);
-    var lib: library.Library = .{ .a = arena.allocator(), .io = io, .dir = .{ .data = dir } };
+    var lib: library.Library = .{ .a = arena.allocator(), .io = io, .dir = dir };
     const release = table.find(.{ .major = 0, .minor = 17, .patch = 0 }).?;
     for (release.entries) |entry| {
         const status = try table.check(&lib, entry);

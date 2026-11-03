@@ -86,7 +86,7 @@ fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Comman
     defer std_dir.close(io);
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &buffer);
-    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = .{ .data = std_dir }, .write = args.write, .paths = args.paths }, &out.interface);
+    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = std_dir, .write = args.write, .paths = args.paths }, &out.interface);
     try out.interface.flush();
 }
 
@@ -110,7 +110,7 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     var gate = c.*;
     var job_dir = try c.directory().openDir(c.io, directory, .{});
     defer job_dir.close(c.io);
-    gate.dir = .{ .data = job_dir };
+    gate.dir = job_dir;
     // The gate's build is developed with bay or not on its own account (preflight's sample is not).
     gate.bay = if (gate.developedWithBay()) c.bay orelse "bay" else null;
     var linking: std.json.Array = .init(c.a);
@@ -181,7 +181,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
             // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
             const job_dir: ?std.Io.Dir = if (moved) try c.directory().openDir(c.io, directory, .{}) else null;
             defer if (job_dir) |dir| dir.close(c.io);
-            if (job_dir) |dir| w.dir = .{ .data = dir };
+            if (job_dir) |dir| w.dir = dir;
             // The package there builds as it is developed: with bay only if its manifest says so.
             if (moved) w.bay = w.bayFor(&env);
             try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));

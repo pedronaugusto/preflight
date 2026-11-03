@@ -200,6 +200,46 @@ const Loader = struct {
         }
     }
 
+    /// Which compilations compile each input, as glint reads its imports in them: the
+    /// program's where a module of the program's compiles it, the build runner's where a build
+    /// script's does, and every compilation of each file that imports it. A file no module
+    /// compiles and nothing compiled imports is the program's.
+    fn compilations(self: *Loader, imports: []const glint.Project.Import) !void {
+        const program = try self.c.a.alloc(bool, self.inputs.items.len);
+        const build = try self.c.a.alloc(bool, self.inputs.items.len);
+        for (self.inputs.items, program, build) |input, *in_program, *in_build| {
+            in_program.* = false;
+            in_build.* = false;
+            const modules = self.modules_of.get(input.name) orelse continue;
+            for (modules.items) |which| {
+                if (self.build.modules[which].script) in_build.* = true else in_program.* = true;
+            }
+        }
+        spread(imports, program, build);
+        for (program, build) |*in_program, in_build| in_program.* = in_program.* or !in_build;
+        spread(imports, program, build);
+        for (self.inputs.items, program, build) |*input, in_program, in_build| {
+            input.compilations = if (in_program and in_build) .both else if (in_build) .build else .program;
+        }
+    }
+
+    /// Each compilation of a file to every file it imports in that compilation, until none
+    /// is added.
+    fn spread(imports: []const glint.Project.Import, program: []bool, build: []bool) void {
+        var growing = true;
+        while (growing) {
+            growing = false;
+            for (imports) |edge| for ([_]glint.Project.Compilations{ .program, .build }) |in| {
+                if (edge.compilation) |only| if (only != in) continue;
+                const set = if (in == .program) program else build;
+                if (set[edge.from] and !set[edge.target]) {
+                    set[edge.target] = true;
+                    growing = true;
+                }
+            };
+        }
+    }
+
     fn mark(self: *Loader, path: []const u8, module: u32) !bool {
         const entry = try self.modules_of.getOrPut(self.c.a, path);
         if (!entry.found_existing) entry.value_ptr.* = .empty;
@@ -268,42 +308,62 @@ const Loader = struct {
         return id;
     }
 
+    /// Where an import written in `from` leads in each compilation that compiles it.
+    const Lead = struct {
+        /// Where it leads in every compilation of the file; null where it leads nowhere.
+        every: ?[]const u8 = null,
+        /// Where it leads in the program's and in the build runner's, when they bind it apart.
+        program: ?[]const u8 = null,
+        build: ?[]const u8 = null,
+    };
+
     /// Where an import written in `from` leads, when the build says: `std`, a
     /// module the configuration binds the name to (whatever the name ends
     /// with: gantry's Zig frontend is the module `gantry.zig`), or else a
-    /// relative file. A name two modules that both compile the file bind
-    /// differently leads nowhere.
-    fn lead(self: *Loader, from: []const u8, name: []const u8) !?[]const u8 {
-        if (std.mem.eql(u8, name, "std")) return self.std_file;
-        switch (try self.bound(from, name)) {
-            .path => |path| return path,
-            .ambiguous => return null,
-            .unbound => {},
+    /// relative file. The program and the build runner bind names apart: a file both
+    /// compile leads to each one's module, an edge apiece. A name two modules of one
+    /// compilation that both compile the file bind differently leads nowhere there.
+    fn lead(self: *Loader, from: []const u8, name: []const u8) !Lead {
+        if (std.mem.eql(u8, name, "std")) return .{ .every = self.std_file };
+        const program = try self.bound(from, name, .program);
+        const build = try self.bound(from, name, .build);
+        if (program == .unbound and build == .unbound) {
+            if (!std.mem.endsWith(u8, name, ".zig")) return .{};
+            const path = try join(self.c.a, std.Io.Dir.path.dirname(from) orelse "", name);
+            const outside = std.mem.startsWith(u8, path, "..") or std.Io.Dir.path.isAbsolute(path);
+            if (outside and !self.insideStd(path) and !self.modules_of.contains(path)) return .{};
+            return .{ .every = path };
         }
-        if (!std.mem.endsWith(u8, name, ".zig")) return null;
-        const path = try join(self.c.a, std.Io.Dir.path.dirname(from) orelse "", name);
-        const outside = std.mem.startsWith(u8, path, "..") or std.Io.Dir.path.isAbsolute(path);
-        if (outside and !self.insideStd(path) and !self.modules_of.contains(path)) return null;
-        return path;
+        const in_program: ?[]const u8 = if (program == .path) program.path else null;
+        const in_build: ?[]const u8 = if (build == .path) build.path else null;
+        // One module wherever the name is bound: the edge holds in every compilation of the file.
+        if (program != .ambiguous and build != .ambiguous) {
+            if (in_program == null or in_build == null or std.mem.eql(u8, in_program.?, in_build.?))
+                return .{ .every = in_program orelse in_build };
+        }
+        return .{ .program = in_program, .build = in_build };
     }
 
     /// Whether the build binds no module named `name` in any module that compiles `from`:
-    /// a module this build does not have there, as glint is told. Zig's own names (`std`,
-    /// `builtin`, `root`) are always there, and a file no configured module compiles has no
-    /// bindings to go by.
+    /// a module this build does not have there, as glint is told. A name ending in `.zig` or
+    /// `.zon` is a file, as Zig reads it (a build script's `@import("build.zig.zon")`), never a
+    /// module; Zig's own names (`std`, `builtin`, `root`) are always there, and a file no
+    /// configured module compiles has no bindings to go by.
     fn absent(self: *Loader, from: []const u8, name: []const u8) !bool {
-        if (std.mem.endsWith(u8, name, ".zig")) return false;
+        for ([_][]const u8{ ".zig", ".zon" }) |extension| if (std.mem.endsWith(u8, name, extension)) return false;
         for ([_][]const u8{ "std", "builtin", "root" }) |own| if (std.mem.eql(u8, name, own)) return false;
         if (!self.modules_of.contains(from)) return false;
-        return try self.bound(from, name) == .unbound;
+        return try self.bound(from, name, .program) == .unbound and try self.bound(from, name, .build) == .unbound;
     }
 
     const Bound = union(enum) { unbound, ambiguous, path: []const u8 };
 
-    fn bound(self: *Loader, from: []const u8, name: []const u8) !Bound {
+    /// What the modules of one compilation that compile `from` bind `name` to.
+    fn bound(self: *Loader, from: []const u8, name: []const u8, in: enum { program, build }) !Bound {
         const modules = self.modules_of.get(from) orelse return .unbound;
         var found: ?[]const u8 = null;
         for (modules.items) |which| {
+            if (self.build.modules[which].script != (in == .build)) continue;
             for (self.build.modules[which].imports) |binding| {
                 if (!std.mem.eql(u8, binding.name, name)) continue;
                 const root = self.build.modules[binding.module].root orelse return .ambiguous;
@@ -345,18 +405,26 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
         const from = loader.inputs.items[cursor];
         var absent: std.ArrayList([]const u8) = .empty;
         for (try loader.importsOf(from.name, from.bytes)) |name| {
-            const path = (try loader.lead(from.name, name)) orelse {
+            const lead = try loader.lead(from.name, name);
+            if (lead.every == null and lead.program == null and lead.build == null) {
                 if (try loader.absent(from.name, name)) try absent.append(c.a, name);
                 continue;
+            }
+            const leads = [_]struct { ?[]const u8, ?glint.Project.Compilations }{
+                .{ lead.every, null }, .{ lead.program, .program }, .{ lead.build, .build },
             };
-            const found = (loader.load(path, false, .production) catch |err| switch (err) {
-                error.ProjectBudgetExceeded => return budget(c),
-                else => return err,
-            }) orelse continue;
-            try imports.append(c.a, .{ .from = cursor, .spelling = name, .target = found });
+            for (leads) |each| {
+                const path, const compilation = each;
+                const found = (loader.load(path orelse continue, false, .production) catch |err| switch (err) {
+                    error.ProjectBudgetExceeded => return budget(c),
+                    else => return err,
+                }) orelse continue;
+                try imports.append(c.a, .{ .from = cursor, .spelling = name, .target = found, .compilation = compilation });
+            }
         }
         loader.inputs.items[cursor].absent = try absent.toOwnedSlice(c.a);
     }
+    try loader.compilations(imports.items);
     const project = glint.Project.init(gpa, loader.inputs.items, imports.items, .{ .io = c.io }) catch |err| switch (err) {
         error.ProjectBudgetExceeded => return budget(c),
         error.Canceled => return error.Canceled,
@@ -556,4 +624,112 @@ test "an options module the build generates whole is read as its module's file, 
     }
     try std.testing.expect(release);
     try std.testing.expect(!later);
+}
+
+test "a build script reads a dependency's script by the dependency's name, and its manifest as a file, never a module it lacks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try write(tmp.dir, "src/root.zig", "pub const x = @import(\"shared.zig\").x;\n");
+    try write(tmp.dir, "src/shared.zig", "pub const x = 1;\n");
+    try write(tmp.dir, "build.zig", "const tools = @import(\"tools\");\nconst manifest = @import(\"build.zig.zon\");\nconst gone = @import(\"gone\");\nconst shared = @import(\"src/shared.zig\");\n");
+    try write(tmp.dir, "build.zig.zon", ".{ .name = .pkg, .version = \"0.1.0\", .fingerprint = 0x1c0ffee, .paths = .{\"src\"} }\n");
+    try write(tmp.dir, "zig-pkg/tools/build.zig", "pub fn addCi() void {}\n");
+    const bindings = [_]src.BuildModule.Binding{.{ .name = "tools", .module = 1 }};
+    const modules = [_]src.BuildModule{
+        .{ .root = "build.zig", .imports = &bindings, .script = true },
+        .{ .root = "zig-pkg/tools/build.zig", .imports = &.{}, .script = true },
+        .{ .root = "src/root.zig", .imports = &.{} },
+    };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .{ .data = tmp.dir } };
+    const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules })).?;
+    defer assembly.deinit();
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    const project = &assembly.project;
+    var tools = false;
+    for (project.imports) |import| {
+        if (!std.mem.eql(u8, project.at(import.from).input.name, "build.zig") or !std.mem.eql(u8, import.spelling, "tools")) continue;
+        tools = true;
+        try std.testing.expectEqualStrings("zig-pkg/tools/build.zig", project.at(import.target).input.name);
+    }
+    try std.testing.expect(tools);
+    for (project.sources) |source| if (std.mem.eql(u8, source.input.name, "build.zig")) {
+        try std.testing.expectEqual(@as(usize, 1), source.input.absent.len);
+        try std.testing.expectEqualStrings("gone", source.input.absent[0]);
+    };
+    // The scripts are the build runner's alone, the program's root its own, and a file both
+    // import both compilations'.
+    const compiled = [_]struct { []const u8, glint.Project.Compilations }{
+        .{ "build.zig", .build },
+        .{ "zig-pkg/tools/build.zig", .build },
+        .{ "src/root.zig", .program },
+        .{ "src/shared.zig", .both },
+    };
+    for (compiled) |expected| {
+        const source = for (project.sources) |source| {
+            if (std.mem.eql(u8, source.input.name, expected[0])) break source;
+        } else return error.TestUnexpectedResult;
+        try std.testing.expectEqual(expected[1], source.input.compilations);
+    }
+}
+
+test "a file both compilations compile reads a name each binds apart as an edge apiece, and one compilation's two bindings as none of its own" {
+    // `src/shared.zig` is the program's (src/root.zig imports it) and the build runner's
+    // (build.zig imports it). `lib` is the library's module in the program and the library's
+    // build script in the build runner. In the twin a second module of the program compiles the
+    // file and binds `lib` elsewhere: the program's edge goes, the build runner's stays.
+    for ([_]bool{ false, true }) |split| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try write(tmp.dir, "src/root.zig", "pub const x = @import(\"shared.zig\").x;\n");
+        try write(tmp.dir, "src/other.zig", "pub const x = @import(\"shared.zig\").x;\n");
+        try write(tmp.dir, "src/shared.zig", "const lib = @import(\"lib\");\npub const x = 1;\n");
+        try write(tmp.dir, "build.zig", "const shared = @import(\"src/shared.zig\");\n");
+        try write(tmp.dir, "zig-pkg/lib/build.zig", "pub fn addCi() void {}\n");
+        try write(tmp.dir, "zig-pkg/lib/src/lib.zig", "pub fn run() void {}\n");
+        try write(tmp.dir, "zig-pkg/fork/lib.zig", "pub fn run() void {}\n");
+        const to_script = [_]src.BuildModule.Binding{.{ .name = "lib", .module = 1 }};
+        const to_library = [_]src.BuildModule.Binding{.{ .name = "lib", .module = 3 }};
+        const to_fork = [_]src.BuildModule.Binding{.{ .name = "lib", .module = 5 }};
+        const modules = [_]src.BuildModule{
+            .{ .root = "build.zig", .imports = &to_script, .script = true },
+            .{ .root = "zig-pkg/lib/build.zig", .imports = &.{}, .script = true },
+            .{ .root = "src/root.zig", .imports = &to_library },
+            .{ .root = "zig-pkg/lib/src/lib.zig", .imports = &.{} },
+            .{ .root = if (split) "src/other.zig" else null, .imports = &to_fork },
+            .{ .root = "zig-pkg/fork/lib.zig", .imports = &.{} },
+        };
+        var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .{ .data = tmp.dir } };
+        const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
+        const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+        const paths = (try select(&c, policy)).?;
+        var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules })).?;
+        defer assembly.deinit();
+        try std.testing.expectEqual(@as(usize, 0), c.errors);
+        const project = &assembly.project;
+        var program: ?[]const u8 = null;
+        var build: ?[]const u8 = null;
+        for (project.imports) |import| {
+            if (!std.mem.eql(u8, project.at(import.from).input.name, "src/shared.zig")) continue;
+            const target = project.at(import.target).input.name;
+            switch (import.in) {
+                .program => program = target,
+                .build => build = target,
+                .both => return error.TestUnexpectedResult,
+            }
+        }
+        try std.testing.expectEqualStrings("zig-pkg/lib/build.zig", build.?);
+        if (split) try std.testing.expectEqual(null, program) else try std.testing.expectEqualStrings("zig-pkg/lib/src/lib.zig", program.?);
+        for (project.sources) |source| {
+            if (std.mem.eql(u8, source.input.name, "src/shared.zig")) try std.testing.expectEqual(.both, source.input.compilations);
+            if (std.mem.eql(u8, source.input.name, "zig-pkg/lib/build.zig")) try std.testing.expectEqual(.build, source.input.compilations);
+            if (std.mem.eql(u8, source.input.name, "zig-pkg/lib/src/lib.zig")) try std.testing.expectEqual(.program, source.input.compilations);
+        }
+    }
 }

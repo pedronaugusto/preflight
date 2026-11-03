@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 const ensign = @import("ensign");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
@@ -265,7 +266,9 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     }
     try config.object.put(a, "unrun_test_roots", .{ .array = unrun_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-    try lint(c, init.gpa, config, sources, code, .{ .modules = try facts.buildModules(a, snapshot), .std_dir = args.zig_std }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release }, try checks.phases.Log.init(a, init.environ_map));
+    const configured = try facts.buildModules(a, snapshot);
+    const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, a, .fromRaw(16 * 1024 * 1024))) else configured;
+    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);

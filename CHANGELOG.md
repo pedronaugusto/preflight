@@ -44,6 +44,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The lint reads a package's `build.zig` in the module Zig compiles it in: each dependency it imports by name (`@import("preflight")`) is that dependency's build script, as Zig's build runner binds it, and the scripts those import in turn; the build passes them (`preflight lint --build-scripts FILE`). Its calls into a dependency's build were left undecided. glint is told which compilations compile each file (the build runner's, the program's, or both), so a dependency's build script a build script imports by aegis's name is never aegis's module, and no file that imports aegis is left undecided by it. An import of a `.zon` file (`@import("build.zig.zon")`) is a file, never a module the build lacks.
 - The test step runs the suite beside the lint, not after it: a red lint skipped every unit test, so a gate on a package whose lint fails reported without its tests having run. Both run now, and the step reports and fails on each.
 - The lint gives glint each file's package by the nearest `build.zig.zon` above it, by name and fingerprint: the checked package's own, a dependency's in its own tree, none for std's. Only the selected files had one, by name alone, so glint could not know aegis imported as a dependency by its identity.
 - The README's wiring without bay, and `sample/zero`, guard `lazyImport` with `b.pkg_hash.len == 0`: built as a dependency, a package wired so asked for its lazy preflight, and its consumers fetched it.

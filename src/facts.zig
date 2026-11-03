@@ -389,6 +389,42 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
     return out;
 }
 
+/// `modules` and a module for each build script `text` (the build's `--build-scripts` table,
+/// JSON) names: its `build.zig` the root, each dependency's script it imports bound by the
+/// dependency's name, as Zig's build runner compiles a package's build script. A script named
+/// as an import and not among the table's is refused, as a table the build did not write.
+pub fn withBuildScripts(a: std.mem.Allocator, modules: []const src.BuildModule, text: []const u8) ![]const src.BuildModule {
+    const Script = struct { script: []const u8, imports: []const struct { name: []const u8, script: []const u8 } };
+    const scripts = std.json.parseFromSliceLeaky([]const Script, a, text, .{}) catch return error.MalformedBuildScripts;
+    const out = try a.alloc(src.BuildModule, modules.len + scripts.len);
+    @memcpy(out[0..modules.len], modules);
+    for (scripts, out[modules.len..]) |script, *module| {
+        const bindings = try a.alloc(src.BuildModule.Binding, script.imports.len);
+        for (script.imports, bindings) |import, *binding| {
+            const index = for (scripts, 0..) |other, i| {
+                if (std.mem.eql(u8, other.script, import.script)) break i;
+            } else return error.MalformedBuildScripts;
+            binding.* = .{ .name = import.name, .module = modules.len + index };
+        }
+        module.* = .{ .root = try named(a, script.script), .imports = bindings, .script = true };
+    }
+    return out;
+}
+
+test "a build script is a module binding each dependency's script by the dependency's name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const configured: []const src.BuildModule = &.{.{ .root = "src/root.zig", .imports = &.{} }};
+    const modules = try withBuildScripts(a, configured, "[{\"script\":\"build.zig\",\"imports\":[{\"name\":\"preflight\",\"script\":\"zig-pkg/preflight/build.zig\"}]},{\"script\":\"zig-pkg/preflight/build.zig\",\"imports\":[]}]");
+    try std.testing.expectEqual(3, modules.len);
+    try std.testing.expectEqualStrings("build.zig", modules[1].root.?);
+    try std.testing.expect(!modules[0].script and modules[1].script and modules[2].script);
+    try std.testing.expectEqualStrings("preflight", modules[1].imports[0].name);
+    try std.testing.expectEqualStrings("zig-pkg/preflight/build.zig", modules[modules[1].imports[0].module].root.?);
+    try std.testing.expectError(error.MalformedBuildScripts, withBuildScripts(a, configured, "[{\"script\":\"build.zig\",\"imports\":[{\"name\":\"gone\",\"script\":\"elsewhere/build.zig\"}]}]"));
+}
+
 /// The text an options step (`b.addOptions`) writes at `index`, the root of a module, where the
 /// configuration holds all of it: no option names a file or directory, whose path the step
 /// writes only as it runs.

@@ -113,6 +113,7 @@ const Lint = struct {
     escapes_before: ?[]const u8 = null,
     release: bool = false,
     module: []const []const u8 = &.{},
+    build_scripts: ?[]const u8 = null,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
@@ -121,6 +122,7 @@ const Lint = struct {
             .zig_std = .{ .value_name = "DIR", .hint = .directory, .help = "The standard library the package builds with, for the lint's types" },
             .build_option = build_option,
             .module = module,
+            .build_scripts = .{ .value_name = "FILE", .hint = .file, .help = "The build scripts the package's build.zig reaches and the dependency scripts each imports by name, as JSON: the build passes it, so lint reads a build script's imports as Zig binds them" },
             .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
             .fix = .{ .negatable = false, .help = "Apply glint's deterministic fixes to the sources first (zig build fix): the report is the run before them" },
             .escapes_before = .{ .value_name = "FILE", .hint = .file, .help = "With --fix, the escapes a lint before reported (its .zig-cache/preflight-lint/escapes.txt, kept): an escape in the older form is named with only the rules listed for it there that find something now" },

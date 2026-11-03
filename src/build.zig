@@ -385,6 +385,7 @@ const Steps = struct {
         for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
         // What the CHANGELOG must name of the public API since the last tag.
         exported(b, package, checks);
+        buildScripts(b, package, checks);
         configurationOptions(b, checks);
         checks.setCwd(package.path("."));
         checks.step.dependOn(&lint_structure.step);
@@ -394,6 +395,7 @@ const Steps = struct {
         fixing.addArgs(&.{ "lint", "--fix", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         fixing.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| fixing.addArgs(&.{ "--test-step", name });
+        buildScripts(b, package, fixing);
         configurationOptions(b, fixing);
         // `zig build fix -- --escapes-before FILE`: the record the escape rename reads.
         fixing.addPassthruArgs();
@@ -439,6 +441,44 @@ fn exported(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
             else => {},
         }
     }
+}
+
+/// `--build-scripts <file>`: the build scripts the package's `build.zig` reaches, each with the
+/// script of every dependency it imports by its name (`@import("preflight")` is preflight's
+/// `build.zig`), as Zig's build runner binds them, so lint reads a build script in the module
+/// Zig compiles it in. A script is named as the configuration names its package's files: the
+/// package's own `build.zig`, another's under its root. A dependency Zig did not fetch, or one
+/// with no build script, is none a script imports.
+fn buildScripts(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
+    const Import = struct { name: []const u8, script: []const u8 };
+    const Script = struct { script: []const u8, imports: []const Import };
+    const own = package.root.toString(b.allocator) catch @panic("OOM");
+    var scripts: std.ArrayList(Script) = .empty;
+    var seen: std.array_hash_map.String(void) = .empty;
+    if (package.pkg_hash.len != 0) seen.put(b.allocator, package.pkg_hash, {}) catch @panic("OOM");
+    var pending: std.ArrayList(struct { root: []const u8, deps: []const struct { []const u8, []const u8 } }) = .empty;
+    pending.append(b.allocator, .{ .root = own, .deps = package.available_deps }) catch @panic("OOM");
+    while (pending.pop()) |at| {
+        var imports: std.ArrayList(Import) = .empty;
+        for (at.deps) |dependency| {
+            const entry = std.Build.package_map.get(dependency[1]) orelse continue;
+            if (!entry.available or entry.run_build == null) continue;
+            imports.append(b.allocator, .{ .name = dependency[0], .script = scriptPath(b, own, entry.build_root) }) catch @panic("OOM");
+            if ((seen.getOrPut(b.allocator, entry.hash) catch @panic("OOM")).found_existing) continue;
+            pending.append(b.allocator, .{ .root = entry.build_root, .deps = entry.deps }) catch @panic("OOM");
+        }
+        scripts.append(b.allocator, .{ .script = scriptPath(b, own, at.root), .imports = imports.items }) catch @panic("OOM");
+    }
+    const text = std.json.Stringify.valueAlloc(b.allocator, scripts.items, .{}) catch @panic("OOM");
+    run.addArg("--build-scripts");
+    run.addFileArg(b.addWriteFiles().add("build-scripts.json", text));
+}
+
+/// The build script of the package at `root`: `build.zig` for the checked package's own, whose
+/// files lint names from its root; another's under that package's root.
+fn scriptPath(b: *std.Build, own: []const u8, root: []const u8) []const u8 {
+    const same = std.mem.eql(u8, std.Io.Dir.path.resolveAlloc(b.allocator, &.{own}) catch @panic("OOM"), std.Io.Dir.path.resolveAlloc(b.allocator, &.{root}) catch @panic("OOM"));
+    return if (same) "build.zig" else b.pathJoin(&.{ root, "build.zig" });
 }
 
 /// Under the family's policy, each installed artifact the build makes ReleaseFast or ReleaseSmall

@@ -188,6 +188,9 @@ pub const BuildModule = struct {
     /// module (`b.addOptions`), its declarations constants. Lint reads it as the module's
     /// file, so what imports it names a file the program holds.
     contents: ?[]const u8 = null,
+    /// A build script: the build runner compiles it, and the names it imports are its
+    /// dependencies' build scripts, never the program's modules of those names.
+    script: bool = false,
     pub const Binding = struct { name: []const u8, module: usize };
 };
 

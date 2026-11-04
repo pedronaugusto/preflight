@@ -194,7 +194,7 @@ test "a run that did not finish refreshes what it recorded and keeps every test 
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .{ .data = tmp.dir } };
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
     // The emulated job ran `first` before its time ran out; `reached` never started.
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-riscv64-debug-all.ndjson", .data = "{\"name\":\"first\",\"seconds\":30,\"status\":\"pass\",\"key\":\"linux-riscv64-debug\"}\n" });
     const previous = (try std.json.parseFromSlice(src.Value, a,

@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
             c.environ_map = init.environ_map;
             try checks.campaign.run(&c, args.cache, args.cwd, args.build);
         },
-        .run => try runGate(c, init.environ_map),
+        .run => try runGate(c, init.environ_map, null),
         .skip => |args| try skipCommand(&c, init.environ_map, args),
         .attest => try checks.attest.run(c, init.environ_map),
         .docs => |args| {
@@ -161,43 +161,199 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
     };
     const decisions = try checks.local.decide(c.a, jobs, host, portable);
     var not_here: std.ArrayList([]const u8) = .empty;
-    var failed: std.ArrayList([]const u8) = .empty;
-    var ran: usize = 0;
-    for (jobs, decisions) |job, decision| switch (decision) {
+    var here: std.ArrayList(GateJob) = .empty;
+    for (jobs, decisions, 0..) |job, decision, index| switch (decision) {
         .covered => {},
         .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
-        .run => {
-            var env = try environ.clone(c.a);
-            try env.put("STEP", checks.local.stepOf(job));
-            try env.put("BUILD_ARGS", job.args);
-            try env.put("PREFLIGHT_TARGETS", job.targets);
-            try env.put("PREFLIGHT_SHARD", job.shard);
-            try env.put("PREFLIGHT_SETUP", if (job.setup) "true" else "false");
-            try env.put("PREFLIGHT_SETUP_STEP", job.prepare);
-            var w = c.*;
-            w.environ_map = &env;
-            const directory = if (job.directory.len != 0) job.directory else working;
-            const moved = !std.mem.eql(u8, directory, ".");
-            // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
-            const job_dir: ?std.Io.Dir = if (moved) try c.directory().openDir(c.io, directory, .{}) else null;
-            defer if (job_dir) |dir| dir.close(c.io);
-            if (job_dir) |dir| w.dir = dir;
-            // The package there builds as it is developed: with bay only if its manifest says so.
-            if (moved) w.bay = w.bayFor(&env);
-            try stdout(c.*, try c.a.print("gate: {s}\n", .{job.name}));
-            ran += 1;
-            runGate(w, &env) catch |err| {
-                c.report("gate: {s} failed: {t}\n", .{ job.name, err });
-                try failed.append(c.a, job.name);
-            };
-        },
+        .run => try here.append(c.a, .{ .job = job, .key = try checks.local.jobKey(c.a, jobs, index), .directory = if (job.directory.len != 0) job.directory else working }),
     };
-    const verdict = try checks.local.verdict(c.a, ran, failed.items, not_here.items);
+    const slots: u32 = if (args.jobs) |count| @max(count, 1) else defaultSlots();
+    // A gate stopped by a signal ends its jobs' builds with it.
+    checks.running.endWithGate();
+    var failed: std.ArrayList([]const u8) = .empty;
+    if (slots == 1) {
+        // One at a time, each job's output streamed as it comes.
+        for (here.items) |*job| {
+            try stdout(c.*, try c.a.print("gate: {s}\n", .{job.job.name}));
+            runGateJob(c.*, environ, job, null) catch |err| {
+                c.report("gate: {s} failed: {t}\n", .{ job.job.name, err });
+                try failed.append(c.a, job.job.name);
+            };
+        }
+    } else {
+        try runGateJobs(c.*, environ, here.items, slots);
+        for (here.items) |job| if (job.outcome) |_| {} else |_| try failed.append(c.a, job.job.name);
+    }
+    const verdict = try checks.local.verdict(c.a, here.items.len, failed.items, not_here.items);
     if (!verdict.green) {
         c.report("{s}\n", .{verdict.line});
         return error.CheckFailed;
     }
     try stdout(c.*, try c.a.print("{s}\n", .{verdict.line}));
+}
+
+/// A job the gate runs here, and how it went.
+const GateJob = struct {
+    job: checks.matrix.Job,
+    /// Its name for the places it keeps apart from the jobs that run beside it.
+    key: []const u8,
+    /// Where it runs, relative to the gate's directory.
+    directory: []const u8,
+    outcome: anyerror!void = {},
+};
+
+/// Where the gate keeps each job's output while the jobs run at once.
+const gate_logs = ".zig-cache/preflight-gate";
+
+/// The shares the gate's jobs take at once: one a core, and no more than one for each
+/// 4 GiB of memory, which one job's largest compile can take.
+fn defaultSlots() u32 {
+    const cores = std.Thread.getCpuCount() catch 1;
+    const memory = std.process.totalSystemMemory() catch 4 << 30;
+    return @intCast(@max(1, @min(cores, memory / (4 << 30)))); // safe: at most the core count
+}
+
+/// The parts of a job its own beside others: an allocator of its own, for the job's
+/// thread, and the file its output goes to.
+const Own = struct { a: std.mem.Allocator, output: std.Io.File };
+
+/// Runs `job` as the hosted job runs it. Beside others (`own`) it keeps its places under
+/// its key and writes to its own file; alone, it streams its output as before.
+fn runGateJob(c: src.Context, environ: *const std.process.Environ.Map, job: *const GateJob, own: ?Own) !void {
+    var w = c;
+    w.grouped = true;
+    if (own) |parts| {
+        w.a = parts.a;
+        w.output = parts.output;
+    }
+    var env = try environ.clone(w.a);
+    try env.put("STEP", checks.local.stepOf(job.job));
+    try env.put("BUILD_ARGS", job.job.args);
+    try env.put("PREFLIGHT_TARGETS", job.job.targets);
+    try env.put("PREFLIGHT_SHARD", job.job.shard);
+    try env.put("PREFLIGHT_SETUP", if (job.job.setup) "true" else "false");
+    try env.put("PREFLIGHT_SETUP_STEP", job.job.prepare);
+    w.environ_map = &env;
+    const moved = !std.mem.eql(u8, job.directory, ".");
+    // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
+    if (moved) w.dir = try c.directory().openDir(c.io, job.directory, .{});
+    defer if (moved) w.dir.?.close(c.io);
+    // The package there builds as it is developed: with bay only if its manifest says so.
+    if (moved) w.bay = w.bayFor(&env);
+    try runGate(w, &env, if (own != null) job.key else null);
+}
+
+/// The machine's shares the running jobs hold, and the gate's output, which one job
+/// writes at a time.
+const Shares = struct {
+    mutex: std.Io.Mutex = .init,
+    freed: std.Io.Condition = .init,
+    free: u32,
+    output: std.Io.Mutex = .init,
+
+    fn take(s: *Shares, io: std.Io, count: u32) void {
+        s.mutex.lockUncancelable(io);
+        defer s.mutex.unlock(io);
+        while (s.free < count) s.freed.waitUncancelable(io, &s.mutex);
+        s.free -= count;
+    }
+
+    fn give(s: *Shares, io: std.Io, count: u32) void {
+        s.mutex.lockUncancelable(io);
+        s.free += count;
+        s.mutex.unlock(io);
+        s.freed.broadcast(io);
+    }
+};
+
+/// The seconds `job` took at the last gate here, or null when it has none.
+fn lastSeconds(c: src.Context, job: GateJob) ?f64 {
+    const path = c.a.print("{s}/{s}.seconds", .{ gate_logs, job.key }) catch return null;
+    const text = c.directory().readFileAlloc(c.io, path, c.a, .limited(64)) catch return null;
+    return std.fmt.parseFloat(f64, std.mem.trim(u8, text, " \n")) catch null;
+}
+
+/// The order the gate starts its jobs in: the longest first, by what each took at the
+/// last gate here, so the one that takes longest is not started last; a job with no
+/// record first of all, since it may be the longest.
+fn startOrder(c: src.Context, jobs: []const GateJob) ![]usize {
+    const Entry = struct { index: usize, seconds: f64 };
+    const entries = try c.a.alloc(Entry, jobs.len);
+    for (entries, jobs, 0..) |*entry, job, index| entry.* = .{ .index = index, .seconds = lastSeconds(c, job) orelse std.math.inf(f64) };
+    std.mem.sort(Entry, entries, {}, struct {
+        fn longer(_: void, left: Entry, right: Entry) bool {
+            return left.seconds > right.seconds;
+        }
+    }.longer);
+    const order = try c.a.alloc(usize, jobs.len);
+    for (order, entries) |*index, entry| index.* = entry.index;
+    return order;
+}
+
+/// The gate's jobs at once, `slots` shares of the machine at a time (`weight`), started
+/// longest first (`startOrder`). Each job's output goes to a file of its own and is
+/// written whole when it ends, as a job run alone reads; the records are reset once, for
+/// all of them, in each directory they run in.
+fn runGateJobs(c: src.Context, environ: *const std.process.Environ.Map, jobs: []GateJob, slots: u32) !void {
+    var directories: std.array_hash_map.String(void) = .empty;
+    for (jobs) |job| if (!(try directories.getOrPut(c.a, job.directory)).found_existing) {
+        var place = c;
+        const moved = !std.mem.eql(u8, job.directory, ".");
+        if (moved) place.dir = try c.directory().openDir(c.io, job.directory, .{});
+        defer if (moved) place.dir.?.close(c.io);
+        try checks.profile.reset(place, ".zig-cache/preflight-timings");
+    };
+    try c.directory().createDirPath(c.io, gate_logs);
+    const order = try startOrder(c, jobs);
+    var shares: Shares = .{ .free = slots };
+    var group: std.Io.Group = .init;
+    for (order) |index| {
+        const share = @min(checks.local.weight(jobs[index].job), slots);
+        shares.take(c.io, share);
+        group.concurrent(c.io, runShare, .{ c, environ, &jobs[index], &shares, share }) catch {
+            // No thread to give it: it runs here, before the next is started.
+            runShare(c, environ, &jobs[index], &shares, share);
+        };
+    }
+    group.await(c.io) catch |err| switch (err) {
+        error.Canceled => return err,
+    };
+}
+
+/// One job beside the others, holding `share` of the machine until it ends.
+fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJob, shares: *Shares, share: u32) void {
+    defer shares.give(c.io, share);
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const timer = checks.phases.Timer.begin(c, job.job.name);
+    const path = a.print("{s}/{s}.log", .{ gate_logs, job.key }) catch |err| {
+        job.outcome = err;
+        return;
+    };
+    job.outcome = run: {
+        const file = c.directory().createFile(c.io, path, .{ .truncate = true }) catch |err| break :run err;
+        defer file.close(c.io);
+        break :run runGateJob(c, environ, job, .{ .a = a, .output = file });
+    };
+    const seconds = timer.seconds(c);
+    // What it took, for the next gate's order; a record that cannot be written costs only that.
+    if (a.print("{s}/{s}.seconds", .{ gate_logs, job.key })) |record| {
+        if (a.print("{d:.1}\n", .{seconds})) |text| {
+            // glint-ignore: Z026 -- the record only orders the next gate's jobs; without it that job starts first
+            c.directory().writeFile(c.io, .{ .sub_path = record, .data = text }) catch {};
+        } else |_| {}
+    } else |_| {}
+    shares.output.lockUncancelable(c.io);
+    defer shares.output.unlock(c.io);
+    // glint-ignore: Z026 -- the job's line is for the reader; its outcome stands, and the gate names a red job again at its end
+    stdout(c, a.print("gate: {s} ({d:.1} s)\n", .{ job.job.name, seconds }) catch return) catch {};
+    // A job's output that cannot be read back is lost to the reader; its outcome stands.
+    const text = c.directory().readFileAlloc(c.io, path, a, .limited(256 * 1024 * 1024)) catch "";
+    var w = c;
+    w.a = a;
+    w.report("{s}", .{text});
+    if (job.outcome) |_| {} else |err| w.report("gate: {s} failed: {t}\n", .{ job.job.name, err });
 }
 
 /// `generate`: the caller made again for the package's pins and configuration, where it
@@ -401,7 +557,9 @@ fn stage(c: *src.Context, label: []const u8) checks.phases.Timer {
 
 fn stdout(c: src.Context, text: []const u8) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.stdout().writer(c.io, &buffer);
+    // Streaming: a positional writer, one made for each call, would write each line at the
+    // start of a file standing for stdout, over the last.
+    var writer = std.Io.File.stdout().writerStreaming(c.io, &buffer);
     try writer.interface.writeAll(text);
     try writer.interface.flush();
 }
@@ -451,7 +609,11 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
     return if (step == .string) step.string else null;
 }
 
-fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
+/// Runs the job `env` describes, as the hosted job runs it. `job` names a gate's job, which
+/// may run beside others in this directory: its build runs as `-Dci-job=<job>`, so that its
+/// records and test programs keep their own places, and the gate resets the records once
+/// for all its jobs, where a hosted job resets them for itself.
+fn runGate(context: src.Context, env: *std.process.Environ.Map, job: ?[]const u8) !void {
     var c = context;
     // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
     // (`targets`). A test's environment holds none of preflight's controls, this one either.
@@ -464,7 +626,7 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
         c.environ_map = env;
     }
     const step = env.get("STEP") orelse "ci";
-    if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
+    if (job == null and (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run")))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = try c.options("ci/workflow.json");
     const log = try checks.phases.Log.init(c.a, env);
@@ -482,11 +644,11 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
             try checks.command.execute(c, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{before.string} }));
         }
     }
-    try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
+    try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "", job);
 }
 
 /// Runs `zig build <step> <build_args>`, or `bay <step> ...` under bay, as the hosted gate does, timed.
-fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, step: []const u8, build_args: []const u8) !void {
+fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, step: []const u8, build_args: []const u8, job: ?[]const u8) !void {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, c.buildCommand());
     try argv.append(c.a, step);
@@ -498,6 +660,8 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         if (std.mem.eql(u8, token, "-Dci-bench-smoke=false")) continue;
         try argv.append(c.a, token);
     }
+    // Whether the build keeps this job's records apart, under its name.
+    var declares_job = false;
     // Custom legacy steps may not use addCi. Ask the configured compiler
     // graph whether it declares these controls instead of guessing from source.
     {
@@ -516,6 +680,10 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
             // This program is the checks the build would compile, built from the same commit.
             if (std.mem.eql(u8, name, "ci-checks")) try argv.append(c.a, try c.a.print("-Dci-checks={s}", .{try std.process.executablePathAlloc(c.io, c.a)}));
+            if (std.mem.eql(u8, name, "ci-job")) if (job) |key| {
+                try argv.append(c.a, try c.a.print("-Dci-job={s}", .{key}));
+                declares_job = true;
+            };
             // SDK identity is an explicit build option, so Zig configuration caches
             // cannot retain a different runner's SDKROOT environment. A build that
             // does not declare it (a nested package, a custom step) is not asked: Zig
@@ -528,7 +696,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     // The tests the step runs, counted per root by the build after its runs: this run's,
     // so an earlier run's count is gone first. The count is told where to write them, in
     // the package's directory: the build's cache, where its records are, can be anywhere.
-    const counted = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
+    const counted = if (declares_job) try c.a.print(".zig-cache/preflight-counts/{s}/{s}", .{ job.?, checks.counts.summary_name }) else ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
     c.directory().deleteFile(c.io, counted) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,

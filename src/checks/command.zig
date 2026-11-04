@@ -2,10 +2,19 @@
 //! where the network may fail them.
 const std = @import("std");
 const src = @import("source.zig");
+const running = @import("running.zig");
 
-/// Runs `argv` in the context's directory and fails unless it exits 0.
+/// Runs `argv` in the context's directory and fails unless it exits 0. Its output goes
+/// where the context's reports go: a gate job's own file, or this process's streams.
 pub fn execute(c: src.Context, argv: []const []const u8) !void {
-    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
+    const output: std.process.SpawnOptions.StdIo = if (c.output) |file| .{ .file = file } else .inherit;
+    // A gate job's command leads a group of its own, which ends with a stopped gate.
+    const grouped = running.grouped and c.grouped;
+    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = output, .stderr = output, .pgid = if (grouped) 0 else null });
+    // The pid as spawned: `wait` forgets it.
+    const leader = if (grouped) child.id.? else undefined;
+    if (grouped) running.hold(leader);
+    defer if (grouped) running.release(leader);
     const term = try child.wait(c.io);
     if (term != .exited or term.exited != 0) return error.CommandFailed;
 }
@@ -91,4 +100,35 @@ test "the fetch configures the job's build, first with no options, then with its
     try std.testing.expectEqual(@as(usize, 5), passes[1].len);
     try std.testing.expectEqualStrings("-Dci-lint=false", passes[1][4]);
     try std.testing.expectEqual(@as(usize, 1), (try fetches(arena.allocator(), &.{ "zig", "build" }, "")).len);
+}
+
+test "a gate job's command and what it started end when the gate's jobs are ended" {
+    if (!running.grouped) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .grouped = true };
+    const Job = struct {
+        result: anyerror!void = {},
+        fn run(context: src.Context, job: *@This()) void {
+            // A shell holding a child of its own, which a signal to the shell alone would leave.
+            job.result = execute(context, &.{ "sh", "-c", "sleep 300 & wait" });
+        }
+    };
+    var job: Job = .{};
+    const started: std.Io.Clock.Timestamp = .now(std.testing.io, .awake);
+    const thread = try std.Thread.spawn(.{}, Job.run, .{ c, &job });
+    // Ended once it is held, and so running.
+    while (true) {
+        const held = for (&running.leaders) |*place| {
+            if (place.load(.acquire) != 0) break true;
+        } else false;
+        if (held) break;
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake);
+    }
+    try std.Io.sleep(std.testing.io, .fromMilliseconds(200), .awake);
+    running.endAll();
+    thread.join();
+    try std.testing.expectError(error.CommandFailed, job.result);
+    // The shell's wait ends only when its sleep does: well short of 300 s, both ended.
+    try std.testing.expect(started.untilNow(std.testing.io).raw.toSeconds() < 60);
 }

@@ -120,6 +120,12 @@ pub fn normalize(a: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error
     return resolved;
 }
 
+/// Whether an import names a file by its path from the importing one, as Zig reads it: a Zig
+/// file, or a ZON one (`@import("build.zig.zon")`), never a module.
+fn relativeFile(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, ".zig") or std.mem.endsWith(u8, name, ".zon");
+}
+
 fn join(a: std.mem.Allocator, directory: []const u8, name: []const u8) std.mem.Allocator.Error![]const u8 {
     return normalize(a, try std.Io.Dir.path.join(a, &.{ directory, name }));
 }
@@ -192,7 +198,7 @@ const Loader = struct {
             while (pending.pop()) |path| {
                 const bytes = (try self.read(path)) orelse continue;
                 for (try self.importsOf(path, bytes)) |name| {
-                    if (!std.mem.endsWith(u8, name, ".zig")) continue;
+                    if (!relativeFile(name)) continue;
                     const target = try join(self.c.a, std.Io.Dir.path.dirname(path) orelse "", name);
                     if (try self.mark(target, @intCast(which))) try pending.append(self.c.a, target);
                 }
@@ -259,6 +265,8 @@ const Loader = struct {
             .name = path,
             .bytes = bytes,
             .stem = if (std.mem.endsWith(u8, base, ".zig")) base[0 .. base.len - 4] else base,
+            // A ZON file a Zig file imports is data, read as ZON.
+            .kind = if (std.mem.endsWith(u8, base, ".zon")) .zon else .zig,
             .selected = selected,
             .classification = if (kind == .production) .production else .@"test",
             .package = package.name,
@@ -280,7 +288,7 @@ const Loader = struct {
             .ambiguous => return null,
             .unbound => {},
         }
-        if (!std.mem.endsWith(u8, name, ".zig")) return null;
+        if (!relativeFile(name)) return null;
         const path = try join(self.c.a, std.Io.Dir.path.dirname(from) orelse "", name);
         const outside = std.mem.startsWith(u8, path, "..") or std.Io.Dir.path.isAbsolute(path);
         if (outside and !self.insideStd(path) and !self.modules_of.contains(path)) return null;
@@ -292,7 +300,7 @@ const Loader = struct {
     /// `builtin`, `root`) are always there, and a file no configured module compiles has no
     /// bindings to go by.
     fn absent(self: *Loader, from: []const u8, name: []const u8) !bool {
-        if (std.mem.endsWith(u8, name, ".zig")) return false;
+        if (relativeFile(name)) return false;
         for ([_][]const u8{ "std", "builtin", "root" }) |own| if (std.mem.eql(u8, name, own)) return false;
         if (!self.modules_of.contains(from)) return false;
         return try self.bound(from, name) == .unbound;
@@ -520,6 +528,39 @@ test "an import means what the configured build binds it to, in the module that 
         }
         if (std.mem.eql(u8, input.name, "src/helper.zig")) try std.testing.expectEqual(@as(usize, 0), input.absent.len);
     }
+}
+
+test "a ZON file a Zig file imports is read with it, as ZON: build.zig's build.zig.zon, a module's data" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try write(tmp.dir, "src/root.zig", "const Data = struct { a: u8 };\npub const data: Data = @import(\"data.zon\");\n");
+    try write(tmp.dir, "src/data.zon", ".{ .a = 1 }\n");
+    try write(tmp.dir, "build.zig", "const manifest = @import(\"build.zig.zon\");\npub fn build(b: *@import(\"std\").Build) void {\n    _ = b;\n    _ = manifest.version;\n}\n");
+    try write(tmp.dir, "build.zig.zon", ".{ .name = .pkg, .version = \"0.1.0\", .fingerprint = 0x1c0ffee, .paths = .{\"src\"} }\n");
+    const modules = [_]src.BuildModule{.{ .root = "src/root.zig", .imports = &.{} }};
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .{ .data = tmp.dir } };
+    const config = try parsed(c.a, "{\"test_support\":[]}");
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules })).?;
+    defer assembly.deinit();
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    const project = &assembly.project;
+    var found: usize = 0;
+    for (project.imports) |import| {
+        const from = project.at(import.from).input.name;
+        const to = project.at(import.target).input;
+        const want = if (std.mem.eql(u8, from, "build.zig")) "build.zig.zon" else if (std.mem.eql(u8, from, "src/root.zig")) "src/data.zon" else continue;
+        if (!std.mem.endsWith(u8, import.spelling, ".zon")) continue;
+        try std.testing.expectEqualStrings(want, to.name);
+        // Data, never selected: no rule reads it but through the value the import gives.
+        try std.testing.expect(to.kind == .zon);
+        try std.testing.expect(!to.selected);
+        found += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found);
 }
 
 test "an options module the build generates whole is read as its module's file, beside the package's" {

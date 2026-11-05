@@ -16,6 +16,9 @@ pub const addCheck = ci.addCheck;
 /// A program the tests run, named to them by its path from the package root,
 /// which holds where portable tests replay.
 pub const addTestProgram = ci.addTestProgram;
+/// Zig's library as the runner running the tests has it, named to them by the path
+/// from the package root of a file holding it, which holds where portable tests replay.
+pub const addTestZigLib = ci.addTestZigLib;
 /// Adds `check-consumer`: a project that depends on the package with nothing fetched.
 pub const addConsumerCheck = ci.consumer.add;
 /// What `addConsumerCheck` builds.

@@ -133,6 +133,15 @@ pub fn addTestProgram(b: *std.Build, options: *std.Build.Step.Options, name: []c
     portable.addProgram(b, options, name, program);
 }
 
+/// Zig's library, which the tests read through `name` in `options`: the path, from
+/// the package root, of a file that holds the library's absolute path, written before
+/// they compile with this build's Zig's, and where portable tests replay with the
+/// replaying runner's. Zig's test runner takes no argument a test reads, and a path
+/// from `addOptionPath` is the building runner's own: portable tests refuse one.
+pub fn addTestZigLib(b: *std.Build, options: *std.Build.Step.Options, name: []const u8) void {
+    portable.addZigLib(b, options, name);
+}
+
 /// Builds and runs a repository check program of `package` and its tests as one
 /// step of `b`. The program runs from the repository root.
 pub fn addCheck(b: *std.Build, package: *std.Build, name: []const u8, source: []const u8) *std.Build.Step.Compile {

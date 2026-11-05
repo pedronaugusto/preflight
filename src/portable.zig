@@ -20,6 +20,9 @@ pub const Command = struct {
     /// The arguments (positions in `argv`) that are the Zig executable: the replaying runner
     /// names its own Zig there, as it names its own library.
     zig_exe: []const usize = &.{},
+    /// Where, under the install prefix, the file that names Zig's library to the tests is
+    /// (`addZigLib`): the replaying runner writes it there for its own Zig before they run.
+    zig_lib_place: ?[]const u8 = null,
 };
 
 /// A path argument in Zig's library: `argv[index]`, a directory (`addDirectoryArg`) or a file.
@@ -37,6 +40,35 @@ pub fn addProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const
     const install = b.addInstallArtifact(program, .{ .dest_dir = .{ .override = .{ .custom = programs_dir } }, .pdb_dir = .disabled, .implib_dir = .disabled });
     options.addOption([]const u8, name, b.fmt("zig-out/{s}/{s}", .{ programs_dir, program.out_filename }));
     options.step.dependOn(&install.step);
+}
+
+/// Where `addZigLib` installs the file that names Zig's library, under the install prefix.
+const zig_lib_file = "preflight/zig-lib";
+
+/// Zig's library, named to the tests as `name` in `options`: the path, from the package
+/// root, of a file holding the library's absolute path, written before they compile by a
+/// program given the library as this build's Zig has it. Where portable tests replay, the
+/// replaying runner writes it for its own Zig. Zig's test runner takes no argument a test
+/// reads, and a path from `addOptionPath` is the building runner's, which portable tests refuse.
+pub fn addZigLib(b: *std.Build, options: *std.Build.Step.Options, name: []const u8) void {
+    const place = zig_lib_file;
+    options.addOption([]const u8, name, b.fmt("zig-out/{s}", .{place}));
+    options.step.dependOn(writeZigLib(b, place));
+}
+
+/// The step that installs, at `place` under the install prefix, the absolute path of Zig's
+/// library as this build's Zig has it.
+fn writeZigLib(b: *std.Build, place: []const u8) *std.Build.Step {
+    // Fetched lazily: until it is, this configure pass ends and the step is never run.
+    const pkg = b.dependencyLazy("preflight", .{}) catch return &b.addWriteFiles().step;
+    const program = b.addExecutable(.{ .name = "preflight-zig-lib", .root_module = b.createModule(.{
+        .root_source_file = pkg.builder.path("src/zig_lib.zig"),
+        .target = b.graph.host,
+        .optimize = .debug,
+    }) });
+    const run = b.addRunArtifact(program);
+    run.addDirectoryArg2(.zig_lib, .{});
+    return &b.addInstallFile(run.addOutputFileArg2("zig-lib", .{}), place).step;
 }
 
 /// `checker` is preflight's command program, which restores the executables'
@@ -81,6 +113,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
             if (lib.directory) run.addDirectoryArg2(b.graph.path(.zig_lib, arg), .{}) else run.addFileArg2(b.graph.path(.zig_lib, arg), .{});
         }
         run.setCwd(if (command.scratch) b.tmpPath() else package.path(command.cwd orelse "."));
+        if (command.zig_lib_place) |place| run.step.dependOn(writeZigLib(b, place));
         run.has_side_effects = true;
         // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; the recorded command needs .zig_test
         if (command.test_runner) run.enableTestRunnerMode();
@@ -150,12 +183,17 @@ fn native(module: *const std.Build.Module) bool {
     return target.query.cpu_model == .native or target.query.isNativeCpu();
 }
 
-/// The programs `artifact` runs, as `addProgram` named them, from the package
-/// root. A path given to its options by `addOptionPath` (or its directory and
-/// untracked kinds) is refused: it is the building runner's, absolute, and
-/// the runner replaying the tests has no such path.
-fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) []const []const u8 {
+/// What `artifact`'s options name from the package root: the programs it runs, as
+/// `addProgram` named them, and the file naming Zig's library (`addZigLib`).
+const Named = struct { programs: []const []const u8, zig_lib_place: ?[]const u8 };
+
+/// What `artifact`'s options name from the package root. A path given to its options
+/// by `addOptionPath` (or its directory and untracked kinds) is refused: it is the
+/// building runner's, absolute, and the runner replaying the tests has no such path.
+fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) Named {
     var programs: std.ArrayList([]const u8) = .empty;
+    var zig_lib_named: ?[]const u8 = null;
+    const zig_lib_place = zig_lib_file;
     // Options reach the artifact as modules, each the generated file of its step.
     var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
     graph.put(b.allocator, artifact.root_module, {}) catch @panic("OOM");
@@ -171,13 +209,17 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) []const []const u8 {
         };
         const options = b.graph.generated_files.items[@backingInt(generated.index)].cast(std.Build.Step.Options) orelse continue;
         if (options.files.items.len + options.directories.items.len + options.untracked_paths.items.len != 0)
-            @panic("portable tests must not be given a path by addOptionPath: it is the building runner's own, which the runner replaying them has not; name a program the tests run with preflight.addTestProgram");
+            @panic("portable tests must not be given a path by addOptionPath: it is the building runner's own, which the runner replaying them has not; name a program the tests run with preflight.addTestProgram, Zig's library with preflight.addTestZigLib");
         for (options.step.dependencies.items) |installing| {
+            if (installing.cast(std.Build.Step.InstallFile)) |file| {
+                if (std.mem.eql(u8, file.dest_rel_path, zig_lib_place)) zig_lib_named = zig_lib_place;
+                continue;
+            }
             const install = installing.cast(std.Build.Step.InstallArtifact) orelse continue;
             programs.append(b.allocator, b.fmt("zig-out/{s}/{s}", .{ programs_dir, install.dest_sub_path orelse install.artifact.out_filename })) catch @panic("OOM");
         }
     }
-    return programs.items;
+    return .{ .programs = programs.items, .zig_lib_place = zig_lib_named };
 }
 
 /// A path argument as the replaying runner names its own copy of it: from the run's working
@@ -223,7 +265,7 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
         // other run would replay without it.
         if (run.environ_map != null and artifact.kind != .@"test") @panic("portable tests must not carry an environment");
         baseline(b, artifact);
-        const programs = runs(b, artifact);
+        const named = runs(b, artifact);
         const name = b.fmt("test-{d}{s}", .{ commands.items.len, if (artifact.root_module.resolved_target.?.result.os.tag == .windows) ".exe" else "" });
         const install = b.addInstallArtifact(artifact, .{ .dest_dir = .{ .override = .{ .custom = "preflight/bin" } }, .dest_sub_path = name });
         compile.dependOn(&install.step);
@@ -264,7 +306,7 @@ fn collect(b: *std.Build, package: *std.Build, step: *std.Build.Step, compile: *
             },
             else => @panic("portable tests must not contain generated arguments"),
         };
-        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = programs, .zig_lib = zig_lib.items, .zig_exe = zig_exe.items }) catch @panic("OOM");
+        commands.append(b.allocator, .{ .argv = argv.items, .test_runner = run.stdio == .zig_test or run.stdio == .protocol, .cwd = cwd, .scratch = scratch, .programs = named.programs, .zig_lib = zig_lib.items, .zig_exe = zig_exe.items, .zig_lib_place = named.zig_lib_place }) catch @panic("OOM");
         for (step.dependencies.items) |dependency| {
             if (dependency != &artifact.step) compile.dependOn(dependency);
         }

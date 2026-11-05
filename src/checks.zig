@@ -29,6 +29,7 @@ test {
     _ = @import("checks/surface.zig");
     _ = @import("consumer.zig");
     _ = @import("nested.zig");
+    _ = @import("zig_lib.zig");
     _ = @import("plain.zig");
     _ = @import("record.zig");
     _ = @import("checks/counts.zig");

@@ -267,6 +267,51 @@ test "a test given a path in its package, one in Zig's library and Zig itself re
     try std.testing.expect(std.mem.find(u8, refused.stderr, "must not name a path the building runner has alone") != null);
 }
 
+test "a test reads Zig's library through addTestZigLib, here and where it replays: the replaying runner writes the file for its own Zig" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The tests read std where this Zig has it, as a checker of sources reads std's.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const library = b.addOptions();
+        \\    preflight.addTestZigLib(b, library, "zig_lib");
+        \\    module.addOptions("library", library);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{
+        source,
+        \\
+        \\test "std, where Zig's library is" {
+        \\    var buffer: [4096]u8 = undefined;
+        \\    const lib = try std.Io.Dir.cwd().readFile(std.testing.io, @import("library").zig_lib, &buffer);
+        \\    var dir = try std.Io.Dir.openDirAbsolute(std.testing.io, lib, .{});
+        \\    defer dir.close(std.testing.io);
+        \\    try dir.access(std.testing.io, "std/std.zig", .{});
+        \\}
+        \\
+    }) });
+    const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(tested)) std.debug.print("{s}", .{tested.stderr});
+    try std.testing.expect(command.succeeded(tested));
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
+    try std.testing.expect(command.succeeded(compiled));
+    const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
+    try std.testing.expect(std.mem.find(u8, manifest, "\"zig_lib_place\":\"preflight/zig-lib\"") != null);
+    // A replaying runner downloads the tests, not the building runner's file.
+    try tmp.dir.deleteFile(io, "zig-out/preflight/zig-lib");
+    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
+    try std.testing.expect(command.succeeded(executed));
+    try tmp.dir.access(io, "zig-out/preflight/zig-lib", .{});
+}
+
 /// The one Zig cache every fixture's build shares: each fixture is a fresh directory, and a
 /// cache of its own would build preflight's checks, its runner and its tools from cold, about
 /// a minute each time. Zig's cache is content-addressed and safe to share; what a fixture

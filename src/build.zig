@@ -447,7 +447,8 @@ fn exported(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) void {
     }
 }
 
-/// `--build-scripts <file>`: the build scripts the package's `build.zig` reaches, each with the
+/// `--build-scripts <file>`: the build scripts the build compiles (the package's `build.zig`,
+/// the root's where another's runs it, and each they reach), each with the
 /// script of every dependency it imports by its name (`@import("preflight")` is preflight's
 /// `build.zig`), as Zig's build runner binds them, so lint reads a build script in the module
 /// Zig compiles it in. A script is named as the configuration names its package's files: the
@@ -462,6 +463,10 @@ fn buildScripts(b: *std.Build, package: *std.Build, run: *std.Build.Step.Run) vo
     if (package.pkg_hash.len != 0) seen.put(b.allocator, package.pkg_hash, {}) catch @panic("OOM");
     var pending: std.ArrayList(struct { root: []const u8, deps: []const struct { []const u8, []const u8 } }) = .empty;
     pending.append(b.allocator, .{ .root = own, .deps = package.available_deps }) catch @panic("OOM");
+    // A root that is not the package's (bay's, which binds the package's `dev(b, tools)` as
+    // `package.dev(b, @This())`) is a script the build runner compiles too: its binding is one
+    // a generic's body is judged at.
+    if (b != package) pending.append(b.allocator, .{ .root = b.root.toString(b.allocator) catch @panic("OOM"), .deps = b.available_deps }) catch @panic("OOM");
     while (pending.pop()) |at| {
         var imports: std.ArrayList(Import) = .empty;
         for (at.deps) |dependency| {

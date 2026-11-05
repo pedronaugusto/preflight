@@ -397,6 +397,15 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
         };
         try selected.append(c.a, .{ .path = path, .kind = kind });
     }
+    // Every build script the build compiles is read, unselected, though no selected file
+    // imports it: the root bay writes binds the package's `dev(b, tools)` there, a binding a
+    // rule judges `dev`'s body at.
+    for (loader.build.modules) |module| if (module.script) if (module.root) |root| {
+        _ = loader.load(root, false, .production) catch |err| switch (err) {
+            error.ProjectBudgetExceeded => return budget(c),
+            else => return err,
+        };
+    };
     try loader.membership();
 
     var imports: std.ArrayList(glint.Project.Import) = .empty;
@@ -675,6 +684,45 @@ test "a build script reads a dependency's script by the dependency's name, and i
         } else return error.TestUnexpectedResult;
         try std.testing.expectEqual(expected[1], source.input.compilations);
     }
+}
+
+test "a build script no selected file imports is read, unselected: bay's root, which binds the package's dev by the package's name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try write(tmp.dir, "src/root.zig", "pub const x = 1;\n");
+    try write(tmp.dir, "build.zig", "pub fn dev(b: anytype, tools: type) void {\n    _ = b;\n    _ = tools;\n}\n");
+    try write(tmp.dir, "build.zig.zon", ".{ .name = .pkg, .version = \"0.1.0\", .fingerprint = 0x1c0ffee, .paths = .{\"src\"} }\n");
+    try write(tmp.dir, ".zig-cache/bay/build.zig", "const package = @import(\"pkg\");\npub fn build(b: anytype) void {\n    package.dev(b, @This());\n}\n");
+    const bindings = [_]src.BuildModule.Binding{.{ .name = "pkg", .module = 1 }};
+    const modules = [_]src.BuildModule{
+        .{ .root = ".zig-cache/bay/build.zig", .imports = &bindings, .script = true },
+        .{ .root = "build.zig", .imports = &.{}, .script = true },
+        .{ .root = "src/root.zig", .imports = &.{} },
+    };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
+    const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+    const paths = (try select(&c, policy)).?;
+    var assembly = (try assemble(&c, std.testing.allocator, policy, paths, .{ .modules = &modules })).?;
+    defer assembly.deinit();
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    const project = &assembly.project;
+    var root = false;
+    for (project.sources) |source| if (std.mem.eql(u8, source.input.name, ".zig-cache/bay/build.zig")) {
+        root = true;
+        try std.testing.expect(!source.input.selected);
+        try std.testing.expectEqual(glint.Project.Compilations.build, source.input.compilations);
+    };
+    try std.testing.expect(root);
+    var binds = false;
+    for (project.imports) |import| {
+        if (!std.mem.eql(u8, project.at(import.from).input.name, ".zig-cache/bay/build.zig") or !std.mem.eql(u8, import.spelling, "pkg")) continue;
+        binds = true;
+        try std.testing.expectEqualStrings("build.zig", project.at(import.target).input.name);
+    }
+    try std.testing.expect(binds);
 }
 
 test "a file both compilations compile reads a name each binds apart as an edge apiece, and one compilation's two bindings as none of its own" {

@@ -44,7 +44,8 @@ pub fn addProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const
     options.step.dependOn(&install.step);
 }
 
-/// Where `addZigLib` installs the file that names Zig's library, under the install prefix.
+/// Where `addZigLib` installs the file that names Zig's library, under the install prefix,
+/// in a gate job's own place as a program is (`configure.jobPlace`).
 const zig_lib_file = "preflight/zig-lib";
 
 /// Zig's library, named to the tests as `name` in `options`: the path, from the package
@@ -53,7 +54,7 @@ const zig_lib_file = "preflight/zig-lib";
 /// replaying runner writes it for its own Zig. Zig's test runner takes no argument a test
 /// reads, and a path from `addOptionPath` is the building runner's, which portable tests refuse.
 pub fn addZigLib(b: *std.Build, options: *std.Build.Step.Options, name: []const u8) void {
-    const place = zig_lib_file;
+    const place = configure.jobPlace(b, zig_lib_file);
     options.addOption([]const u8, name, b.fmt("zig-out/{s}", .{place}));
     options.step.dependOn(writeZigLib(b, place));
 }
@@ -195,7 +196,7 @@ const Named = struct { programs: []const []const u8, zig_lib_place: ?[]const u8 
 fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) Named {
     var programs: std.ArrayList([]const u8) = .empty;
     var zig_lib_named: ?[]const u8 = null;
-    const zig_lib_place = zig_lib_file;
+    const zig_lib_place = configure.jobPlace(b, zig_lib_file);
     // Options reach the artifact as modules, each the generated file of its step.
     var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
     graph.put(b.allocator, artifact.root_module, {}) catch @panic("OOM");

@@ -53,7 +53,7 @@ const working_directory: ensign.Option = .{ .value_name = "DIR", .hint = .direct
 const workflow_config: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json of the working directory by default" };
 const build_option: ensign.Option = .{ .value_name = "-DNAME=VALUE", .help = "An option the build was configured with, repeated, so the configured graph is the build's" };
 
-const Plan = struct {
+pub const Plan = struct {
     zig_exe: ?[]const u8 = null,
     config: ?[]const u8 = null,
     tier: matrix.Tier = .fast,
@@ -69,7 +69,7 @@ const Plan = struct {
     };
 };
 
-const Generate = struct {
+pub const Generate = struct {
     zig_exe: ?[]const u8 = null,
     config: ?[]const u8 = null,
     manifest: []const u8 = "build.zig.zon",
@@ -89,7 +89,7 @@ const Generate = struct {
     };
 };
 
-const Facts = struct {
+pub const Facts = struct {
     zig_exe: ?[]const u8 = null,
     build_option: []const []const u8 = &.{},
     options: []const []const u8 = &.{},
@@ -103,7 +103,7 @@ const Facts = struct {
     };
 };
 
-const Lint = struct {
+pub const Lint = struct {
     config: []const u8 = "ci/preflight.json",
     zig_exe: ?[]const u8 = null,
     zig_std: ?[]const u8 = null,
@@ -131,7 +131,7 @@ const Lint = struct {
     };
 };
 
-const Surface = struct {
+pub const Surface = struct {
     since: ?[]const u8 = null,
     module: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
@@ -143,7 +143,7 @@ const Surface = struct {
     };
 };
 
-const Gate = struct {
+pub const Gate = struct {
     zig_exe: ?[]const u8 = null,
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
@@ -155,7 +155,7 @@ const Gate = struct {
     };
 };
 
-const Targets = struct {
+pub const Targets = struct {
     zig_exe: ?[]const u8 = null,
     config: []const u8 = "ci/workflow.json",
     pub const spec: ensign.Spec(@This()) = .{
@@ -164,7 +164,7 @@ const Targets = struct {
     };
 };
 
-const Skip = struct {
+pub const Skip = struct {
     config: []const u8 = "ci/preflight.json",
     pub const spec: ensign.Spec(@This()) = .{
         .about = "Whether the change is documentation alone, which a fast run does not test",
@@ -172,7 +172,7 @@ const Skip = struct {
     };
 };
 
-const Profile = struct {
+pub const Profile = struct {
     input: []const u8 = ".preflight-timings",
     durations: []const u8 = "ci/durations.json",
     output: ?[]const u8 = null,
@@ -192,7 +192,7 @@ const Profile = struct {
     };
 };
 
-const Campaign = struct {
+pub const Campaign = struct {
     cache: []const u8,
     cwd: []const u8 = ".",
     build: []const []const u8,
@@ -206,7 +206,7 @@ const Campaign = struct {
     };
 };
 
-const Unsharded = struct {
+pub const Unsharded = struct {
     name: []const u8 = "test",
     pub const spec: ensign.Spec(@This()) = .{
         .about = "Fail when the job runs one shard of the tests, which a test runner of the package's own cannot",
@@ -214,7 +214,7 @@ const Unsharded = struct {
     };
 };
 
-const Counts = struct {
+pub const Counts = struct {
     records: []const u8 = ".zig-cache/preflight-counts",
     expect: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
@@ -226,7 +226,7 @@ const Counts = struct {
     };
 };
 
-const Executable = struct {
+pub const Executable = struct {
     paths: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
         .about = "Give downloaded test executables back the permission to run that an artifact upload drops",
@@ -234,7 +234,7 @@ const Executable = struct {
     };
 };
 
-const Cache = struct {
+pub const Cache = struct {
     path: []const u8 = ".zig-cache",
     cap: usize = 1 << 20,
     pub const spec: ensign.Spec(@This()) = .{
@@ -246,7 +246,7 @@ const Cache = struct {
     };
 };
 
-const Docs = struct {
+pub const Docs = struct {
     config: []const u8 = "ci/preflight.json",
     zig_exe: ?[]const u8 = null,
     region: []const u8 = "usage",
@@ -260,7 +260,7 @@ const Docs = struct {
     };
 };
 
-const Deprecations = struct {
+pub const Deprecations = struct {
     std: []const u8,
     write: bool = false,
     paths: []const []const u8 = &.{},

@@ -27,7 +27,7 @@ pub const Entry = struct {
 
 pub const Error = error{ OutOfMemory, InvalidName, NotDirectory, LinkTarget, ImageTooLarge };
 
-const Node = struct {
+pub const Node = struct {
     name: []const u8,
     kind: Kind,
     mode: u32,

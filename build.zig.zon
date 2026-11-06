@@ -12,8 +12,8 @@
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=aegis-0.3#4d8a6dd455d4fc18090b8820c2542a62e1db4b2e",
-            .hash = "gantry-0.3.4-1iNrkd7ZDACsAi7gKnH-DZnNwLbBXDETlvc8TbXPy9gI",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=aegis-0.3#0e1536d5f41acbbe87149a6dfc9bb740be3d7c94",
+            .hash = "gantry-0.3.4-1iNrkQXbDADAHwaN25ZhlmM4eegVXtVc-a00zfqHjrYE",
             .lazy = true,
         },
 

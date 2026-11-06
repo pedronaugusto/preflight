@@ -5,24 +5,28 @@
 //! run.
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 
 /// Whether a job's command leads a process group of its own here.
 pub const grouped = builtin.target.os.tag != .windows;
 
 const Pid = if (grouped) std.posix.pid_t else i32;
 
-/// The leaders running now; 0 is a free place. Read by the signal handler, so only atomics.
-pub var leaders: [256]std.atomic.Value(Pid) = @splat(.init(0));
+/// A place in `leaders`: free, or the pid of a command leading a process group of its own.
+pub const Leader = enum(Pid) { free = 0, _ };
+
+/// The leaders running now. Read by the signal handler, so only atomics.
+pub var leaders: [256]aegis.Atomic(Leader) = @splat(.init(.free));
 
 /// Holds `pid`, a command a job started at the head of its own group, until `release`.
 /// With every place taken it is not held, and a stopped gate leaves it running.
 pub fn hold(pid: Pid) void {
-    for (&leaders) |*place| if (place.cmpxchgStrong(0, pid, .acq_rel, .monotonic) == null) return;
+    for (&leaders) |*place| if (place.cmpxchgStrong(.free, @fromBackingInt(pid), .acq_rel, .monotonic) == null) return;
 }
 
 /// Lets go of `pid`, which has ended.
 pub fn release(pid: Pid) void {
-    for (&leaders) |*place| if (place.cmpxchgStrong(pid, 0, .acq_rel, .monotonic) == null) return;
+    for (&leaders) |*place| if (place.cmpxchgStrong(@fromBackingInt(pid), .free, .acq_rel, .monotonic) == null) return;
 }
 
 /// Ends the gate's commands on the signals that stop a gate, then lets the signal end
@@ -37,8 +41,8 @@ pub fn endWithGate() void {
 pub fn endAll() void {
     if (!grouped) return;
     for (&leaders) |*place| {
-        const pid = place.load(.acquire);
-        if (pid != 0) _ = std.posix.system.kill(-pid, .TERM);
+        const leader = place.load(.acquire);
+        if (leader != .free) _ = std.posix.system.kill(-@backingInt(leader), .TERM);
     }
 }
 
@@ -50,12 +54,13 @@ fn stopped(sig: std.posix.SIG) callconv(.c) void {
 }
 
 test "a held command is let go of, and a place is free again" {
+    const leader: Leader = @fromBackingInt(4242);
     hold(4242);
     try std.testing.expect(for (&leaders) |*place| {
-        if (place.load(.monotonic) == 4242) break true;
+        if (place.load(.monotonic) == leader) break true;
     } else false);
     release(4242);
     try std.testing.expect(for (&leaders) |*place| {
-        if (place.load(.monotonic) == 4242) break false;
+        if (place.load(.monotonic) == leader) break false;
     } else true);
 }

@@ -6,6 +6,10 @@ const configure = @import("../configure.zig");
 const family = @import("../family.zig");
 
 pub const Value = std.json.Value;
+/// What a context is lent is owned where it is opened (`owned.zig`).
+pub const OwnedDir = @import("../owned.zig").OwnedDir;
+pub const OwnedFile = @import("../owned.zig").OwnedFile;
+
 pub const Context = struct {
     a: std.mem.Allocator,
     io: std.Io,

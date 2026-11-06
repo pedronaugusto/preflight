@@ -311,18 +311,20 @@ fn relative(path: []const u8, directory: bool) !void {
 pub fn write(c: src.Context, path: []const u8, text: []const u8) !void {
     try relative(path, false);
     if (!std.mem.endsWith(u8, path, ".yml") and !std.mem.endsWith(u8, path, ".yaml")) return error.InvalidWorkflowPath;
-    var dir = try c.directory().openDir(c.io, ".", .{ .follow_symlinks = false });
-    defer dir.close(c.io);
+    // Each directory on the way is opened from the one before it, without following a link, and
+    // replaces it: the parent is closed, its owner taking the child.
+    var dir: src.OwnedDir = .init(try c.directory().openDir(c.io, ".", .{ .follow_symlinks = false }));
+    defer dir.deinit(c.io);
     var parts = std.mem.splitScalar(u8, path, '/');
     var part = parts.next().?;
     while (parts.next()) |next| {
-        const child = try dir.openDir(c.io, part, .{ .follow_symlinks = false });
-        dir.close(c.io);
-        dir = child;
+        var child: src.OwnedDir = .init(try dir.borrow().openDir(c.io, part, .{ .follow_symlinks = false }));
+        dir.deinit(c.io);
+        child.moveInto(&dir);
         part = next;
     }
-    const file = dir.openFile(c.io, part, .{ .mode = .read_write, .follow_symlinks = false }) catch |err| switch (err) {
-        error.FileNotFound => try dir.createFile(c.io, part, .{ .exclusive = true }),
+    const file = dir.borrow().openFile(c.io, part, .{ .mode = .read_write, .follow_symlinks = false }) catch |err| switch (err) {
+        error.FileNotFound => try dir.borrow().createFile(c.io, part, .{ .exclusive = true }),
         else => return err,
     };
     defer file.close(c.io);

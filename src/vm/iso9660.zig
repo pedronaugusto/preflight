@@ -88,9 +88,14 @@ pub const Writer = struct {
         if (w.nodes.items[to].kind != .file) return error.LinkTarget;
         const shared = w.nodes.items[to].extent_of;
         const index = try w.node(try clean(name), .file);
+        // A file node (`node` made it one or found one), now sharing the target's extent and metadata.
         const n = &w.nodes.items[index];
         const t = w.nodes.items[shared];
-        n.* = .{ .name = n.name, .kind = .file, .mode = t.mode, .uid = t.uid, .gid = t.gid, .data = t.data, .parent = n.parent, .extent_of = shared, .children = n.children };
+        n.mode = t.mode;
+        n.uid = t.uid;
+        n.gid = t.gid;
+        n.data = t.data;
+        n.extent_of = shared;
     }
 
     /// The node at `path`, made with its parents when missing.

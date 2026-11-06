@@ -8,6 +8,7 @@ const timings = @import("preflight_timings");
 const order_module = @import("preflight_order");
 const options = @import("preflight_runner_options");
 const bound = @import("preflight_watchdog");
+// aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
 const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();

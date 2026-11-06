@@ -82,11 +82,11 @@ fn profileCommand(c: src.Context, args: @FieldType(Command, "profile")) !void {
 
 /// `deprecations`: what this Zig release deprecated, rewritten, or with `--write` applied.
 fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Command, "deprecations")) !void {
-    var std_dir = try std.Io.Dir.cwd().openDir(io, args.std, .{});
-    defer std_dir.close(io);
+    var std_dir: src.OwnedDir = .init(try std.Io.Dir.cwd().openDir(io, args.std, .{}));
+    defer std_dir.deinit(io);
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &buffer);
-    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = std_dir, .write = args.write, .paths = args.paths }, &out.interface);
+    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = std_dir.borrow().*, .write = args.write, .paths = args.paths }, &out.interface);
     try out.interface.flush();
 }
 
@@ -108,9 +108,9 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(
 fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerror!void {
     if (config.* != .object) return;
     var gate = c.*;
-    var job_dir = try c.directory().openDir(c.io, directory, .{});
-    defer job_dir.close(c.io);
-    gate.dir = job_dir;
+    var job_dir: src.OwnedDir = .init(try c.directory().openDir(c.io, directory, .{}));
+    defer job_dir.deinit(c.io);
+    gate.dir = job_dir.borrow().*;
     // The gate's build is developed with bay or not on its own account (preflight's sample is not).
     gate.bay = if (gate.developedWithBay()) c.bay orelse "bay" else null;
     var linking: std.json.Array = .init(c.a);
@@ -236,8 +236,9 @@ fn runGateJob(c: src.Context, environ: *const std.process.Environ.Map, job: *con
     w.environ_map = &env;
     const moved = !std.mem.eql(u8, job.directory, ".");
     // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
-    if (moved) w.dir = try c.directory().openDir(c.io, job.directory, .{});
-    defer if (moved) w.dir.?.close(c.io);
+    var job_dir: ?src.OwnedDir = if (moved) .init(try c.directory().openDir(c.io, job.directory, .{})) else null;
+    defer if (job_dir) |*dir| dir.deinit(c.io);
+    if (job_dir) |*dir| w.dir = dir.borrow().*;
     // The package there builds as it is developed: with bay only if its manifest says so.
     if (moved) w.bay = w.bayFor(&env);
     try runGate(w, &env, if (own != null) job.key else null);
@@ -246,22 +247,26 @@ fn runGateJob(c: src.Context, environ: *const std.process.Environ.Map, job: *con
 /// The machine's shares the running jobs hold, and the gate's output, which one job
 /// writes at a time.
 const Shares = struct {
-    mutex: std.Io.Mutex = .init,
-    freed: std.Io.Condition = .init,
-    free: u32,
-    output: std.Io.Mutex = .init,
+    free: aegis.BlockingGuarded(u32),
+    freed: aegis.Condition = .init(),
+    /// The gate's stdout: one job's lines at a time, written only while this is held.
+    output: aegis.BlockingGuarded(void) = .init({}),
 
-    fn take(s: *Shares, io: std.Io, count: u32) void {
-        s.mutex.lockUncancelable(io);
-        defer s.mutex.unlock(io);
-        while (s.free < count) s.freed.waitUncancelable(io, &s.mutex);
-        s.free -= count;
+    /// Waits for `count` shares and takes them. Only the gate's loop waits, with no timeout, so
+    /// neither the waiter limit nor a timeout can end the wait; either would fail the gate by name.
+    fn take(s: *Shares, io: std.Io, count: u32) aegis.Condition.UncancelableWaitError!void {
+        var held = s.free.acquireUncancelable(io);
+        defer held.deinit(io);
+        while (held.value().* < count) try held.waitUncancelable(&s.freed, io, .none);
+        held.value().* -= count;
     }
 
     fn give(s: *Shares, io: std.Io, count: u32) void {
-        s.mutex.lockUncancelable(io);
-        s.free += count;
-        s.mutex.unlock(io);
+        {
+            var held = s.free.acquireUncancelable(io);
+            defer held.deinit(io);
+            held.value().* += count;
+        }
         s.freed.broadcast(io);
     }
 };
@@ -299,17 +304,18 @@ fn runGateJobs(c: src.Context, environ: *const std.process.Environ.Map, jobs: []
     for (jobs) |job| if (!(try directories.getOrPut(c.a, job.directory)).found_existing) {
         var place = c;
         const moved = !std.mem.eql(u8, job.directory, ".");
-        if (moved) place.dir = try c.directory().openDir(c.io, job.directory, .{});
-        defer if (moved) place.dir.?.close(c.io);
+        var job_dir: ?src.OwnedDir = if (moved) .init(try c.directory().openDir(c.io, job.directory, .{})) else null;
+        defer if (job_dir) |*dir| dir.deinit(c.io);
+        if (job_dir) |*dir| place.dir = dir.borrow().*;
         try checks.profile.reset(place, ".zig-cache/preflight-timings");
     };
     try c.directory().createDirPath(c.io, gate_logs);
     const order = try startOrder(c, jobs);
-    var shares: Shares = .{ .free = slots };
+    var shares: Shares = .{ .free = .init(slots) };
     var group: std.Io.Group = .init;
     for (order) |index| {
         const share = @min(checks.local.weight(jobs[index].job), slots);
-        shares.take(c.io, share);
+        try shares.take(c.io, share);
         group.concurrent(c.io, runShare, .{ c, environ, &jobs[index], &shares, share }) catch {
             // No thread to give it: it runs here, before the next is started.
             runShare(c, environ, &jobs[index], &shares, share);
@@ -332,9 +338,9 @@ fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJ
         return;
     };
     job.outcome = run: {
-        const file = c.directory().createFile(c.io, path, .{ .truncate = true }) catch |err| break :run err;
-        defer file.close(c.io);
-        break :run runGateJob(c, environ, job, .{ .a = a, .output = file });
+        var file: src.OwnedFile = .init(c.directory().createFile(c.io, path, .{ .truncate = true }) catch |err| break :run err);
+        defer file.deinit(c.io);
+        break :run runGateJob(c, environ, job, .{ .a = a, .output = file.borrow().* });
     };
     const seconds = timer.seconds(c);
     // What it took, for the next gate's order; a record that cannot be written costs only that.
@@ -344,8 +350,8 @@ fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJ
             c.directory().writeFile(c.io, .{ .sub_path = record, .data = text }) catch {};
         } else |_| {}
     } else |_| {}
-    shares.output.lockUncancelable(c.io);
-    defer shares.output.unlock(c.io);
+    var writing = shares.output.acquireUncancelable(c.io);
+    defer writing.deinit(c.io);
     // glint-ignore: Z026 -- the job's line is for the reader; its outcome stands, and the gate names a red job again at its end
     stdout(c, a.print("gate: {s} ({d:.1} s)\n", .{ job.job.name, seconds }) catch return) catch {};
     // A job's output that cannot be read back is lost to the reader; its outcome stands.

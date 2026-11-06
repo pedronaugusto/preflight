@@ -5,6 +5,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const configure = @import("configure.zig");
 const plain = @import("plain.zig");
+const OwnedDir = @import("owned.zig").OwnedDir;
 
 pub const Options = struct {
     /// The dependency name a consumer gives the package, as in its build.zig.zon.
@@ -133,10 +134,10 @@ pub fn main(init: std.process.Init) !void {
     const shape: Shape = .{ .package = args[6], .modules = modules.items, .options = dependency_options.items };
     // A consumer that builds without bay takes every pin as written: two packages that pin
     // a third at two revisions link both, which bay's one selection hides.
-    var global = try cwd.openDir(io, args[7], .{});
-    defer global.close(io);
+    var global: OwnedDir = .init(try cwd.openDir(io, args[7], .{}));
+    defer global.deinit(io);
     const package_manifest = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
-    const found = try plain.conflicts(a, io, try aegis.own.readFile(io, cwd, package_manifest, a, .fromRaw(1024 * 1024)), shape.package, .{ .global = global, .zig = args[1] });
+    const found = try plain.conflicts(a, io, try aegis.own.readFile(io, cwd, package_manifest, a, .fromRaw(1024 * 1024)), shape.package, .{ .global = global.borrow().*, .zig = args[1] });
     if (found.len != 0) {
         var buffer: [1024]u8 = undefined;
         var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);

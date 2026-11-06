@@ -120,7 +120,7 @@ test "a gate job's command and what it started end when the gate's jobs are ende
     // Ended once it is held, and so running.
     while (true) {
         const held = for (&running.leaders) |*place| {
-            if (place.load(.acquire) != 0) break true;
+            if (place.load(.acquire) != .free) break true;
         } else false;
         if (held) break;
         try std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake);

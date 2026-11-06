@@ -46,6 +46,7 @@ pub const TestTimeout = union(enum) {
                 // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
                 const ns = @max(custom.limit.toNanoseconds(), 1);
                 if (ns > std.math.maxInt(u64)) break :bound null;
+                // aegis: design(A011): std alone, as the test runner and build module every package compiles (aegis's own too) must be
                 break :bound .fromNanoseconds(ns);
             },
             .off => |reason| if (std.mem.trim(u8, reason, " ").len == 0) null else .zero,

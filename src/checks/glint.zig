@@ -115,6 +115,7 @@ fn peerWriters(c: *src.Context, own: []const glint.Config.PeerWriter, modules: [
         var dir = std.fs.path.dirname(root);
         const package = while (dir) |at| : (dir = std.fs.path.dirname(at)) {
             const manifest = try std.fs.path.join(c.a, &.{ at, "build.zig.zon" });
+            // glint-ignore: Z026 -- a directory with no reachable build.zig.zon is not the package's: the search goes up
             if (std.Io.Dir.cwd().access(c.io, manifest, .{})) |_| break at else |_| {}
         } else continue;
         if ((try seen.getOrPut(c.a, package)).found_existing) continue;

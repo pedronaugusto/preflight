@@ -337,8 +337,10 @@ fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJ
         break :run runGateJob(c, environ, job, .{ .a = a, .output = file });
     };
     const seconds = timer.seconds(c);
-    // What it took, for the next gate's order; a record that cannot be written costs only that.
+    // What it took, for the next gate's order.
+    // glint-ignore: Z026 -- a timing record that cannot be named costs only the next gate's order
     if (a.print("{s}/{s}.seconds", .{ gate_logs, job.key })) |record| {
+        // glint-ignore: Z026 -- a timing record whose text cannot be made costs only the next gate's order
         if (a.print("{d:.1}\n", .{seconds})) |text| {
             // glint-ignore: Z026 -- the record only orders the next gate's jobs; without it that job starts first
             c.directory().writeFile(c.io, .{ .sub_path = record, .data = text }) catch {};

@@ -222,7 +222,9 @@ pub fn run(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8,
 pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) Outcome {
     var lines = std.mem.tokenizeAny(u8, whole(status), "\r\n");
     while (lines.next()) |line| {
+        // glint-ignore: Z026 -- a status line that is no exit code is read as the lines below
         if (std.mem.startsWith(u8, line, "exited ")) if (std.fmt.parseInt(u8, line["exited ".len..], 10)) |code| return .{ .ending = .{ .exited = code } } else |_| {};
+        // glint-ignore: Z026 -- a status line that is no signal number is read as the lines below
         if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10)) |sig| {
             if (sig >= 1 and sig <= max_signal) return .{ .ending = .{ .signal = sig } };
         } else |_| {};

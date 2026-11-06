@@ -125,6 +125,7 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         try protocol.writer.writeAll(body);
         if (header.tag == .bsp_configuration_failed) {
             // What the build wrote to stderr says why; it ends after saying so.
+            // glint-ignore: Z026 -- the build's stderr ends after it says why, or the read fails; what it said so far is the report
             while (multi.fill(4096, protocol_timeout)) |_| {
                 if (multi.reader(1).bufferedLen() > limit) break;
             } else |_| {}

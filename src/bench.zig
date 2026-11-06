@@ -100,10 +100,12 @@ fn provenance(b: *std.Build) []const u8 {
     if (std.mem.startsWith(u8, head, "ref: ")) {
         const ref = b.fmt("{s}/{s}", .{ common, std.mem.trim(u8, head[5..], "\r\n") });
         b.dependOnDirectoryMetadata(.{ .cwd_relative = std.Io.Dir.path.dirname(ref).? });
+        // glint-ignore: Z026 -- a ref file that cannot be reached is no input of the build: there is nothing to watch
         if (std.Io.Dir.cwd().access(b.graph.io, ref, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = ref }) else |_| {}
     }
     b.dependOnDirectoryMetadata(.{ .cwd_relative = directory });
     const packed_path = b.fmt("{s}/packed-refs", .{common});
+    // glint-ignore: Z026 -- a repository with no reachable packed-refs has none to watch
     if (std.Io.Dir.cwd().access(b.graph.io, packed_path, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = packed_path }) else |_| {}
     const result = std.process.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "HEAD" }, .cwd = .{ .path = cwd }, .stdout_limit = .limited(1024), .stderr_limit = .limited(32768) }) catch return "source-archive";
     if (result.term != .exited or result.term.exited != 0) return "source-archive";

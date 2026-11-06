@@ -127,7 +127,7 @@ pub fn dev(b: *std.Build, _: type) void {
     // the gate finds among this build's dependencies is this package.
     ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
         .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" }, .{ .name = "configuration", .source = "bench/configuration.zig" } },
-        .imports = benchImports,
+        .imports = &bench_imports,
         .target = target,
         .optimize = .debug,
     } });
@@ -199,7 +199,9 @@ fn addCommands(b: *std.Build, executable: *std.Build.Step.Compile, root: []const
 
 /// The benchmarks' imports, in `b`, the development build: the checks and the
 /// facts reader of this package, with gantry and glint in the benchmark's mode.
-fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+/// preflight's own benchmarks import its checks and facts; they need no state of the package's.
+const bench_imports: Bench.Imports = .{ .make = benchImports };
+fn benchImports(_: *const Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const package = b.dependency("preflight", .{}).builder;
     const gantry_dep = package.dependencyLazy("gantry", .{ .target = target, .optimize = optimize, .zig = true }) catch unreachable; // unreachable: dev returns before addCi if gantry is not available
     const gantry = gantry_dep.module("gantry");

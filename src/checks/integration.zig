@@ -1522,7 +1522,8 @@ const bench_build =
     \\    preflight.addCi(b, b, .{ .tests = step, .portable_tests = true, .bench = BENCH });
     \\}
     \\
-    \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+    \\const imports_hook: preflight.Bench.Imports = .{ .make = imports };
+    \\fn imports(_: *const preflight.Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     \\    const module = b.createModule(.{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
     \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "preflight_sample", .module = module }}) catch @panic("OOM");
     \\}
@@ -1545,7 +1546,7 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     const missing = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(missing));
     try std.testing.expect(std.mem.find(u8, missing.stderr, "bench/: give addCi its .bench") != null);
-    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = imports, .target = target, .optimize = optimize }";
+    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = &imports_hook, .target = target, .optimize = optimize }";
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
     const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(tested)) std.debug.print("{s}\n", .{tested.stderr});
@@ -1580,7 +1581,7 @@ test "without shakedown a stranger's benchmarks are built, smoke-run and run, wi
     try withoutShakedown(a, tmp.dir);
     try tmp.dir.createDirPath(io, "bench");
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "const sample = @import(\"preflight_sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
-    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = imports, .target = target, .optimize = optimize }";
+    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = &imports_hook, .target = target, .optimize = optimize }";
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
     const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(refused));
@@ -1633,9 +1634,10 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         \\    test_step.dependOn(&b.addRunArtifact(tests).step);
         \\    test_step.dependOn(&b.addRunArtifact(helper).step);
         \\    b.step("check", "root").dependOn(&tests.step);
-        \\    preflight.addCi(b, b, .{ .tests = test_step, .bench = .{ .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }}, .imports = imports, .target = target, .optimize = optimize } });
+        \\    preflight.addCi(b, b, .{ .tests = test_step, .bench = .{ .programs = &.{.{ .name = "bench", .source = "bench/main.zig" }}, .imports = &imports_hook, .target = target, .optimize = optimize } });
         \\}
-        \\fn imports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+        \\const imports_hook: preflight.Bench.Imports = .{ .make = imports };
+        \\fn imports(_: *const preflight.Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
         \\    _ = target;
         \\    _ = optimize;
         \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = b.modules.get("preflight_sample").? }}) catch @panic("OOM");
@@ -1951,10 +1953,11 @@ test "toolchain measuring builds without executing and injects shakedown for a c
         \\}
     });
     const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
-    const changed = try std.mem.replaceOwned(u8, a, build, ".portable_tests = true", ".portable_tests = true, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize, .imports = probeImports }");
+    const changed = try std.mem.replaceOwned(u8, a, build, ".portable_tests = true", ".portable_tests = true, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize, .imports = &probe_hook }");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = try std.mem.concat(a, u8, &.{
         changed,
-        \\fn probeImports(_: *std.Build, _: std.Build.ResolvedTarget, _: std.lang.Optimize) []const std.Build.Module.Import { return &.{}; }
+        \\const probe_hook: preflight.Bench.Imports = .{ .make = probeImports };
+        \\fn probeImports(_: *const preflight.Bench.Imports, _: *std.Build, _: std.Build.ResolvedTarget, _: std.lang.Optimize) []const std.Build.Module.Import { return &.{}; }
     }) });
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench-build" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
@@ -1992,11 +1995,12 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
         \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
         \\    const step = b.step("test", "Run the sample tests");
         \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = package.module("preflight_sample") })).step);
-        \\    tools.preflight.addCi(b, package.builder, .{ .tests = step, .bench = .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = benchImports, .target = target, .optimize = optimize } });
+        \\    tools.preflight.addCi(b, package.builder, .{ .tests = step, .bench = .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = &bench_hook, .target = target, .optimize = optimize } });
         \\    tools.preflight.addConsumerCheck(b, package.builder, .{ .package = "preflight_sample", .program = package.path("ci/consumer.zig") });
         \\}
         \\
-        \\fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+        \\const bench_hook: tools.preflight.Bench.Imports = .{ .make = benchImports };
+        \\fn benchImports(_: *const tools.preflight.Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
         \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
         \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = package.module("preflight_sample") }}) catch @panic("OOM");
         \\}

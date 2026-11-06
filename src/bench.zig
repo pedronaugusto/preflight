@@ -7,11 +7,18 @@ const family = @import("family.zig");
 /// A repository's benchmark programs and their package modules.
 pub const Bench = struct {
     programs: []const Program,
-    imports: *const fn (*std.Build, std.Build.ResolvedTarget, std.lang.Optimize) []const std.Build.Module.Import = noImports,
+    /// The package's own modules the programs import, made where they are built (`Imports`).
+    imports: ?*const Imports = null,
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
     link_libc: ?bool = null,
     pub const Program = struct { name: []const u8, source: []const u8, timed: bool = true };
+    /// What the benchmarks import beside shakedown, made for each mode they are built in. A package
+    /// embeds it in its own state and gets that state back with `@fieldParentPtr`, so what the
+    /// modules need is held there, never in a container-level variable.
+    pub const Imports = struct {
+        make: *const fn (*const Imports, *std.Build, std.Build.ResolvedTarget, std.lang.Optimize) []const std.Build.Module.Import,
+    };
 };
 pub const smoke_flag = "--smoke";
 
@@ -111,7 +118,7 @@ fn provenance(b: *std.Build) []const u8 {
 }
 
 fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8, measured: bool) *std.Build.Step.Compile {
-    const mod = b.createModule(.{ .root_source_file = package.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = bench.imports(b, bench.target, optimize) });
+    const mod = b.createModule(.{ .root_source_file = package.path(program.source), .target = bench.target, .optimize = optimize, .link_libc = bench.link_libc, .imports = if (bench.imports) |hook| hook.make(hook, b, bench.target, optimize) else &.{} });
     // A benchmark measures through the shakedown the package declares, the one its tests
     // link; `imports` gives the package's own modules, and one way is the only way.
     if (mod.import_table.contains("shakedown")) std.debug.panic("bench.imports gives `shakedown`: preflight adds the one the package declares; leave it out of the list", .{});
@@ -130,8 +137,4 @@ fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.P
     metadata.addOption([]const u8, "zig", b.graph.zig_exe);
     mod.addOptions("preflight_bench_options", metadata);
     return b.addExecutable(.{ .name = program.name, .root_module = mod });
-}
-
-fn noImports(_: *std.Build, _: std.Build.ResolvedTarget, _: std.lang.Optimize) []const std.Build.Module.Import {
-    return &.{};
 }

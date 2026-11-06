@@ -104,8 +104,9 @@ Compiled caches never skip test execution: each gate runs the test binaries even
 when their build products are already available.
 
 A package with benchmarks gives them to `addCi` as `.bench = .{ .programs = &.{.{ .name
-= "scan", .source = "bench/scan.zig" }}, .imports = imports, .target = target,
-.optimize = optimize }`, where `imports(b, target, optimize)` builds the modules a
+= "scan", .source = "bench/scan.zig" }}, .imports = &state.imports, .target = target,
+.optimize = optimize }`, where `state.imports` is a `Bench.Imports` the package embeds in its own
+state, whose `make(&state.imports, b, target, optimize)` builds the modules a
 program imports in that mode. `zig build bench` builds every program in ReleaseFast
 under `zig-out/bench` and runs the timed ones one after another with no arguments
 (`.timed = false` leaves out a tool such as a fixture writer); a program's own

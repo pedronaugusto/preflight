@@ -68,11 +68,13 @@ const guest_path = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
 pub fn main(init: std.process.Init) void {
     const io = init.io;
     const gpa = init.arena.allocator();
-    const status = run(io, gpa) catch |err| blk: {
+    // Where the ending is reported: the `status` port, once `run` has opened it.
+    var status_port: c.fd_t = -1;
+    const status = run(io, gpa, &status_port) catch |err| blk: {
         say("{t}", .{err});
         break :blk Ending{ .failed = err };
     };
-    report(status);
+    report(status_port, status);
     powerOff();
 }
 
@@ -82,7 +84,7 @@ const Ending = union(enum) {
     failed: anyerror,
 };
 
-fn run(io: Io, gpa: std.mem.Allocator) !Ending {
+fn run(io: Io, gpa: std.mem.Allocator, status_port: *c.fd_t) !Ending {
     try holdStandardFds();
     for (modules) |name| {
         // A module GENERIC already holds is loaded: EEXIST.
@@ -114,6 +116,7 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try check(c.chdir("/"), error.Root);
 
     const ports = try openPorts(io);
+    status_port.* = ports.status;
     try writeAll(ports.status, "started\n");
     return try launch(gpa, .{ .argv = argv, .environ = environ, .cwd = cwd, .user = user, .home = home }, ports);
 }
@@ -269,7 +272,6 @@ fn openPorts(io: Io) !Ports {
         .err = try openPort(io, "/dev/vtcon/err"),
         .status = try openPort(io, "/dev/vtcon/status"),
     };
-    status_port = ports.status;
     return ports;
 }
 
@@ -296,9 +298,6 @@ fn openPort(io: Io, path: [*:0]const u8) !c.fd_t {
     try check(c.tcsetattr(fd, .NOW, &mode), error.PortMode);
     return fd;
 }
-
-// aegis: design(A007): the test machine's first process, one thread and std alone, as its kernel runs it
-var status_port: c.fd_t = -1;
 
 /// Runs the program with pipes for its standard streams, as a build gives a program
 /// on any host, and carries them over the ports: the `io` port's frames to its stdin
@@ -564,7 +563,7 @@ fn writeAll(fd: c.fd_t, bytes: []const u8) !void {
 
 /// The program's ending on the `status` port. A machine whose port is missing or
 /// refuses the write leaves no ending, which the host reports with the console.
-fn report(ending: Ending) void {
+fn report(status_port: c.fd_t, ending: Ending) void {
     if (status_port < 0) return;
     var buffer: [128]u8 = undefined;
     const text = switch (ending) {

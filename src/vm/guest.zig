@@ -36,11 +36,13 @@ const guest_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
 pub fn main(init: std.process.Init) void {
     const io = init.io;
     const gpa = init.arena.allocator();
-    const status = run(io, gpa) catch |err| blk: {
+    // Where the ending is reported: the `status` port, once `run` has opened it.
+    var status_port: linux.fd_t = -1;
+    const status = run(io, gpa, &status_port) catch |err| blk: {
         say("{t}", .{err});
         break :blk Ending{ .failed = err };
     };
-    report(status);
+    report(status_port, status);
     powerOff();
 }
 
@@ -50,7 +52,7 @@ const Ending = union(enum) {
     failed: anyerror,
 };
 
-fn run(io: Io, gpa: std.mem.Allocator) !Ending {
+fn run(io: Io, gpa: std.mem.Allocator, status_port: *linux.fd_t) !Ending {
     try mountSystem();
     try loopbackUp();
     var uts: linux.utsname = std.mem.zeroes(linux.utsname);
@@ -87,6 +89,7 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try check(linux.umount2(host_mount, linux.MNT.DETACH), error.UnmountHost);
 
     const ports = try openPorts(io, gpa);
+    status_port.* = ports.status;
     return try launch(gpa, .{ .argv = argv, .environ = environ, .cwd = cwd, .user = user, .home = home }, ports);
 }
 
@@ -335,10 +338,7 @@ const Ports = struct { io: linux.fd_t, err: linux.fd_t, status: linux.fd_t };
 fn openPorts(io: Io, gpa: std.mem.Allocator) !Ports {
     var tries: usize = 0;
     while (true) : (tries += 1) {
-        if (try findPorts(io, gpa)) |ports| {
-            status_port = ports.status;
-            return ports;
-        }
+        if (try findPorts(io, gpa)) |ports| return ports;
         if (tries == 1000) return error.PortsMissing;
         try io.sleep(.fromMilliseconds(10), .awake);
     }
@@ -368,9 +368,6 @@ fn findPorts(io: Io, gpa: std.mem.Allocator) !?Ports {
     }
     return ports;
 }
-
-// aegis: design(A007): the test machine's first process, one thread and std alone, as its kernel runs it
-var status_port: linux.fd_t = -1;
 
 /// Runs the program with pipes for its standard streams, as a build gives a program
 /// on any host, and carries them over the ports: the `io` port's frames to its stdin
@@ -615,7 +612,7 @@ fn writeAll(fd: linux.fd_t, bytes: []const u8) !void {
 
 /// The program's ending on the `status` port. A machine whose port is missing or
 /// refuses the write leaves no status, which the host reports with the console.
-fn report(ending: Ending) void {
+fn report(status_port: linux.fd_t, ending: Ending) void {
     if (status_port < 0) return;
     var buffer: [128]u8 = undefined;
     const text = switch (ending) {

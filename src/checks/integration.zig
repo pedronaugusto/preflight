@@ -444,7 +444,7 @@ fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []
     }
     if (config) |settings| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = settings });
     const result = try lintFixtureWith(a, tmp.dir, options);
-    if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the lint output it did not find the rule in
+    if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // a failing test shows the lint output it did not find the rule in
     try std.testing.expect(result.term == .exited and (result.term.exited != 0) == fails);
     if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
 }
@@ -464,7 +464,7 @@ test "a red lint and a failing unit test are each reported: the suite runs whate
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    if (std.mem.find(u8, result.stderr, "P005") == null or std.mem.find(u8, result.stderr, "the sample's own check") == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the build output it did not find both failures in
+    if (std.mem.find(u8, result.stderr, "P005") == null or std.mem.find(u8, result.stderr, "the sample's own check") == null) std.debug.print("{s}\n", .{result.stderr}); // a failing test shows the build output it did not find both failures in
     try std.testing.expect(result.term == .exited and result.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, result.stderr, "P005") != null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "the sample's own check") != null);

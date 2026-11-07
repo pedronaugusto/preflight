@@ -601,13 +601,19 @@ const Supervisor = struct {
             // may add one the signal missed: signal until none is left. An
             // ended process its parent has not waited for still counts, so the
             // tries are bounded.
+            // A cancel ends the waits between signals, not the signals: it
+            // stays asked for once they are done.
+            var canceled = false;
+            defer if (canceled) sio.recancel();
             for (0..50) |_| {
                 switch (std.posix.errno(std.posix.system.kill(-tree.group, .KILL))) {
                     .SUCCESS => {},
                     else => return,
                 }
-                // glint-ignore: Z026 -- a cancel only shortens the wait between two signals
-                sio.sleep(.fromMilliseconds(10), .awake) catch {};
+                if (canceled) continue;
+                sio.sleep(.fromMilliseconds(10), .awake) catch |err| switch (err) {
+                    error.Canceled => canceled = true,
+                };
             }
         }
 

@@ -1,10 +1,13 @@
-//! A project that depends on the package by path, built with fetching off and
-//! only the packages the package itself needs: the build a consumer gets.
+//! A project that depends on the package as a fetch gives it (only what its manifest's
+//! `.paths` lists), built with fetching off and only the packages the package itself needs:
+//! the build a consumer gets.
 //! The build runs this file as a program to write the project.
 const std = @import("std");
 const aegis = @import("aegis");
 const configure = @import("configure.zig");
 const plain = @import("plain.zig");
+const nested = @import("nested.zig");
+const zon_text = @import("zon.zig");
 
 pub const Options = struct {
     /// The dependency name a consumer gives the package, as in its build.zig.zon.
@@ -186,8 +189,8 @@ pub fn main(init: std.process.Init) !void {
     try dir.createDirPath(io, "src");
     const directory = try cwd.realPathFileAlloc(io, args[2], a);
     const root = try cwd.realPathFileAlloc(io, args[4], a);
-    const relative = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
-    std.mem.replaceScalar(u8, relative, '\\', '/');
+    const in_place = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
+    std.mem.replaceScalar(u8, in_place, '\\', '/');
     const text = try aegis.own.readFile(io, cwd, args[5], a, .fromRaw(16 * 1024 * 1024));
     var modules: std.ArrayList([]const u8) = .empty;
     var dependency_options: std.ArrayList(Option) = .empty;
@@ -199,8 +202,8 @@ pub fn main(init: std.process.Init) !void {
     // a third at two revisions link both, which bay's one selection hides.
     var global = try cwd.openDir(io, args[7], .{});
     defer global.close(io);
-    const package_manifest = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
-    const found = try plain.conflicts(a, io, try aegis.own.readFile(io, cwd, package_manifest, a, .fromRaw(1024 * 1024)), shape.package, .{ .global = global, .zig = args[1] });
+    const package_manifest = try aegis.own.readFile(io, cwd, try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" }), a, .fromRaw(1024 * 1024));
+    const found = try plain.conflicts(a, io, package_manifest, shape.package, .{ .global = global, .zig = args[1] });
     if (found.len != 0) {
         var buffer: [1024]u8 = undefined;
         var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
@@ -209,6 +212,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
     try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
+    const relative = if (try fetched(a, io, root, dir, directory, package_manifest)) fetched_name else in_place;
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
     try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });
     var env = try init.environ_map.clone(a);
@@ -231,6 +235,47 @@ pub fn main(init: std.process.Init) !void {
         try stderr.interface.flush();
         std.process.exit(1);
     }
+}
+
+/// Where the project keeps the package as a fetch gives it.
+const fetched_name = "package";
+
+/// The package as a consumer's fetch gives it, written to `fetched_name` under the project
+/// (`project`, at `directory`): only what `manifest`'s `.paths` lists of `root`, so a file the
+/// build reads and the manifest leaves out fails here as it fails for a consumer. The path
+/// dependencies of the manifest are written relative to where it now is. False, and nothing
+/// written, where `.paths` ships the whole directory (`""`) or the manifest does not parse,
+/// which Zig then reports reading the package where it is.
+fn fetched(a: std.mem.Allocator, io: std.Io, root: []const u8, project: std.Io.Dir, directory: []const u8, manifest_text: []const u8) !bool {
+    const listed = (try shippedPaths(a, manifest_text)) orelse return false;
+    for (listed) |path| if (path.len == 0) return false;
+    try project.deleteTree(io, fetched_name);
+    var to = try project.createDirPathOpen(io, fetched_name, .{});
+    defer to.close(io);
+    var from = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer from.close(io);
+    for (listed) |path| {
+        if (std.mem.eql(u8, path, "build.zig.zon")) continue;
+        // A path the manifest names and the package lacks is the paths check's to report.
+        nested.copy(io, a, from, to, path) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => |other| return other,
+        };
+    }
+    const placed = try std.Io.Dir.path.join(a, &.{ directory, fetched_name });
+    try to.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try nested.relocate(a, manifest_text, root, placed) });
+    return true;
+}
+
+/// The manifest's `.paths`, or null where it does not parse or names none.
+fn shippedPaths(a: std.mem.Allocator, manifest_text: []const u8) !?[]const []const u8 {
+    const source = (try zon_text.source(a, manifest_text)) orelse return null;
+    var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
+    const parsed = std.zon.parse.fromSlice(struct { paths: []const []const u8 }, .{ .gpa = a, .arena = a, .source = source, .diagnostics = &diagnostics, .ignore_unknown_fields = true }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseZon => return null,
+    };
+    return parsed.paths;
 }
 
 /// `name=bool:false`, `name=i64:3` or `name=str:text`.
@@ -324,6 +369,32 @@ test "a module is optional where a configuration leaves it out" {
     try std.testing.expect(!optional(&.{both}, "relic_lfs"));
     try std.testing.expect(optional(&.{ both, without }, "relic_lfs"));
     try std.testing.expect(!optional(&.{ both, without }, "relic"));
+}
+
+test "the consumer's package is what .paths lists: a file the manifest leaves out is not there, a path dependency still resolves" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "pkg/src");
+    try tmp.dir.createDirPath(io, "pkg/ci");
+    try tmp.dir.createDirPath(io, "project");
+    const text = ".{ .name = .p, .dependencies = .{ .near = .{ .path = \"../near\" } }, .paths = .{ \"build.zig\", \"build.zig.zon\", \"src\", \"ci/lists.zig\", \"README.md\" } }";
+    for ([_][]const u8{ "pkg/build.zig", "pkg/src/root.zig", "pkg/ci/lists.zig", "pkg/ci/other.zig" }) |path| try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "" });
+    const root = try tmp.dir.realPathFileAlloc(io, "pkg", a);
+    const directory = try tmp.dir.realPathFileAlloc(io, "project", a);
+    var project = try tmp.dir.openDir(io, "project", .{});
+    defer project.close(io);
+    try std.testing.expect(try fetched(a, io, root, project, directory, text));
+    for ([_][]const u8{ "package/build.zig", "package/src/root.zig", "package/ci/lists.zig" }) |path| _ = try project.statFile(io, path, .{});
+    try std.testing.expectError(error.FileNotFound, project.statFile(io, "package/ci/other.zig", .{}));
+    const written = try aegis.own.readFile(io, project, "package/build.zig.zon", a, .fromRaw(4096));
+    try std.testing.expect(std.mem.find(u8, written, ".path = \"../../near\"") != null);
+    // The whole directory shipped, or a manifest that does not parse: read where it is.
+    try std.testing.expect(!try fetched(a, io, root, project, directory, ".{ .paths = .{\"\"} }"));
+    try std.testing.expect(!try fetched(a, io, root, project, directory, ".{ .paths = "));
 }
 
 test "a package fetched by hash is copied for the consumer, one reached by path is not" {

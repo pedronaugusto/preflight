@@ -95,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Copies `path`, a file or a directory, from `from` to `to`.
-fn copy(io: std.Io, a: std.mem.Allocator, from: std.Io.Dir, to: std.Io.Dir, path: []const u8) !void {
+pub fn copy(io: std.Io, a: std.mem.Allocator, from: std.Io.Dir, to: std.Io.Dir, path: []const u8) !void {
     const stat = try from.statFile(io, path, .{});
     if (stat.kind != .directory) {
         if (std.Io.Dir.path.dirname(path)) |parent| try to.createDirPath(io, parent);

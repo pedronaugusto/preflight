@@ -10,6 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `ConsumerOptions.configurations` (each a `ConsumerConfiguration`): the consumer check builds each listed configuration, `options` with the configuration's variation on top (a variation's option replaces the base's of the same name), each in a project directory of its own named by its index and options, all under the one `check-consumer` step. A configuration whose options leave a module out of the package names the modules its program imports (`modules`; null is the base `modules`). A failing build prints the options it was built with. The default is one empty variation, the single build of `options` as before. A package with optional features lists each combination it promises, so none is a promise nothing compiled (relic's `.http` and `.lfs`).
 
+### Changed
+
+- The consumer check builds the package as a fetch gives it: only what `build.zig.zon`'s `.paths` lists, copied under the consumer's project, with the manifest's path dependencies made relative to there. It read the package by path, where `.paths` does not apply, so a build file the manifest left out passed the check and failed for every consumer. A manifest that ships its whole directory (`""`) is read where it is.
+
 ## [0.18.6] - 2026-10-31
 
 ### Fixed

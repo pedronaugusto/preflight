@@ -20,8 +20,13 @@ pub const Options = struct {
     /// brings the packages it depends on in turn, as a fetch would.
     packages: []const *std.Build.Dependency = &.{},
     /// Options the consumer gives the package, as `b.dependency(name, .{ ... })` does: `.http = false`
-    /// proves a build without a feature the package makes optional.
+    /// proves a build without a feature the package makes optional. The base of every configuration.
     options: []const Option = &.{},
+    /// The builds checked: each is `options` with its variation on top (a variation's option
+    /// replaces the base's of the same name), built in a project directory of its own. One empty
+    /// variation, the default, is the one build of `options` alone. A package with optional
+    /// features lists each combination it promises, so each is compiled.
+    configurations: []const []const Option = &.{&.{}},
 };
 
 /// One option of the dependency.
@@ -60,30 +65,62 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         const entry = std.Build.package_map.get(hash) orelse unreachable; // gather puts only hashes it found
         _ = packages.addCopyDirectory(.{ .cwd_relative = entry.build_root }, hash, .{});
     }
-    const build = b.addRunArtifact(consumer);
-    build.addArg(b.graph.zig_exe);
-    build.addDirectoryArg2(b.graph.path(.local_cache, "preflight-consumer"), .{});
-    build.addDirectoryArg2(packages.getDirectory(), .{});
-    build.addDirectoryArg2(package.path("."), .{});
-    build.addFileArg(options.program);
-    build.addArg(options.package);
-    build.addDirectoryArg2(b.graph.path(.global_cache, "."), .{});
-    for (options.options) |option| build.addArg(switch (option.value) {
-        .flag => |flag| b.fmt("-D{s}=bool:{}", .{ option.name, flag }),
-        .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
-        .text => |text| b.fmt("-D{s}=str:{s}", .{ option.name, text }),
-    });
     const names = if (options.modules.len > 0) options.modules else &.{options.package};
-    build.addArgs(names);
-    build.has_side_effects = true;
     const step = configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package}));
-    step.dependOn(&build.step);
+    const single = options.configurations.len == 1 and options.configurations[0].len == 0;
+    for (options.configurations, 0..) |variation, index| {
+        const merged = combined(b.allocator, options.options, variation);
+        const build = b.addRunArtifact(consumer);
+        build.setName(b.fmt("check-consumer {s}", .{label(b, index, merged)}));
+        build.addArg(b.graph.zig_exe);
+        const project = if (single) "preflight-consumer" else b.fmt("preflight-consumer/{s}", .{label(b, index, merged)});
+        build.addDirectoryArg2(b.graph.path(.local_cache, project), .{});
+        build.addDirectoryArg2(packages.getDirectory(), .{});
+        build.addDirectoryArg2(package.path("."), .{});
+        build.addFileArg(options.program);
+        build.addArg(options.package);
+        build.addDirectoryArg2(b.graph.path(.global_cache, "."), .{});
+        for (merged) |option| build.addArg(switch (option.value) {
+            .flag => |flag| b.fmt("-D{s}=bool:{}", .{ option.name, flag }),
+            .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
+            .text => |text| b.fmt("-D{s}=str:{s}", .{ option.name, text }),
+        });
+        build.addArgs(names);
+        build.has_side_effects = true;
+        step.dependOn(&build.step);
+    }
     // The program checked against the package's own modules too, which also tells lint what
     // each name it imports is: the configured graph is all lint reads, and the consumer's
     // project is written only when the check runs.
     const program = b.createModule(.{ .root_source_file = options.program, .target = b.graph.host, .optimize = .debug });
     for (names) |name| program.addImport(name, package.modules.get(name) orelse @panic(b.fmt("addConsumerCheck: the package has no module {s}", .{name})));
     step.dependOn(&b.addObject(.{ .name = "consumer-program", .root_module = program }).step);
+}
+
+/// `base` with `variation` on top: a variation's option replaces the base's of the same name.
+fn combined(a: std.mem.Allocator, base: []const Option, variation: []const Option) []const Option {
+    var out: std.ArrayList(Option) = .empty;
+    for (base) |option| {
+        const replaced = for (variation) |v| {
+            if (std.mem.eql(u8, v.name, option.name)) break true;
+        } else false;
+        if (!replaced) out.append(a, option) catch @panic("OOM");
+    }
+    out.appendSlice(a, variation) catch @panic("OOM");
+    return out.items;
+}
+
+/// A configuration's name, which its project directory and step take: its index and options,
+/// as `1-http=false-lfs=true`, so a failure says which build it was.
+fn label(b: *std.Build, index: usize, merged: []const Option) []const u8 {
+    var out: std.Io.Writer.Allocating = .init(b.allocator);
+    out.writer.print("{d}", .{index}) catch @panic("OOM");
+    for (merged) |option| switch (option.value) {
+        .flag => |flag| out.writer.print("-{s}={}", .{ option.name, flag }),
+        .number => |number| out.writer.print("-{s}={d}", .{ option.name, number }),
+        .text => |text| out.writer.print("-{s}={s}", .{ option.name, text }),
+    } catch @panic("OOM");
+    return out.written();
 }
 
 /// Puts `hash` and every package it depends on, transitively, into `closure`: with
@@ -156,7 +193,21 @@ pub fn main(init: std.process.Init) !void {
     const packages = try cwd.realPathFileAlloc(io, args[3], a);
     var child = try std.process.spawn(io, .{ .argv = &.{ args[1], "build", "--system", packages }, .cwd = .{ .path = directory }, .environ_map = &env });
     const term = try child.wait(io);
-    if (term != .exited or term.exited != 0) std.process.exit(1);
+    if (term != .exited or term.exited != 0) {
+        // Which configuration failed: its options, as the dependency took them.
+        var buffer: [1024]u8 = undefined;
+        var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
+        try stderr.interface.print("check-consumer: {s} failed to build with", .{shape.package});
+        if (shape.options.len == 0) try stderr.interface.writeAll(" no options");
+        for (shape.options) |option| switch (option.value) {
+            .flag => |flag| try stderr.interface.print(" .{s} = {}", .{ option.name, flag }),
+            .number => |number| try stderr.interface.print(" .{s} = {d}", .{ option.name, number }),
+            .text => |value| try stderr.interface.print(" .{s} = \"{s}\"", .{ option.name, value }),
+        };
+        try stderr.interface.writeAll("\n");
+        try stderr.interface.flush();
+        std.process.exit(1);
+    }
 }
 
 /// Where the project keeps the package as a fetch gives it.
@@ -294,6 +345,21 @@ test "the consumer's package is what .paths lists: a file the manifest leaves ou
     // The whole directory shipped, or a manifest that does not parse: read where it is.
     try std.testing.expect(!try fetched(a, io, root, project, directory, ".{ .paths = .{\"\"} }"));
     try std.testing.expect(!try fetched(a, io, root, project, directory, ".{ .paths = "));
+}
+
+test "a configuration is the base with its variation on top" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = [_]Option{ .{ .name = "http", .value = .{ .flag = true } }, .{ .name = "level", .value = .{ .number = 2 } } };
+    const none = combined(a, &base, &.{});
+    try std.testing.expectEqual(@as(usize, 2), none.len);
+    const varied = combined(a, &base, &.{ .{ .name = "http", .value = .{ .flag = false } }, .{ .name = "lfs", .value = .{ .flag = false } } });
+    try std.testing.expectEqual(@as(usize, 3), varied.len);
+    try std.testing.expectEqualStrings("level", varied[0].name);
+    try std.testing.expectEqualStrings("http", varied[1].name);
+    try std.testing.expect(!varied[1].value.flag);
+    try std.testing.expectEqualStrings("lfs", varied[2].name);
 }
 
 test "a package fetched by hash is copied for the consumer, one reached by path is not" {

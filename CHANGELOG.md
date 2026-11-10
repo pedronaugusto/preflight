@@ -65,6 +65,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu).
 - The VM host's input forwarding ends at once on a cancel; it read a cancel as the end of the input and sent the program an end-of-input frame first.
 - A package developed with bay balances its shards by its own `ci/durations.json`, read from its repository; it was looked for in the development build's root, which holds none. The development build's configuration no longer depends on that root, so it configures with the cache outside the package (a hosted job's `ZIG_LOCAL_CACHE_DIR`), where Zig 0.17 failed it with `configuration failed: FileSystemFailure`.
+### Added
+
+- `ConsumerOptions.configurations`: the consumer check builds each listed configuration, `options` with the configuration's variation on top (a variation's option replaces the base's of the same name), each in a project directory of its own named by its index and options, all under the one `check-consumer` step. A failing build prints the options it was built with. The default is one empty variation, the single build of `options` as before. A package with optional features lists each combination it promises, so none is a promise nothing compiled (relic's `.http` and `.lfs`).
 
 ## [0.18.6] - 2026-10-31
 

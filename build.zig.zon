@@ -6,14 +6,14 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=strict-1029b#f084faf655f1a768f2a019108dbf01c837683836",
-            .hash = "glint-0.7.5-3jcpoTRYSQBYhZqdUDXj9rGqa2wIXkSrmRAdv7jNxVJd",
+            .url = "git+https://github.com/pedronaugusto/glint?ref=strict-1029b#cf2efc5dff792d732b0603d09387845dbbe1aeae",
+            .hash = "glint-0.7.5-3jcpoUSpUQBOIIDGau9ZTRQmWbu1TPOZG7Zl3EZOZjKg",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=aegis-0.3#2499644cde587d1914f5d0c51618ff9a37c552e5",
-            .hash = "gantry-0.3.4-1iNrkQXbDADC63YOsuZRMTVVjlfVDZkz7zKRRZ8K9zuc",
+            .url = "git+https://github.com/pedronaugusto/gantry?ref=aegis-0.3#55adb1419e65589057d87dd27f7869f9a2e40dcb",
+            .hash = "gantry-0.3.4-1iNrkfnbDADSMAQ7Js6Yk31v6Arzie51X7zcRB--DxkT",
             .lazy = true,
         },
 
@@ -60,8 +60,8 @@
         },
 
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#248245d5d064be33208cd33d2b6d7213b6de630c",
-            .hash = "aegis-0.2.4-rsxoug_HCwBwYsCzcjCWxwzngcZSho0vjQhPfkpbLv-5",
+            .url = "git+https://github.com/pedronaugusto/aegis#c8982a86cbd8a85ac9941df59b6c36a10a252355",
+            .hash = "aegis-0.2.4-rsxouvwTDACNY2hXYVwyUefGiHkfV4nV6HBftNXJRliQ",
         },
     },
     .dev_dependencies = .{

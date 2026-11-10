@@ -1,5 +1,6 @@
-//! A project that depends on the package by path, built with fetching off and
-//! only the packages the package itself needs: the build a consumer gets.
+//! A project that depends on the package as a fetch gives it (only what its manifest's
+//! `.paths` lists), built with fetching off and only the packages the package itself needs:
+//! the build a consumer gets.
 //! The build runs this file as a program to write the project.
 const std = @import("std");
 const aegis = @import("aegis");

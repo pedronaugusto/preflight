@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `ConsumerOptions.configurations`: the consumer check builds each listed configuration, `options` with the configuration's variation on top (a variation's option replaces the base's of the same name), each in a project directory of its own named by its index and options, all under the one `check-consumer` step. A failing build prints the options it was built with. The default is one empty variation, the single build of `options` as before. A package with optional features lists each combination it promises, so none is a promise nothing compiled (relic's `.http` and `.lfs`).
+
 ## [0.18.6] - 2026-10-31
 
 ### Fixed

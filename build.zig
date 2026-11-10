@@ -23,6 +23,8 @@ pub const addTestZigLib = ci.addTestZigLib;
 pub const addConsumerCheck = ci.consumer.add;
 /// What `addConsumerCheck` builds.
 pub const ConsumerOptions = ci.consumer.Options;
+/// One of the builds `ConsumerOptions.configurations` lists.
+pub const ConsumerConfiguration = ci.consumer.Configuration;
 /// Assembles a build nested in the package under the cache, its manifest written from the
 /// package's own pins, and runs it.
 pub const addNestedBuild = ci.nested.add;

@@ -14,7 +14,8 @@ pub const Options = struct {
     package: []const u8,
     /// The consumer's program, importing what a user imports.
     program: std.Build.LazyPath,
-    /// Modules the program imports. Empty means the package name alone.
+    /// Modules the program imports. Empty means the package name alone. A configuration
+    /// whose options leave one out names its own.
     modules: []const []const u8 = &.{},
     /// Packages the consumer's build may read: the package's own dependencies. Each
     /// brings the packages it depends on in turn, as a fetch would.
@@ -22,11 +23,21 @@ pub const Options = struct {
     /// Options the consumer gives the package, as `b.dependency(name, .{ ... })` does: `.http = false`
     /// proves a build without a feature the package makes optional. The base of every configuration.
     options: []const Option = &.{},
-    /// The builds checked: each is `options` with its variation on top (a variation's option
-    /// replaces the base's of the same name), built in a project directory of its own. One empty
-    /// variation, the default, is the one build of `options` alone. A package with optional
-    /// features lists each combination it promises, so each is compiled.
-    configurations: []const []const Option = &.{&.{}},
+    /// The builds checked: each is `options` with its configuration's variation on top (a
+    /// variation's option replaces the base's of the same name), built in a project directory of
+    /// its own. One empty configuration, the default, is the one build of `options` alone. A
+    /// package with optional features lists each combination it promises, so each is compiled.
+    configurations: []const Configuration = &.{.{}},
+};
+
+/// One build the consumer check makes.
+pub const Configuration = struct {
+    /// The variation on `Options.options`.
+    options: []const Option = &.{},
+    /// The modules this build's program imports, where its options leave one of
+    /// `Options.modules` out of the package (relic's `relic_lfs` without `.lfs`); null is
+    /// `Options.modules`.
+    modules: ?[]const []const u8 = null,
 };
 
 /// One option of the dependency.
@@ -67,9 +78,9 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     }
     const names = if (options.modules.len > 0) options.modules else &.{options.package};
     const step = configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package}));
-    const single = options.configurations.len == 1 and options.configurations[0].len == 0;
-    for (options.configurations, 0..) |variation, index| {
-        const merged = combined(b.allocator, options.options, variation);
+    const single = options.configurations.len == 1 and options.configurations[0].options.len == 0;
+    for (options.configurations, 0..) |configuration, index| {
+        const merged = combined(b.allocator, options.options, configuration.options);
         const build = b.addRunArtifact(consumer);
         build.setName(b.fmt("check-consumer {s}", .{label(b, index, merged)}));
         build.addArg(b.graph.zig_exe);
@@ -85,16 +96,32 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
             .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
             .text => |text| b.fmt("-D{s}=str:{s}", .{ option.name, text }),
         });
-        build.addArgs(names);
+        build.addArgs(configuration.modules orelse names);
         build.has_side_effects = true;
         step.dependOn(&build.step);
     }
     // The program checked against the package's own modules too, which also tells lint what
     // each name it imports is: the configured graph is all lint reads, and the consumer's
-    // project is written only when the check runs.
+    // project is written only when the check runs. A module some configuration leaves out may
+    // be one this build's options leave out too.
     const program = b.createModule(.{ .root_source_file = options.program, .target = b.graph.host, .optimize = .debug });
-    for (names) |name| program.addImport(name, package.modules.get(name) orelse @panic(b.fmt("addConsumerCheck: the package has no module {s}", .{name})));
+    for (names) |name| {
+        if (package.modules.get(name)) |module| {
+            program.addImport(name, module);
+        } else if (!optional(options.configurations, name)) @panic(b.fmt("addConsumerCheck: the package has no module {s}", .{name}));
+    }
     step.dependOn(&b.addObject(.{ .name = "consumer-program", .root_module = program }).step);
+}
+
+/// Whether some configuration's modules leave `name` out.
+fn optional(configurations: []const Configuration, name: []const u8) bool {
+    for (configurations) |configuration| {
+        const modules = configuration.modules orelse continue;
+        for (modules) |module| {
+            if (std.mem.eql(u8, module, name)) break;
+        } else return true;
+    }
+    return false;
 }
 
 /// `base` with `variation` on top: a variation's option replaces the base's of the same name.
@@ -360,6 +387,14 @@ test "a configuration is the base with its variation on top" {
     try std.testing.expectEqualStrings("http", varied[1].name);
     try std.testing.expect(!varied[1].value.flag);
     try std.testing.expectEqualStrings("lfs", varied[2].name);
+}
+
+test "a module is optional where a configuration leaves it out" {
+    const both: Configuration = .{};
+    const without: Configuration = .{ .options = &.{.{ .name = "lfs", .value = .{ .flag = false } }}, .modules = &.{"relic"} };
+    try std.testing.expect(!optional(&.{both}, "relic_lfs"));
+    try std.testing.expect(optional(&.{ both, without }, "relic_lfs"));
+    try std.testing.expect(!optional(&.{ both, without }, "relic"));
 }
 
 test "a package fetched by hash is copied for the consumer, one reached by path is not" {

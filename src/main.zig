@@ -90,10 +90,10 @@ fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Comman
     try out.interface.flush();
 }
 
-/// `skip`: whether the change is documentation alone, which a fast run does not test.
+/// `skip`: whether a pull request changes documentation alone, which its ci run does not test.
 fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(Command, "skip")) !void {
-    // A merge or release candidate keeps the whole gate, docs-only or not.
-    const only_docs = std.mem.eql(u8, env.get("PREFLIGHT_TIER") orelse "fast", "fast") and try checks.paths.run(c.*, environment(env, "PREFLIGHT_BASE"));
+    // A release candidate keeps the whole gate, docs-only or not.
+    const only_docs = std.mem.eql(u8, env.get("PREFLIGHT_TIER") orelse "ci", "ci") and try checks.paths.run(c.*, environment(env, "PREFLIGHT_BASE"));
     if (env.get("GITHUB_OUTPUT")) |path| try append(c.*, path, if (only_docs) "docs_only=true\n" else "docs_only=false\n");
     if (only_docs) {
         const config = try c.options(args.config);

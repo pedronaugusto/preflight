@@ -3,30 +3,17 @@ on:
   workflow_call:
     inputs:
       tier:
-        description: fast, merge or release
+        description: ci (every push and pull request) or release (weekly, by dispatch, and before a tag)
         type: string
-        default: fast
+        default: ci
       working-directory:
         type: string
         default: .
       preflight-ref:
         type: string
         required: true
-      attest:
-        type: boolean
-        default: false
-      fast-matrix:
-        description: Static Linux Debug shards generated from ci/workflow.json
-        type: string
-        default: '{"include":[{"name":"Linux Debug","args":"-Doptimize=debug","shard":"","job_timeout":20,"cache_key":"fast-linux-debug-0"}]}'
-      merge-matrix:
-        description: Static native merge-tier matrix, zig build plan -- --tier merge
-        type: string
-        default: '{"include":[]}'
-      merge-compile-matrix:
-        type: string
-        default: '{"include":[]}'
-      merge-run-matrix:
+      ci-matrix:
+        description: Static ci-tier matrix, zig build plan -- --tier ci
         type: string
         default: '{"include":[]}'
       release-matrix:
@@ -51,17 +38,17 @@ permissions:
   actions: read
 jobs:
   tier:
-    if: '!contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    if: '!contains(fromJSON(''["ci","release"]''), inputs.tier)'
     runs-on: ubuntu-latest
     steps:
       - env:
           TIER: ${{ inputs.tier }}
-        run: echo "tier must be fast, merge or release, not '$TIER'" && exit 1
+        run: echo "tier must be ci or release, not '$TIER'" && exit 1
   # The checks are built once, for every runner, and every job takes them: no
-  # job compiles the toolchain. The same job tells a fast run whether the
-  # change is documentation alone, which needs none of the gate.
+  # job compiles the toolchain. The same job tells a pull request's ci run
+  # whether the change is documentation alone, which needs none of the gate.
   toolchain:
-    if: '!inputs.attest && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    if: contains(fromJSON('["ci","release"]'), inputs.tier)
     runs-on: ubuntu-latest
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
@@ -88,83 +75,27 @@ jobs:
           overwrite: true
       # A documentation generator may run zig.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        if: inputs.tier == 'fast'
+        if: github.event_name == 'pull_request' && inputs.tier == 'ci'
         with:
           version: 0.17.0
           use-cache: false
-      # The fast tier compares the branch with main; a merge or release candidate keeps the whole gate.
+      # A pull request compares its branch with main; a push to main and a release candidate keep the whole gate.
       - name: Filter paths and check documentation when it is the only change
         id: paths
-        if: inputs.tier == 'fast'
+        if: github.event_name == 'pull_request' && inputs.tier == 'ci'
         working-directory: ${{ inputs.working-directory }}
         env:
           PREFLIGHT_TIER: ${{ inputs.tier }}
         run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight skip
-  main:
-    if: inputs.attest
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: ./.preflight/.github/actions/toolchain
-        with:
-          preflight-ref: ${{ inputs.preflight-ref }}
-      - name: Confirm a merge or release tier passed for this commit
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: .preflight-bin/linux/preflight attest
-  # A branch sees the caches of main and its own, so main keeps what every job of
-  # a new branch would otherwise make for itself: the build runner every `zig build`
-  # compiles first, and the package's external tools. Nothing is run; each job does
-  # a gate job's setup, once a week per runner, and finds all of it cached the rest of the time.
-  warm:
-    needs: toolchain
-    if: github.event_name == 'schedule'
-    name: warm (${{ matrix.os }} ${{ matrix.copy }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      # Zig's own cache is keyed by the CPU model, and the hosted runners have several
-      # of them; each copy lands on one, so that most of them have an entry on main.
-      matrix:
-        include:
-          - { os: ubuntu-latest, copy: 1 }
-          - { os: ubuntu-latest, copy: 2 }
-          - { os: ubuntu-latest, copy: 3 }
-          - { os: ubuntu-latest, copy: 4 }
-          - { os: windows-latest, copy: 1 }
-          - { os: windows-latest, copy: 2 }
-          - { os: windows-latest, copy: 3 }
-          - { os: macos-latest, copy: 1 }
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: ./.preflight/.github/actions/setup
-        with:
-          windows-git-latest: ${{ inputs.windows-git-latest }}
-          working-directory: ${{ inputs.working-directory }}
-          build-key: warm
-          toolchain: toolchain-${{ inputs.preflight-ref }}
-      - name: Install the external tools
-        timeout-minutes: 10
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
   gate:
     needs: toolchain
-    if: '!inputs.attest && needs.toolchain.outputs.docs-only != ''true'' && contains(fromJSON(''["fast","merge","release"]''), inputs.tier)'
+    if: needs.toolchain.outputs.docs-only != 'true' && contains(fromJSON('["ci","release"]'), inputs.tier)
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'merge' && inputs.merge-matrix || inputs.fast-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.ci-matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -277,7 +208,7 @@ jobs:
     # `zig build`, and `ZIG`, which the setup sets to the Zig it installed, makes
     # that Zig master for a package bay develops.
     needs: toolchain
-    if: '!inputs.attest && inputs.tier == ''release'''
+    if: inputs.tier == 'release'
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -353,13 +284,13 @@ jobs:
           if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass; a note for the next port"; fi
   compile:
     needs: toolchain
-    if: '!inputs.attest && (inputs.tier == ''merge'' || inputs.tier == ''release'') && inputs.compile-once'
+    if: inputs.tier == 'release' && inputs.compile-once
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-compile-matrix || inputs.merge-compile-matrix) }}
+      matrix: ${{ fromJSON(inputs.release-compile-matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -412,13 +343,13 @@ jobs:
           retention-days: 1
   execute:
     needs: [toolchain, compile]
-    if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.compile.result == 'success'
+    if: always() && inputs.tier == 'release' && needs.compile.result == 'success'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-run-matrix || inputs.merge-run-matrix) }}
+      matrix: ${{ fromJSON(inputs.release-run-matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -490,7 +421,7 @@ jobs:
   # shards. Only a green run's fold is the proof artifact.
   profile:
     needs: [toolchain, gate, compile, execute]
-    if: always() && !inputs.attest && (inputs.tier == 'merge' || inputs.tier == 'release') && needs.gate.result == 'success'
+    if: always() && needs.gate.result == 'success'
     runs-on: ubuntu-latest
     env:
       FINISHED: ${{ (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') }}

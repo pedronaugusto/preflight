@@ -56,7 +56,7 @@ const build_option: ensign.Option = .{ .value_name = "-DNAME=VALUE", .help = "An
 pub const Plan = struct {
     zig_exe: ?[]const u8 = null,
     config: ?[]const u8 = null,
-    tier: matrix.Tier = .fast,
+    tier: matrix.Tier = .ci,
     output: ?[]const u8 = null,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The jobs of a tier as the hosted caller's matrices",
@@ -291,7 +291,7 @@ test "plan and generate as the build's steps call them" {
     try std.testing.expect(generate.self);
     try std.testing.expectEqualStrings("sample", generate.working_directory.?);
     try std.testing.expectEqual(2, generate.drop.len);
-    try std.testing.expectEqual(.merge, (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "merge" })).command.plan.tier);
+    try std.testing.expectEqual(.release, (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "release" })).command.plan.tier);
     // The caller is generate's alone.
     try std.testing.expectError(error.UnknownOption, parsed(arena.allocator(), &.{ "plan", "--workflow", ".github/workflows/ci.yml" }));
 }

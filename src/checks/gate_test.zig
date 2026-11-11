@@ -43,7 +43,7 @@ const Package = struct {
         const config = "{}\n";
         try p.write("ci/workflow.json", config);
         const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
-        try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, if (developed == .bay) "ci/workflow.json: bay generate" else "ci/workflow.json: zig build generate"));
+        try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, if (developed == .bay) "ci/workflow.json: bay generate" else "ci/workflow.json: zig build generate", 0));
         try p.git(&.{ "add", "-A" });
         try p.git(&.{ "commit", "-q", "-m", "First" });
         try p.git(&.{ "tag", "v0.1.0" });

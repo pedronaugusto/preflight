@@ -105,11 +105,11 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     var config = (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/workflow.json"), .{})).value;
     // `plan` reads the macOS targets that link a framework from the sample's build: none does.
     try config.object.put(a, "sdk_targets", .{ .array = .init(a) });
-    for ([_]matrix.Tier{ .fast, .merge, .release }) |tier| {
+    for ([_]matrix.Tier{ .ci, .release }) |tier| {
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         const groups = [_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run };
         for (groups, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            if (tier == .fast and suffix.len != 0) continue;
+            if (tier == .ci and suffix.len != 0) continue;
             try contains(caller, try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{
                 tier, suffix, try matrix.include(a, group),
             }));
@@ -205,7 +205,7 @@ test "the gate runs the step each planned job names, on the targets it names" {
     try contains(body, "STEP: ${{ matrix.step }}");
     try contains(body, "PREFLIGHT_TARGETS: ${{ matrix.targets }}");
     try contains(body, "hardened-fuzz");
-    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'merge' && inputs.merge-matrix || inputs.fast-matrix) }}");
+    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.ci-matrix) }}");
 }
 
 test "one job builds the checks, and the others take them" {

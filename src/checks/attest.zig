@@ -1,12 +1,11 @@
-//! Main reports green for a commit that passed the merge or release tier.
+//! A tag requires a commit that passed the release tier: `bay release` asks this before it tags.
 const std = @import("std");
 const src = @import("source.zig");
 
-/// The tiers whose successful run, with its proof artifact, stands for a commit.
-const proof_tiers = [_][]const u8{ "merge", "release" };
+/// The tier whose successful run, with its proof artifact, stands for a commit a tag may name.
+const proof_tiers = [_][]const u8{"release"};
 
-/// Whether `artifact` is a merge or release tier's proof for commit `sha`:
-/// `preflight-merge-<sha>` or `preflight-release-<sha>`.
+/// Whether `artifact` is the release tier's proof for commit `sha`: `preflight-release-<sha>`.
 fn proves(artifact: []const u8, sha: []const u8) bool {
     const rest = std.mem.cutPrefix(u8, artifact, "preflight-") orelse return false;
     const tier = std.mem.cutSuffix(u8, rest, sha) orelse return false;
@@ -20,7 +19,8 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
     const repo = env.get("GITHUB_REPOSITORY") orelse return error.MissingRepository;
     const sha = env.get("GITHUB_SHA") orelse return error.MissingCommit;
     const token = env.get("GITHUB_TOKEN") orelse return error.MissingToken;
-    const current = env.get("GITHUB_RUN_ID") orelse return error.MissingRun;
+    // Inside a run, that run's own artifact is no proof; at a tag there is no run.
+    const current: ?i64 = if (env.get("GITHUB_RUN_ID")) |id| std.fmt.parseInt(i64, id, 10) catch return error.MissingRun else null;
     var client: std.http.Client = .{ .allocator = c.a, .io = c.io };
     defer client.deinit();
     // The proof is named for the commit a tier tested, in whichever workflow file
@@ -32,14 +32,14 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
             if (src.get(artifact, "expired") == .bool and src.get(artifact, "expired").bool) continue;
             const run_of = src.get(artifact, "workflow_run");
             const id = src.get(run_of, "id");
-            if (id != .integer or id.integer == (std.fmt.parseInt(i64, current, 10) catch return error.MissingRun)) continue;
+            if (id != .integer or (current != null and id.integer == current.?)) continue;
             if (!proves(try src.string(src.get(artifact, "name"), ""), sha)) continue;
             c.report("{s} passed for {s}: run {d}\n", .{ name, sha, id.integer });
             return;
         }
     }
-    c.report("No successful merge or release tier recorded for exact commit {s}; dispatch the merge tier for this commit.\n", .{sha});
-    return error.NoSuccessfulMergeGate;
+    c.report("No successful release tier recorded for exact commit {s}; dispatch the release tier for this commit, and tag once it is green.\n", .{sha});
+    return error.NoSuccessfulReleaseRun;
 }
 
 fn get(c: src.Context, client: *std.http.Client, token: []const u8, url: []const u8) !src.Value {
@@ -55,13 +55,13 @@ fn get(c: src.Context, client: *std.http.Client, token: []const u8, url: []const
     return (try std.json.parseFromSlice(src.Value, c.a, output.written(), .{ .allocate = .alloc_always })).value;
 }
 
-test "main requires a merge or release proof named for its exact commit" {
-    // The PR's branch head differs from the exact tested merge commit.
-    try std.testing.expect(proves("preflight-merge-merge", "merge"));
+test "a tag requires the release tier's proof named for its exact commit" {
     try std.testing.expect(proves("preflight-release-0f1e", "0f1e"));
+    try std.testing.expect(!proves("preflight-ci-0f1e", "0f1e"));
+    try std.testing.expect(!proves("preflight-merge-0f1e", "0f1e"));
     try std.testing.expect(!proves("preflight-fast-0f1e", "0f1e"));
     try std.testing.expect(!proves("preflight-full-0f1e", "0f1e"));
-    try std.testing.expect(!proves("preflight-merge-0f1e", "other"));
-    try std.testing.expect(!proves("preflight-merge0f1e", "0f1e"));
-    try std.testing.expect(!proves("timings-merge-0f1e", "0f1e"));
+    try std.testing.expect(!proves("preflight-release-0f1e", "other"));
+    try std.testing.expect(!proves("preflight-release0f1e", "0f1e"));
+    try std.testing.expect(!proves("timings-release-0f1e", "0f1e"));
 }

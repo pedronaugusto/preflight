@@ -60,9 +60,11 @@ they are the development build and the package; without it, one builder is both.
 the gate runs are a step of `b`, complete when `addCi` is called: it gives each test it
 finds there preflight's runner, and the gate refuses one added after, by name.
 
-Pull requests then run the merge tier (source checks, the Debug suite on Linux, macOS
-and Windows, and the configured cross targets), a dispatch runs the tier it names, and a
-nightly run takes the full matrix.
+Every push to main and every pull request then runs the ci tier on that commit (the source
+checks, the Debug suite on Linux, macOS and Windows, and a compile of every configured
+target); the release tier, the full matrix, runs weekly and by dispatch, and a tag needs a
+green release run on its commit. Locally, `bay ci` (`zig build ci`) is the ci tier's checks
+on the machine at hand: the source checks and its tests.
 Every option has a default: `ci/preflight.json` chooses what the source checks read and
 hold, `ci/workflow.json` what the hosted gate runs, and `ci/layers.zig` a source layering
 to enforce; a project needs none of them to start. [sample/zero](sample/zero) is such a
@@ -75,8 +77,8 @@ project, and preflight's own gate runs it on every host.
 step by one of those names keeps it, and its tests fail with a message naming the step to
 rename, since the gate would otherwise run the package's step in place of its own.
 
-`addCi` also gives `check` the fast tier's cross compiles: `zig build check` (`bay check`)
-runs `ci-check` for every target the fast tier names, as its hosted jobs do, so a test
+`addCi` also gives `check` the ci tier's cross compiles: `zig build check` (`bay check`)
+runs `ci-check` for every target the ci tier names, as its hosted jobs do, so a test
 behind another system's branch, a Linux-only body on a Mac, fails on the machine at hand
 rather than first in the hosted run. A build that takes `-Dtarget` gets them: one that
 defines `check` before `addCi` keeps its own, with the targets added, and one without gets
@@ -479,27 +481,23 @@ the machine is not made and apk names the package, where an unstated one would d
 
 ### Hosted gate
 
-The gate has four tiers, each holding everything the one before it checks:
+The gate has two tiers, the second holding everything the first checks:
 
-- **local**: the tests a change touches, run by hand while working. Not CI.
-- **fast**: three kinds of Ubuntu job that run side by side: the source checks, the
-  Linux Debug suite in as many shards as `fast_shards` asks for, and an object
-  compile of every configured cross target (macOS and Windows among them) in as
-  many jobs as `cross_jobs` asks for. Test, helper and public-module objects are
-  compiled for each target, and the benchmarks in Debug. This proves compilation,
-  not linking.
-- **merge**: the gate a change passes to reach main: the source checks, the Debug suite
-  on Linux, macOS and Windows (sharded as configured), and an object compile of every
-  configured cross target (macOS and Windows run natively instead). It is the required
-  status check of a pull request.
-- **release**: the full matrix, nightly and before a cut: every mode on every host
-  (Debug, ReleaseSafe and ReleaseFast, ARM Linux and Windows included), the Debug suite on a
-  riscv64 Linux kernel under QEMU, the Debug suite of each configured target a runner
-  executes on an ABI not its own (msvc on the Windows runners, musl on the Linux ones),
-  ReleaseSmall compiled on each system, every cross
-  target with the ReleaseFast benchmarks, the links of every macOS and Windows target
-  (a macOS one on a Mac only when its build links a framework), TSan and the hardened
-  checks where configured, and the Debug suite on Linux with Zig master.
+- **ci**: what every push to main and every pull request runs, on that commit: the source
+  checks, the Linux Debug suite in as many shards as `fast_shards` asks for, the macOS and
+  Windows Debug suites (sharded as `shards` says), and an object compile of every configured
+  cross target in as many jobs as `cross_jobs` asks for. Test, helper and public-module
+  objects are compiled for each target, and the benchmarks in Debug: this proves
+  compilation, not linking. Main is kept green: a red push is fixed forward at once.
+- **release**: the full matrix, weekly and by dispatch, and what a tag requires: every mode
+  on every host (Debug, ReleaseSafe and ReleaseFast, ARM Linux and Windows included), the
+  Debug suite on a riscv64 Linux kernel under QEMU, the Debug suite of each configured target
+  a runner executes on an ABI not its own (msvc on the Windows runners, musl on the Linux
+  ones), ReleaseSmall compiled on each system, every cross target with the ReleaseFast
+  benchmarks, the links of every macOS and Windows target (a macOS one on a Mac only when its
+  build links a framework), TSan, the fuzz campaigns and the hardened checks where
+  configured, and the Debug suite on Linux with Zig master. A green release run leaves its
+  proof, the artifact `preflight-release-<sha>`, which `preflight attest` looks for.
 
 The release tier also runs the Debug suite on Linux with Zig master,
 the next release in development. That job never blocks: the run's summary
@@ -520,33 +518,32 @@ holds a repository's own workflows to the same: a `uses:` under `.github` that n
 or a branch, which the action's owners can move, fails it by file and line. The sample caller in this
 repository shows the trigger and concurrency policy:
 
-- Work-branch pushes start no run. Dispatch runs the tier it names, fast by default.
-- Pull requests and merge queue candidates run the merge tier, which is the gate to
-  require as a status check.
-- A schedule runs the release tier nightly.
-- The caller owns one concurrency group per branch, with cancellation enabled
-  for work branches and disabled for main's status job.
+- Each push to main runs the ci tier on its own commit, so every commit on main has its
+  status; work-branch pushes start no run.
+- Pull requests run the ci tier, the status check to require; a newer push to a pull
+  request cancels the run of the older.
+- A schedule runs the release tier weekly, at the package's own minute of the week (from
+  its manifest's fingerprint), so the account's runners never take every package's full
+  matrix at once. Dispatch runs the tier it names, ci by default.
 
 The options of `ci/workflow.json`, all off or defaulted in a new project. Any other key is
 refused, so a misspelt option fails the plan instead of quietly changing nothing.
 
-- `attest` (default `false`): a push to main runs a cheap job that looks for the proof artifact a
-  merge or release run left for its exact SHA, and fails without one. For repositories that push
-  to main by hand.
-- `nightly` (default: the release tier at `23 3 * * *` UTC): `false` for no schedule, or
-  `{ "cron": "5 1 * * 0", "tier": "merge" }` for another time or tier. The run also warms main's caches.
+- `attest` and `nightly` are refused by name: every push to main runs the ci tier itself, and
+  the release tier's schedule is weekly, at the package's own time. `generate` takes them out
+  of the file, naming each, so moving a package to this preflight is that one command.
 - `jobs`: the package's own jobs, each a build step the gate runs beside its own:
 
   ```json
   {"jobs": [
     {"name": "conformance", "step": "test", "directory": "conformance", "os": ["ubuntu-latest", "macos-latest"]},
-    {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["merge", "release"]},
-    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["fast", "merge", "release"], "setup": false, "timeout": 30},
+    {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["release"]},
+    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["ci", "release"], "setup": false, "timeout": 30},
     {"name": "ThreadSanitizer", "step": "test", "args": ["-Dthread-sanitizer=true"], "tiers": ["release"], "shards": 3}
   ]}
   ```
 
-  `os` defaults to Ubuntu and `tiers` to merge and release; `args` holds whitespace-free `-D`
+  `os` defaults to Ubuntu and `tiers` to ci and release; `args` holds whitespace-free `-D`
   flags (the package's `build_args` are its own builds', not a declared job's); `directory` is
   relative to the repository and defaults to the package; `setup` runs the package's
   `setup_step` (true, the default), nothing (false) or a step of the job's own; `timeout` is
@@ -566,7 +563,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 
 `ci/workflow.json` is the declarative input, and the caller is wholly generated from it:
 both reusable-workflow references, the checkout pin, triggers, concurrency policy, the
-seven tier matrices with the declared jobs. Make it, and make it again after a pin moves,
+the ci tier's matrix and the release tier's three (its jobs, its compiles and the runs
+of what they compiled), with the declared jobs. Make it, and make it again after a pin moves,
 with:
 
 ```sh
@@ -602,10 +600,10 @@ dumps.
 ### Releasing
 
 preflight verifies; it neither versions, tags nor pushes. A package releases with bay
-(`bay release`), which writes the release from `CHANGELOG.md`'s `[Unreleased]` section,
-commits it, runs this gate on that commit, and pushes the branch and the tag only when it is
-green. The gate (`zig build gate`, `bay gate` under bay), a step `addCi` adds, first checks
-what a release needs beside the jobs, each refusal naming its fix:
+(`bay release`), which writes the release from `CHANGELOG.md`'s `[Unreleased]` section and
+tags it only once the release tier has run green on that commit (`preflight attest` finds the
+run's proof). The gate (`zig build gate`, `bay gate` under bay), a step `addCi` adds, checks
+in seconds what a release needs beside that run, each refusal naming its fix:
 
 1. the caller is what `generate` makes for the package's pins and
    configuration, so the hosted runs check the package with the preflight it pins;
@@ -635,18 +633,10 @@ what a release needs beside the jobs, each refusal naming its fix:
    module declares. A change of behaviour it cannot see at all: its author names it. CHANGELOG.md is read as bay reads it (bay's `changelog` module):
    an entry is a line under one of Keep a Changelog's groups or `### Breaking`.
 
-The lint checks 2 and 3 on every commit too. Then the gate runs, on this machine, the release
-tier's jobs of its own system, at every optimize mode (a Linux machine of either architecture
-runs the Linux ones, once each), the source checks and every target's compile, which the hosted
-gate runs on Linux, a declared job that names no runner, and the hardened runs; each as the
-hosted job runs it, every one of them, so a red names all that failed. It names what it did not
-run and why, and only that stays unproven: another system's suite, ThreadSanitizer off x86_64
-and aarch64 Linux and macOS, and the VM legs (riscv64 under QEMU), which are the nightly's by
-declaration on every host (docs/design.md, "The gate on the machines at hand"). bay runs it on
-each machine a release is gated on.
-It runs the planned jobs in the directory the package's caller runs its gate in (preflight's
-own runs its sample), or the one `--working-directory <dir>` names, and the declared jobs in
-their own directories.
+The lint checks 2 and 3 on every commit too. The gate runs no job: the hosted tiers run them,
+and `bay ci` runs the ci tier's checks on the machine at hand. `--working-directory <dir>`
+reads the caller of a package whose planned jobs run in `dir` (preflight's own runs its
+sample there).
 
 ### The linked graph
 
@@ -731,7 +721,7 @@ and shard replay matrices; it never moves SDK linking to Linux.
 the `check` graph and public modules, the benchmarks in Debug,
 helpers, generated inputs and transitive native libraries. `ci-check-bench` emits
 the benchmarks as they are built to run, in ReleaseFast: the release tier
-compile them for every target, and the fast tier does not, since that optimizing
+compiles them for every target, and the ci tier does not, since that optimizing
 compile takes longer than all the other objects together. The compile
 projection carries target, CPU, optimization and source/header options; SDK
 link requests stay on the original native modules. Zig resolves framework and
@@ -745,12 +735,11 @@ local build option for native links, including an explicit macOS target or CPU.
 The SDK search paths also reach transitive native dependencies. Foreign object
 jobs do not require an Apple SDK.
 
-The first job of a fast run filters changes. A dispatched branch whose commits since
-it left `origin/main` touch only Markdown outside `src`, LICENSE or images runs the
+The first job of a dispatched ci run filters changes. A dispatched branch whose commits
+since it left `origin/main` touch only Markdown outside `src`, LICENSE or images runs the
 documented-snippet check alone. Mixed changes, source Markdown and an unavailable base
-keep the test gate. A pull request, a merge queue entry and the release tier always
-run the whole gate, documentation or not: what a landing passes does not depend on a
-path filter.
+keep the test gate. A push to main, a pull request and the release tier always run the
+whole gate, documentation or not: what a landing passes does not depend on a path filter.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
 jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, `riscv64` for the
@@ -798,10 +787,10 @@ the sources and a gigabyte of objects per job evicted the rest of the repository
 caches. What Zig builds for itself is the build runner and each target's runtime,
 which every `zig build` compiles first, for the CPU model it runs on (the hosted runners
 have several, and a runner built on one is of no use on another, so the cache is keyed
-by the model) and which a run on main renews weekly in the `warm` job, on a few runners
-of each kind, together with the package's external tools: a branch sees the caches of main
-and its own, so its first jobs restore the runner instead of compiling it, and the tools
-instead of building them.
+by the model) and renewed weekly, together with the package's external tools: the ci run of
+each push to main saves them, and a branch sees the caches of main and its own, so a pull
+request's jobs restore the runner instead of compiling it, and the tools instead of
+building them.
 Each job fetches what its own build asks for: it configures the build with the
 job's arguments (`zig build --list-steps`) and builds nothing, retrying three times
 with backoff, as tool setup does. Zig compiles the build script of every package a

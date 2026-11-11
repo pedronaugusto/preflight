@@ -11,8 +11,8 @@ const std = @import("std");
 /// unless they link it already. A program's libc is its own, so the installed
 /// artifacts and the benchmarks are compiled as they are built.
 /// `ci-check-bench` compiles the benchmarks as they are built to run, which in
-/// ReleaseFast takes longer than all the rest: the fast tier leaves it to the
-/// merge tier, since a benchmark's Debug object already holds what a target
+/// ReleaseFast takes longer than all the rest: the ci tier leaves it to the
+/// release tier, since a benchmark's Debug object already holds what a target
 /// accepts of its source.
 /// `targets` is `check`'s compile of the other targets, which runs builds of its own: no
 /// projection reaches into it. `check` is the development build's own, null where preflight's is the step.

@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
         .plan => |args| try planCommand(&c, init, args),
         .generate => |args| try generateCommand(&c, args),
         .surface => |args| try surfaceCommand(&c, args),
-        .gate => |args| try gateCommand(&c, init.environ_map, args),
+        .gate => |args| try gateCommand(&c, args),
         .targets => |args| try targetsCommand(c, init.environ_map, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
         .executable => |args| for (args.paths) |path| try executable(c, path),
@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
             c.environ_map = init.environ_map;
             try checks.campaign.run(&c, args.cache, args.cwd, args.build);
         },
-        .run => try runGate(c, init.environ_map, null),
+        .run => try runGate(c, init.environ_map),
         .skip => |args| try skipCommand(&c, init.environ_map, args),
         .attest => try checks.attest.run(c, init.environ_map),
         .docs => |args| {
@@ -125,22 +125,20 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
 }
 
-/// `gate`: the release tier's jobs this machine runs, each as the hosted job runs it, all of
-/// them, so a red names every job that failed here; what it cannot run is named.
+/// `gate`: what a release needs beside its hosted release run, before `bay release` asks
+/// for that run: the caller as `plan` generates it, the manifest's version as the
+/// CHANGELOG's newest release, and the CHANGELOG naming what the public API changed since
+/// the last tag. Each refusal names its fix. The jobs are the hosted tiers': a push runs the
+/// ci tier, and a tag needs a green release run on its commit (`attest`); `bay ci` is the
+/// ci tier's checks here (the source checks and this machine's tests).
 ///
-/// Before any job, what a release needs beside them: the caller as `plan` generates it, the
-/// manifest's version as the CHANGELOG's newest release, and the CHANGELOG naming what the
-/// public API changed since the last tag. Each refusal names its fix, and no job runs.
-///
-/// `--working-directory <dir>` gates a package whose planned jobs run in `dir` while its
-/// declared jobs' directories are the repository's, as the hosted caller runs them
-/// (preflight's own gate runs its sample there); by default the directory the package's
-/// caller runs its gate in. `--config` defaults to `dir`'s.
-fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @FieldType(Command, "gate")) !void {
+/// `--working-directory <dir>` reads the caller of a package whose planned jobs run in
+/// `dir` (preflight's own runs its sample there); `--config` defaults to `dir`'s.
+fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
     if (args.zig_exe) |zig| c.zig = zig;
     // A caller other than plan generates would have the hosted runs check another release
     // than the one gated here.
-    const planned = checks.caller.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
+    _ = checks.caller.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
         // Reported where it failed.
         error.CallerRefused => return error.CheckFailed,
         else => return err,
@@ -150,216 +148,7 @@ fn gateCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @
         try checks.release.changelogNamesChanges(c, try modules(c.a, args.module));
     }
     if (c.errors != 0) return error.CheckFailed;
-    const working = args.working_directory orelse planned orelse ".";
-    const config_path = args.config orelse try std.Io.Dir.path.join(c.a, &.{ working, "ci/workflow.json" });
-    const config = try checks.workflow.configuration(c.*, config_path);
-    const jobs = try checks.matrix.plan(c.a, config, .release);
-    const host: checks.local.Host = .{ .os = builtin.target.os.tag, .arch = builtin.target.cpu.arch };
-    const portable = checks.local.Portable.from(environ) orelse {
-        c.report("gate: PREFLIGHT_PORTABLE is here or elsewhere, not {s}\n", .{environ.get("PREFLIGHT_PORTABLE").?}); // safe: only a value set and unknown is refused
-        return error.CheckFailed;
-    };
-    const decisions = try checks.local.decide(c.a, jobs, host, portable);
-    var not_here: std.ArrayList([]const u8) = .empty;
-    var here: std.ArrayList(GateJob) = .empty;
-    for (jobs, decisions, 0..) |job, decision, index| switch (decision) {
-        .covered => {},
-        .elsewhere => |why| try not_here.append(c.a, try c.a.print("{s} ({s})", .{ job.name, why })),
-        .run => try here.append(c.a, .{ .job = job, .key = try checks.local.jobKey(c.a, jobs, index), .directory = if (job.directory.len != 0) job.directory else working }),
-    };
-    const slots: u32 = if (args.jobs) |count| @max(count, 1) else defaultSlots();
-    // A gate stopped by a signal ends its jobs' builds with it.
-    checks.running.endWithGate();
-    var failed: std.ArrayList([]const u8) = .empty;
-    if (slots == 1) {
-        // One at a time, each job's output streamed as it comes.
-        for (here.items) |*job| {
-            try stdout(c.*, try c.a.print("gate: {s}\n", .{job.job.name}));
-            runGateJob(c.*, environ, job, null) catch |err| {
-                c.report("gate: {s} failed: {t}\n", .{ job.job.name, err });
-                try failed.append(c.a, job.job.name);
-            };
-        }
-    } else {
-        try runGateJobs(c.*, environ, here.items, slots);
-        for (here.items) |job| if (job.outcome) |_| {} else |_| try failed.append(c.a, job.job.name);
-    }
-    const verdict = try checks.local.verdict(c.a, here.items.len, failed.items, not_here.items);
-    if (!verdict.green) {
-        c.report("{s}\n", .{verdict.line});
-        return error.CheckFailed;
-    }
-    try stdout(c.*, try c.a.print("{s}\n", .{verdict.line}));
-}
-
-/// A job the gate runs here, and how it went.
-const GateJob = struct {
-    job: checks.matrix.Job,
-    /// Its name for the places it keeps apart from the jobs that run beside it.
-    key: []const u8,
-    /// Where it runs, relative to the gate's directory.
-    directory: []const u8,
-    outcome: anyerror!void = {},
-};
-
-/// Where the gate keeps each job's output while the jobs run at once.
-const gate_logs = ".zig-cache/preflight-gate";
-
-/// The shares the gate's jobs take at once: one a core, and no more than one for each
-/// 4 GiB of memory, which one job's largest compile can take.
-fn defaultSlots() u32 {
-    const cores = std.Thread.getCpuCount() catch 1;
-    const memory = std.process.totalSystemMemory() catch 4 << 30;
-    return @intCast(@max(1, @min(cores, memory / (4 << 30)))); // safe: at most the core count
-}
-
-/// The parts of a job its own beside others: an allocator of its own, for the job's
-/// thread, and the file its output goes to.
-const Own = struct { a: std.mem.Allocator, output: std.Io.File };
-
-/// Runs `job` as the hosted job runs it. Beside others (`own`) it keeps its places under
-/// its key and writes to its own file; alone, it streams its output as before.
-fn runGateJob(c: src.Context, environ: *const std.process.Environ.Map, job: *const GateJob, own: ?Own) !void {
-    var w = c;
-    w.grouped = true;
-    if (own) |parts| {
-        w.a = parts.a;
-        w.output = parts.output;
-    }
-    var env = try environ.clone(w.a);
-    try env.put("STEP", checks.local.stepOf(job.job));
-    try env.put("BUILD_ARGS", job.job.args);
-    try env.put("PREFLIGHT_TARGETS", job.job.targets);
-    try env.put("PREFLIGHT_SHARD", job.job.shard);
-    try env.put("PREFLIGHT_SETUP", if (job.job.setup) "true" else "false");
-    try env.put("PREFLIGHT_SETUP_STEP", job.job.prepare);
-    w.environ_map = &env;
-    const moved = !std.mem.eql(u8, job.directory, ".");
-    // aegis: no-danger(A009): a job's directory in the package's own ci/workflow.json; its build already runs its author's code with these rights
-    var job_dir: ?src.OwnedDir = if (moved) .init(try c.directory().openDir(c.io, job.directory, .{})) else null;
-    defer if (job_dir) |*dir| dir.deinit(c.io);
-    if (job_dir) |*dir| w.dir = dir.borrow().*;
-    // The package there builds as it is developed: with bay only if its manifest says so.
-    if (moved) w.bay = w.bayFor(&env);
-    try runGate(w, &env, if (own != null) job.key else null);
-}
-
-/// The machine's shares the running jobs hold, and the gate's output, which one job
-/// writes at a time.
-const Shares = struct {
-    free: aegis.BlockingGuarded(u32),
-    freed: aegis.Condition = .init(),
-    /// The gate's stdout: one job's lines at a time, written only while this is held.
-    output: aegis.BlockingGuarded(void) = .init({}),
-
-    /// Waits for `count` shares and takes them. Only the gate's loop waits, with no timeout, so
-    /// neither the waiter limit nor a timeout can end the wait; either would fail the gate by name.
-    fn take(s: *Shares, io: std.Io, count: u32) aegis.Condition.UncancelableWaitError!void {
-        var held = s.free.acquireUncancelable(io);
-        defer held.deinit(io);
-        while (held.value().* < count) try held.waitUncancelable(&s.freed, io, .none);
-        held.value().* -= count;
-    }
-
-    fn give(s: *Shares, io: std.Io, count: u32) void {
-        {
-            var held = s.free.acquireUncancelable(io);
-            defer held.deinit(io);
-            held.value().* += count;
-        }
-        s.freed.broadcast(io);
-    }
-};
-
-/// The seconds `job` took at the last gate here, or null when it has none.
-fn lastSeconds(c: src.Context, job: GateJob) ?f64 {
-    const path = c.a.print("{s}/{s}.seconds", .{ gate_logs, job.key }) catch return null;
-    const text = c.directory().readFileAlloc(c.io, path, c.a, .limited(64)) catch return null;
-    return std.fmt.parseFloat(f64, std.mem.trim(u8, text, " \n")) catch null;
-}
-
-/// The order the gate starts its jobs in: the longest first, by what each took at the
-/// last gate here, so the one that takes longest is not started last; a job with no
-/// record first of all, since it may be the longest.
-fn startOrder(c: src.Context, jobs: []const GateJob) ![]usize {
-    const Entry = struct { index: usize, seconds: f64 };
-    const entries = try c.a.alloc(Entry, jobs.len);
-    for (entries, jobs, 0..) |*entry, job, index| entry.* = .{ .index = index, .seconds = lastSeconds(c, job) orelse std.math.inf(f64) };
-    std.mem.sort(Entry, entries, {}, struct {
-        fn longer(_: void, left: Entry, right: Entry) bool {
-            return left.seconds > right.seconds;
-        }
-    }.longer);
-    const order = try c.a.alloc(usize, jobs.len);
-    for (order, entries) |*index, entry| index.* = entry.index;
-    return order;
-}
-
-/// The gate's jobs at once, `slots` shares of the machine at a time (`weight`), started
-/// longest first (`startOrder`). Each job's output goes to a file of its own and is
-/// written whole when it ends, as a job run alone reads; the records are reset once, for
-/// all of them, in each directory they run in.
-fn runGateJobs(c: src.Context, environ: *const std.process.Environ.Map, jobs: []GateJob, slots: u32) !void {
-    var directories: std.array_hash_map.String(void) = .empty;
-    for (jobs) |job| if (!(try directories.getOrPut(c.a, job.directory)).found_existing) {
-        var place = c;
-        const moved = !std.mem.eql(u8, job.directory, ".");
-        var job_dir: ?src.OwnedDir = if (moved) .init(try c.directory().openDir(c.io, job.directory, .{})) else null;
-        defer if (job_dir) |*dir| dir.deinit(c.io);
-        if (job_dir) |*dir| place.dir = dir.borrow().*;
-        try checks.profile.reset(place, ".zig-cache/preflight-timings");
-    };
-    try c.directory().createDirPath(c.io, gate_logs);
-    const order = try startOrder(c, jobs);
-    var shares: Shares = .{ .free = .init(slots) };
-    var group: std.Io.Group = .init;
-    for (order) |index| {
-        const share = @min(checks.local.weight(jobs[index].job), slots);
-        try shares.take(c.io, share);
-        group.concurrent(c.io, runShare, .{ c, environ, &jobs[index], &shares, share }) catch {
-            // No thread to give it: it runs here, before the next is started.
-            runShare(c, environ, &jobs[index], &shares, share);
-        };
-    }
-    group.await(c.io) catch |err| switch (err) {
-        error.Canceled => return err,
-    };
-}
-
-/// One job beside the others, holding `share` of the machine until it ends.
-fn runShare(c: src.Context, environ: *const std.process.Environ.Map, job: *GateJob, shares: *Shares, share: u32) void {
-    defer shares.give(c.io, share);
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const timer = checks.phases.Timer.begin(c, job.job.name);
-    const path = a.print("{s}/{s}.log", .{ gate_logs, job.key }) catch |err| {
-        job.outcome = err;
-        return;
-    };
-    job.outcome = run: {
-        var file: src.OwnedFile = .init(c.directory().createFile(c.io, path, .{ .truncate = true }) catch |err| break :run err);
-        defer file.deinit(c.io);
-        break :run runGateJob(c, environ, job, .{ .a = a, .output = file.borrow().* });
-    };
-    const seconds = timer.seconds(c);
-    // What it took, for the next gate's order; a record that cannot be written costs only that.
-    if (a.print("{s}/{s}.seconds", .{ gate_logs, job.key })) |record| {
-        if (a.print("{d:.1}\n", .{seconds})) |text| {
-            // glint-ignore: Z026 -- the record only orders the next gate's jobs; without it that job starts first
-            c.directory().writeFile(c.io, .{ .sub_path = record, .data = text }) catch {};
-        } else |_| {}
-    } else |_| {}
-    var writing = shares.output.acquireUncancelable(c.io);
-    defer writing.deinit(c.io);
-    // glint-ignore: Z026 -- the job's line is for the reader; its outcome stands, and the gate names a red job again at its end
-    stdout(c, a.print("gate: {s} ({d:.1} s)\n", .{ job.job.name, seconds }) catch return) catch {};
-    // A job's output that cannot be read back is lost to the reader; its outcome stands.
-    const text = c.directory().readFileAlloc(c.io, path, a, .limited(256 * 1024 * 1024)) catch "";
-    var w = c;
-    w.a = a;
-    w.report("{s}", .{text});
-    if (job.outcome) |_| {} else |err| w.report("gate: {s} failed: {t}\n", .{ job.job.name, err });
+    try stdout(c.*, "gate: the caller, the version and the CHANGELOG hold; a tag needs a green release run on its commit\n");
 }
 
 /// `generate`: the caller made again for the package's pins and configuration, where it
@@ -615,11 +404,8 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
     return if (step == .string) step.string else null;
 }
 
-/// Runs the job `env` describes, as the hosted job runs it. `job` names a gate's job, which
-/// may run beside others in this directory: its build runs as `-Dci-job=<job>`, so that its
-/// records and test programs keep their own places, and the gate resets the records once
-/// for all its jobs, where a hosted job resets them for itself.
-fn runGate(context: src.Context, env: *std.process.Environ.Map, job: ?[]const u8) !void {
+/// Runs the job `env` describes, as the hosted job runs it.
+fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
     var c = context;
     // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
     // (`targets`). A test's environment holds none of preflight's controls, this one either.
@@ -632,7 +418,7 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map, job: ?[]const u8
         c.environ_map = env;
     }
     const step = env.get("STEP") orelse "ci";
-    if (job == null and (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run")))
+    if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = try c.options("ci/workflow.json");
     const log = try checks.phases.Log.init(c.a, env);
@@ -650,11 +436,11 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map, job: ?[]const u8
             try checks.command.execute(c, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{before.string} }));
         }
     }
-    try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "", job);
+    try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
 }
 
 /// Runs `zig build <step> <build_args>`, or `bay <step> ...` under bay, as the hosted gate does, timed.
-fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, step: []const u8, build_args: []const u8, job: ?[]const u8) !void {
+fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, step: []const u8, build_args: []const u8) !void {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, c.buildCommand());
     try argv.append(c.a, step);
@@ -666,8 +452,6 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         if (std.mem.eql(u8, token, "-Dci-bench-smoke=false")) continue;
         try argv.append(c.a, token);
     }
-    // Whether the build keeps this job's records apart, under its name.
-    var declares_job = false;
     // Custom legacy steps may not use addCi. Ask the configured compiler
     // graph whether it declares these controls instead of guessing from source.
     {
@@ -686,10 +470,6 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
             // This program is the checks the build would compile, built from the same commit.
             if (std.mem.eql(u8, name, "ci-checks")) try argv.append(c.a, try c.a.print("-Dci-checks={s}", .{try std.process.executablePathAlloc(c.io, c.a)}));
-            if (std.mem.eql(u8, name, "ci-job")) if (job) |key| {
-                try argv.append(c.a, try c.a.print("-Dci-job={s}", .{key}));
-                declares_job = true;
-            };
             // SDK identity is an explicit build option, so Zig configuration caches
             // cannot retain a different runner's SDKROOT environment. A build that
             // does not declare it (a nested package, a custom step) is not asked: Zig
@@ -702,7 +482,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     // The tests the step runs, counted per root by the build after its runs: this run's,
     // so an earlier run's count is gone first. The count is told where to write them, in
     // the package's directory: the build's cache, where its records are, can be anywhere.
-    const counted = if (declares_job) try c.a.print(".zig-cache/preflight-counts/{s}/{s}", .{ job.?, checks.counts.summary_name }) else ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
+    const counted = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
     c.directory().deleteFile(c.io, counted) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
@@ -754,7 +534,7 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
     if (covered == 0) return error.MissingCrossTargets;
 }
 
-/// `zig build check`'s other targets: what the fast tier's cross-compile jobs compile, for
+/// `zig build check`'s other targets: what the ci tier's cross-compile jobs compile, for
 /// every target they name, so that a test behind a target's branch (a Linux-only body on a
 /// Mac) fails on the machine at hand rather than first in the hosted run. A planned job
 /// (`PREFLIGHT_PLANNED`, hosted or `gate`'s) leaves it to the plan's own cross-compile jobs.

@@ -93,8 +93,8 @@ runs:
         key: zig-packages-${{ runner.os }}-${{ inputs.zig-version }}-${{ inputs.build-key }}-${{ hashFiles('**/build.zig.zon') }}
     # The build runner every `zig build` compiles first, and the compiler's
     # runtime for each target, which Zig builds on first use. The key is the
-    # same for every kind of job and is renewed weekly; a run on main fills it
-    # (the warm job), since a branch sees the caches of main and its own.
+    # same for every kind of job and is renewed weekly; the ci run of each push to
+    # main saves it, and a branch sees the caches of main and its own.
     - name: Cache what Zig builds for itself
       id: products
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

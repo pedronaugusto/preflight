@@ -45,8 +45,8 @@ jobs:
           TIER: ${{ inputs.tier }}
         run: echo "tier must be ci or release, not '$TIER'" && exit 1
   # The checks are built once, for every runner, and every job takes them: no
-  # job compiles the toolchain. The same job tells a pull request's ci run
-  # whether the change is documentation alone, which needs none of the gate.
+  # job compiles the toolchain. The same job tells a dispatched ci run whether its
+  # branch changes documentation alone, which needs none of the gate.
   toolchain:
     if: contains(fromJSON('["ci","release"]'), inputs.tier)
     runs-on: ubuntu-latest
@@ -75,14 +75,14 @@ jobs:
           overwrite: true
       # A documentation generator may run zig.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        if: github.event_name == 'pull_request' && inputs.tier == 'ci'
+        if: github.event_name == 'workflow_dispatch' && inputs.tier == 'ci'
         with:
           version: 0.17.0
           use-cache: false
-      # A pull request compares its branch with main; a push to main and a release candidate keep the whole gate.
+      # A dispatched ci run compares its branch with main; a push to main, a pull request and a release run keep the whole gate.
       - name: Filter paths and check documentation when it is the only change
         id: paths
-        if: github.event_name == 'pull_request' && inputs.tier == 'ci'
+        if: github.event_name == 'workflow_dispatch' && inputs.tier == 'ci'
         working-directory: ${{ inputs.working-directory }}
         env:
           PREFLIGHT_TIER: ${{ inputs.tier }}
@@ -192,7 +192,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       # A FreeBSD machine that ended without its program's ending keeps its run, console among it.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure() && matrix.machine == 'freebsd'
         with:
           name: freebsd-runs-${{ matrix.cache_key }}

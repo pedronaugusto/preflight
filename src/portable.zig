@@ -30,22 +30,19 @@ pub const ZigLib = struct { index: usize, directory: bool };
 
 const manifest_path = "zig-out/preflight/tests.json";
 /// Where `addProgram` installs, under the install prefix: inside what a
-/// replaying runner downloads. A gate job beside others has its own place
-/// under it (`configure.jobPlace`), where its build's mode of each program is.
+/// replaying runner downloads.
 const programs_dir = "preflight/programs";
 
 /// A program the tests run, named to them as `name` in `options` by its path
 /// from the package root: every test run's working directory, here and where
 /// portable tests replay, and the path is the same on both runners.
 pub fn addProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const u8, program: *std.Build.Step.Compile) void {
-    const place = configure.jobPlace(b, programs_dir);
-    const install = b.addInstallArtifact(program, .{ .dest_dir = .{ .override = .{ .custom = place } }, .pdb_dir = .disabled, .implib_dir = .disabled });
-    options.addOption([]const u8, name, b.fmt("zig-out/{s}/{s}", .{ place, program.out_filename }));
+    const install = b.addInstallArtifact(program, .{ .dest_dir = .{ .override = .{ .custom = programs_dir } }, .pdb_dir = .disabled, .implib_dir = .disabled });
+    options.addOption([]const u8, name, b.fmt("zig-out/{s}/{s}", .{ programs_dir, program.out_filename }));
     options.step.dependOn(&install.step);
 }
 
-/// Where `addZigLib` installs the file that names Zig's library, under the install prefix,
-/// in a gate job's own place as a program is (`configure.jobPlace`).
+/// Where `addZigLib` installs the file that names Zig's library, under the install prefix.
 const zig_lib_file = "preflight/zig-lib";
 
 /// Zig's library, named to the tests as `name` in `options`: the path, from the package
@@ -54,9 +51,8 @@ const zig_lib_file = "preflight/zig-lib";
 /// replaying runner writes it for its own Zig. Zig's test runner takes no argument a test
 /// reads, and a path from `addOptionPath` is the building runner's, which portable tests refuse.
 pub fn addZigLib(b: *std.Build, options: *std.Build.Step.Options, name: []const u8) void {
-    const place = configure.jobPlace(b, zig_lib_file);
-    options.addOption([]const u8, name, b.fmt("zig-out/{s}", .{place}));
-    options.step.dependOn(writeZigLib(b, place));
+    options.addOption([]const u8, name, "zig-out/" ++ zig_lib_file);
+    options.step.dependOn(writeZigLib(b, zig_lib_file));
 }
 
 /// The step that installs, at `place` under the install prefix, the absolute path of Zig's
@@ -196,7 +192,6 @@ const Named = struct { programs: []const []const u8, zig_lib_place: ?[]const u8 
 fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) Named {
     var programs: std.ArrayList([]const u8) = .empty;
     var zig_lib_named: ?[]const u8 = null;
-    const zig_lib_place = configure.jobPlace(b, zig_lib_file);
     // Options reach the artifact as modules, each the generated file of its step.
     var graph: std.array_hash_map.Auto(*std.Build.Module, void) = .empty;
     graph.put(b.allocator, artifact.root_module, {}) catch @panic("OOM");
@@ -215,11 +210,11 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) Named {
             @panic("portable tests must not be given a path by addOptionPath: it is the building runner's own, which the runner replaying them has not; name a program the tests run with preflight.addTestProgram, Zig's library with preflight.addTestZigLib");
         for (options.step.dependencies.items) |installing| {
             if (installing.cast(std.Build.Step.InstallFile)) |file| {
-                if (std.mem.eql(u8, file.dest_rel_path, zig_lib_place)) zig_lib_named = zig_lib_place;
+                if (std.mem.eql(u8, file.dest_rel_path, zig_lib_file)) zig_lib_named = zig_lib_file;
                 continue;
             }
             const install = installing.cast(std.Build.Step.InstallArtifact) orelse continue;
-            programs.append(b.allocator, b.fmt("zig-out/{s}/{s}", .{ configure.jobPlace(b, programs_dir), install.dest_sub_path orelse install.artifact.out_filename })) catch @panic("OOM");
+            programs.append(b.allocator, b.fmt("zig-out/{s}/{s}", .{ programs_dir, install.dest_sub_path orelse install.artifact.out_filename })) catch @panic("OOM");
         }
     }
     return .{ .programs = programs.items, .zig_lib_place = zig_lib_named };

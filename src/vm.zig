@@ -36,7 +36,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Bui
     }
     if (runs.get(.x86_64_freebsd).items.len > 0) {
         if (host.result.os.tag != .linux or host.result.cpu.arch != .x86_64) {
-            tests.dependOn(&b.addFail("ci-vm=freebsd: the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; it runs on the nightly's x86_64 Linux runner").step);
+            tests.dependOn(&b.addFail("ci-vm=freebsd: the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; it runs on the release tier's x86_64 Linux runner").step);
             return;
         }
         const machine = freebsdMachine(b, pkg, host) orelse return;

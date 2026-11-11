@@ -169,7 +169,6 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on an x86_64 Linux host, on PATH)") orelse false,
-        .job = b.option([]const u8, "ci-job", "The gate job this build runs as, beside others in one package directory: its records and the programs its tests run keep places of their own"),
     };
 }
 /// Controls accepted during a root script's lazy-discovery pass.
@@ -182,8 +181,6 @@ pub const CiOptions = struct {
     timing: bool,
     checks: ?[]const u8,
     vm: bool,
-    /// Read where it is used, through `configure.job`; declared here so the build knows it.
-    job: ?[]const u8,
 };
 
 const Steps = struct {
@@ -261,7 +258,7 @@ const Steps = struct {
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
-        // `check` compiles what the fast tier's cross-compile jobs do, for each target they
+        // `check` compiles what the ci tier's cross-compile jobs do, for each target they
         // name: a test behind a target's branch (a Linux-only body, compiled nowhere on a Mac)
         // fails on the machine at hand, not first in the hosted run. The build's own `check`
         // takes it where it has one, else preflight's is the step. A build that takes no
@@ -272,7 +269,7 @@ const Steps = struct {
             run.addArgs(&.{ "targets", "--zig-exe", b.graph.zig_exe });
             run.setCwd(package.path("."));
             run.has_side_effects = true;
-            (own_check orelse configure.claim(b, "check", "Compile the package for every target of the fast tier, as its cross-compile jobs do, without linking or running")).dependOn(&run.step);
+            (own_check orelse configure.claim(b, "check", "Compile the package for every target of the ci tier, as its cross-compile jobs do, without linking or running")).dependOn(&run.step);
             break :step &run.step;
         } else null;
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build, .targets = targets, .check = own_check });
@@ -304,15 +301,15 @@ const Steps = struct {
         surface.setCwd(package.path("."));
         surface.has_side_effects = true;
         configure.claim(b, "surface", "List the public declarations of the modules the package exports; -- --since <tag> lists what changed").dependOn(&surface.step);
-        // The gate a release runs (`bay release`): what a release needs, then the release
-        // tier's jobs this machine runs. Releasing is bay's; preflight verifies.
+        // The gate a release runs (`bay release`): what a release needs beside its hosted
+        // release run, in seconds. Releasing is bay's; preflight verifies.
         const gate = executable.run(b);
         gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
         exported(b, package, gate);
         gate.addPassthruArgs();
         gate.setCwd(package.path("."));
         gate.has_side_effects = true;
-        configure.claim(b, "gate", "What a release needs, then the release tier's jobs this machine runs; what it cannot run is named").dependOn(&gate.step);
+        configure.claim(b, "gate", "What a release needs beside its hosted release run: the caller, the version and the CHANGELOG").dependOn(&gate.step);
         const cache = executable.run(b);
         cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
         cache.setCwd(package.path("."));

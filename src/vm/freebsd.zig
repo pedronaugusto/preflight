@@ -137,7 +137,7 @@ fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
 /// Why the machine cannot run here, or null: it is x86_64 under KVM, which only an
 /// x86_64 Linux host gives.
 pub fn hostRefusal(io: Io) ?[]const u8 {
-    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return "the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; ci-vm=freebsd runs on the nightly's x86_64 Linux runner";
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return "the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; ci-vm=freebsd runs on the release tier's x86_64 Linux runner";
     const kvm = Io.Dir.cwd().openFile(io, "/dev/kvm", .{ .mode = .read_write }) catch return "/dev/kvm cannot be opened read-write: KVM is missing or not open to this user (the runner's job sets its udev rule)";
     kvm.close(io);
     return null;

@@ -8,6 +8,7 @@ const aegis = @import("aegis");
 const src = @import("source.zig");
 const actions = @import("actions.zig");
 const workflow = @import("workflow.zig");
+const matrix = @import("matrix.zig");
 
 /// Adds `sdk_targets` to a gate configuration, read from the build in the gate's directory.
 pub const Sdk = *const fn (*src.Context, *src.Value, []const u8) anyerror!void;
@@ -160,6 +161,7 @@ fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, e
     const given = if (std.mem.eql(u8, found.config, "ci/workflow.json")) null else found.config;
     const label = try workflow.heading(c.a, given, path, found.working_directory, own, c.stepCommand("generate"));
     var config = try workflow.configuration(c.*, found.config);
+    try dropRetired(c, found.config, &config);
     if (sdk) |add| try add(c, &config, found.gate);
     return workflow.generate(c.*, config, manifest, found.gate, own, label, existing, drops) catch |err| {
         if (err == error.UndeclaredCallerJob) {
@@ -167,6 +169,27 @@ fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, e
         } else c.fail("generate: {s} cannot be generated again: {t}", .{ path, err });
         return error.CallerRefused;
     };
+}
+
+/// Takes the keys of triggers that are gone (`matrix.obsolete_triggers`) out of the package's
+/// configuration at `path`, writing it again without them and naming each: moving a package
+/// to this preflight is `generate` alone, where `plan` and `gate` refuse them by name.
+fn dropRetired(c: *src.Context, path: []const u8, config: *src.Value) !void {
+    if (config.* != .object) return;
+    // The file as written: the configuration read for planning holds the records beside it.
+    var written = try c.options(path);
+    if (written != .object) return;
+    var dropped = false;
+    for (matrix.obsolete_triggers) |name| if (written.object.orderedRemove(name)) {
+        _ = config.object.orderedRemove(name);
+        c.report("generate: {s}: dropped `{s}`: every push to main runs the ci tier, and the release tier runs weekly at the package's own time\n", .{ path, name });
+        dropped = true;
+    };
+    if (!dropped) return;
+    var text: std.Io.Writer.Allocating = .init(c.a);
+    try std.json.Stringify.value(written, .{ .whitespace = .indent_2 }, &text.writer);
+    try text.writer.writeByte('\n');
+    try c.directory().writeFile(c.io, .{ .sub_path = path, .data = text.written() });
 }
 
 /// `c` reading and writing from `top`, the repository's top opened.

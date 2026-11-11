@@ -40,7 +40,7 @@ pub const Cli = struct {
             .prepare = .{ .help = "Run the step that installs the job's external tools, when it has one" },
             .fetch = .{ .help = "Fetch the package's dependencies, retried, for the build arguments in BUILD_ARGS" },
             .run = .{ .help = "Run a hosted job: STEP with BUILD_ARGS, its setup first, timed" },
-            .attest = .{ .help = "Record the tier's proof for the commit the job tested" },
+            .attest = .{ .help = "Whether the commit has a green release run, by its proof artifact: bay release asks it before it tags" },
         },
     };
 };
@@ -148,10 +148,9 @@ pub const Gate = struct {
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
     module: []const []const u8 = &.{},
-    jobs: ?u16 = null,
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "What a release needs, then the release tier's jobs this machine runs, each as the hosted job runs it; what it cannot run is named",
-        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module, .jobs = .{ .short = 'j', .value_name = "N", .help = "Run at most N of the machine's shares of jobs at once, a job under QEMU or ThreadSanitizer taking two; one runs them one after another, streaming each. By default one a core, no more than one for each 4 GiB of memory" } },
+        .about = "What a release needs beside its hosted release run: the caller plan generates, the version the CHANGELOG's newest release, and the public API's changes named there",
+        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module },
     };
 };
 
@@ -159,7 +158,7 @@ pub const Targets = struct {
     zig_exe: ?[]const u8 = null,
     config: []const u8 = "ci/workflow.json",
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "Compile the package for every target the fast tier's cross-compile jobs name, as they do, without linking or running; zig build check runs it",
+        .about = "Compile the package for every target the ci tier's cross-compile jobs name, as they do, without linking or running; zig build check runs it",
         .options = .{ .zig_exe = zig_exe, .config = workflow_config },
     };
 };

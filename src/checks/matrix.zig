@@ -25,7 +25,7 @@ const obsolete = [_][]const u8{ "windows_shards", "fast_windows_shards", "shard_
 /// Every push and pull request runs the ci tier on its commit and the release tier runs weekly and by dispatch, so
 /// a push that only confirmed another run (`attest`) and the nightly (`nightly`) are gone; a caller that still sets
 /// them is refused by name.
-const obsolete_triggers = [_][]const u8{ "attest", "nightly" };
+pub const obsolete_triggers = [_][]const u8{ "attest", "nightly" };
 /// A ThreadSanitizer run of a package's own step is a declared job (`jobs`), and preflight's own is `hardened`.
 const obsolete_sanitizer = [_][]const u8{ "sanitizer", "sanitizer_job_timeout" };
 

@@ -465,7 +465,7 @@ test "every caller runs the ci tier on each push to main and pull request, and t
     try std.testing.expect(std.mem.find(u8, plain, try a.print("    - cron: '{s}'\n", .{try weekly(a, 0x1234)})) != null);
     try std.testing.expect(std.mem.find(u8, plain, "github.event_name == 'schedule' && 'release' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci'") != null);
     try std.testing.expect(std.mem.find(u8, plain, "options: [ci, release]") != null);
-    // Each push runs on its own commit; nothing confirms another run's, and nothing runs nightly.
+    // Each push runs on its own commit; nothing confirms another run's, and the release tier runs weekly.
     try std.testing.expect(std.mem.find(u8, plain, "format('push-{0}', github.sha)") != null);
     for ([_][]const u8{ "merge_group", "attest", "status-only", "fast-matrix", "merge-matrix" }) |gone| try std.testing.expect(std.mem.find(u8, plain, gone) == null);
     try std.testing.expect(std.mem.find(u8, plain, "      ci-matrix: >-\n") != null);

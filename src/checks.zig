@@ -18,11 +18,9 @@ pub const lazy_import = @import("checks/lazy_import.zig");
 pub const release = @import("checks/release.zig");
 pub const surface = @import("checks/surface.zig");
 pub const caller = @import("checks/caller.zig");
-pub const local = @import("checks/local.zig");
 pub const command = @import("checks/command.zig");
 pub const phases = @import("checks/phases.zig");
 pub const counts = @import("checks/counts.zig");
-pub const running = @import("checks/running.zig");
 
 test {
     _ = @import("cli.zig");
@@ -69,10 +67,8 @@ test {
     _ = caller;
     _ = @import("checks/actions.zig");
     _ = @import("checks/gate_test.zig");
-    _ = @import("checks/local.zig");
     _ = lazy_import;
     _ = command;
-    _ = running;
     _ = paths;
     _ = phases;
     _ = @import("checks/workflow_test.zig");

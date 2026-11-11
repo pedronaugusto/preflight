@@ -1,7 +1,7 @@
-//! `preflight gate` end to end, before its jobs: a package in a git repository of its own,
-//! the preflight program run as `bay gate` runs it, refusing what a release must not carry
-//! (a caller other than `generate` makes, a manifest and a CHANGELOG at different releases,
-//! a public declaration changed with no breaking entry) before any job runs. The program
+//! `preflight gate` end to end: a package in a git repository of its own, the preflight
+//! program run as `bay gate` runs it, refusing what a release must not carry (a caller
+//! other than `generate` makes, a manifest and a CHANGELOG at different releases, a public
+//! declaration changed with no breaking entry). The program
 //! gets PATH (on Windows, PATHEXT and SystemRoot beside it) and what the test sets, nothing
 //! else of the user's.
 const std = @import("std");
@@ -71,13 +71,18 @@ const Package = struct {
 
     /// `preflight gate` as the package's build runs it, with the module it exports.
     fn gate(p: *Package) !std.process.RunResult {
+        return p.preflight(&.{ "gate", "--module", "build.zig=build.zig", "--module", "pkg=src/a.zig" });
+    }
+
+    /// The preflight program run in the package with `args`.
+    fn preflight(p: *Package, args: []const []const u8) !std.process.RunResult {
         const program = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.preflight, p.arena.allocator());
-        return std.process.run(p.arena.allocator(), std.testing.io, .{ .argv = &.{ program, "gate", "--module", "build.zig=build.zig", "--module", "pkg=src/a.zig" }, .cwd = .{ .dir = p.tmp.dir }, .environ_map = &p.env });
+        return std.process.run(p.arena.allocator(), std.testing.io, .{ .argv = try std.mem.concat(p.arena.allocator(), []const u8, &.{ &.{program}, args }), .cwd = .{ .dir = p.tmp.dir }, .environ_map = &p.env });
     }
 };
 
-/// The gate refused, saying `said`, and ran no job.
-fn refusedBeforeJobs(result: std.process.RunResult, said: []const u8) !void {
+/// The gate refused, saying `said`, and passed nothing.
+fn refused(result: std.process.RunResult, said: []const u8) !void {
     if (result.term != .exited or result.term.exited != 1 or std.mem.find(u8, result.stderr, said) == null) {
         std.debug.print("expected a refusal saying:\n{s}\nstdout:\n{s}\nstderr:\n{s}\n", .{ said, result.stdout, result.stderr });
         return error.TestUnexpectedResult;
@@ -85,29 +90,29 @@ fn refusedBeforeJobs(result: std.process.RunResult, said: []const u8) !void {
     try std.testing.expect(std.mem.find(u8, result.stdout, "gate: ") == null);
 }
 
-test "the gate refuses a public declaration changed with no breaking entry, before any job" {
+test "the gate refuses a public declaration changed with no breaking entry" {
     const p = try Package.init();
     defer p.deinit();
     try p.write("src/a.zig", "pub fn run(size: u32) void {\n    _ = size;\n}\n");
     try p.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Changed\n\n- A smaller size.\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- First.\n");
     try p.git(&.{ "commit", "-q", "-am", "Smaller" });
-    try refusedBeforeJobs(try p.gate(), "removed or changed these public declarations");
+    try refused(try p.gate(), "removed or changed these public declarations");
 }
 
-test "the gate refuses a manifest and a CHANGELOG at different releases, before any job" {
+test "the gate refuses a manifest and a CHANGELOG at different releases" {
     const p = try Package.init();
     defer p.deinit();
     try p.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.1] - 2026-01-02\n\n### Fixed\n\n- A fix.\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- First.\n");
     try p.git(&.{ "commit", "-q", "-am", "Half a release" });
-    try refusedBeforeJobs(try p.gate(), ".version is 0.1.0 and CHANGELOG.md's newest release is 0.1.1");
+    try refused(try p.gate(), ".version is 0.1.0 and CHANGELOG.md's newest release is 0.1.1");
 }
 
-test "the gate refuses a caller that is not what generate makes for the package's configuration, before any job" {
+test "the gate refuses a caller that is not what generate makes for the package's configuration" {
     const p = try Package.init();
     defer p.deinit();
     try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
     try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
-    try refusedBeforeJobs(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `bay generate`");
+    try refused(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `bay generate`");
 }
 
 test "a package without bay is told to run `zig build generate`, the command it has" {
@@ -115,5 +120,37 @@ test "a package without bay is told to run `zig build generate`, the command it 
     defer p.deinit();
     try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
     try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
-    try refusedBeforeJobs(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `zig build generate`");
+    try refused(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `zig build generate`");
+}
+
+test "a package carrying what a release needs passes the gate, which runs no job" {
+    const p = try Package.init();
+    defer p.deinit();
+    const result = try p.gate();
+    if (result.term != .exited or result.term.exited != 0) {
+        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ result.stdout, result.stderr });
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expect(std.mem.find(u8, result.stdout, "a tag needs a green release run on its commit") != null);
+}
+
+test "generate takes the retired triggers out of ci/workflow.json, naming each, and the gate passes after" {
+    const p = try Package.init();
+    defer p.deinit();
+    try p.write("ci/workflow.json", "{\"attest\": true, \"compile_once\": true, \"nightly\": false}\n");
+    try p.git(&.{ "commit", "-q", "-am", "The old triggers" });
+    const generated = try p.preflight(&.{"generate"});
+    if (generated.term != .exited or generated.term.exited != 0) {
+        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ generated.stdout, generated.stderr });
+        return error.TestUnexpectedResult;
+    }
+    for ([_][]const u8{ "dropped `attest`", "dropped `nightly`" }) |said| try std.testing.expect(std.mem.find(u8, generated.stderr, said) != null);
+    const config = try p.tmp.dir.readFileAlloc(std.testing.io, "ci/workflow.json", p.arena.allocator(), .limited(4096));
+    try std.testing.expectEqualStrings("{\n  \"compile_once\": true\n}\n", config);
+    try p.git(&.{ "commit", "-q", "-am", "Generated" });
+    const gated = try p.gate();
+    if (gated.term != .exited or gated.term.exited != 0) {
+        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ gated.stdout, gated.stderr });
+        return error.TestUnexpectedResult;
+    }
 }

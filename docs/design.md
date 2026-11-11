@@ -94,22 +94,20 @@ checks the last two on every commit. The changelog is read with bay's own reader
 checker reads what the writer writes. preflight is run through the package's development build,
 not linked into bay: the preflight that judges a package is the one its manifest pins.
 
-## The gate on the machines at hand
+## Where a release is proven
 
-`gate` runs the release tier on the machine it is on, and a release is green only when that
-machine proved every native job of its own system: the suite on the host's OS at every optimize
-mode a package releases in (Debug, ReleaseSafe and ReleaseFast run, ReleaseSmall compiles),
-whatever its architecture, the hardened runs, the source checks, the named targets' compiles and
-every job of the package's own that names no runner. The release tier holds a row for each
-runner at each of those modes, so whichever machine gates finds its own system's rows. What
-stays unproven here is named on the gate's last line, and is only ever another system's jobs or
-a VM leg.
+A release is proven by the hosted release tier on the commit it tags: `bay release` tags only
+once a release run on that commit is green (`attest` finds its proof artifact). `gate` runs no
+job: it checks in seconds what a release needs beside that run (the caller `generate` makes,
+the version the CHANGELOG's newest release, the public API's changes named there). Every push
+to main and every pull request runs the ci tier, and `bay ci` runs its checks on the machine at
+hand. The release tier runs weekly at the package's own minute of the week, and by dispatch.
 
-The VM legs are the nightly's by declaration, on every host: riscv64 Linux on its own kernel
+The VM legs are the release tier's, on GitHub's Linux runners: riscv64 Linux on its own kernel
 under QEMU's system emulation, and x86_64 FreeBSD on its own kernel under KVM. No machine that
 gates a release runs a VM (the owner's rule since 2026-10-25), and preflight reads no machine's
-configuration to decide it, so a gate cannot pass or fail on what a machine happens to have
-installed. Their result is the nightly's run on GitHub's Linux runners. It is a rule, not a
+configuration to decide it, so a release cannot pass or fail on what a machine happens to have
+installed. It is a rule, not a
 limit: the riscv64 leg would run on macOS, since QEMU's 9p file sharing, which gives the machine
 the host's files at their paths, its user network and its serial ports all work on a macOS
 host; only Windows lacks the 9p sharing it needs. FreeBSD's leg runs under KVM, so on an x86_64
@@ -178,7 +176,7 @@ seed, and lint prints all it held when it fails.
 ## The FreeBSD test machine
 
 A program built for x86_64 FreeBSD runs on FreeBSD's own kernel under QEMU with KVM, on
-an x86_64 Linux host only (vm/freebsd.zig refuses any other by name); it is the nightly tier's,
+an x86_64 Linux host only (vm/freebsd.zig refuses any other by name); it is the release tier's,
 for what no hosted runner is and a cross-compile cannot show: FreeBSD's kernel TLS and
 its sockets. The machine is FreeBSD's own release files, pinned by hash in preflight's
 manifest and fetched only by a build that asks for it, as the riscv64 machine's Alpine

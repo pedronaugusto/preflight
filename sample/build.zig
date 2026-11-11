@@ -31,8 +31,10 @@ pub fn build(b: *std.Build) void {
 }
 
 fn sampleBench(target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) preflight.Bench {
-    return .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = benchImports, .target = target, .optimize = optimize };
+    return .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = &bench_imports, .target = target, .optimize = optimize };
 }
-fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+/// The benchmarks' imports hold no state of their own: the hook is the whole of it.
+const bench_imports: preflight.Bench.Imports = .{ .make = benchImports };
+fn benchImports(_: *const preflight.Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = b.createModule(.{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize }) }}) catch @panic("OOM");
 }

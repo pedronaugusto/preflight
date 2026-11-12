@@ -167,20 +167,20 @@ fn escapeRecord(c: *src.Context, path: []const u8) !?[]const glint.Fix.Escaped {
 }
 
 /// glint's assertion counts, each call by the declaration it resolves to
-/// (std's `debug.assert`, aegis's `assert` contracts), never by its
+/// (std's `debug.assert`, and what a package names in its place), never by its
 /// spelling: a report, never a gate, since a count says nothing of what an
 /// assertion checks. In a hosted job the per-file table goes to its summary.
 fn assertions(c: *src.Context, project: *const glint.Project, report: *const glint.Report) void {
     const metrics = report.metrics orelse return;
     const t = metrics.total;
-    c.report("preflight: assertions: {d} in {d} functions, {d} of them with one; {d} calls spelled like one unresolved\n", .{ t.total(), t.functions, t.asserted, t.unresolved });
+    c.report("preflight: assertions: {d} in {d} functions, {d} of them with one\n", .{ t.total(), t.functions, t.asserted });
     const path = c.summary_path orelse return;
     var text: std.Io.Writer.Allocating = .init(c.a);
-    text.writer.writeAll("\nAssertions (report only)\n\n| File | Functions | With one | Assertions | Unresolved |\n|---|---:|---:|---:|---:|\n") catch @panic("OOM");
+    text.writer.writeAll("\nAssertions (report only)\n\n| File | Functions | With one | Assertions |\n|---|---:|---:|---:|\n") catch @panic("OOM");
     for (metrics.files) |file| {
         const n = file.counts;
-        if (n.functions == 0 and n.unresolved == 0) continue;
-        text.writer.print("| `{s}` | {d} | {d} | {d} | {d} |\n", .{ project.at(file.file).input.name, n.functions, n.asserted, n.total(), n.unresolved }) catch @panic("OOM");
+        if (n.functions == 0) continue;
+        text.writer.print("| `{s}` | {d} | {d} | {d} |\n", .{ project.at(file.file).input.name, n.functions, n.asserted, n.total() }) catch @panic("OOM");
     }
     // glint-ignore: Z026 -- a summary that cannot be written leaves the line printed above
     appendTo(c.*, c.directory(), path, text.written()) catch {};
@@ -235,36 +235,17 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     if (held) c.report("glint: every finding: {s}\n", .{findings_at});
 
     var unfinished: usize = 0;
-    var unresolved: usize = 0;
-    // A finding rule's undecided sites, by rule, against the repository's ceiling for it.
-    var undecided: std.array_hash_map.Auto(glint.Rule, usize) = .empty;
-    // Every incomplete site, where the run prints the first `printed`.
+    // Every run error, where the run prints the first `printed`: glint's output is findings,
+    // reports and run errors, and a run error stops the run.
     var sites: std.Io.Writer.Allocating = .init(c.a);
-    for (report.coverage) |note| {
-        const file = project.at(note.file).input.name;
-        const gating = if (note.rule) |rule| chosen.base.level(rule) == .gate else false;
-        const stops = switch (note.reason) {
-            .parsed, .unsupported => false,
-            .invalid_syntax, .invalid_lowering, .budget_exhausted => true,
-            .unresolved => gating,
-        };
-        if (stops or (gating and note.reason != .parsed)) {
-            const start = sites.written().len;
-            sites.writer.print("glint: incomplete: {s}:{d}: {s}{s}{s}: {s}\n", .{ file, lineAt(project.at(note.file).input.bytes, note.start), note.rule_name, if (note.rule_name.len != 0) " " else "", @tagName(note.reason), note.detail }) catch @panic("OOM");
-            if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
-            unfinished += 1;
-        } else if (note.reason == .unresolved) {
-            unresolved += 1;
-            if (note.rule) |rule| {
-                const count = undecided.getOrPutValue(c.a, rule, 0) catch @panic("OOM");
-                count.value_ptr.* += 1;
-                const start = sites.written().len;
-                sites.writer.print("glint: undecided: {s}:{d}: {s}: {s}\n", .{ file, lineAt(project.at(note.file).input.bytes, note.start), note.rule_name, note.detail }) catch @panic("OOM");
-                if (count.value_ptr.* <= printed) c.report("{s}", .{sites.written()[start..]});
-            }
-        }
+    for (report.errors) |run_error| {
+        const start = sites.written().len;
+        if (run_error.file) |file| {
+            sites.writer.print("glint: error: {s}: {s}\n", .{ project.at(file).input.name, run_error.why }) catch @panic("OOM");
+        } else sites.writer.print("glint: error: {s}\n", .{run_error.why}) catch @panic("OOM");
+        if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
+        unfinished += 1;
     }
-    ceilings(c, chosen, undecided);
     for (report.malformed) |entry| {
         const start = sites.written().len;
         sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ project.at(entry.span.file).input.name, entry.span.line, entry.why }) catch @panic("OOM");
@@ -283,10 +264,10 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         c.report("glint: {d} more incomplete sites; all {d}: {s}\n", .{ unfinished - printed, unfinished, sites_at });
     }
     if (!report.complete) {
-        c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} of them suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
+        c.fail("glint: the run did not complete ({d} run errors, malformed or stale suppressions, {d} of them suppressions that suppress nothing): an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
     }
-    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.count(), failing, warned, report.suppressed, unfinished, unresolved });
-    byRule(c, chosen, shown, undecided);
+    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} incomplete\n", .{ project.count(), failing, warned, report.suppressed, unfinished });
+    byRule(c, chosen, shown);
 }
 
 /// The vendored files that are still their upstream's copy, by the SHA-256 their entries record.
@@ -310,42 +291,19 @@ fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendore
     return out.items;
 }
 
-/// Each rule's findings and undecided sites, counted: the line a sizing or a review reads. The
-/// bans that hold what the package ships first (P007, P008, P009, then the rules its packages
-/// declare), then any other rule a site is undecided for.
-fn byRule(c: *src.Context, chosen: policy.Policy, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
+/// Each shipped ban's findings, counted: the line a sizing or a review reads (P007, P008, P009,
+/// then the rules the packages declare).
+fn byRule(c: *src.Context, chosen: policy.Policy, shown: std.AutoHashMapUnmanaged(glint.Rule, usize)) void {
     var line: std.Io.Writer.Allocating = .init(c.a);
     var bans: std.ArrayList(glint.Rule) = .empty;
     bans.appendSlice(c.a, &.{ .P007, .P008, .P009 }) catch @panic("OOM");
     for (chosen.declared) |definition| bans.append(c.a, definition.id) catch @panic("OOM");
     for (bans.items) |id| {
         const found = shown.get(id) orelse 0;
-        const open = undecided.get(id) orelse 0;
-        if (found == 0 and open == 0) continue;
-        line.writer.print("{s}{s} {d}/{d}", .{ if (line.written().len == 0) "" else ", ", ruleName(chosen, id), found, open }) catch @panic("OOM");
+        if (found == 0) continue;
+        line.writer.print("{s}{s} {d}", .{ if (line.written().len == 0) "" else ", ", ruleName(chosen, id), found }) catch @panic("OOM");
     }
-    for (undecided.keys(), undecided.values()) |rule, open| {
-        if (chosen.shippedBan(rule)) continue;
-        line.writer.print("{s}{s} {d}/{d}", .{ if (line.written().len == 0) "" else ", ", ruleName(chosen, rule), shown.get(rule) orelse 0, open }) catch @panic("OOM");
-    }
-    if (line.written().len != 0) c.report("preflight: glint: by rule (findings/undecided): {s}\n", .{line.written()});
-}
-
-/// Each reporting rule's undecided sites against the repository's ceiling for it
-/// (`glint.unresolved`, none by default): above it fails, since the count the reviews read may
-/// not grow; below it asks for the ceiling to come down to what is left.
-fn ceilings(c: *src.Context, chosen: policy.Policy, undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
-    for (undecided.keys(), undecided.values()) |rule, count| {
-        var ceiling: usize = 0;
-        for (chosen.ceilings) |entry| if (entry.rule == rule) {
-            ceiling = entry.sites;
-        };
-        if (count > ceiling) c.fail("glint: {s} leaves {d} sites undecided, above the {d} `glint.unresolved` allows: the count may not grow", .{ ruleName(chosen, rule), count, ceiling });
-    }
-    for (chosen.ceilings) |entry| {
-        const count = undecided.get(entry.rule) orelse 0;
-        if (count < entry.sites) c.report("glint: {s} leaves {d} sites undecided, below its ceiling of {d}: lower `glint.unresolved.{s}` to {d}\n", .{ entry.name, count, entry.sites, entry.name, count });
-    }
+    if (line.written().len != 0) c.report("preflight: glint: shipped bans' findings: {s}\n", .{line.written()});
 }
 
 fn ruleName(chosen: policy.Policy, rule: glint.Rule) []const u8 {
@@ -567,20 +525,13 @@ test "the list of every finding names a vendored file's carried sites as carried
     try std.testing.expect(failing > printed);
 }
 
-test "a reporting rule's undecided sites count against the repository's ceiling, which may not grow" {
+test "a site a ban cannot decide is a finding, and `glint.unresolved` is retired by name" {
     const f = try Fixture.init();
     defer f.deinit();
-    // `@setRuntimeSafety` with a computed argument: P007, a finding, cannot decide it.
+    // `@setRuntimeSafety` with a computed argument: P007 cannot show the checks stay on.
     try f.file("src/root.zig", "pub fn run(comptime on: bool) void {\n    @setRuntimeSafety(on);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"P007\":1}}}", .{}));
-    // A ceiling above the count passes and asks to come down.
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"P007\":3}}}", .{}));
-    // A rule that only reports holds its undecided sites to a ceiling as a finding does: Z012
-    // cannot tell whether a type it cannot resolve is private.
-    try f.file("src/root.zig", "const dep = @import(\"dep\");\npub fn run() dep.T {\n    return undefined;\n}\n");
-    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"Z012\":1}}}", .{}));
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"P007\":1}}}", .{}) != 0);
 }
 
 test "function length: the limit, a per-path ceiling and a reasoned exception that cannot grow or go stale" {
@@ -613,8 +564,8 @@ test "a debug print, a deprecated call and, under the family's policy, a file's 
     const paths = "{\"glint_paths\":[\"src\"]}";
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{});\n}\n");
     try std.testing.expect(try f.run(paths, build) != 0);
-    // The same code without the standard library's declarations is unresolved, not a finding.
-    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, .{}));
+    // Without the standard library the import names nothing the run maps: the run stops.
+    try std.testing.expect(try f.run(paths, .{}) != 0);
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{}); // glint-ignore: P005 -- the tool's one line of output\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOfScalar(u8, text, 'x');\n}\n");
@@ -696,7 +647,7 @@ test "assertions are counted by the declaration a call resolves to, never by its
     f.c.summary_path = "summary.md";
     _ = try f.run("{\"glint_paths\":[\"src\"]}", .{ .std_dir = "stdlib" });
     const out = held.written();
-    try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one; 0 calls spelled like one unresolved") != null);
+    try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one") != null);
     const summary = try f.c.read("summary.md");
     try std.testing.expect(std.mem.find(u8, summary, "| `src/root.zig` | 3 | 1 | 1 | 0 |") != null);
 }

@@ -69,9 +69,9 @@ const Entry = struct { rule: glint.Rule, weight: Weight };
 /// does a debug print the project forbids (P005). glint's shipped bans (P007's unchecked
 /// operations, P008's same-typed ids, P009's frame pointer carried out) weigh as findings under
 /// the family's policy and report elsewhere; the rules the program's packages declare join once
-/// the run reads them (`Policy.resolve`), a ban a finding and hygiene a report. A site any rule
-/// that reports cannot decide is counted against the repository's `unresolved` ceiling for it,
-/// which may not grow (a gating rule's stops the run). The function reading budget (P003) is a
+/// the run reads them (`Policy.resolve`), a ban a finding and hygiene a report: each rule's own
+/// default, with the family's configuration over it, not a second mechanism. glint leaves no
+/// site undecided: a site is a finding, a report or nothing. The function reading budget (P003) is a
 /// house style, reported until a package gates it in its `glint.rules`. A discarded error (Z026,
 /// an empty `catch` with no reason written at it) is a result nobody read, and gates: a
 /// best-effort cleanup is a fine reason, silence is not. Two operators Zig 0.18 refuses to order
@@ -118,7 +118,7 @@ const retired = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "glint_config", .instead = "move its fields into the `glint` object" },
 };
 
-const glint_keys = [_][]const u8{ "rules", "fact_budget", "max_line_length", "disallowed", "unresolved", "peer_writers" };
+const glint_keys = [_][]const u8{ "rules", "fact_budget", "max_line_length", "disallowed", "peer_writers" };
 
 /// The rules glint folded into others: a repository still naming one is told where its sites went.
 const folded = [_]struct { id: []const u8, instead: []const u8 }{
@@ -134,17 +134,14 @@ const folded = [_]struct { id: []const u8, instead: []const u8 }{
 const retired_glint = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "casts", .instead = "P007 finds every pointer conversion; write `// glint-ignore: P007 -- <reason>` at a raw one" },
     .{ .key = "escapes", .instead = "the aegis escape form is gone: every rule takes `// glint-ignore: <rule> -- <reason>`, which the report counts" },
+    .{ .key = "unresolved", .instead = "glint 0.8 leaves no site undecided: a ban reports what it cannot decide and hygiene stays silent, so there is no count to hold" },
     .{ .key = "cast_scope", .instead = "the danger rules read production code only" },
     .{ .key = "strict_suppressions", .instead = "suppressions are strict in every repository: one that suppresses nothing fails" },
 };
 
 pub const Limit = struct { pattern: *const gantry.rules.Pattern, lines: u32 };
-/// How many sites a rule that reports may leave undecided in this repository: the count the
-/// reviews read, which may not grow.
-pub const Ceiling = struct { rule: glint.Rule, name: []const u8, sites: usize };
-/// A rule name glint itself does not have, as the repository wrote it: a level in `rules`, or a
-/// ceiling in `unresolved` (`ceiling` set).
-pub const Pending = struct { name: []const u8, level: glint.Config.Level = .report, ceiling: ?usize = null };
+/// A rule name glint itself does not have, as the repository wrote it in `rules`, with its level.
+pub const Pending = struct { name: []const u8, level: glint.Config.Level = .report };
 pub const Exception = struct { path: []const u8, function: []const u8, lines: u32, reason: []const u8 };
 /// A file kept as its upstream wrote it: where it comes from, how the upstream's copy is
 /// verified, and the SHA-256 of that copy. While the file is the copy, its verification is the
@@ -158,10 +155,7 @@ pub const Policy = struct {
     findings: []const glint.Rule,
     /// Under the family's policy a repository may only raise a rule.
     family: bool,
-    /// Undecided sites a rule that reports (a finding or a report) may leave, by rule; a rule
-    /// not named may leave none.
-    ceilings: []const Ceiling = &.{},
-    /// Rule names glint itself does not have, from `rules` and `unresolved`: a package's, until
+    /// Rule names glint itself does not have, from `rules`: a package's, until
     /// the run's packages are read (`resolve`).
     pending: []const Pending = &.{},
     /// The rules the run's packages declare, once `resolve` read them.
@@ -233,13 +227,11 @@ pub const Policy = struct {
         policy.declared = definitions;
         var findings: std.ArrayList(glint.Rule) = .empty;
         try findings.appendSlice(a, policy.findings);
-        var ceilings: std.ArrayList(Ceiling) = .empty;
-        try ceilings.appendSlice(a, policy.ceilings);
         for (definitions) |definition| {
             const declared = definition.declared orelse continue;
             const default: Weight = if (!declared.default) .off else if (declared.kind == .ban) .finding else .report;
             var weight = default;
-            for (policy.pending) |named| if (named.ceiling == null and std.mem.eql(u8, named.name, definition.name)) {
+            for (policy.pending) |named| if (std.mem.eql(u8, named.name, definition.name)) {
                 const asked: Weight = switch (named.level) {
                     .gate => .gate,
                     .report => .report,
@@ -251,21 +243,11 @@ pub const Policy = struct {
             policy.base = try withLevel(a, policy.base, definition.id, levelOf(weight));
         }
         for (policy.pending) |named| {
-            const definition = for (definitions) |each| {
-                if (std.mem.eql(u8, each.name, named.name)) break each;
-            } else {
-                c.fail("glint: {s}", .{refusal(c, named.name)});
-                continue;
-            };
-            const sites = named.ceiling orelse continue;
-            switch (policy.base.level(definition.id)) {
-                .report => try ceilings.append(a, .{ .rule = definition.id, .name = named.name, .sites = sites }),
-                .gate => c.fail("glint: unresolved: {s} gates, so a site it leaves undecided stops the run: it holds no ceiling", .{named.name}),
-                .off => c.fail("glint: unresolved: {s} does not run, so it leaves no site undecided", .{named.name}),
-            }
+            for (definitions) |each| {
+                if (std.mem.eql(u8, each.name, named.name)) break;
+            } else c.fail("glint: {s}", .{refusal(c, named.name)});
         }
         policy.findings = findings.items;
-        policy.ceilings = ceilings.items;
     }
 
     /// glint's configuration for one file: the base, its function ceilings
@@ -457,7 +439,6 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     policy.exceptions = try parseExceptions(c, src.get(config, "function_exceptions"));
     policy.vendored = try parseVendored(c, src.get(config, "vendored"));
     policy.paths = try parsePaths(c, src.get(config, "glint_paths"));
-    policy.ceilings = try parseCeilings(c, src.get(block, "unresolved"), policy.base, &pending);
     policy.pending = pending.items;
     policy.base.peer_writers = try parsePeerWriters(c, block);
     return if (c.errors == before) policy else null;
@@ -552,49 +533,6 @@ pub fn parsePeerWriters(c: *src.Context, block: src.Value) ![]const glint.Config
             continue;
         }
         try out.append(c.a, .{ .module = module.string, .declaration = declaration.string });
-    }
-    return out.items;
-}
-
-/// `unresolved`: the ceiling of undecided sites of each rule that reports, by its name. A gating
-/// rule holds none (a site it leaves undecided stops the run), nor one that does not run.
-fn parseCeilings(c: *src.Context, value: src.Value, base: glint.Config, pending: *std.ArrayList(Pending)) ![]const Ceiling {
-    if (value == .null) return &.{};
-    if (value != .object) {
-        c.fail("glint: `unresolved` maps a rule to how many sites it may leave undecided", .{});
-        return &.{};
-    }
-    var out: std.ArrayList(Ceiling) = .empty;
-    var entries = value.object.iterator();
-    while (entries.next()) |entry| {
-        const name = entry.key_ptr.*;
-        const sites = entry.value_ptr.*;
-        const rule = glint.parseRule(name, &.{}) orelse {
-            if (glintForm(name)) {
-                c.fail("glint: unresolved: {s}", .{refusal(c, name)});
-                continue;
-            }
-            const count: usize = if (sites == .integer and sites.integer >= 1) std.math.cast(usize, sites.integer) orelse 0 else 0;
-            if (count == 0) c.fail("glint: unresolved: {s}: a positive count of sites (a rule not named may leave none)", .{name}) else try pending.append(c.a, .{ .name = name, .ceiling = count });
-            continue;
-        };
-        switch (base.level(rule)) {
-            .report => {},
-            .gate => {
-                c.fail("glint: unresolved: {s} gates, so a site it leaves undecided stops the run: it holds no ceiling", .{name});
-                continue;
-            },
-            .off => {
-                c.fail("glint: unresolved: {s} does not run, so it leaves no site undecided", .{name});
-                continue;
-            },
-        }
-        const count: usize = if (sites == .integer and sites.integer >= 1) std.math.cast(usize, sites.integer) orelse 0 else 0;
-        if (count == 0) {
-            c.fail("glint: unresolved: {s}: a positive count of sites (a rule not named may leave none)", .{name});
-            continue;
-        }
-        try out.append(c.a, .{ .rule = rule, .name = name, .sites = count });
     }
     return out.items;
 }
@@ -754,16 +692,15 @@ test "a package's rules join the policy at its weights once the run's table is r
         .{ .id = opt_in, .name = "A012", .group = .family_policy, .purpose = "p", .declared = .{ .package = "aegis", .kind = .ban, .reads = .replaces, .default = false } },
     };
     var policy = (try parse(&c, try parsed(c.a,
-        \\{"glint":{"rules":[{"id":"A004","level":"gate"}],"unresolved":{"A007":2}}}
+        \\{"glint":{"rules":[{"id":"A004","level":"gate"}]}}
     ), test_shipped)).?;
-    try std.testing.expectEqual(@as(usize, 2), policy.pending.len);
+    try std.testing.expectEqual(@as(usize, 1), policy.pending.len);
     try policy.resolve(&c, &table);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqual(.report, policy.base.level(ban));
     try std.testing.expect(policy.fails(ban));
     try std.testing.expectEqual(.gate, policy.base.level(hygiene));
     try std.testing.expectEqual(.off, policy.base.level(opt_in));
-    try std.testing.expectEqual(@as(usize, 2), policy.ceilings[policy.ceilings.len - 1].sites);
     // The package's rules hold what it ships, as P007, P008 and P009 do.
     try std.testing.expect(policy.shippedBan(ban) and policy.shippedBan(.P007) and !policy.shippedBan(.Z026));
     try std.testing.expectEqual(.off, (try policy.forFile(c.a, "bench/main.zig")).level(ban));
@@ -796,13 +733,12 @@ test "a repository amends the policy by rule and cannot swap it for another prof
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
     const amended = (try parse(&c, try parsed(c.a,
-        \\{"glint":{"rules":[{"id":"Z006","level":"gate"},{"id":"Z024","level":"report"},{"id":"Z026","level":"gate"}],"unresolved":{"Z012":2}}}
+        \\{"glint":{"rules":[{"id":"Z006","level":"gate"},{"id":"Z024","level":"report"},{"id":"Z026","level":"gate"}]}}
     ), test_shipped)).?;
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqual(.gate, amended.base.level(.Z006));
     try std.testing.expectEqual(.report, amended.base.level(.Z024));
     try std.testing.expect(amended.fails(.P005) and amended.fails(.Z011));
-    try std.testing.expectEqual(@as(usize, 2), amended.ceilings[0].sites);
     try std.testing.expect(amended.base.strict_suppressions);
     for ([_][]const u8{
         // Under the family's policy a repository may only raise a rule: nothing turns one off

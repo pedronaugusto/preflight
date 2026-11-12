@@ -474,7 +474,8 @@ test "a shipped ban's site fails in production unless a suppression names it; te
     try f.file("src/root_test.zig", "pub const t = 1;\n");
     try f.file("src/testing/harness.zig", "pub const h = 1;\n");
     // An upstream's file kept unchanged: its verification is the reason its danger sites carry,
-    // while it is the copy the entry's SHA-256 names, and an undecided site is still undecided.
+    // while it is the copy the entry's SHA-256 names: a site a ban cannot decide is a finding it
+    // carries as any other.
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(cast, &digest, .{});
     const entry = "{{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}";
@@ -485,12 +486,12 @@ test "a shipped ban's site fails in production unless a suppression names it; te
     try std.testing.expectEqual(@as(usize, 0), try f.run(vendored.buffered(), .{}));
     try f.file("src/vendor/fiat.zig", cast ++ "pub const edited = 1;\n");
     try std.testing.expect(try f.run(vendored.buffered(), .{}) != 0);
-    const undecided = "const flags = struct { var checked: bool = true; };\npub fn f() void {\n    @setRuntimeSafety(flags.checked);\n}\n";
-    std.crypto.hash.sha2.Sha256.hash(undecided, &digest, .{});
-    try f.file("src/vendor/fiat.zig", undecided);
+    const unsure = "const flags = struct { var checked: bool = true; };\npub fn f() void {\n    @setRuntimeSafety(flags.checked);\n}\n";
+    std.crypto.hash.sha2.Sha256.hash(unsure, &digest, .{});
+    try f.file("src/vendor/fiat.zig", unsure);
     vendored = .fixed(&buffer);
     try vendored.print(entry, .{&digest});
-    try std.testing.expect(try f.run(vendored.buffered(), .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run(vendored.buffered(), .{}));
 }
 
 test "the list of every finding names a vendored file's carried sites as carried" {
@@ -591,9 +592,10 @@ test "an analysis glint did not finish is never a pass, whatever its findings" {
     try f.file("src/root.zig", "pub fn twice() void {\n    const a = 1;\n    const a = 2;\n    _ = a;\n}\n");
     try std.testing.expect(try f.run("{" ++ paths ++ "}", .{}) != 0);
     // Work it ran out of budget for.
+    const with_std: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    _ = std.mem;\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", .{}));
-    try std.testing.expect(try f.run("{" ++ paths ++ ",\"glint\":{\"fact_budget\":1}}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", with_std));
+    try std.testing.expect(try f.run("{" ++ paths ++ ",\"glint\":{\"fact_budget\":1}}", with_std) != 0);
     // A suppression that suppresses nothing.
     try f.file("src/root.zig", "// glint-ignore: Z026 -- there is no empty catch here\npub const x = 1;\n");
     try std.testing.expect(try f.run("{" ++ paths ++ "}", .{}) != 0);
@@ -611,13 +613,13 @@ test "a run counts every incomplete site, prints the first ones and lists them a
     f.c.summary_path = "summary.md";
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
     const out = held.written();
-    try std.testing.expectEqual(@as(usize, printed), std.mem.count(u8, out, "glint: incomplete: "));
+    try std.testing.expectEqual(@as(usize, printed), std.mem.count(u8, out, "glint: error: "));
     try std.testing.expect(std.mem.find(u8, out, "glint: 5 more incomplete sites; all 30: " ++ sites_path) != null);
-    try std.testing.expect(std.mem.find(u8, out, ", 30 sites incomplete, ") != null);
+    try std.testing.expect(std.mem.find(u8, out, ", 30 incomplete") != null);
     const all = try f.c.read(sites_path);
-    try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, all, "glint: incomplete: "));
+    try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, all, "glint: error: "));
     const summary = try f.c.read("summary.md");
-    try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, summary, "glint: incomplete: "));
+    try std.testing.expectEqual(@as(usize, printed + 5), std.mem.count(u8, summary, "glint: error: "));
 }
 
 test "assertions are counted by the declaration a call resolves to, never by its spelling" {
@@ -649,7 +651,7 @@ test "assertions are counted by the declaration a call resolves to, never by its
     const out = held.written();
     try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one") != null);
     const summary = try f.c.read("summary.md");
-    try std.testing.expect(std.mem.find(u8, summary, "| `src/root.zig` | 3 | 1 | 1 | 0 |") != null);
+    try std.testing.expect(std.mem.find(u8, summary, "| `src/root.zig` | 3 | 1 | 1 |") != null);
 }
 
 /// An `Io` on which every task has been asked to stop.

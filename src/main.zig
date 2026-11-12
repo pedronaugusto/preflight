@@ -221,7 +221,20 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     }
     try config.object.put(a, "unrun_test_roots", .{ .array = unrun_values.toManaged(a) });
     c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-    const configured = try facts.buildModules(a, snapshot);
+    // The modules of the build for each target the CI runs, beside this machine's: a module only
+    // one target's build adds is linted on every run, and an import of it names a module.
+    var per_target: std.ArrayList([]const src.BuildModule) = .empty;
+    try per_target.append(a, try facts.buildModules(a, snapshot));
+    for (try src.items(src.get(try c.options("ci/workflow.json"), "targets"))) |target| {
+        const name = checks.matrix.targetName(target) catch continue;
+        const options = try std.mem.concat(a, []const u8, &.{ args.build_option, &.{try a.print("-Dtarget={s}", .{name})} });
+        const built = facts.read(c.*, c.zig, options) catch |err| {
+            c.fail("lint: the build for {s} could not be configured ({t}), so its modules are not mapped", .{ name, err });
+            continue;
+        };
+        try per_target.append(a, try facts.buildModules(a, built));
+    }
+    const configured = try facts.unionModules(a, per_target.items);
     const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, a, .fromRaw(16 * 1024 * 1024))) else configured;
     try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));

@@ -278,46 +278,36 @@ under whatever name the build gives it, at any revision that keeps its public na
 |---|---|
 | Z003 syntax, Z013 dead import, Z026 discarded error | gate |
 | Z011 deprecated call, P005 debug print | finding: any finding fails, and a call glint cannot resolve is counted, not a verdict |
-| the aegis pack: A001-A005 (aegis's types used as their contracts say) and the danger rules A007-A019 | finding, with a ceiling on undecided sites, where the program imports aegis; under the family's policy, always |
-| A006, A009, A010, A012, A013, A018, A020, A021: the rules that read the input or peer fact, and lock order | report on a landing; the release tier (`-Dci-release`, `lint --release`) fails on them as findings |
+| P007 unchecked operations, P008 same-typed ids, P009 frame pointer carried out: glint's shipped bans | finding under the family's policy; report elsewhere |
+| the rules the program's packages declare in their `lint_rules` (aegis's A001, A004, A007-A013, A015, A021) | each by its own default: a ban a finding, hygiene a report, an opt-in rule off until named |
 | P003 function length, Z012, Z016, Z001, Z005, Z006, Z009, Z014, Z031, Z032 | report, until a package is clean under them and gates them itself |
 | Z024 line length | off |
 | D001 dead declarations | report |
 | P006 disallowed declarations | gate: what `disallowed` adds, and under the family's policy the durability door (airlock's: std's raw syncs, its `Io` atomic files and `File.sync`) and the whole-file read (aegis's) |
 
-`gate` is glint's: a finding fails the run, and so does any site the rule could
-not decide. A *finding* rule fails on what glint finds and does not fail on the
-calls it could not resolve: a call through a receiver of unknown type is not a
-verdict either way.
+`gate` is glint's: a finding fails the run. A *finding* rule fails on what glint finds; a
+*report* prints and never fails. glint leaves no site undecided: a site is a finding, a
+report or nothing, and a run error (a file it cannot parse, an import no mapping names, a
+budget run out, a configuration naming nothing) stops the run. The lint maps the modules of
+the build for every target `ci/workflow.json` names, so a module only one target adds is read
+on every run.
 
-**The danger rules** (glint's aegis pack, aegis's design §7) find every site where a danger
-exists: shared state, secrets, input, integer conversions and arithmetic on input, units of time,
-work sized by input, contracts, lifetimes, ownership, identity, state machines,
-diagnostics to peers, the operations Zig leaves unchecked, cancellation. A site uses
-aegis's type or carries the one escape, `// aegis: <reason>: <why>`, whose reason is
-`no-danger`, `design`, `hot-loop`, `internal` or `boundary`. The run prints every escape
-with the rules it covers (all of them in `.zig-cache/preflight-lint/escapes.txt`), the
-first 25 findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when
-there are more) and a line of findings, escapes and undecided sites by rule. `zig build fix` (`bay dev fix`) writes glint's deterministic fixes into the sources first: std's `assert` as aegis's `assert.invariant`, a reason written the older way (`// safe:`, `// unreachable:`) as the escape, an escape that covers nothing gone. What is left is the sites whose answer is a design choice. The undecided sites of every
-rule that reports, a danger rule or any other, count against `glint.unresolved`, a ceiling per
-rule (none by default; a gating rule's undecided site stops the run instead): above it fails,
-since the count the reviews read may not grow, and below it the run asks for it to come
-down. The findings the escapes cover hold to `glint.escapes`, a count per reason and rule
-(none by default): one more than it holds fails, since a new escape, or one widened to a
-rule it did not cover, is then a line in review, and one fewer fails until the count comes
-down, so it only falls. The danger rules' scope is what `build.zig.zon`'s `.paths` ships, `build.zig` among
-it, and no setting narrows it; tests and test support are not shipped, so they leave them out; a
-`vendored` file ships, and is held to them: while it is the copy its SHA-256 names, the
-upstream's verification is the reason its danger sites carry, and changed, it fails the run.
-
-The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A018, A020), and the new A021 (lock order), are reported on a landing until a fresh sample of each shows its noise near zero, and fail a release as findings; the rest of the pack are findings. A package that owns a writer to a peer (a server's response, a protocol's transport) names it in `glint.peer_writers`, each `{"module": "uplink", "declaration": "server.Response.writer"}`; A018 reads a package's own and those of the packages it depends on.
+**The shipped bans** (P007-P009, and every rule a package declares) hold what
+`build.zig.zon`'s `.paths` ships, `build.zig` among it, and no setting narrows them; tests and
+test support are not shipped, so they leave them out; a `vendored` file ships, and is held to
+them: while it is the copy its SHA-256 names, the upstream's verification is the reason its
+sites carry, and changed, it fails the run. Every rule takes one suppression,
+`// glint-ignore: <rule>, ... -- <reason>`; the aegis escape form is read no more, and
+`zig build fix` (`bay dev fix`) rewrites it into that form. The run prints the first 25
+findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when there are
+more) and a line of the shipped bans' findings. `glint.unresolved` and `glint.escapes` are
+retired: there is no undecided count, and no escape count, to hold.
 
 **A repository amends the policy** in the `glint` object of `ci/preflight.json`:
 
 ```json
 "glint": {
   "rules": [{"id": "A004", "level": "gate"}, {"id": "Z006", "level": "gate"}],
-  "unresolved": {"A009": 3}, "escapes": {"boundary": {"A019": 12}, "no-danger": {"A009": 3, "A010": 1}},
   "fact_budget": 4000000, "max_line_length": 100,
   "disallowed": [{"source": "src/io.zig", "declaration": "write", "reason": "...", "replacement": "..."}]
 }
@@ -326,8 +316,10 @@ The rules that read glint's input or peer fact (A006, A009, A010, A012, A013, A0
 `rules` raises a rule to `report` or `gate` above its default weight. Under the family's
 policy a level below it (`off` for a reported rule, `off` or `report` for a finding) fails by
 name, since a repository may only raise the family's bar; without it the level is the
-project's, and the lint names each rule set below its default. An unknown or removed id fails, and P001, P002, P004 and E001, folded into the
-danger rules, say where their sites went. There is no profile:
+project's, and the lint names each rule set below its default. A package's rule (`A004`)
+resolves once the run reads the packages' `lint_rules`. An unknown or removed id fails with
+glint's own words for it (`glint.RemovedRule`: A019 is P007 now, A010 is gone, A007 is
+aegis's), and P001, P002, P004 and E001 say where their sites went. There is no profile:
 the default policy is preflight's, and a deviation is a visible line. `function_limit`
 (120), `function_limits` (a lower ceiling by path) and `function_exceptions` (an exact
 `path:function`, a ceiling and a reason; growth fails, and one that names no function

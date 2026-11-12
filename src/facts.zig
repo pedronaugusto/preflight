@@ -389,6 +389,37 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
     return out;
 }
 
+/// The modules of several configured builds as one list: the builds of each target a repository's
+/// CI runs, so a module only one target's build adds (a Windows-only dependency) is the lint's too.
+/// A module is one by its root and whether it is a build script; one each build has merges the
+/// names each binds.
+pub fn unionModules(a: std.mem.Allocator, lists: []const []const src.BuildModule) ![]const src.BuildModule {
+    var out: std.ArrayList(src.BuildModule) = .empty;
+    var bindings: std.ArrayList(std.ArrayList(src.BuildModule.Binding)) = .empty;
+    for (lists) |list| {
+        // Where each module of this list lands in `out`.
+        const placed = try a.alloc(usize, list.len);
+        for (list, placed) |module, *at| {
+            at.* = for (out.items, 0..) |known, i| {
+                if (known.script == module.script and module.root != null and known.root != null and std.mem.eql(u8, known.root.?, module.root.?)) break i;
+            } else blk: {
+                try out.append(a, .{ .root = module.root, .imports = &.{}, .contents = module.contents, .script = module.script });
+                try bindings.append(a, .empty);
+                break :blk out.items.len - 1;
+            };
+        }
+        for (list, placed) |module, at| for (module.imports) |binding| {
+            const target = placed[binding.module];
+            const known = for (bindings.items[at].items) |each| {
+                if (std.mem.eql(u8, each.name, binding.name) and each.module == target) break true;
+            } else false;
+            if (!known) try bindings.items[at].append(a, .{ .name = binding.name, .module = target });
+        };
+    }
+    for (out.items, bindings.items) |*module, list| module.imports = list.items;
+    return out.items;
+}
+
 /// `modules` and a module for each build script `text` (the build's `--build-scripts` table,
 /// JSON) names: its `build.zig` the root, each dependency's script it imports bound by the
 /// dependency's name, as Zig's build runner compiles a package's build script. A script named
@@ -657,4 +688,24 @@ test "build protocol chunked transport cancellation child status and output faul
     const seed = try fixture.seed(a);
     const loaded = try configuration.load(a, seed);
     try std.testing.expectError(error.WriteFailed, write(a, .{ .config = loaded, .path = "path" }, &writer));
+}
+
+test "the modules of several targets' builds are one list: a module by its root once, each name every build binds" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const host = [_]src.BuildModule{
+        .{ .root = "src/root.zig", .imports = &.{.{ .name = "dep", .module = 1 }} },
+        .{ .root = "dep/root.zig", .imports = &.{} },
+    };
+    const windows = [_]src.BuildModule{
+        .{ .root = "src/root.zig", .imports = &.{ .{ .name = "dep", .module = 1 }, .{ .name = "winapi", .module = 2 } } },
+        .{ .root = "dep/root.zig", .imports = &.{} },
+        .{ .root = "winapi/root.zig", .imports = &.{} },
+    };
+    const merged = try unionModules(arena.allocator(), &.{ &host, &windows });
+    try std.testing.expectEqual(@as(usize, 3), merged.len);
+    try std.testing.expectEqual(@as(usize, 2), merged[0].imports.len);
+    try std.testing.expectEqualStrings("winapi", merged[0].imports[1].name);
+    try std.testing.expectEqualStrings("winapi/root.zig", merged[merged[0].imports[1].module].root.?);
 }

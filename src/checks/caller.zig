@@ -48,7 +48,6 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
     const Found = struct { name: []const u8, planned: workflow.Planned, gate: []const u8 };
     var generated: std.ArrayList(Found) = .empty;
     const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github", "workflows" });
-    // glint-ignore: A009 -- no-danger: git's own answer for this repository's top, which preflight checks with its user's rights
     if (std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true })) |opened| {
         var dir = opened;
         defer dir.close(c.io);
@@ -88,7 +87,6 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
 /// workflow takes in turn unless it pins it so too.
 fn pinnedActions(c: *src.Context, top: []const u8) !void {
     const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github" });
-    // glint-ignore: A009 -- no-danger: git's own answer for this repository's top, which preflight checks with its user's rights
     var dir = std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
@@ -203,7 +201,6 @@ fn atTop(c: *src.Context, top: std.Io.Dir) src.Context {
 /// configuration: a release that left it so would have the hosted runs check the package
 /// with another preflight than it pins, or other jobs than ci/workflow.json declares.
 fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
-    // glint-ignore: A009 -- no-danger: git's own answer for this repository's top, which preflight checks with its user's rights
     var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
     defer top.close(c.io);
     const at_top = atTop(c, top);
@@ -231,7 +228,6 @@ pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
         break :fresh Caller{ .name = "ci.yml", .top = top, .directory = directory, .gate = request.working_directory orelse directory, .working_directory = request.working_directory };
     };
     if (request.config) |given| found.config = given;
-    // glint-ignore: A009 -- no-danger: git's own answer for this repository's top, which preflight checks with its user's rights
     var top = try std.Io.Dir.cwd().openDir(c.io, found.top, .{});
     defer top.close(c.io);
     const at_top = atTop(c, top);

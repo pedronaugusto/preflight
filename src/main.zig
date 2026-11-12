@@ -375,7 +375,6 @@ fn stdout(c: src.Context, text: []const u8) !void {
 }
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
-    // glint-ignore: A009 -- no-danger: the output file the hosted runner names in GITHUB_OUTPUT or GITHUB_ENV
     const file = try std.Io.Dir.cwd().createFile(c.io, path, .{ .truncate = false, .read = true });
     defer file.close(c.io);
     var buffer: [4096]u8 = undefined;

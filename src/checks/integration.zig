@@ -497,7 +497,7 @@ test "a red lint and a failing unit test are each reported: the suite runs whate
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    if (std.mem.find(u8, result.stderr, "P005") == null or std.mem.find(u8, result.stderr, "the sample's own check") == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the build output it did not find both failures in
+    if (std.mem.find(u8, result.stderr, "P005") == null or std.mem.find(u8, result.stderr, "the sample's own check") == null) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(result.term == .exited and result.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, result.stderr, "P005") != null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "the sample's own check") != null);
@@ -1192,7 +1192,6 @@ test "the tests' process ends with the runner the build kills" {
     const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromSeconds(10), .clock = .awake });
     while (std.posix.kill(pid, @fromBackingInt(@intCast(0)))) |_| {
         if (std.Io.Clock.Timestamp.compare(.now(io, .awake), .gte, deadline)) {
-            // glint-ignore: Z026 -- the process may end on its own first; the test fails either way
             std.posix.kill(pid, .KILL) catch {};
             return error.TestsProcessOutlivedTheRunner;
         }

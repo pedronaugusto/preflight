@@ -101,7 +101,6 @@ const Guard = struct {
                     if (flags_at >= at) @compileError(@typeName(T) ++ "." ++ info.field_names[at] ++ " is decoded before the flags it reads");
                 };
                 var result: T = undefined;
-                // glint-ignore: P007 -- no-danger: each field's storage reads only flags its struct decodes before it, as the assertion above holds at compile time
                 inline for (info.field_names, info.field_types) |name, F| @field(result, name) = try g.field(F, i, &result);
                 return result;
             },
@@ -174,7 +173,6 @@ const Guard = struct {
                 const count: usize = (try g.span(i, 1))[0];
                 const names = @typeInfo(T.Elem).@"struct";
                 const words = try g.span(i, std.math.mul(usize, count, names.field_names.len) catch return error.MalformedConfiguration);
-                // glint-ignore: A009 -- no-danger: the columns are count words each of the words span checked; each column's type is one of Zig's u32 index enums, non-exhaustive, and value checks each word
                 inline for (names.field_types, 0..) |F, n| for (words[n * count ..][0..count]) |raw| try g.value(F, @fromBackingInt(raw));
                 return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // glint-ignore: P007 -- no-danger: Zig's multi-list decoder borrows native u32 columns validated above.
             },
@@ -197,7 +195,6 @@ const Guard = struct {
                 const payload_start = i.*;
                 const words = try g.span(i, count);
                 for (words, 0..) |raw, n| {
-                    // glint-ignore: A009 -- no-danger: the loop above returned unless start is within extra; loadBits reads the metadata words it counted there
                     const meta = C.loadBits(u32, g.c.extra[start..], n * @bitSizeOf(T.Meta), T.Meta);
                     switch (meta.tag) {
                         inline else => |tag| try g.value(@FieldType(T.Union, @tagName(tag)), @fromBackingInt(raw)),

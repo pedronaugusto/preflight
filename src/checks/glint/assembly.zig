@@ -76,7 +76,6 @@ const Scope = enum { ships, kept };
 /// `build.zig.zon` among them; beside it, a nested package is left to its own build.
 fn take(c: *src.Context, path: []const u8, scope: Scope, found: *std.array_hash_map.String(void)) !enum { taken, absent, other } {
     const clean = try normalize(c.a, path);
-    // glint-ignore: A009 -- no-danger: a path the package's own manifest or configuration names, or a default; its build already runs its author's code with these rights
     const stat = c.directory().statFile(c.io, clean, .{}) catch |err| switch (err) {
         error.FileNotFound => return .absent,
         else => return err,
@@ -90,7 +89,6 @@ fn take(c: *src.Context, path: []const u8, scope: Scope, found: *std.array_hash_
 }
 
 fn collect(c: *src.Context, root: []const u8, scope: Scope, found: *std.array_hash_map.String(void)) !void {
-    // glint-ignore: A009 -- no-danger: a directory the package's own configuration or the defaults name; its build already runs its author's code with these rights
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walkSelectively(c.a);

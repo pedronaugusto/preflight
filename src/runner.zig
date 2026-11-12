@@ -17,10 +17,8 @@ pub const std_options: std.Options = .{ .logFn = log };
 const log_level = @field(std.log.Level, @tagName(options.test_log_level));
 // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var errors: std.atomic.Value(usize) = .init(0);
-// glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var order: []usize = &.{};
 /// The job's deadline, `PREFLIGHT_DEADLINE`, which a hosted job's runner sets.
-// glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var job_deadline: ?i64 = null;
 /// As upstream's runner sets up `std.testing.allocator` for each test.
 const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701ba, .check_write_after_free = true };
@@ -35,7 +33,6 @@ const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701b
 /// reports leaks, double frees and a damaged block footer. Every run fails the same way.
 const Backing = struct {
     const Quarantine = if (options.quarantine) @import("preflight_quarantine").alloc.Quarantine else void;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var quarantine: Quarantine = undefined;
 
     fn begin() std.mem.Allocator {
@@ -65,7 +62,6 @@ pub fn log(comptime level: std.log.Level, comptime scope: @EnumLiteral(), compti
 /// Whether the test running now called `std.testing.fuzz`. A build finds
 /// its fuzz tests by running them unfuzzed first and asking each whether it
 /// was one; the fuzzing build asks it again of each test it runs (`Fuzzing`).
-// glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var fuzz_called: bool = false;
 
 pub fn fuzz(
@@ -87,27 +83,17 @@ pub fn fuzz(
 /// upstream's runner returns from such a skip quietly. Here it fails, by name.
 const Fuzzing = if (builtin.fuzz) struct {
     const abi = std.Build.abi.fuzz;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var arg_buffer: [8192]u8 = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var input: [4096]u8 = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var output: [4096]u8 = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var reader: std.Io.File.Reader = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var writer: std.Io.File.Writer = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var server: std.zig.Server = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var process: std.process.Init.Minimal = undefined;
     /// The Io the fuzzer's own tasks run on: the poller of the build's inputs.
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var threaded: std.Io.Threaded = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var poller: std.Io.Future(std.Io.Cancelable!void) = undefined;
     /// The fuzz tests the build named, as indexes into the test functions.
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var indexes: []u32 = &.{};
     const gpa = std.heap.page_allocator;
 
@@ -363,15 +349,11 @@ pub fn main(init: std.process.Init.Minimal) void {
 /// the names of its own there, and a name another binary holds fails its test,
 /// naming both, before any fuzzer starts.
 const FuzzNames = struct {
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var directory: ?[]const u8 = null;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var directory_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
     /// This run's claim: a number of its own, then its executable's path.
     /// Two runs of one binary contend as two binaries do.
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var claim_buffer: [17 + std.Io.Dir.max_path_bytes]u8 = undefined;
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     var own: []const u8 = &.{};
 
     fn read(environ: std.process.Environ) !void {
@@ -435,10 +417,8 @@ fn testsEnviron(environ: std.process.Environ) std.process.Environ {
     }
     return tests_environ.?;
 }
-// glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var tests_environ: ?std.process.Environ = null;
 const control_prefix = "PREFLIGHT_";
-// glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
 extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
 
 fn readDeadline(environ: std.process.Environ) !?i64 {
@@ -633,17 +613,11 @@ const Supervisor = struct {
             peak_process_memory: usize,
             peak_job_memory: usize,
         };
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn CreateJobObjectW(security: ?*std.os.windows.SECURITY_ATTRIBUTES, name: ?[*:0]const u16) callconv(.winapi) ?std.os.windows.HANDLE;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn SetInformationJobObject(job: std.os.windows.HANDLE, class: c_int, information: *const anyopaque, length: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn AssignProcessToJobObject(job: std.os.windows.HANDLE, process: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn TerminateJobObject(job: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn TerminateProcess(process: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn ResumeThread(thread: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.DWORD;
     };
 
@@ -676,7 +650,6 @@ const Supervisor = struct {
             return if (builtin.target.os.tag == .windows) @intFromPtr(end.handle) else @intCast(end.handle);
         }
 
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "kernel32" fn CreatePipe(read: *std.os.windows.HANDLE, write: *std.os.windows.HANDLE, security: ?*std.os.windows.SECURITY_ATTRIBUTES, size: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
     };
 
@@ -685,7 +658,6 @@ const Supervisor = struct {
     fn follow(text: []const u8) !void {
         const value = std.fmt.parseUnsigned(usize, text, 10) catch return error.InvalidLifeline;
         const end: std.Io.File = if (builtin.target.os.tag == .windows)
-            // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
             Lifeline.file(@ptrFromInt(value))
         else
             Lifeline.file(std.math.cast(std.posix.fd_t, value) orelse return error.InvalidLifeline);
@@ -806,11 +778,8 @@ const Supervisor = struct {
             status: i32,
             reserved: i32,
         };
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "c" fn proc_listallpids(buffer: ?*anyopaque, size: c_int) c_int;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, size: c_int) c_int;
-        // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
         extern "c" fn proc_pidfdinfo(pid: c_int, fd: c_int, flavor: c_int, buffer: ?*anyopaque, size: c_int) c_int;
 
         fn listHolders(output: std.Io.File, w: *std.Io.Writer) !void {
@@ -903,9 +872,7 @@ const Supervisor = struct {
         }
     }
 
-    // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn WaitForSingleObject(handle: std.os.windows.HANDLE, milliseconds: std.os.windows.DWORD) callconv(.winapi) std.os.windows.DWORD;
-    // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn GetExitCodeProcess(process: std.os.windows.HANDLE, code: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
 };
 
@@ -975,9 +942,7 @@ const Protocol = struct {
     const file_share_read = 0x1;
     const file_share_write = 0x2;
     const open_existing = 3;
-    // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn SetHandleInformation(handle: std.os.windows.HANDLE, mask: std.os.windows.DWORD, flags: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
-    // glint-ignore: P007 -- boundary: an OS process or handle call of the runner's, at its one seam
     extern "kernel32" fn CreateFileW(
         name: [*:0]const u16,
         access: std.os.windows.DWORD,
@@ -1010,7 +975,6 @@ fn metadata(server: *std.zig.Server) !void {
 
 /// The build's cache, which the build names to a run of the tests (`--cache-dir`), where it
 /// replays them too; null for a binary run by hand.
-// glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var build_cache: ?[]const u8 = null;
 
 /// The count of this binary's tests, for the build's count of its tests per root: written

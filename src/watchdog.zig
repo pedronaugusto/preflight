@@ -50,7 +50,9 @@ pub fn ending(b: Bound) Ending {
 pub fn bound(io: std.Io, limit: std.Io.Duration, job_deadline: ?i64) Bound {
     const seconds = job_deadline orelse return .{ .limit = limit, .job = false };
     // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
-    const left = @as(i96, seconds) * std.time.ns_per_s - std.Io.Clock.real.now(io).nanoseconds;
+    const now = std.Io.Clock.real.now(io).nanoseconds;
+    // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
+    const left = @as(i96, seconds) * std.time.ns_per_s - now;
     // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     if (left >= limit.nanoseconds) return .{ .limit = limit, .job = false };
     // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be

@@ -36,7 +36,9 @@ pub const Timer = struct {
     /// Seconds since `begin`.
     pub fn seconds(timer: Timer, c: src.Context) f64 {
         // glint-ignore: A011 -- no-danger: a duration shown to a person, in seconds
-        return @as(f64, @floatFromInt(timer.start.untilNow(c.io).raw.nanoseconds)) / std.time.ns_per_s;
+        const nanoseconds: f64 = @floatFromInt(timer.start.untilNow(c.io).raw.nanoseconds);
+        // glint-ignore: A011 -- no-danger: a duration shown to a person, in seconds
+        return nanoseconds / std.time.ns_per_s;
     }
 
     /// Prints the phase and adds it to the log. A log that cannot be written
@@ -60,7 +62,6 @@ pub const Timer = struct {
 };
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
-    // glint-ignore: A009 -- no-danger: the step summary or record file the hosted runner or the caller names, written with their rights
     const file = try c.directory().createFile(c.io, path, .{ .truncate = false, .read = true });
     defer file.close(c.io);
     var buffer: [1024]u8 = undefined;

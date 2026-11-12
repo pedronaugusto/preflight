@@ -19,6 +19,20 @@ pub const Bench = struct {
     pub const Imports = struct {
         make: *const fn (*const Imports, *std.Build, std.Build.ResolvedTarget, std.lang.Optimize) []const std.Build.Module.Import,
     };
+
+    /// What makes a package's modules for one mode, from what it is built for and nothing else.
+    pub const MakeImports = fn (*std.Build, std.Build.ResolvedTarget, std.lang.Optimize) []const std.Build.Module.Import;
+
+    /// The hook for imports that need no state: `.imports = tools.preflight.Bench.importsFrom(benchImports)`.
+    /// Each function given has one hook of its own, made at compile time, which calls it.
+    pub fn importsFrom(comptime make: MakeImports) *const Imports {
+        return &struct {
+            const hook: Imports = .{ .make = call };
+            fn call(_: *const Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+                return make(b, target, optimize);
+            }
+        }.hook;
+    }
 };
 pub const smoke_flag = "--smoke";
 

@@ -156,6 +156,35 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try std.testing.expect(std.mem.find(u8, cast.stderr, "P007: src/sample.zig:2:") != null);
 }
 
+test "lint maps an options module whose options name paths, and a module rooted in a file the build embeds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const options = b.addOptions();
+        \\    preflight.addTestZigLib(b, options, "data");
+        \\    options.addOption(u32, "count", 3);
+        \\    module.addOptions("options", options);
+        \\    module.addImport("listing", b.createModule(.{ .root_source_file = b.addWriteFiles().add("listing.zig", "pub const names = [_][]const u8{\"a\"};\n") }));
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ source, "\ntest \"reads both\" {\n    _ = @import(\"options\").data;\n    _ = @import(\"options\").count;\n    _ = @import(\"listing\").names;\n}\n" }) });
+    // The layer check takes the two modules as the package's own named dependencies.
+    try edit(a, tmp.dir, "ci/layers.zig", ".except_targets = &.{ \"std\", \"builtin\" }", ".except_targets = &.{ \"std\", \"builtin\", \"options\", \"listing\" }");
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
+}
+
 test "portable replay records timings and still rejects failed tests and leaked memory" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -380,9 +380,12 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
             binding.* = .{ .name = name.slice(c), .module = indices.getIndex(imported).? };
         }
         module.* = .{ .root = try rootPath(a, c, snapshot.package, configured.root_source_file), .imports = bindings };
-        if (module.root == null) if (optionsOf(c, configured.root_source_file)) |contents| {
+        if (module.root == null) if (try optionsOf(a, c, configured.root_source_file)) |contents| {
             const generated = configured.root_source_file.unwrap().?.get(c).generated;
             module.root = try named(a, try a.print(".preflight-generated/{d}/options.zig", .{@backingInt(generated.index)}));
+            module.contents = contents;
+        } else if (embedOf(c, configured.root_source_file)) |contents| {
+            module.root = try generatedName(a, c, configured.root_source_file.unwrap().?.get(c).generated);
             module.contents = contents;
         };
     }
@@ -456,17 +459,36 @@ test "a build script is a module binding each dependency's script by the depende
     try std.testing.expectError(error.MalformedBuildScripts, withBuildScripts(a, configured, "[{\"script\":\"build.zig\",\"imports\":[{\"name\":\"gone\",\"script\":\"elsewhere/build.zig\"}]}]"));
 }
 
-/// The text an options step (`b.addOptions`) writes at `index`, the root of a module, where the
-/// configuration holds all of it: no option names a file or directory, whose path the step
-/// writes only as it runs.
-fn optionsOf(c: *const C, index: C.LazyPath.OptionalIndex) ?[]const u8 {
+/// The text an options step (`b.addOptions`) writes at `index`, the root of a module, as the
+/// step writes it: its contents, then each path option as `pub const NAME: []const u8`. A path
+/// is the run's (an artifact's, a file's, a directory's: the step writes it only as it runs), so
+/// its value is `undefined` here; its name and type are the configuration's, and they are what a
+/// lint reads of it.
+fn optionsOf(a: std.mem.Allocator, c: *const C, index: C.LazyPath.OptionalIndex) !?[]const u8 {
     const path = (index.unwrap() orelse return null).get(c);
     if (path != .generated or path.generated.flags.up != 0) return null;
     for (c.steps) |step| {
         const options = step.extended.cast(c, C.Step.Options) orelse continue;
         if (options.generated_file != path.generated.index) continue;
-        if (options.flags.files or options.flags.directories or options.flags.untracked_paths) return null;
-        return options.contents.slice(c);
+        var text: Io.Writer.Allocating = .init(a);
+        try text.writer.writeAll(options.contents.slice(c));
+        for ([_][]const C.Step.Options.NamedPath{ options.files.slice, options.directories.slice, options.untracked_paths.slice }) |paths| for (paths) |each| {
+            try text.writer.print("pub const {f}: []const u8 = undefined;\n", .{std.zig.fmtId(each.name.slice(c))});
+        };
+        return text.written();
+    }
+    return null;
+}
+
+/// The bytes a WriteFile step embeds at `index`, the root of a module: content the
+/// configuration holds (`b.addWriteFiles().add(name, bytes)`). A file it copies is the run's.
+fn embedOf(c: *const C, index: C.LazyPath.OptionalIndex) ?[]const u8 {
+    const path = (index.unwrap() orelse return null).get(c);
+    if (path != .generated or path.generated.flags.up != 0) return null;
+    for (c.steps) |step| {
+        const files = step.extended.cast(c, C.Step.WriteFile) orelse continue;
+        if (files.generated_directory != path.generated.index) continue;
+        for (files.embeds.slice) |embed| if (std.mem.eql(u8, embed.sub_path.slice(c), path.generated.sub_path.slice(c))) return embed.contents.slice(c);
     }
     return null;
 }

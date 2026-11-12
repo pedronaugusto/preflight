@@ -30,7 +30,6 @@ const Guard = struct {
     }
     fn value(g: *Guard, comptime T: type, v: T) LoadError!void {
         if (T == C.Bytes) {
-            // aegis: no-danger(A010): the or's left side returned where the index passes the length, so the length less it is not negative
             if (v.index > g.c.string_bytes.len or v.len > g.c.string_bytes.len - v.index) return error.MalformedConfiguration;
             return;
         }
@@ -102,7 +101,7 @@ const Guard = struct {
                     if (flags_at >= at) @compileError(@typeName(T) ++ "." ++ info.field_names[at] ++ " is decoded before the flags it reads");
                 };
                 var result: T = undefined;
-                // aegis: no-danger(A019): each field's storage reads only flags its struct decodes before it, as the assertion above holds at compile time
+                // glint-ignore: P007 -- no-danger: each field's storage reads only flags its struct decodes before it, as the assertion above holds at compile time
                 inline for (info.field_names, info.field_types) |name, F| @field(result, name) = try g.field(F, i, &result);
                 return result;
             },
@@ -131,9 +130,7 @@ const Guard = struct {
             .@"enum" => |info| b: {
                 const raw = (try g.span(i, 1))[0];
                 if (raw > std.math.maxInt(info.tag_type)) return error.MalformedConfiguration;
-                // aegis: no-danger(A010): checked against the tag type's greatest value on the line before; the type is a comptime parameter, which the lint cannot name
                 const backing: info.tag_type = @intCast(raw);
-                // aegis: no-danger(A010): a non-exhaustive enum takes every value of its tag type, and an exhaustive one went through fromInt
                 break :b if (info.mode == .exhaustive) (std.enums.fromInt(T, backing) orelse return error.MalformedConfiguration) else @fromBackingInt(backing);
             },
             .@"struct" => |info| switch (info.layout) {
@@ -143,11 +140,11 @@ const Guard = struct {
                 },
                 .@"extern" => b: {
                     const words = try g.span(i, @sizeOf(T) / 4);
-                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // aegis: no-danger(A019): bounded native u32 storage; Zig configuration's extern structs have u32 alignment.
+                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // glint-ignore: P007 -- no-danger: bounded native u32 storage; Zig configuration's extern structs have u32 alignment.
                 },
                 .auto => if (T == std.Target.Cpu.Feature.Set) b: {
                     const words = try g.span(i, @sizeOf(T) / 4);
-                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // aegis: no-danger(A019): feature set copied by value from a bounds-checked u32 slice, retaining its native layout.
+                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // glint-ignore: P007 -- no-danger: feature set copied by value from a bounds-checked u32 slice, retaining its native layout.
                 } else try g.storage(T, i, parent),
             },
             else => @compileError("unsupported configuration field " ++ @typeName(T)),
@@ -169,7 +166,7 @@ const Guard = struct {
                 if (T.storage == .flag_length_prefixed_list and !@field(@field(parent, @tagName(T.flags)), @tagName(T.flag))) return .{ .slice = &.{} };
                 const count: usize = if (T.storage == .flag_list) @field(@field(parent, @tagName(T.flags)), @tagName(T.flag)) else (try g.span(i, 1))[0];
                 const words = try g.span(i, std.math.mul(usize, count, @sizeOf(T.Elem) / 4) catch return error.MalformedConfiguration);
-                const slice: []const T.Elem = @ptrCast(words); // aegis: no-danger(A019): serialized elements have u32 native layout and the entire list was checked above.
+                const slice: []const T.Elem = @ptrCast(words); // glint-ignore: P007 -- no-danger: serialized elements have u32 native layout and the entire list was checked above.
                 for (slice) |elem| try g.value(T.Elem, elem);
                 return .{ .slice = slice };
             },
@@ -177,9 +174,9 @@ const Guard = struct {
                 const count: usize = (try g.span(i, 1))[0];
                 const names = @typeInfo(T.Elem).@"struct";
                 const words = try g.span(i, std.math.mul(usize, count, names.field_names.len) catch return error.MalformedConfiguration);
-                // aegis: no-danger(A009, A010): the columns are count words each of the words span checked; each column's type is one of Zig's u32 index enums, non-exhaustive, and value checks each word
+                // glint-ignore: A009 -- no-danger: the columns are count words each of the words span checked; each column's type is one of Zig's u32 index enums, non-exhaustive, and value checks each word
                 inline for (names.field_types, 0..) |F, n| for (words[n * count ..][0..count]) |raw| try g.value(F, @fromBackingInt(raw));
-                return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // aegis: no-danger(A019): Zig's multi-list decoder borrows native u32 columns validated above.
+                return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // glint-ignore: P007 -- no-danger: Zig's multi-list decoder borrows native u32 columns validated above.
             },
             .union_list => {
                 if (!@field(@field(parent, @tagName(T.flags)), @tagName(T.flag))) return .{ .data = null, .len = 0 };
@@ -200,14 +197,13 @@ const Guard = struct {
                 const payload_start = i.*;
                 const words = try g.span(i, count);
                 for (words, 0..) |raw, n| {
-                    // aegis: no-danger(A009): the loop above returned unless start is within extra; loadBits reads the metadata words it counted there
+                    // glint-ignore: A009 -- no-danger: the loop above returned unless start is within extra; loadBits reads the metadata words it counted there
                     const meta = C.loadBits(u32, g.c.extra[start..], n * @bitSizeOf(T.Meta), T.Meta);
                     switch (meta.tag) {
-                        // aegis: no-danger(A010): each payload's type is one of Zig's u32 index enums, non-exhaustive, and value checks each word
                         inline else => |tag| try g.value(@FieldType(T.Union, @tagName(tag)), @fromBackingInt(raw)),
                     }
                 }
-                return .{ .data = @ptrFromInt(payload_start), .len = count }; // aegis: no-danger(A019): Zig represents deserialized union-list storage by an extra-array index, never dereferenced as a pointer.
+                return .{ .data = @ptrFromInt(payload_start), .len = count }; // glint-ignore: P007 -- no-danger: Zig represents deserialized union-list storage by an extra-array index, never dereferenced as a pointer.
             },
             else => @compileError("unsupported configuration storage"),
         }

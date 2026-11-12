@@ -223,7 +223,7 @@ fn jobKey(line: []const u8) ?[]const u8 {
 /// the account's shared runners.
 pub fn weekly(a: std.mem.Allocator, seed: u64) ![]const u8 {
     const minute_of_week = std.hash.Wyhash.hash(0x7765656b6c79, std.mem.asBytes(&seed)) % (7 * 24 * 60);
-    return a.print("{d} {d} * * {d}", .{ minute_of_week % 60, minute_of_week / 60 % 24, minute_of_week / (24 * 60) });
+    return a.print("{d} {d} * * {d}", .{ minute_of_week % 60, (minute_of_week / 60) % 24, minute_of_week / (24 * 60) });
 }
 
 /// The caller of `config`, pinned to `pin` (to the commit under test with `own`), gated in

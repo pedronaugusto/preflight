@@ -25,21 +25,21 @@ const aegis = @import("aegis");
 const c = std.c;
 const Io = std.Io;
 
-// aegis: boundary(A019): libc's reboot(2), which std.c does not declare for FreeBSD
+// glint-ignore: P007 -- boundary: libc's reboot(2), which std.c does not declare for FreeBSD
 extern "c" fn reboot(howto: c_int) c_int;
-// aegis: boundary(A019): libc's pause(3), which std.c does not declare
+// glint-ignore: P007 -- boundary: libc's pause(3), which std.c does not declare
 extern "c" fn pause() c_int;
-// aegis: boundary(A019): libc's kldload(2), which std.c does not declare
+// glint-ignore: P007 -- boundary: libc's kldload(2), which std.c does not declare
 extern "c" fn kldload(file: [*:0]const u8) c_int;
-// aegis: boundary(A019): libc's nmount(2), which std.c does not declare; its options are name and value pairs
+// glint-ignore: P007 -- boundary: libc's nmount(2), which std.c does not declare; its options are name and value pairs
 extern "c" fn nmount(iov: [*]c.iovec, niov: c_uint, flags: c_int) c_int;
-// aegis: boundary(A019): libc's chroot(2), which std.c does not declare
+// glint-ignore: P007 -- boundary: libc's chroot(2), which std.c does not declare
 extern "c" fn chroot(path: [*:0]const u8) c_int;
-// aegis: boundary(A019): libc's setgroups(2), which std.c does not declare for FreeBSD
+// glint-ignore: P007 -- boundary: libc's setgroups(2), which std.c does not declare for FreeBSD
 extern "c" fn setgroups(ngroups: c_int, gidset: [*]const c.gid_t) c_int;
-// aegis: boundary(A019): libc's cfmakeraw(3), which std.c does not declare
+// glint-ignore: P007 -- boundary: libc's cfmakeraw(3), which std.c does not declare
 extern "c" fn cfmakeraw(t: *c.termios) void;
-// aegis: boundary(A019): libc's sigprocmask(2) on FreeBSD's own sigset_t
+// glint-ignore: P007 -- boundary: libc's sigprocmask(2) on FreeBSD's own sigset_t
 extern "c" fn sigprocmask(how: c_int, set: ?*const c.sigset_t, old: ?*c.sigset_t) c_int;
 
 /// sys/reboot.h: power the machine off after halting, without the kernel's own
@@ -229,7 +229,7 @@ fn mount(from: [:0]const u8, fspath: [:0]const u8, fstype: [:0]const u8, options
 
 /// An nmount(2) entry: a string with its NUL, as the kernel copies it.
 fn entry(text: [:0]const u8) c.iovec {
-    return .{ .base = @constCast(text.ptr), .len = text.len + 1 }; // aegis: boundary(A019): nmount(2) only reads its options; C's iovec has no const pointer
+    return .{ .base = @constCast(text.ptr), .len = text.len + 1 }; // glint-ignore: P007 -- boundary: nmount(2) only reads its options; C's iovec has no const pointer
 }
 
 /// The program's path `path` in its root, before the first process takes that root.
@@ -297,7 +297,7 @@ fn openPort(io: Io, path: [*:0]const u8) !c.fd_t {
     return fd;
 }
 
-// aegis: design(A007): the test machine's first process, one thread and std alone, as its kernel runs it
+// glint-ignore: A007 -- design: the test machine's first process, one thread and std alone, as its kernel runs it
 var status_port: c.fd_t = -1;
 
 /// Runs the program with pipes for its standard streams, as a build gives a program

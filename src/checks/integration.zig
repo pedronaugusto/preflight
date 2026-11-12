@@ -1932,14 +1932,16 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
         \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
         \\    const step = b.step("test", "Run the sample tests");
         \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = package.module("preflight_sample") })).step);
-        \\    tools.preflight.addCi(b, package.builder, .{ .tests = step, .bench = .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = &bench_hook, .target = target, .optimize = optimize } });
+        \\    // The hook's type is the dev dependency's, which only `dev` is given (`tools`).
+        \\    const bench = struct {
+        \\        const hook: tools.preflight.Bench.Imports = .{ .make = imports };
+        \\        fn imports(_: *const tools.preflight.Bench.Imports, owner: *std.Build, chosen: std.Build.ResolvedTarget, mode: std.lang.Optimize) []const std.Build.Module.Import {
+        \\            const sample = owner.dependency("preflight_sample", .{ .target = chosen, .optimize = mode });
+        \\            return owner.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = sample.module("preflight_sample") }}) catch @panic("OOM");
+        \\        }
+        \\    };
+        \\    tools.preflight.addCi(b, package.builder, .{ .tests = step, .bench = .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = &bench.hook, .target = target, .optimize = optimize } });
         \\    tools.preflight.addConsumerCheck(b, package.builder, .{ .package = "preflight_sample", .program = package.path("ci/consumer.zig") });
-        \\}
-        \\
-        \\const bench_hook: tools.preflight.Bench.Imports = .{ .make = benchImports };
-        \\fn benchImports(_: *const tools.preflight.Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
-        \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
-        \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = package.module("preflight_sample") }}) catch @panic("OOM");
         \\}
         \\
     });

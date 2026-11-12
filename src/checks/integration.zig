@@ -175,6 +175,10 @@ test "lint maps an options module whose options name paths, and a module rooted 
     );
     const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ source, "\ntest \"reads both\" {\n    _ = @import(\"options\").data;\n    _ = @import(\"options\").count;\n    _ = @import(\"listing\").names;\n}\n" }) });
+    // The builds of the CI's targets each name a generated root by its own step index: one text
+    // is one module across them.
+    const workflow = try aegis.own.readFile(io, std.Io.Dir.cwd(), try std.Io.Dir.path.join(a, &.{ root, "sample", "ci", "workflow.json" }), a, .fromRaw(1024 * 1024));
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = workflow });
     // The layer check takes the two modules as the package's own named dependencies.
     try edit(a, tmp.dir, "ci/layers.zig", ".except_targets = &.{ \"std\", \"builtin\" }", ".except_targets = &.{ \"std\", \"builtin\", \"options\", \"listing\" }");
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });

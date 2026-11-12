@@ -380,12 +380,14 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
             binding.* = .{ .name = name.slice(c), .module = indices.getIndex(imported).? };
         }
         module.* = .{ .root = try rootPath(a, c, snapshot.package, configured.root_source_file), .imports = bindings };
+        // A generated root is named by its text: the step's index shifts between the builds of
+        // each CI target (`unionModules`), and one text is one module whatever build made it.
         if (module.root == null) if (try optionsOf(a, c, configured.root_source_file)) |contents| {
-            const generated = configured.root_source_file.unwrap().?.get(c).generated;
-            module.root = try named(a, try a.print(".preflight-generated/{d}/options.zig", .{@backingInt(generated.index)}));
+            module.root = try named(a, try a.print(".preflight-generated/{x:0>16}/options.zig", .{std.hash.Wyhash.hash(0, contents)}));
             module.contents = contents;
         } else if (embedOf(c, configured.root_source_file)) |contents| {
-            module.root = try generatedName(a, c, configured.root_source_file.unwrap().?.get(c).generated);
+            const generated = configured.root_source_file.unwrap().?.get(c).generated;
+            module.root = try named(a, try a.print(".preflight-generated/{x:0>16}/{s}", .{ std.hash.Wyhash.hash(0, contents), generated.sub_path.slice(c) }));
             module.contents = contents;
         };
     }

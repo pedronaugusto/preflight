@@ -481,8 +481,9 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         // A test the step runs outside preflight's runner would pass unwatched.
         // `ci-test` is the tests as `addCi` read them; one that joined after is only in `ci`,
         // which is where to look for it, so the job refuses it rather than leaving it unrun.
-        const outside = try facts.testsOutsideRunner(c.a, snapshot, if (std.mem.eql(u8, step, "ci-test")) "ci" else step);
-        for (outside) |name| c.report("preflight: {s}: `{s}` runs it without preflight's runner, so with no watchdog, shard, timing record or riscv64 machine: it joined the tests after addCi read them; add it to them before addCi\n", .{ name, step });
+        const inspected = if (std.mem.eql(u8, step, "ci-test")) "ci" else step;
+        const outside = try facts.testsOutsideRunner(c.a, snapshot, inspected);
+        for (outside) |name| c.report("preflight: {s}: `{s}` runs it without preflight's runner, so with no watchdog, shard, timing record or riscv64 machine: it joined the tests after addCi read them; add it to them before addCi\n", .{ name, inspected });
         if (outside.len != 0) return error.TestOutsideRunner;
         for (snapshot.config.available_options) |available_option| {
             const name = available_option.name.slice(&snapshot.config);

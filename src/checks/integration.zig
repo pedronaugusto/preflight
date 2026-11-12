@@ -2195,7 +2195,7 @@ test "toolchain hosted runner passes the SDK only to a build that declares it" {
     const build = try std.Io.Dir.path.join(a, &.{ owner, "build.zig" });
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
-    try env.put("STEP", "ci-test");
+    try env.put("STEP", "test");
     try env.put("BUILD_ARGS", "");
     try env.put("PREFLIGHT_SETUP", "false");
     // The runner's SDK, as `setup` writes it on a macOS host.

@@ -61,7 +61,7 @@ fn writeZigLib(b: *std.Build, place: []const u8) *std.Build.Step {
     // Fetched lazily: until it is, this configure pass ends and the step is never run.
     const pkg = b.dependencyLazy("preflight", .{}) catch return &b.addWriteFiles().step;
     const program = b.addExecutable(.{ .name = "preflight-zig-lib", .root_module = b.createModule(.{
-        .root_source_file = pkg.builder.path("src/zig_lib.zig"),
+        .root_source_file = pkg.builder.path("src/library_path.zig"),
         .target = b.graph.host,
         .optimize = .debug,
     }) });

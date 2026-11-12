@@ -34,5 +34,10 @@
         "level": "gate"
       }
     ]
+  },
+  "fuzz": {
+    "trusted": {
+      "parseDeadline": "PREFLIGHT_DEADLINE is written by preflight's own run (watchdog.jobDeadline) and read by its test runner: the package's own input, not outside data"
+    }
   }
 }

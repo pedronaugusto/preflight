@@ -85,7 +85,9 @@ ci tier's cross compiles: `check` runs `ci-check` for every target the ci tier n
 hosted jobs do, so a test behind another system's branch, a Linux-only body on a Mac, fails
 on the machine at hand rather than first in the hosted run. A build that takes `-Dtarget`
 gets them. One that defines `check` before `addCi` keeps its own, with these added, and one
-without gets preflight's. A planned job leaves them to the
+without gets preflight's. Each target is a build of its own, which takes every core unless
+`PREFLIGHT_JOBS=N` holds it to N jobs (`-jN`): `-j` given to the outer build cannot reach it,
+since Zig reads `-j` after the build script has made its steps. A planned job leaves them to the
 plan's own cross-compile jobs.
 
 `zig build lint` runs source checks, among them that a function of `build.zig` that calls `lazyImport` calls `@setEvalBranchQuota` first: std compares every package of the tree there at comptime, and a large tree passes the default 1000 branches. `zig build ci` checks sources before running

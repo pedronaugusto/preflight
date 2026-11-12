@@ -516,6 +516,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
 /// the generated workflow no longer matches `ci/workflow.json`.
 fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value, bench: bool) !void {
     const log = try checks.phases.Log.init(c.a, env);
+    const jobs = checks.matrix.jobsFrom(env) catch return error.InvalidJobs;
     const wanted = env.get("PREFLIGHT_TARGETS") orelse "";
     var names = std.mem.tokenizeScalar(u8, wanted, ' ');
     var covered: usize = 0;
@@ -526,7 +527,7 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
             if (!std.mem.eql(u8, try checks.matrix.targetName(target), name)) continue;
             found = true;
             covered += 1;
-            try compileTarget(c, log, config, target, bench);
+            try compileTarget(c, log, config, target, bench, jobs);
         }
         if (!found) {
             c.report("preflight: {s} is no target of ci/workflow.json; regenerate the workflow\n", .{name});
@@ -546,16 +547,20 @@ fn targetsCommand(context: src.Context, environ: *std.process.Environ.Map, args:
     if (args.zig_exe) |zig| c.zig = zig;
     const config = try c.options(args.config);
     const log = try checks.phases.Log.init(c.a, environ);
-    for (try checks.matrix.fastTargets(c.a, config)) |target| try compileTarget(c, log, config, target, false);
+    const jobs = checks.matrix.jobsFrom(environ) catch {
+        c.report("targets: PREFLIGHT_JOBS is a count of jobs, at least 1, not {s}\n", .{environ.get("PREFLIGHT_JOBS").?}); // safe: only a value set and unreadable is refused
+        return error.CheckFailed;
+    };
+    for (try checks.matrix.fastTargets(c.a, config)) |target| try compileTarget(c, log, config, target, false, jobs);
 }
 
 /// One target's objects in Debug, and with `bench` its ReleaseFast benchmarks in a second
 /// build, each timed.
-fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, target: src.Value, bench: bool) !void {
+fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, target: src.Value, bench: bool, jobs: ?u32) !void {
     const name = try checks.matrix.targetName(target);
     for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
         if (index == 1 and !bench) break;
-        const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step);
+        const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step, jobs);
         const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
         defer timer.end(c, log);
         try checks.command.execute(c, argv);

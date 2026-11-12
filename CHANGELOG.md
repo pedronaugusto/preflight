@@ -32,6 +32,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `PREFLIGHT_JOBS=N` holds the build `check` starts for each target, and a hosted cross-compile job's, to N jobs (`-jN`). Each ran on every core whatever the outer build's `-j`, which Zig reads after the build script and so no step sees: relic's check peaked at 35 GiB, 5.4 GiB at one job.
 - `addTestZigLib(b, options, name)`: Zig's library for tests that read it (a checker of sources reading std). `name` in `options` is the path, from the package root, of a file holding the library's absolute path, which a program given the library writes before the tests compile; a replaying runner writes it again for its own Zig before they run. Zig's test runner takes no argument a test reads, and a path from `addOptionPath` is the building runner's, which portable tests refuse, so a test had no way to its Zig's library.
 - A portable test may name the Zig executable (`addFileArg(.zig_exe)`): the replaying runner names its own Zig there, as it names its own library, so a test that compiles with Zig replays.
 - A portable test may name a path in its package, in a dependency fetched into it, or in Zig's library: the manifest names it from the run's directory, or from the library, which the replaying runner's own Zig resolves. Any path argument was refused; any other path still is, since only the building runner has it.

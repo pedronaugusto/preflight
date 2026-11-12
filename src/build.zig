@@ -164,7 +164,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .profile_options = hardened.declare(b),
         .smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true,
         .sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner"),
-        .lint_enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true,
+        .lint_enabled = b.option(bool, "ci-lint", "Run glint's lint beside the tests; false leaves it out, and only it: the other source checks run either way") orelse true,
         .release = b.option(bool, "ci-release", "The release tier's source checks: every shipped ban's finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
@@ -185,6 +185,9 @@ pub const CiOptions = struct {
 
 const Steps = struct {
     lint: *std.Build.Step,
+    /// The tests alone, which the hosted test jobs run: the source checks are the source
+    /// checks job's, once, where `test` and `ci` here run them beside the tests.
+    tests_only: *std.Build.Step,
     ci: *std.Build.Step,
     objects: *std.Build.Step,
     bench_objects: *std.Build.Step,
@@ -202,12 +205,13 @@ const Steps = struct {
         const controls = declareCiOptions(b, config.timings_enabled);
         const lint = configure.claim(b, "lint", "Check format, structure, Zig policy and test imports");
         const ci = configure.claim(b, "ci", "Run source checks, then the tests");
+        const tests_only = configure.claim(b, "ci-test", "Run the tests alone, as the hosted test jobs do: the source checks are the source checks job's");
         ci.dependOn(config.tests);
         forceTests(config.tests);
         const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -341,14 +345,22 @@ const Steps = struct {
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
-        steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
+        const source = steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
         if (policy == .family) releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
         if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
+        // `ci-test`, the hosted test jobs' step, is the tests as every walk above left them;
+        // only then do the source checks join `test` and `ci` here, beside the tests, not before
+        // them: a red one still runs the suite, and the step reports and fails on each.
+        // `-Dci-lint=false` leaves out glint's lint alone; the rest of the checks run either way.
+        for (config.tests.dependencies.items) |dependency| steps.tests_only.dependOn(dependency);
+        for ([_]*std.Build.Step{ config.tests, steps.ci }) |step| for (source) |source_check| step.dependOn(source_check);
     }
 
-    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) void {
+    /// The source checks' steps, which `addCi` sets beside the tests once `ci-test` has them:
+    /// the lint (glint's and the rest), or the rest alone with `-Dci-lint=false`, and the snippets.
+    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) [2]*std.Build.Step {
         const host = ciTarget(b);
         // A package that declares no structure is held to none.
         const layers = b.createModule(.{
@@ -399,6 +411,17 @@ const Steps = struct {
         checks.setCwd(package.path("."));
         checks.step.dependOn(&lint_structure.step);
         steps.lint.dependOn(&checks.step);
+        // The same checks less glint's lint, for a build with `-Dci-lint=false`: formatting,
+        // the declared structure, test imports, namespace layout and package paths still run.
+        const source = executable.run(b);
+        source.addArgs(&.{ "lint", "--skip-glint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
+        source.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+        for (test_steps) |name| source.addArgs(&.{ "--test-step", name });
+        exported(b, package, source);
+        buildScripts(b, package, source);
+        configurationOptions(b, source);
+        source.setCwd(package.path("."));
+        source.step.dependOn(&lint_structure.step);
         // `fix`: glint's deterministic fixes written into the sources, then the lint's report.
         const fixing = executable.run(b);
         fixing.addArgs(&.{ "lint", "--fix", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
@@ -418,14 +441,7 @@ const Steps = struct {
         snippets.setCwd(package.path("."));
         const snippets_step = configure.claim(b, "snippets", "Check the documented snippets, each region as zig build docs renders it");
         snippets_step.dependOn(&snippets.step);
-        if (steps.lint_enabled) {
-            // The lint and the snippets are beside the tests, not before them: a red lint
-            // still runs the suite and the snippets, and the step reports and fails on each.
-            config.tests.dependOn(steps.lint);
-            config.tests.dependOn(snippets_step);
-            steps.ci.dependOn(steps.lint);
-            steps.ci.dependOn(snippets_step);
-        }
+        return .{ if (steps.lint_enabled) steps.lint else &source.step, snippets_step };
     }
 };
 

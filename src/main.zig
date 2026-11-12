@@ -236,7 +236,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     }
     const configured = try facts.unionModules(a, per_target.items);
     const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, a, .fromRaw(16 * 1024 * 1024))) else configured;
-    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -317,17 +317,20 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool }, log: checks.phases.Log) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
     if (c.errors != 0) return;
     try checks.fuzz.summary(c, sources, config, c.summary_path);
-    var timer = stage(c, "glint");
-    try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
-    timer.end(c.*, log);
-    if (c.errors != 0) return;
-    timer = stage(c, "namespace layout");
+    // Without glint (`-Dci-lint=false`) the rest of the source checks still run.
+    if (!mode.skip_glint) {
+        const timer = stage(c, "glint");
+        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
+        timer.end(c.*, log);
+        if (c.errors != 0) return;
+    }
+    var timer = stage(c, "namespace layout");
     try checks.policy.layout(c, sources, config);
     timer.end(c.*, log);
     if (c.errors != 0) return;
@@ -432,7 +435,7 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
         c.environ_map = env;
     }
     const step = env.get("STEP") orelse "ci";
-    if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-run"))
+    if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-test") or std.mem.eql(u8, step, "ci-run"))
         try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = try c.options("ci/workflow.json");
     const log = try checks.phases.Log.init(c.a, env);
@@ -476,7 +479,9 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         for (argv.items[first_option..]) |option_text| if (std.mem.startsWith(u8, option_text, "-D")) try options.append(c.a, option_text);
         const snapshot = try facts.read(c, c.zig, options.items);
         // A test the step runs outside preflight's runner would pass unwatched.
-        const outside = try facts.testsOutsideRunner(c.a, snapshot, step);
+        // `ci-test` is the tests as `addCi` read them; one that joined after is only in `ci`,
+        // which is where to look for it, so the job refuses it rather than leaving it unrun.
+        const outside = try facts.testsOutsideRunner(c.a, snapshot, if (std.mem.eql(u8, step, "ci-test")) "ci" else step);
         for (outside) |name| c.report("preflight: {s}: `{s}` runs it without preflight's runner, so with no watchdog, shard, timing record or riscv64 machine: it joined the tests after addCi read them; add it to them before addCi\n", .{ name, step });
         if (outside.len != 0) return error.TestOutsideRunner;
         for (snapshot.config.available_options) |available_option| {

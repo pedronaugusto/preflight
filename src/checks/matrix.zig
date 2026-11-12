@@ -45,7 +45,8 @@ fn minutes(config: src.Value, name: []const u8) !usize {
 pub const Job = struct {
     os: []const u8,
     name: []const u8,
-    step: []const u8 = "ci",
+    /// The tests alone (`ci-test`): the source checks run once, in their own job.
+    step: []const u8 = "ci-test",
     args: []const u8 = "",
     /// `i/n` when the job runs one shard of its tests.
     shard: []const u8 = "",
@@ -497,7 +498,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         for (try src.items(portable_hosts)) |host| if (std.mem.eql(u8, try src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (tier == .ci or job.declared or job.machine != .none or job.target != null or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci") or linuxHost(job.os)) {
+        if (tier == .ci or job.declared or job.machine != .none or job.target != null or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci-test") or linuxHost(job.os)) {
             try native.append(a, job);
             continue;
         }
@@ -972,7 +973,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     var macos: usize = 0;
     var linux: usize = 0;
     for (jobs) |job| {
-        if (!std.mem.eql(u8, job.step, "ci")) continue;
+        if (!std.mem.eql(u8, job.step, "ci-test")) continue;
         if (job.machine != .none) continue;
         if (std.mem.eql(u8, job.os, hosts[2])) windows += 1;
         if (std.mem.eql(u8, job.os, hosts[1])) macos += 1;
@@ -1024,7 +1025,7 @@ test "a configured target a runner executes, on an ABI not its own, runs its Deb
     var names: std.ArrayList([]const u8) = .empty;
     for (jobs) |job| if (job.target) |target| {
         try names.append(a, job.name);
-        try std.testing.expectEqualStrings("ci", job.step);
+        try std.testing.expectEqualStrings("ci-test", job.step);
         try std.testing.expect(job.setup);
         try std.testing.expect(std.mem.find(u8, job.args, try a.print("-Dtarget={s}", .{target})) != null);
         try std.testing.expect(std.mem.startsWith(u8, job.args, "-Doptimize=debug -Dci-timings=true -Dci-lint=false"));
@@ -1131,7 +1132,7 @@ test "fast shards split the Linux Debug tests, which no other job runs" {
     try std.testing.expectEqualStrings("1/3", jobs[1].shard);
     try std.testing.expectEqualStrings("Linux Debug shard 2/3", jobs[2].name);
     try std.testing.expectEqualStrings("3/3", jobs[3].shard);
-    for (jobs[1..6]) |job| try std.testing.expectEqualStrings("ci", job.step);
+    for (jobs[1..6]) |job| try std.testing.expectEqualStrings("ci-test", job.step);
     for (jobs[4..6]) |job| try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));
 }
 
@@ -1166,12 +1167,12 @@ test "the ci tier is the source checks, the Debug suite on Linux, macOS and Wind
     try std.testing.expectEqual(@as(usize, 6), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
     try std.testing.expectEqualStrings("snippets", jobs[5].step);
-    try std.testing.expectEqualStrings("ci", jobs[1].step);
+    try std.testing.expectEqualStrings("ci-test", jobs[1].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
     try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[2].name);
     try std.testing.expectEqualStrings("test (windows-latest, Debug)", jobs[3].name);
     for (jobs[1..4]) |job| {
-        try std.testing.expectEqualStrings("ci", job.step);
+        try std.testing.expectEqualStrings("ci-test", job.step);
         try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", job.args);
         try std.testing.expect(job.operation == .execute);
     }
@@ -1241,7 +1242,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
                 continue;
             },
         }
-        if (std.mem.eql(u8, job.step, "ci")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
+        if (std.mem.eql(u8, job.step, "ci-test")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
     }
 }
 

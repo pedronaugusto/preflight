@@ -113,6 +113,7 @@ pub const Lint = struct {
     fix: bool = false,
     escapes_before: ?[]const u8 = null,
     release: bool = false,
+    skip_glint: bool = false,
     module: []const []const u8 = &.{},
     build_scripts: ?[]const u8 = null,
     pub const spec: ensign.Spec(@This()) = .{
@@ -128,6 +129,7 @@ pub const Lint = struct {
             .fix = .{ .negatable = false, .help = "Apply glint's deterministic fixes to the sources first (zig build fix): the report is the run before them" },
             .escapes_before = .{ .value_name = "FILE", .hint = .file, .help = "With --fix, the escapes a lint before reported (its .zig-cache/preflight-lint/escapes.txt, kept): an escape in the older form is named with only the rules listed for it there that find something now" },
             .release = .{ .negatable = false, .help = "The release tier's bar: every shipped ban's finding fails (P007, P008, P009 and the rules the packages declare), those the default policy reports included" },
+            .skip_glint = .{ .negatable = false, .help = "Every source check but glint's lint: what a build with -Dci-lint=false runs beside its tests" },
         },
     };
 };

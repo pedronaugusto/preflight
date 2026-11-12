@@ -70,7 +70,7 @@ hold, `ci/workflow.json` what the hosted gate runs, and `ci/layers.zig` a source
 to enforce; a project needs none of them to start. [sample/zero](sample/zero) is such a
 project, and preflight's own gate runs it on every host.
 
-`addCi` adds the steps its gate runs by name (`lint`, `snippets`, `ci`, `ci-check`, `ci-check-bench`,
+`addCi` adds the steps its gate runs by name (`lint`, `snippets`, `ci`, `ci-test`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
 `check-imports`, `surface`, `gate`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
@@ -105,8 +105,11 @@ reach the build through it. A process a test started that still holds that outpu
 seconds after the tests ended fails the run, named with its arguments on Linux and
 macOS, where the build would otherwise wait for it and kill the runner a minute later
 with no name. A crash's report reaches the build whole either way.
-`-Dci-lint=false` lets the hosted optimization and shard jobs use the source job's
-result; the default local gate always checks sources.
+`-Dci-lint=false` leaves out glint's lint, and only it: a gate run while the lint is red by
+ruling still runs the other source checks beside its tests (formatting, the declared
+structure, test imports, namespace layout, package paths, and the documented snippets). The
+hosted test jobs run `ci-test`, the tests alone, on each system; the source checks, which
+read the same files on every system, run once, in the source checks job.
 Compiled caches never skip test execution: each gate runs the test binaries even
 when their build products are already available.
 

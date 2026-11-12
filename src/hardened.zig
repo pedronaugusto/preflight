@@ -54,7 +54,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
             tests.dependOn(&b.addFail(b.fmt("hardened: {s} must execute native tests, not compile only", .{chosen.?})).step);
         }
     }
-    const normal = again(b, package, &.{ "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
+    const normal = again(b, package, &.{ "ci-test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, normal);
     normal.setCwd(package.path("."));
     normal.has_side_effects = true;
@@ -68,7 +68,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     fuzz.addDirectoryArg2(package.path("."), .{});
     fuzz.addArg("--");
     fuzz.addArgs(configure.rerun(b, package));
-    fuzz.addArgs(&.{ given.fuzz_step orelse "test", "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
+    fuzz.addArgs(&.{ testsAlone(b, tests, given.fuzz_step orelse "test"), "-Dci-hardened=true", "-Dci-lint=false", "-Dci-bench-smoke=false", b.fmt("--fuzz={d}", .{given.fuzz_iterations}) });
     forward(b, fuzz);
     fuzz.has_side_effects = true;
     const fuzz_step = configure.claim(b, "hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
@@ -77,7 +77,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     } else if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
         fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support").step);
     } else fuzz_step.dependOn(&fuzz.step);
-    const tsan = again(b, package, &.{ given.tsan_step, "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
+    const tsan = again(b, package, &.{ testsAlone(b, tests, given.tsan_step), "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, tsan);
     tsan.setCwd(package.path("."));
     tsan.has_side_effects = true;
@@ -85,6 +85,14 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     if (!sanitized(b.graph.host.result)) {
         tsan_step.dependOn(&b.addFail("hardened-tsan: unsupported target; requires native x86_64 or aarch64 Linux or macOS").step);
     } else tsan_step.dependOn(&tsan.step);
+}
+
+/// The step a run of the build again runs for `name`: `ci-test`, the tests alone, where `name`
+/// is the package's tests step, which runs the source checks beside them; any other step as
+/// named. The source checks are the source checks job's, not each hardened run's.
+fn testsAlone(b: *std.Build, tests: *std.Build.Step, name: []const u8) []const u8 {
+    const named = b.top_level_steps.get(name) orelse return name;
+    return if (&named.step == tests) "ci-test" else name;
 }
 
 /// How many times a test's bound grows under ThreadSanitizer, which runs code

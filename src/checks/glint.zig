@@ -26,7 +26,7 @@ pub const Inputs = struct {
     /// With `fix`, the escapes a lint before reported, by which an escape in the older form is
     /// named (`zig build fix -- --escapes-before FILE`): glint's migration aid.
     escapes_before: ?[]const u8 = null,
-    /// The release tier's bar: every aegis-pack finding fails, the flow rules' too,
+    /// The release tier's bar: every shipped ban's finding fails, the reported ones too,
     /// which the default policy only reports while a landing reads them.
     release: bool = false,
 };
@@ -55,19 +55,23 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     const paths = (try assembly.select(c, chosen)) orelse return;
     var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
     defer assembled.deinit();
-    // The aegis pack's rules hold a program to aegis's types: a program that imports no aegis
-    // has none of them to use, unless the family's policy holds it to them.
-    if (chosen.aegis == .imported and try glint.AegisPack.importer(inputs.gpa, &assembled.project) == null) {
-        const stated = chosen.ceilings.len + chosen.escapes.len;
-        chosen = try chosen.withoutPack(c.a);
-        c.report("glint: aegis pack: off, no file imports aegis{s}\n", .{if (stated != 0) ": `glint.unresolved` and `glint.escapes` are not read" else ""});
-    }
+    // The rules the program's packages declare join the policy, and every name glint itself
+    // does not have resolves against them.
+    const errors = c.errors;
+    const declared = glint.packageRules(c.a, &assembled.project) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            c.fail("glint: the packages' lint_rules could not be read ({t}): two packages declare one rule id, or more rules than ids", .{err});
+            return;
+        },
+    };
+    try chosen.resolve(c, declared);
+    if (c.errors != errors) return;
     var files: std.ArrayList(glint.FileConfig) = .empty;
     for (assembled.selected, 0..) |file, index| {
         try files.append(c.a, .{ .file = try assembled.project.fileAt(index), .config = try chosen.forFile(c.a, file.path) });
     }
     var report = glint.runConfigured(inputs.gpa, &assembled.project, chosen.base, .{
-        .project_rules = &policy.project_rules,
         .files = files.items,
         .io = c.io,
     }) catch |err| switch (err) {
@@ -196,7 +200,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         const file = project.at(d.span.file).input.name;
         all.writer.print("{s}: {s}:{d}:{d}: {s}", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
         // A danger site of an upstream's unchanged file carries the upstream's verification.
-        if (policy.inPack(d.rule)) if (for (kept, 0..) |entry, i| {
+        if (chosen.shippedBan(d.rule)) if (for (kept, 0..) |entry, i| {
             if (std.mem.eql(u8, entry.path, file)) break i;
         } else null) |at| {
             all.writer.print(" (vendored: carried by {s}'s verification)\n", .{kept[at].upstream}) catch @panic("OOM");
@@ -204,7 +208,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
             continue;
         };
         all.writer.writeByte('\n') catch @panic("OOM");
-        const fails = d.level == .gate or chosen.fails(d.rule) or (release and policy.inPack(d.rule));
+        const fails = d.level == .gate or chosen.fails(d.rule) or (release and chosen.shippedBan(d.rule));
         const seen = shown.getOrPutValue(c.a, d.rule, 0) catch null;
         if (seen) |count| {
             count.value_ptr.* += 1;
@@ -261,7 +265,6 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         }
     }
     ceilings(c, chosen, undecided);
-    escapes(c, chosen, project, report);
     for (report.malformed) |entry| {
         const start = sites.written().len;
         sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ project.at(entry.span.file).input.name, entry.span.line, entry.why }) catch @panic("OOM");
@@ -283,7 +286,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         c.fail("glint: the analysis is incomplete ({d} sites or files undecided, {d} of them suppressions that suppress nothing); an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
     }
     c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} sites incomplete, {d} sites unresolved\n", .{ project.count(), failing, warned, report.suppressed, unfinished, unresolved });
-    byRule(c, report, shown, undecided);
+    byRule(c, chosen, shown, undecided);
 }
 
 /// The vendored files that are still their upstream's copy, by the SHA-256 their entries record.
@@ -308,25 +311,24 @@ fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendore
 }
 
 /// Each rule's findings and undecided sites, counted: the line a sizing or a review reads. The
-/// pack's rules first, with what its escapes cover, then any other rule a site is undecided for.
-fn byRule(c: *src.Context, report: *const glint.Report, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
+/// bans that hold what the package ships first (P007, P008, P009, then the rules its packages
+/// declare), then any other rule a site is undecided for.
+fn byRule(c: *src.Context, chosen: policy.Policy, shown: std.AutoHashMapUnmanaged(glint.Rule, usize), undecided: std.array_hash_map.Auto(glint.Rule, usize)) void {
     var line: std.Io.Writer.Allocating = .init(c.a);
-    for (policy.project_rules) |rule| {
-        const id = rule.definition.id;
+    var bans: std.ArrayList(glint.Rule) = .empty;
+    bans.appendSlice(c.a, &.{ .P007, .P008, .P009 }) catch @panic("OOM");
+    for (chosen.declared) |definition| bans.append(c.a, definition.id) catch @panic("OOM");
+    for (bans.items) |id| {
         const found = shown.get(id) orelse 0;
         const open = undecided.get(id) orelse 0;
-        var escaped: usize = 0;
-        for (report.escapes) |escape| for (escape.covered) |covered| if (std.mem.eql(u8, covered.name, rule.definition.name)) {
-            escaped += 1;
-        };
-        if (found == 0 and open == 0 and escaped == 0) continue;
-        line.writer.print("{s}{s} {d}/{d}/{d}", .{ if (line.written().len == 0) "" else ", ", rule.definition.name, found, escaped, open }) catch @panic("OOM");
+        if (found == 0 and open == 0) continue;
+        line.writer.print("{s}{s} {d}/{d}", .{ if (line.written().len == 0) "" else ", ", ruleName(chosen, id), found, open }) catch @panic("OOM");
     }
     for (undecided.keys(), undecided.values()) |rule, open| {
-        if (policy.inPack(rule)) continue;
-        line.writer.print("{s}{s} {d}/0/{d}", .{ if (line.written().len == 0) "" else ", ", ruleName(rule), shown.get(rule) orelse 0, open }) catch @panic("OOM");
+        if (chosen.shippedBan(rule)) continue;
+        line.writer.print("{s}{s} {d}/{d}", .{ if (line.written().len == 0) "" else ", ", ruleName(chosen, rule), shown.get(rule) orelse 0, open }) catch @panic("OOM");
     }
-    if (line.written().len != 0) c.report("preflight: glint: by rule (findings/escaped/undecided): {s}\n", .{line.written()});
+    if (line.written().len != 0) c.report("preflight: glint: by rule (findings/undecided): {s}\n", .{line.written()});
 }
 
 /// Each reporting rule's undecided sites against the repository's ceiling for it
@@ -338,7 +340,7 @@ fn ceilings(c: *src.Context, chosen: policy.Policy, undecided: std.array_hash_ma
         for (chosen.ceilings) |entry| if (entry.rule == rule) {
             ceiling = entry.sites;
         };
-        if (count > ceiling) c.fail("glint: {s} leaves {d} sites undecided, above the {d} `glint.unresolved` allows: the count may not grow", .{ ruleName(rule), count, ceiling });
+        if (count > ceiling) c.fail("glint: {s} leaves {d} sites undecided, above the {d} `glint.unresolved` allows: the count may not grow", .{ ruleName(chosen, rule), count, ceiling });
     }
     for (chosen.ceilings) |entry| {
         const count = undecided.get(entry.rule) orelse 0;
@@ -346,90 +348,10 @@ fn ceilings(c: *src.Context, chosen: policy.Policy, undecided: std.array_hash_ma
     }
 }
 
-fn ruleName(rule: glint.Rule) []const u8 {
-    for (policy.project_rules) |entry| if (entry.definition.id == rule) return entry.definition.name;
+fn ruleName(chosen: policy.Policy, rule: glint.Rule) []const u8 {
+    for (chosen.declared) |definition| if (definition.id == rule) return definition.name;
     return @tagName(rule);
 }
-
-/// Every aegis escape, with the rules whose findings it covers: per rule a count by reason, then
-/// each escape, the first `printed` of a rule here and all of them in a file beside the
-/// incomplete sites. The reviews read each one, and the findings they cover, by reason and
-/// rule, hold to `glint.escapes`: above it fails, since a new escape, or one widened to a rule
-/// it did not cover, is a visible line there, and below it fails too, until the line comes
-/// down, so each count only falls. An escape in the older form, which names no rule, covers
-/// nothing glint 0.8.0 holds it to: it is counted apart, in the report and in the file, and
-/// held to no line, since `zig build fix` names its rules.
-fn escapes(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report) void {
-    var text: std.Io.Writer.Allocating = .init(c.a);
-    var counts: std.array_hash_map.String([policy.escape_reasons.len]usize) = .empty;
-    const reasons = policy.escape_reasons;
-    var older: usize = 0;
-    for (report.escapes) |escape| if (olderForm(project, escape)) {
-        older += 1;
-    } else for (escape.covered) |covered| {
-        const entry = counts.getOrPutValue(c.a, covered.name, @splat(0)) catch @panic("OOM");
-        for (reasons, 0..) |reason, r| if (std.mem.eql(u8, reason, escape.reason)) {
-            entry.value_ptr[r] += 1;
-        };
-    };
-    for (chosen.escapes) |held| _ = counts.getOrPutValue(c.a, held.name, @splat(0)) catch @panic("OOM");
-    var pairs = counts.iterator();
-    while (pairs.next()) |entry| for (reasons, entry.value_ptr.*, 0..) |reason, count, r| {
-        const rule = entry.key_ptr.*;
-        const ceiling = for (chosen.escapes) |held| {
-            if (held.reason == r and std.mem.eql(u8, held.name, rule)) break held.findings;
-        } else 0;
-        if (count > ceiling) {
-            c.fail("glint: `{s}` escapes cover {d} {s} findings, above the {d} `glint.escapes` holds: a new or widened escape is a line there, so set `glint.escapes.{s}.{s}` to {d} with it, or give the site aegis's type", .{ reason, count, rule, ceiling, reason, rule, count });
-        } else if (count < ceiling) c.fail("glint: `{s}` escapes cover {d} {s} findings, below the {d} `glint.escapes` holds: lower `glint.escapes.{s}.{s}` to {d}, so the count only falls", .{ reason, count, rule, ceiling, reason, rule, count });
-    };
-    if (report.escapes.len == 0) {
-        _ = writeList(c, escapes_path, "");
-        return;
-    }
-    for (report.escapes) |escape| {
-        text.writer.print("glint: escape: {s}:{d}:{d}: {s}: {s} (", .{ project.at(escape.span.file).input.name, escape.span.line, escape.span.column, escape.reason, escape.why }) catch @panic("OOM");
-        for (escape.covered, 0..) |covered, i| text.writer.print("{s}{s}", .{ if (i == 0) "" else ", ", covered.name }) catch @panic("OOM");
-        text.writer.writeAll(")\n") catch @panic("OOM");
-    }
-    var lines = std.mem.splitScalar(u8, text.written(), '\n');
-    var shown: usize = 0;
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        if (shown == printed) break;
-        c.report("{s}\n", .{line});
-        shown += 1;
-    }
-    var summary: std.Io.Writer.Allocating = .init(c.a);
-    var rules = counts.iterator();
-    while (rules.next()) |entry| {
-        if (std.mem.allEqual(usize, entry.value_ptr, 0)) continue;
-        summary.writer.print("{s}{s} ", .{ if (summary.written().len == 0) "" else ", ", entry.key_ptr.* }) catch @panic("OOM");
-        var first = true;
-        for (reasons, entry.value_ptr.*) |reason, n| if (n != 0) {
-            summary.writer.print("{s}{s} {d}", .{ if (first) "(" else ", ", reason, n }) catch @panic("OOM");
-            first = false;
-        };
-        summary.writer.writeByte(')') catch @panic("OOM");
-    }
-    const apart = if (older == 0) "" else c.a.print(" ({d} in the older form, naming no rule, so covering nothing: `zig build fix` names their rules)", .{older}) catch @panic("OOM");
-    const covered = if (summary.written().len == 0) "" else c.a.print(": {s}", .{summary.written()}) catch @panic("OOM");
-    const line = c.a.print("preflight: escapes: {d}{s}{s}", .{ report.escapes.len, apart, covered }) catch @panic("OOM");
-    text.writer.print("{s}\n", .{line}) catch @panic("OOM");
-    c.report("{s}; all of them: {s}\n", .{ line, writeList(c, escapes_path, text.written()) });
-}
-
-/// Whether `escape` is written in the older form, `// aegis: <reason>: <why>`, naming no rule.
-fn olderForm(project: *const glint.Project, escape: glint.Report.Escape) bool {
-    const bytes = project.at(escape.span.file).input.bytes;
-    const comment = bytes[@min(escape.span.start, bytes.len)..];
-    const marker = "aegis:";
-    const after = std.mem.trimStart(u8, comment[(std.mem.find(u8, comment, marker) orelse return false) + marker.len ..], " ");
-    return !std.mem.startsWith(u8, after[@min(escape.reason.len, after.len)..], "(");
-}
-
-/// Every aegis escape of a lint, relative to the package; empty after a run with none.
-pub const escapes_path = ".zig-cache/preflight-lint/escapes.txt";
 
 /// In a hosted job, the whole list of incomplete sites in the job's summary too,
 /// when the run's report holds only the first `printed`.
@@ -514,11 +436,11 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     defer f.deinit();
     try f.file("src/root.zig", "pub fn answer() u32 {\n    return 42;\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}));
-    // A pointer conversion is a danger site: it carries the aegis escape.
+    // A pointer conversion is P007's site: a suppression names it.
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger(A019): the same type\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":1}}}}", .{}));
+    try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // glint-ignore: P007 -- the same type\n}\n");
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}));
     // A discarded error fails unless its reason is written at the site; under the family's
     // policy a repository cannot lower it to a report, and without it the report is its choice.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
@@ -530,34 +452,30 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
 }
 
-test "the aegis pack holds a program that imports aegis, or any under the family's policy: without either, a danger site is no finding" {
+test "the shipped bans are findings under the family's policy and reports elsewhere" {
     const f = try Fixture.init();
     defer f.deinit();
-    var report: std.Io.Writer.Allocating = .init(f.c.a);
-    f.c.held = &report;
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
-    try std.testing.expect(std.mem.find(u8, report.written(), "glint: aegis pack: off, no file imports aegis\n") != null);
-    // A count the repository states for the pack is not read while the pack is off, and says so.
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":1}}}}", .{}));
-    try std.testing.expect(std.mem.find(u8, report.written(), "`glint.unresolved` and `glint.escapes` are not read") != null);
+    // `glint.escapes` went with the escape form.
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"P007\":1}}}}", .{}) != 0);
 }
 
 test "a clean run leaves its lists empty, not as the run before it wrote them" {
     const f = try Fixture.init();
     defer f.deinit();
-    // More findings than the run prints, an escape, and an escape that covers nothing.
+    // More findings than the run prints, a suppression, and one that suppresses nothing.
     var dirty: std.Io.Writer.Allocating = .init(f.c.a);
     for (0..printed + 1) |i| try dirty.writer.print("pub fn view{d}(p: *u8) *u32 {{\n    return @ptrCast(@alignCast(p));\n}}\n", .{i});
-    try dirty.writer.writeAll("pub fn same(p: *const u8) *const u8 {\n    return @ptrCast(p); // aegis: no-danger: the same type\n}\n");
-    try dirty.writer.writeAll("pub fn plain() u32 {\n    return 1; // aegis: no-danger: nothing here\n}\n");
+    try dirty.writer.writeAll("pub fn same(p: *const u8) *const u8 {\n    return @ptrCast(p); // glint-ignore: P007 -- the same type\n}\n");
+    try dirty.writer.writeAll("pub fn plain() u32 {\n    return 1; // glint-ignore: P007 -- nothing here\n}\n");
     try f.file("src/root.zig", dirty.written());
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
-    for ([_][]const u8{ findings_path, sites_path, escapes_path }) |path| try std.testing.expect((try f.c.read(path)).len != 0);
+    for ([_][]const u8{ findings_path, sites_path }) |path| try std.testing.expect((try f.c.read(path)).len != 0);
     try f.file("src/root.zig", "pub fn answer() u32 {\n    return 42;\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}));
-    for ([_][]const u8{ findings_path, sites_path, escapes_path }) |path| try std.testing.expectEqualStrings("", try f.c.read(path));
+    for ([_][]const u8{ findings_path, sites_path }) |path| try std.testing.expectEqualStrings("", try f.c.read(path));
 }
 
 test "style is reported and does not fail; a repository may gate it" {
@@ -579,51 +497,17 @@ test "glint reads ranges at the pointer widths of the workflow's targets and of 
     try std.testing.expectEqualSlices(u16, &.{ 64, 32 }, try pointerWidths(&f.c));
 }
 
-test "a danger site fails in production unless it carries the aegis escape; tests are not shipped, a vendored file is" {
+test "a shipped ban's site fails in production unless a suppression names it; tests are not shipped, a vendored file is" {
     const f = try Fixture.init();
     defer f.deinit();
     const cast = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p));\n}\n";
     const paths = "{\"policy\":\"family\",\"glint_paths\":[\"src\"]}";
     try f.file("src/root.zig", cast);
     try std.testing.expect(try f.run(paths, .{}) != 0);
+    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // glint-ignore: P007 -- p points at a u32 the kernel wrote\n}\n");
+    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, .{}));
+    // The old escape form is read no more: the run is incomplete until `zig build fix` rewrites it.
     try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): p points at a u32 the kernel wrote\n}\n");
-    // The package holds the findings its escapes cover, by reason and rule: one more than
-    // `glint.escapes` holds fails, and one fewer fails until the count comes down.
-    const held = "{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2}}}}";
-    try std.testing.expect(try f.run(paths, .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run(held, .{}));
-    // The escape covers both sites on its line, the cast and the alignment, so it counts 2:
-    // a second site under one escape is held as one more finding, never silent (pre-7 e01).
-    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":1}}}}", .{}) != 0);
-    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":3}}}}", .{}) != 0);
-    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"A019\":2}}}}", .{}) != 0);
-    // An escape widened to a rule it did not cover is a new pair, however many escapes there
-    // are: here it would hide an input's conversion (review-1029 M3), which a landing reports
-    // and a release fails.
-    // The read is std's, so the input fact needs std itself.
-    const with_std: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
-    const read = "pub fn view(p: *u8, r: *@import(\"std\").Io.Reader) !*u32 {\n    const n = try r.takeInt(u64, .little);\n    if (@as(u32, @intCast(n)) == 7) return error.X; return @ptrCast(@alignCast(p)); // aegis: ";
-    try f.file("src/root.zig", read ++ "boundary(A019): p points at a u32 the kernel wrote\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run(held, with_std));
-    try f.file("src/root.zig", read ++ "boundary(A019, A010): p points at a u32 the kernel wrote\n}\n");
-    try std.testing.expect(try f.run(held, with_std) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"boundary\":{\"A019\":2,\"A010\":1}}}}", with_std));
-    // An escape in the older form names no rule, so it covers nothing it is held to: counted
-    // apart in the report and in the file, never against `glint.escapes` (review-1029b m-b).
-    var report: std.Io.Writer.Allocating = .init(f.c.a);
-    f.c.held = &report;
-    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary: p points at a u32 the kernel wrote\n}\n");
-    try std.testing.expect(try f.run(held, .{}) != 0);
-    try std.testing.expect(std.mem.find(u8, report.written(), "below the 2 `glint.escapes` holds") != null);
-    const older = "preflight: escapes: 1 (1 in the older form, naming no rule, so covering nothing: `zig build fix` names their rules)";
-    try std.testing.expect(std.mem.find(u8, report.written(), older) != null);
-    try std.testing.expect(std.mem.find(u8, try f.c.read(escapes_path), older) != null);
-    f.c.held = null;
-    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): p points at a u32 the kernel wrote\n}\n");
-    // An escape needs one of the five reasons and a why, and the pack takes no other suppression.
-    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: fast: it is\n}\n");
-    try std.testing.expect(try f.run(paths, .{}) != 0);
-    try f.file("src/root.zig", "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // glint-ignore: A019 -- boundary\n}\n");
     try std.testing.expect(try f.run(paths, .{}) != 0);
     try f.file("src/root.zig", "pub const x = 1;\n");
     try f.file("src/root_test.zig", cast);
@@ -686,18 +570,17 @@ test "the list of every finding names a vendored file's carried sites as carried
 test "a reporting rule's undecided sites count against the repository's ceiling, which may not grow" {
     const f = try Fixture.init();
     defer f.deinit();
-    // `@setRuntimeSafety` with a computed argument: A019, a finding, cannot decide it.
+    // `@setRuntimeSafety` with a computed argument: P007, a finding, cannot decide it.
     try f.file("src/root.zig", "pub fn run(comptime on: bool) void {\n    @setRuntimeSafety(on);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":1}}}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"P007\":1}}}", .{}));
     // A ceiling above the count passes and asks to come down.
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A019\":3}}}", .{}));
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"P007\":3}}}", .{}));
     // A rule that only reports holds its undecided sites to a ceiling as a finding does: Z012
     // cannot tell whether a type it cannot resolve is private.
     try f.file("src/root.zig", "const dep = @import(\"dep\");\npub fn run() dep.T {\n    return undefined;\n}\n");
-    // The findings A007 and A015 leave the same site undecided, each held to its own ceiling.
-    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A007\":1,\"A015\":1}}}", .{}) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"A007\":1,\"A015\":1,\"Z012\":1}}}", .{}));
+    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
+    try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"Z012\":1}}}", .{}));
 }
 
 test "function length: the limit, a per-path ceiling and a reasoned exception that cannot grow or go stale" {

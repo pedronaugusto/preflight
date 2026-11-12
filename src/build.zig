@@ -165,7 +165,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true,
         .sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner"),
         .lint_enabled = b.option(bool, "ci-lint", "Run source checks before CI tests") orelse true,
-        .release = b.option(bool, "ci-release", "The release tier's source checks: every aegis-pack finding fails, the reported ones included") orelse false,
+        .release = b.option(bool, "ci-release", "The release tier's source checks: every shipped ban's finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on an x86_64 Linux host, on PATH)") orelse false,
@@ -408,7 +408,7 @@ const Steps = struct {
         fixing.addPassthruArgs();
         fixing.setCwd(package.path("."));
         fixing.has_side_effects = true;
-        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (std's assert as aegis's, older written reasons as escapes, unused escapes gone), then report what is left").dependOn(&fixing.step);
+        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (the aegis pack's old escapes and names rewritten as glint-ignore), then report what is left").dependOn(&fixing.step);
         // The documented snippets alone: a lint that fails, or refuses its configuration,
         // never hides a broken one, and the hosted plan runs them as a job of their own.
         const snippets = executable.run(b);

@@ -149,11 +149,11 @@ test "format checks owned sources and ignores extracted dependency packages" {
     // An example ships nowhere: the danger rules hold the sources.
     const example = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(example.term == .exited and example.term.exited == 0);
-    // In the sources a pointer conversion is a danger site (A019): without the aegis escape it fails the gate.
+    // In the sources a pointer conversion is P007's site: without a suppression it fails the gate.
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "pub fn at(address: usize) *const u8 {\n    return @ptrFromInt(address);\n}\ntest {}\n" });
     const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
-    try std.testing.expect(std.mem.find(u8, cast.stderr, "A019: src/sample.zig:2:") != null);
+    try std.testing.expect(std.mem.find(u8, cast.stderr, "P007: src/sample.zig:2:") != null);
 }
 
 test "portable replay records timings and still rejects failed tests and leaked memory" {
@@ -470,20 +470,19 @@ test "a red lint and a failing unit test are each reported: the suite runs whate
     try std.testing.expect(std.mem.find(u8, result.stderr, "the sample's own check") != null);
 }
 
-test "the default policy reports a flow rule's site and does not fail the gate: an error input makes unreachable (A013)" {
-    try lintSample("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", false);
-}
-
-test "the release tier fails a flow rule's site the default policy reports: an error input makes unreachable (A013)" {
-    try lintSampleWith("const std = @import(\"std\");\npub fn work(r: *std.Io.Reader) u8 {\n    return r.takeByte() catch unreachable;\n}\ntest {}\n", "A013", true, &.{"-Dci-release"}, null);
+test "outside the family's policy a shipped ban reports and does not fail the gate; the release tier fails it" {
+    const project = "{\"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"]}";
+    const cast = "pub fn at(address: usize) *const u8 {\n    return @ptrFromInt(address);\n}\ntest {}\n";
+    try lintSampleWith(cast, "P007", false, &.{}, project);
+    try lintSampleWith(cast, "P007", true, &.{"-Dci-release"}, project);
 }
 
 test "the default policy gates P005: a debug print left in" {
     try lintSample("const std = @import(\"std\");\npub fn work() void {\n    std.debug.print(\"hi\", .{});\n}\ntest {}\n", "P005", true);
 }
 
-test "the default policy fails a danger site: runtime safety switched off (A019)" {
-    try lintSample("pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n", "A019", true);
+test "the family's policy fails a shipped ban's site: runtime safety switched off (P007)" {
+    try lintSample("pub fn work() void {\n    @setRuntimeSafety(false);\n}\ntest {}\n", "P007", true);
 }
 
 test "the default policy gates Z011: a deprecated std function" {
@@ -494,11 +493,9 @@ test "a style rule is reported with its site and does not fail the gate" {
     try lintSample("pub const BadName = 1;\ntest {}\n", "Z006", false);
 }
 
-test "a danger site with the aegis escape passes, the escape listed with its rule and counted against the package's" {
-    const escaped = "pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): the kernel wrote a u32 there\n}\ntest {}\n";
-    const counted = "{\"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"glint\": {\"escapes\": {\"boundary\": {\"A019\": 2}}}}";
-    try lintSampleWith(escaped, "escape: src/sample.zig:2", false, &.{}, counted);
-    try lintSampleWith(escaped, "above the 0 `glint.escapes` holds", true, &.{}, null);
+test "a shipped ban's site a suppression names passes; the old escape form fails until fixed" {
+    try lintSample("pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // glint-ignore: P007 -- the kernel wrote a u32 there\n}\ntest {}\n", null, false);
+    try lintSample("pub fn view(p: *u8) *u32 {\n    return @ptrCast(@alignCast(p)); // aegis: boundary(A019): the kernel wrote a u32 there\n}\ntest {}\n", "P007", true);
 }
 
 test "the sample's clean code passes the gate" {

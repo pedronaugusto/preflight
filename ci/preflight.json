@@ -16,34 +16,13 @@
     "src/bench_driver.zig"
   ],
   "glint": {
-    "unresolved": {
-      "A007": 2,
-      "A011": 1
-    },
-    "escapes": {
-      "no-danger": { "A009": 18, "A010": 6, "A011": 3, "A015": 1, "A019": 7 },
-      "design": { "A007": 24, "A011": 12, "A015": 5 },
-      "boundary": { "A007": 2, "A019": 25 }
-    },
     "rules": [
       {
         "id": "A001",
         "level": "gate"
       },
       {
-        "id": "A002",
-        "level": "gate"
-      },
-      {
-        "id": "A003",
-        "level": "gate"
-      },
-      {
         "id": "A004",
-        "level": "gate"
-      },
-      {
-        "id": "A005",
         "level": "gate"
       },
       {

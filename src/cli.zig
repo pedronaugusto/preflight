@@ -127,7 +127,7 @@ pub const Lint = struct {
             .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
             .fix = .{ .negatable = false, .help = "Apply glint's deterministic fixes to the sources first (zig build fix): the report is the run before them" },
             .escapes_before = .{ .value_name = "FILE", .hint = .file, .help = "With --fix, the escapes a lint before reported (its .zig-cache/preflight-lint/escapes.txt, kept): an escape in the older form is named with only the rules listed for it there that find something now" },
-            .release = .{ .negatable = false, .help = "The release tier's bar: every aegis-pack finding fails, those the default policy reports included" },
+            .release = .{ .negatable = false, .help = "The release tier's bar: every shipped ban's finding fails (P007, P008, P009 and the rules the packages declare), those the default policy reports included" },
         },
     };
 };

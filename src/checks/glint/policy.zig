@@ -7,7 +7,6 @@ const glint = @import("glint");
 const src = @import("../source.zig");
 const family = @import("../../family.zig");
 
-
 /// Work glint may do on one run. The largest repository preflight checks fits in
 /// a fraction of it; a run that spends it is incomplete, never green.
 pub const fact_budget: usize = 4_000_000;
@@ -683,9 +682,9 @@ test "a package's rules join the policy at its weights once the run's table is r
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
-    const ban: glint.Rule = @enumFromInt(2000);
-    const hygiene: glint.Rule = @enumFromInt(2001);
-    const opt_in: glint.Rule = @enumFromInt(2002);
+    const ban: glint.Rule = @fromBackingInt(@intCast(2000));
+    const hygiene: glint.Rule = @fromBackingInt(@intCast(2001));
+    const opt_in: glint.Rule = @fromBackingInt(@intCast(2002));
     const table = [_]glint.RuleDefinition{
         .{ .id = ban, .name = "A007", .group = .family_policy, .purpose = "p", .declared = .{ .package = "aegis", .kind = .ban, .reads = .replaces, .default = true } },
         .{ .id = hygiene, .name = "A004", .group = .family_policy, .purpose = "p", .declared = .{ .package = "aegis", .kind = .hygiene, .reads = .exits, .default = true } },

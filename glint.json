@@ -1,0 +1,7 @@
+{
+  "seams": [
+    {"file": "src/vm/guest.zig", "rules": ["P007"], "reason": "the Linux guest's init: it is the system calls that bring the VM up"},
+    {"file": "src/vm/freebsd/guest.zig", "rules": ["P007"], "reason": "the FreeBSD guest's init: it is the system calls that bring the VM up"},
+    {"file": "src/runner.zig", "rules": ["P007"], "reason": "the test runner's per-OS layer: the process, pipe and console calls std's checked layer does not give it"}
+  ]
+}

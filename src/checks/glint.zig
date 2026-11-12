@@ -50,8 +50,6 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
         else => return err,
     };
     var chosen = (try policy.parse(c, inputs.config, shipped)) orelse return;
-    chosen.base.peer_writers = try peerWriters(c, chosen.base.peer_writers, inputs.build.modules);
-    chosen.base.pointer_widths = try pointerWidths(c);
     const paths = (try assembly.select(c, chosen)) orelse return;
     var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
     defer assembled.deinit();
@@ -88,51 +86,6 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     assertions(c, &assembled.project, &report);
 }
 
-/// The peer writers A018 reads: the package's own, then those each package it depends on
-/// declares in its `ci/preflight.json` (found beside the `build.zig.zon` above a dependency
-/// module's root).
-/// The pointer widths glint reads ranges at: those of the targets `ci/workflow.json` names
-/// and of this machine, whose tests run natively, so a package with no 32-bit target is not
-/// held to a 32-bit `usize`. A package that names no targets is read at both 32 and 64 bits.
-fn pointerWidths(c: *src.Context) ![]const u16 {
-    const targets = try src.items(src.get(try c.options("ci/workflow.json"), "targets"));
-    if (targets.len == 0) return &.{};
-    var out: std.ArrayList(u16) = .empty;
-    try out.append(c.a, @import("builtin").target.ptrBitWidth());
-    for (targets) |target| {
-        // A target the matrix refuses is named there; its width cannot be read here.
-        const query = std.Target.Query.parse(.{ .arch_os_abi = try matrix.targetName(target) }) catch continue;
-        const arch = query.cpu_arch orelse continue;
-        const width = std.Target.ptrBitWidth_arch_abi(arch, query.abi orelse .none);
-        if (std.mem.findScalar(u16, out.items, width) == null) try out.append(c.a, width);
-    }
-    return out.items;
-}
-
-fn peerWriters(c: *src.Context, own: []const glint.Config.PeerWriter, modules: []const src.BuildModule) ![]const glint.Config.PeerWriter {
-    var out: std.ArrayList(glint.Config.PeerWriter) = .empty;
-    try out.appendSlice(c.a, own);
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
-    for (modules) |module| {
-        const root = module.root orelse continue;
-        if (!std.fs.path.isAbsolute(root)) continue;
-        var dir = std.fs.path.dirname(root);
-        const package = while (dir) |at| : (dir = std.fs.path.dirname(at)) {
-            const manifest = try std.fs.path.join(c.a, &.{ at, "build.zig.zon" });
-            if (std.Io.Dir.cwd().access(c.io, manifest, .{})) |_| break at else |_| {}
-        } else continue;
-        if ((try seen.getOrPut(c.a, package)).found_existing) continue;
-        const path = try std.fs.path.join(c.a, &.{ package, "ci", "preflight.json" });
-        // A dependency without the file declares no writers.
-        const bytes = aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, c.a, .fromRaw(1 << 20)) catch continue;
-        const config = std.json.parseFromSliceLeaky(src.Value, c.a, bytes, .{}) catch {
-            c.fail("glint: {s}: not JSON, so its peer writers cannot be read", .{path});
-            continue;
-        };
-        try out.appendSlice(c.a, try policy.parsePeerWriters(c, src.get(config, "glint")));
-    }
-    return out.items;
-}
 
 /// Writes each source glint's fixes change (`zig build fix`): the deterministic answers, the
 /// escape for a reason written the older way, an unused escape gone. The run's report is the
@@ -444,17 +397,6 @@ test "style is reported and does not fail; a repository may gate it" {
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z006\",\"level\":\"gate\"}]}}", .{}) != 0);
 }
 
-test "glint reads ranges at the pointer widths of the workflow's targets and of this machine" {
-    if (@import("builtin").target.ptrBitWidth() != 64) return error.SkipZigTest;
-    const f = try Fixture.init();
-    defer f.deinit();
-    try std.testing.expectEqual(@as(usize, 0), (try pointerWidths(&f.c)).len);
-    try f.file("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\",{\"target\":\"aarch64-macos\",\"cpu\":\"apple_m1\"}]}");
-    try std.testing.expectEqualSlices(u16, &.{64}, try pointerWidths(&f.c));
-    try f.file("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\",\"wasm32-freestanding\"]}");
-    try std.testing.expectEqualSlices(u16, &.{ 64, 32 }, try pointerWidths(&f.c));
-}
-
 test "a shipped ban's site fails in production unless a suppression names it; tests are not shipped, a vendored file is" {
     const f = try Fixture.init();
     defer f.deinit();
@@ -595,7 +537,10 @@ test "an analysis glint did not finish is never a pass, whatever its findings" {
     const with_std: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    _ = std.mem;\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{" ++ paths ++ "}", with_std));
-    try std.testing.expect(try f.run("{" ++ paths ++ ",\"glint\":{\"fact_budget\":1}}", with_std) != 0);
+    // The budget is glint's option, in glint.json.
+    try f.file("glint.json", "{\"fact_budget\":1}");
+    try std.testing.expect(try f.run("{" ++ paths ++ "}", with_std) != 0);
+    try f.file("glint.json", "{}");
     // A suppression that suppresses nothing.
     try f.file("src/root.zig", "// glint-ignore: Z026 -- there is no empty catch here\npub const x = 1;\n");
     try std.testing.expect(try f.run("{" ++ paths ++ "}", .{}) != 0);

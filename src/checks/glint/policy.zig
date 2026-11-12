@@ -4,6 +4,7 @@
 const std = @import("std");
 const gantry = @import("gantry");
 const glint = @import("glint");
+const aegis = @import("aegis");
 const src = @import("../source.zig");
 const family = @import("../../family.zig");
 
@@ -117,7 +118,7 @@ const retired = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "glint_config", .instead = "move its fields into the `glint` object" },
 };
 
-const glint_keys = [_][]const u8{ "rules", "fact_budget", "max_line_length", "disallowed", "peer_writers" };
+const glint_keys = [_][]const u8{"rules"};
 
 /// The rules glint folded into others: a repository still naming one is told where its sites went.
 const folded = [_]struct { id: []const u8, instead: []const u8 }{
@@ -135,6 +136,10 @@ const retired_glint = [_]struct { key: []const u8, instead: []const u8 }{
     .{ .key = "escapes", .instead = "the aegis escape form is gone: every rule takes `// glint-ignore: <rule> -- <reason>`, which the report counts" },
     .{ .key = "unresolved", .instead = "glint 0.8 leaves no site undecided: a ban reports what it cannot decide and hygiene stays silent, so there is no count to hold" },
     .{ .key = "cast_scope", .instead = "the danger rules read production code only" },
+    .{ .key = "fact_budget", .instead = "glint's options have one home: write `fact_budget` in the repository's glint.json" },
+    .{ .key = "max_line_length", .instead = "glint's options have one home: write `max_line_length` in the repository's glint.json" },
+    .{ .key = "disallowed", .instead = "glint's options have one home: write `disallowed` in the repository's glint.json" },
+    .{ .key = "peer_writers", .instead = "it went with A018, which read it" },
     .{ .key = "strict_suppressions", .instead = "suppressions are strict in every repository: one that suppresses nothing fails" },
 };
 
@@ -347,6 +352,11 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     base.strict_suppressions = true;
     base.fact_budget = fact_budget;
     base.metrics = true;
+    // glint's own code options have one home, the repository's glint.json, which a glint run
+    // without preflight reads too: its seams, test inputs, limits, disallowed declarations and
+    // fact budget. Its profile and rules are the glint command line's selection, which
+    // preflight's policy replaces.
+    try glintOptions(c, &base);
 
     const block = src.get(config, "glint");
     var chosen: std.ArrayList(glint.Config.Selection) = .empty;
@@ -365,7 +375,7 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
                 }
             } else if (!known(&glint_keys, key)) c.fail("glint: unknown setting `{s}`", .{key});
         }
-        try parseBlock(c, block, &base, &chosen, &pending);
+        try parseBlock(c, block, &chosen, &pending);
     }
     if (c.errors != before) return null;
 
@@ -439,7 +449,6 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
     policy.vendored = try parseVendored(c, src.get(config, "vendored"));
     policy.paths = try parsePaths(c, src.get(config, "glint_paths"));
     policy.pending = pending.items;
-    policy.base.peer_writers = try parsePeerWriters(c, block);
     return if (c.errors == before) policy else null;
 }
 
@@ -448,7 +457,7 @@ fn known(names: []const []const u8, key: []const u8) bool {
     return false;
 }
 
-fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections: *std.ArrayList(glint.Config.Selection), pending: *std.ArrayList(Pending)) !void {
+fn parseBlock(c: *src.Context, block: src.Value, selections: *std.ArrayList(glint.Config.Selection), pending: *std.ArrayList(Pending)) !void {
     const a = c.a;
     const rules = src.get(block, "rules");
     if (rules != .null and rules != .array) c.fail("glint: `rules` is a list of {{id, level}}", .{});
@@ -483,62 +492,50 @@ fn parseBlock(c: *src.Context, block: src.Value, base: *glint.Config, selections
         for (selections.items) |earlier| if (earlier.rule == rule) c.fail("glint: {s} is listed twice", .{id.string});
         try selections.append(a, .{ .rule = rule, .level = chosen });
     }
-    const budget = src.get(block, "fact_budget");
-    if (budget != .null) {
-        const count: ?usize = if (budget == .integer and budget.integer > 0) std.math.cast(usize, budget.integer) else null;
-        if (count) |given| base.fact_budget = given else c.fail("glint: `fact_budget` is a positive count", .{});
-    }
-    const width = src.get(block, "max_line_length");
-    if (width != .null) {
-        if (width == .integer and width.integer > 0 and width.integer <= std.math.maxInt(u32)) base.max_line_length = @intCast(width.integer) else c.fail("glint: `max_line_length` is a positive byte count", .{});
-    }
-    const disallowed = src.get(block, "disallowed");
-    if (disallowed != .null and disallowed != .array) c.fail("glint: `disallowed` is a list of {{source, declaration, reason, replacement, scope}}: a declaration of a module or `.zig` file, or with no source an external symbol", .{});
-    var list: std.ArrayList(glint.Config.Disallowed) = .empty;
-    for (try src.items(disallowed)) |entry| {
-        var fields: [3][]const u8 = undefined;
-        for ([_][]const u8{ "declaration", "reason", "replacement" }, &fields) |key, *field| {
-            const value = src.get(entry, key);
-            field.* = if (value == .string) value.string else "";
-        }
-        const source = src.get(entry, "source");
-        if (source != .null and source != .string) c.fail("glint: a disallowed `source` is a module or a `.zig` file", .{});
-        const written = src.get(entry, "scope");
-        const chosen: @FieldType(glint.Config.Disallowed, "scope") = if (written == .null) .all else std.meta.stringToEnum(@FieldType(glint.Config.Disallowed, "scope"), try src.string(written, "")) orelse blk: {
-            c.fail("glint: a disallowed `scope` is all or production", .{});
-            break :blk .all;
-        };
-        try list.append(a, .{ .source = if (source == .string) source.string else null, .declaration = fields[0], .reason = fields[1], .replacement = fields[2], .scope = chosen });
-    }
-    base.disallowed = try list.toOwnedSlice(a);
 }
 
-/// `peer_writers`: the functions this package owns whose result writes to a peer (A018's sinks),
-/// each `{"module": "uplink", "declaration": "server.Response.writer"}`. A package's lint reads
-/// its own and those of the packages it depends on.
-pub fn parsePeerWriters(c: *src.Context, block: src.Value) ![]const glint.Config.PeerWriter {
-    const list = src.get(block, "peer_writers");
-    if (list == .null) return &.{};
-    var out: std.ArrayList(glint.Config.PeerWriter) = .empty;
-    if (list != .array) {
-        c.fail("glint: `peer_writers` lists the functions whose result writes to a peer, each a `module` and a `declaration`", .{});
-        return &.{};
-    }
-    for (list.array.items) |item| {
-        const module = src.get(item, "module");
-        const declaration = src.get(item, "declaration");
-        if (item != .object or module != .string or declaration != .string or item.object.count() != 2) {
-            c.fail("glint: peer_writers: each entry is `{{\"module\": NAME, \"declaration\": PATH}}`", .{});
-            continue;
-        }
-        try out.append(c.a, .{ .module = module.string, .declaration = declaration.string });
-    }
-    return out.items;
-}
 
 /// A rule's id as a configuration writes it.
 fn nameOf(rule: glint.Rule) []const u8 {
     return @tagName(rule);
+}
+
+/// The options the repository's glint.json sets, onto `base`: each key it writes, and none it
+/// leaves out, so preflight's defaults hold where it is silent. No glint.json sets none.
+fn glintOptions(c: *src.Context, base: *glint.Config) !void {
+    const bytes = aegis.own.readFile(c.io, c.directory(), "glint.json", c.a, .fromRaw(1 << 20)) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    const written = std.json.parseFromSliceLeaky(src.Value, c.a, bytes, .{}) catch {
+        c.fail("glint.json: not JSON, so glint's options are not read", .{});
+        return;
+    };
+    const options = std.json.parseFromSliceLeaky(glint.cli.Configuration, c.a, bytes, .{}) catch |err| {
+        c.fail("glint.json: not a configuration glint reads ({t})", .{err});
+        return;
+    };
+    if (written != .object) return;
+    const has = struct {
+        fn key(value: src.Value, name: []const u8) bool {
+            return value.object.get(name) != null;
+        }
+    }.key;
+    if (has(written, "max_line_length")) base.max_line_length = options.max_line_length;
+    if (has(written, "max_parameters")) base.max_parameters = options.max_parameters;
+    if (has(written, "max_nesting")) base.max_nesting = options.max_nesting;
+    if (has(written, "max_stack_array")) base.max_stack_array = options.max_stack_array;
+    if (has(written, "disallowed")) base.disallowed = options.disallowed;
+    if (has(written, "fact_budget")) base.fact_budget = options.fact_budget;
+    if (has(written, "seams")) base.seams = options.seams;
+    if (has(written, "test_inputs")) base.test_inputs = options.test_inputs;
+    // The function-length options are preflight's (`function_limit`, `function_exceptions`):
+    // one home for each.
+    for ([_][]const u8{ "max_function_lines", "function_exceptions" }) |key| if (has(written, key)) c.fail("glint.json: `{s}` is set in ci/preflight.json (`function_limit`, `function_exceptions`), its one home under preflight", .{key});
+    if (has(written, "profile") or has(written, "rules")) {
+        c.report("glint.json: its profile and rules are the glint command line's; preflight's policy sets the levels (`glint.rules` in ci/preflight.json)\n", .{});
+        c.notes += 1;
+    }
 }
 
 /// What a configuration naming `name`, which no rule of the run has, is told: glint's own words
@@ -710,21 +707,6 @@ test "a package's rules join the policy at its weights once the run's table is r
     var family_policy = (try parse(&c, try parsed(c.a, "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"A007\",\"level\":\"off\"}]}}"), test_shipped)).?;
     try family_policy.resolve(&c, &table);
     try std.testing.expectEqual(@as(usize, 2), c.errors);
-}
-
-test "a package declares the peer writers it owns, each a module and a declaration" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io };
-    const declared = (try parse(&c, try parsed(c.a,
-        \\{"glint":{"peer_writers":[{"module":"uplink","declaration":"server.Response.writer"}]}}
-    ), test_shipped)).?;
-    try std.testing.expectEqual(@as(usize, 0), c.errors);
-    try std.testing.expectEqualStrings("server.Response.writer", declared.base.peer_writers[0].declaration);
-    _ = try parse(&c, try parsed(c.a,
-        \\{"glint":{"peer_writers":[{"module":"uplink"}]}}
-    ), test_shipped);
-    try std.testing.expectEqual(@as(usize, 1), c.errors);
 }
 
 test "a repository amends the policy by rule and cannot swap it for another profile" {

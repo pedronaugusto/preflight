@@ -11,7 +11,7 @@ pub const task_stack: aegis.units.Bytes(usize) = .fromRaw(64 * 1024);
 /// Calls `operation(context)` until it succeeds or has failed `tries` times,
 /// and then returns its last error.
 pub fn retry(io: Io, tries: u32, context: anytype, comptime operation: fn (@TypeOf(context)) anyerror!void) anyerror!void {
-    std.debug.assert(tries > 0);
+    aegis.assert.invariant(tries > 0, "a retry makes at least one try");
     var wait: aegis.units.Duration(.second, u32) = .fromRaw(1);
     var failed: u32 = 0;
     while (true) {

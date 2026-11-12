@@ -6,7 +6,6 @@ const std = @import("std");
 const aegis = @import("aegis");
 const glint = @import("glint");
 const src = @import("source.zig");
-const matrix = @import("matrix.zig");
 const fetched = @import("manifest.zig");
 pub const policy = @import("glint/policy.zig");
 pub const assembly = @import("glint/assembly.zig");
@@ -85,7 +84,6 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     judge(c, chosen, &assembled.project, &report, inputs.release);
     assertions(c, &assembled.project, &report);
 }
-
 
 /// Writes each source glint's fixes change (`zig build fix`): the deterministic answers, the
 /// escape for a reason written the older way, an unused escape gone. The run's report is the

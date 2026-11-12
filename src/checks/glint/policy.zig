@@ -494,7 +494,6 @@ fn parseBlock(c: *src.Context, block: src.Value, selections: *std.ArrayList(glin
     }
 }
 
-
 /// A rule's id as a configuration writes it.
 fn nameOf(rule: glint.Rule) []const u8 {
     return @tagName(rule);

@@ -28,6 +28,7 @@ pub const Cli = struct {
         executable: Executable,
         cache: Cache,
         docs: Docs,
+        snippets: Snippets,
         deprecations: Deprecations,
     },
 
@@ -168,6 +169,15 @@ pub const Skip = struct {
     pub const spec: ensign.Spec(@This()) = .{
         .about = "Whether the change is documentation alone, which a fast run does not test",
         .options = .{ .config = .{ .value_name = "FILE", .hint = .file, .help = "The source checks' configuration, whose documentation a docs-only change is checked against" } },
+    };
+};
+
+pub const Snippets = struct {
+    config: []const u8 = "ci/preflight.json",
+    zig_exe: ?[]const u8 = null,
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Check the documented snippets alone: a lint that fails, or refuses its configuration, never hides a broken one",
+        .options = .{ .config = .{ .value_name = "FILE", .hint = .file, .help = "The source checks' configuration, whose `docs` names the snippets" }, .zig_exe = zig_exe },
     };
 };
 

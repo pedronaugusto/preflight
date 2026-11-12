@@ -316,6 +316,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     try freebsdJobs(a, config, &jobs);
     try ownTargetJobs(a, config, &jobs);
     try jobs.append(a, try lintJob(a, config, .release));
+    try jobs.append(a, try snippetsJob(a, config));
     try releaseJobs(a, config, &jobs);
     try sdkJobs(a, config, &jobs);
     for (jobs.items) |*job| job.cache_key = try key(a, job.*);
@@ -334,6 +335,7 @@ fn ciPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     for (jobs.items[start..]) |*job| job.cache_key = try key(a, job.*);
     const targets = try src.items(src.get(config, "targets"));
     if (targets.len > 0) try crossJobs(a, config, &jobs, targets, false);
+    try jobs.append(a, try snippetsJob(a, config));
     return jobs.items;
 }
 
@@ -559,11 +561,24 @@ fn linuxPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
 fn lintJob(a: std.mem.Allocator, config: src.Value, tier: Tier) !Job {
     return .{
         .os = hosts[0],
-        .name = "source checks and documented snippets",
+        .name = "source checks",
         .step = "lint",
         .args = std.mem.trimStart(u8, try a.print("{s}{s}", .{ if (tier == .release) " -Dci-release" else "", try buildArgs(a, src.get(config, "build_args")) }), " "),
         .job_timeout = try minutes(config, "source_job_timeout"),
         .cache_key = "lint",
+    };
+}
+
+/// The documented snippets, a job of their own: a red lint, or one that refuses its
+/// configuration, never hides a broken snippet.
+fn snippetsJob(a: std.mem.Allocator, config: src.Value) !Job {
+    return .{
+        .os = hosts[0],
+        .name = "documented snippets",
+        .step = "snippets",
+        .args = std.mem.trimStart(u8, try buildArgs(a, src.get(config, "build_args")), " "),
+        .job_timeout = try minutes(config, "source_job_timeout"),
+        .cache_key = "snippets",
     };
 }
 
@@ -1096,8 +1111,10 @@ test "fast shards split the Linux Debug tests, which no other job runs" {
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"fast_shards\":3}", .{})).value;
     const jobs = try plan(a, config, .ci);
-    try std.testing.expectEqual(@as(usize, 6), jobs.len);
+    try std.testing.expectEqual(@as(usize, 7), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
+    // The documented snippets are a job of their own, which a red lint does not hide.
+    try std.testing.expectEqualStrings("snippets", jobs[6].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
     try std.testing.expectEqualStrings("1/3", jobs[1].shard);
     try std.testing.expectEqualStrings("Linux Debug shard 2/3", jobs[2].name);
@@ -1134,8 +1151,9 @@ test "the ci tier is the source checks, the Debug suite on Linux, macOS and Wind
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"cross_jobs\":1,\"targets\":[\"aarch64-linux-gnu\"],\"hardened\":true}", .{})).value;
     const jobs = try plan(a, config, .ci);
-    try std.testing.expectEqual(@as(usize, 5), jobs.len);
+    try std.testing.expectEqual(@as(usize, 6), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
+    try std.testing.expectEqualStrings("snippets", jobs[5].step);
     try std.testing.expectEqualStrings("ci", jobs[1].step);
     try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", jobs[1].args);
     try std.testing.expectEqualStrings("test (macos-latest, Debug)", jobs[2].name);
@@ -1177,17 +1195,17 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"],\"policy\":\"family\"}", .{})).value;
     const jobs = try plan(a, config, .release);
     const expected = [_][]const u8{
-        "test (ubuntu-latest, Debug)",                          "test (ubuntu-latest, ReleaseSafe)",     "test (ubuntu-latest, ReleaseFast)",
-        "test (macos-latest, Debug)",                           "test (macos-latest, ReleaseSafe)",      "test (macos-latest, ReleaseFast)",
-        "test (windows-latest, Debug)",                         "test (windows-latest, ReleaseSafe)",    "test (windows-latest, ReleaseFast)",
-        "test (ubuntu-24.04-arm, Debug)",                       "test (ubuntu-24.04-arm, ReleaseSafe)",  "test (ubuntu-24.04-arm, ReleaseFast)",
-        "test (windows-11-arm, Debug)",                         "test (windows-11-arm, ReleaseSafe)",    "test (windows-11-arm, ReleaseFast)",
-        "source checks and documented snippets",                "compile (ubuntu-latest, ReleaseSmall)", "compile (macos-latest, ReleaseSmall)",
-        "compile (windows-latest, ReleaseSmall)",               "Cross compile",                         "test (riscv64-linux on its kernel under QEMU, Debug)",
-        "test (x86_64-freebsd on its kernel under KVM, Debug)",
+        "test (ubuntu-latest, Debug)",                          "test (ubuntu-latest, ReleaseSafe)",                    "test (ubuntu-latest, ReleaseFast)",
+        "test (macos-latest, Debug)",                           "test (macos-latest, ReleaseSafe)",                     "test (macos-latest, ReleaseFast)",
+        "test (windows-latest, Debug)",                         "test (windows-latest, ReleaseSafe)",                   "test (windows-latest, ReleaseFast)",
+        "test (ubuntu-24.04-arm, Debug)",                       "test (ubuntu-24.04-arm, ReleaseSafe)",                 "test (ubuntu-24.04-arm, ReleaseFast)",
+        "test (windows-11-arm, Debug)",                         "test (windows-11-arm, ReleaseSafe)",                   "test (windows-11-arm, ReleaseFast)",
+        "source checks",                                        "documented snippets",                                  "compile (ubuntu-latest, ReleaseSmall)",
+        "compile (macos-latest, ReleaseSmall)",                 "compile (windows-latest, ReleaseSmall)",               "Cross compile",
+        "test (riscv64-linux on its kernel under QEMU, Debug)", "test (x86_64-freebsd on its kernel under KVM, Debug)",
         // Under the family's policy the hardened profile is every package's.
-        "hardened",                              "hardened-fuzz",
-        "hardened-tsan",
+        "hardened",
+        "hardened-fuzz",                                        "hardened-tsan",
     };
     try std.testing.expectEqual(expected.len, jobs.len);
     for (expected) |name| {

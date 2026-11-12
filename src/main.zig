@@ -50,6 +50,10 @@ pub fn main(init: std.process.Init) !void {
             if (generator == .null) return error.UnknownDocumentationRegion;
             try stdout(c, try checks.docs.generate(c, generator));
         },
+        .snippets => |args| {
+            if (args.zig_exe) |zig| c.zig = zig;
+            try checks.docs.check(&c, try c.options(args.config));
+        },
         .deprecations => |args| try deprecationsCommand(init.io, a, args),
         .lint => |args| {
             // A passing lint prints nothing; a failing one prints all it found, and a
@@ -314,10 +318,8 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     try checks.policy.layout(c, sources, config);
     timer.end(c.*, log);
     if (c.errors != 0) return;
-    timer = stage(c, "documentation");
-    try checks.docs.check(c, config);
-    timer.end(c.*, log);
-    if (c.errors != 0) return;
+    // The documented snippets are a check of their own (`snippets`), which a lint
+    // that fails here would otherwise hide.
     timer = stage(c, "test imports");
     try checks.imports.check(c, sources, code, config);
     timer.end(c.*, log);

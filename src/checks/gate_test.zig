@@ -154,3 +154,23 @@ test "generate takes the retired triggers out of ci/workflow.json, naming each, 
         return error.TestUnexpectedResult;
     }
 }
+
+test "the documented snippets are checked on their own, a broken one named where the lint refuses its configuration" {
+    const p = try Package.init();
+    defer p.deinit();
+    // A configuration glint 0.8 refuses (A002 is a rule it no longer has), and a README block
+    // that is not what its example makes: the snippets are judged all the same.
+    try p.write("ci/preflight.json", "{\"glint\":{\"rules\":[{\"id\":\"A002\",\"level\":\"gate\"}]},\"docs\":{\"usage\":{\"source\":\"usage.zig\",\"region\":\"usage\",\"module\":\"pkg\"}}}\n");
+    try p.write("usage.zig", "const pkg = @import(\"pkg\");\npub fn main() void {\n    // --- README:usage ---\n    pkg.run(1);\n    // --- README:usage ---\n}\n");
+    try p.write("README.md", "<!-- BEGIN GENERATED usage -->\nstale\n<!-- END GENERATED -->\n");
+    const stale = try p.preflight(&.{"snippets"});
+    try std.testing.expect(stale.term == .exited and stale.term.exited != 0);
+    try std.testing.expect(std.mem.find(u8, stale.stderr, "README.md: generated block 'usage' differs from its example") != null);
+    // Written as the example makes it, the snippets pass, whatever the lint says of the rest.
+    try p.write("README.md", "<!-- BEGIN GENERATED usage -->\n```zig\nconst pkg = @import(\"pkg\");\n\npkg.run(1);\n```\n<!-- END GENERATED -->\n");
+    const current = try p.preflight(&.{"snippets"});
+    if (current.term != .exited or current.term.exited != 0) {
+        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ current.stdout, current.stderr });
+        return error.TestUnexpectedResult;
+    }
+}

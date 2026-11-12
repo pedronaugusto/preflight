@@ -200,7 +200,7 @@ const Steps = struct {
 
     fn create(b: *std.Build, config: Config) Steps {
         const controls = declareCiOptions(b, config.timings_enabled);
-        const lint = configure.claim(b, "lint", "Check format, structure, Zig policy, docs and test imports");
+        const lint = configure.claim(b, "lint", "Check format, structure, Zig policy and test imports");
         const ci = configure.claim(b, "ci", "Run source checks, then the tests");
         ci.dependOn(config.tests);
         forceTests(config.tests);
@@ -409,11 +409,20 @@ const Steps = struct {
         fixing.setCwd(package.path("."));
         fixing.has_side_effects = true;
         configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (std's assert as aegis's, older written reasons as escapes, unused escapes gone), then report what is left").dependOn(&fixing.step);
+        // The documented snippets alone: a lint that fails, or refuses its configuration,
+        // never hides a broken one, and the hosted plan runs them as a job of their own.
+        const snippets = executable.run(b);
+        snippets.addArgs(&.{ "snippets", "--config", config.config, "--zig-exe", b.graph.zig_exe });
+        snippets.setCwd(package.path("."));
+        const snippets_step = configure.claim(b, "snippets", "Check the documented snippets, each region as zig build docs renders it");
+        snippets_step.dependOn(&snippets.step);
         if (steps.lint_enabled) {
-            // The lint is beside the tests, not before them: a red lint still runs the suite,
-            // and the step reports and fails on each.
+            // The lint and the snippets are beside the tests, not before them: a red lint
+            // still runs the suite and the snippets, and the step reports and fails on each.
             config.tests.dependOn(steps.lint);
+            config.tests.dependOn(snippets_step);
             steps.ci.dependOn(steps.lint);
+            steps.ci.dependOn(snippets_step);
         }
     }
 };

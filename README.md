@@ -70,7 +70,7 @@ hold, `ci/workflow.json` what the hosted gate runs, and `ci/layers.zig` a source
 to enforce; a project needs none of them to start. [sample/zero](sample/zero) is such a
 project, and preflight's own gate runs it on every host.
 
-`addCi` adds the steps its gate runs by name (`lint`, `ci`, `ci-check`, `ci-check-bench`,
+`addCi` adds the steps its gate runs by name (`lint`, `snippets`, `ci`, `ci-check`, `ci-check-bench`,
 `ci-link`, `ci-build`, `ci-run`, `plan`, `facts`, `cache`, `docs`, `deprecations`,
 `check-imports`, `surface`, `gate`, and with their options `bench`, `bench-build`, `bench-ab`, `fuzz`,
 `hardened`, `hardened-fuzz`, `hardened-tsan`, `check-consumer`). A package that already has a
@@ -488,7 +488,8 @@ the machine is not made and apk names the package, where an unstated one would d
 The gate has two tiers, the second holding everything the first checks:
 
 - **ci**: what every push to main and every pull request runs, on that commit: the source
-  checks, the Linux Debug suite in as many shards as `fast_shards` asks for, the macOS and
+  checks, the documented snippets (a job of their own, so a red lint never hides a broken
+  one), the Linux Debug suite in as many shards as `fast_shards` asks for, the macOS and
   Windows Debug suites (sharded as `shards` says), and an object compile of every configured
   cross target in as many jobs as `cross_jobs` asks for. Test, helper and public-module
   objects are compiled for each target, and the benchmarks in Debug: this proves

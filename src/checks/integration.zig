@@ -1675,6 +1675,13 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
     }
+    // `check` compiles what `ci-check` does here, running none of it: a benchmark and a program
+    // the tests run (as an example is) fail it broken, where a benchmark failed only `test`'s smoke run.
+    for ([_][]const u8{ "helper", "bench" }) |kind| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }, .cwd = .{ .dir = tmp.dir } });
+        try std.testing.expect(result.term == .exited and result.term.exited != 0);
+        try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
+    }
     // The timed ReleaseFast program is a distinct artifact from the Debug one
     // `ci-check` compiles. A successful Debug compile must not hide an error in
     // that artifact, so `ci-check-bench`, which the release tier runs,

@@ -258,21 +258,27 @@ const Steps = struct {
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
-        // `check` compiles what the ci tier's cross-compile jobs do, for each target they
-        // name: a test behind a target's branch (a Linux-only body, compiled nowhere on a Mac)
-        // fails on the machine at hand, not first in the hosted run. The build's own `check`
-        // takes it where it has one, else preflight's is the step. A build that takes no
-        // `-Dtarget` (preflight's own, whose jobs run in its sample) has no other target.
+        // `check` compiles, running nothing: here, all `ci-check` does (the tests, the programs
+        // they run, an example among them, the installed artifacts, the public modules and the
+        // benchmarks in Debug), so a broken benchmark fails it and not only a smoke run of
+        // `test`; and what the ci tier's cross-compile jobs do, for each target they name, so a
+        // test behind a target's branch (a Linux-only body, compiled nowhere on a Mac) fails on
+        // the machine at hand, not first in the hosted run. The build's own `check` takes it
+        // where it has one, else preflight's is the step. A build that takes no `-Dtarget`
+        // (preflight's own, whose jobs run in its sample) has no other target.
         const own_check: ?*std.Build.Step = if (b.top_level_steps.get("check")) |own| &own.step else null;
+        const check = own_check orelse configure.claim(b, "check", "Compile, without linking or running, the tests, the programs they run, the benchmarks and the public modules, and the package for every target of the ci tier");
         const targets: ?*std.Build.Step = if (b.available_options_map.contains("target")) step: {
             const run = executable.run(b);
             run.addArgs(&.{ "targets", "--zig-exe", b.graph.zig_exe });
             run.setCwd(package.path("."));
             run.has_side_effects = true;
-            (own_check orelse configure.claim(b, "check", "Compile the package for every target of the ci tier, as its cross-compile jobs do, without linking or running")).dependOn(&run.step);
+            check.dependOn(&run.step);
             break :step &run.step;
         } else null;
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build, .targets = targets, .check = own_check });
+        // After the projection read `check`, so it never reads its own objects back.
+        check.dependOn(steps.objects);
         if (config.portable_tests) portable.add(b, package, config.tests, executable, counted.names);
         const plan = executable.run(b);
         plan.addArg("plan");

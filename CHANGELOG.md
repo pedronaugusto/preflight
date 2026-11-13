@@ -56,6 +56,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Pins aegis 1243edb4 (sample/bay too), where it pinned 688eb2b: that commit's `aegis_` field rename left reads of the old names in methods aegis's own build never reached, so a consumer that called one failed to compile (relic through xenoglyph: `bounded.Array.len`, "no field named 'used'"). aegis now compiles every container's methods in a test of its own.
 - `gate` lost its lines when its standard output was a file: each line was written at the file's start, over the one before.
 - The lint reads a package's `build.zig` in the module Zig compiles it in: each dependency it imports by name (`@import("preflight")`) is that dependency's build script, as Zig's build runner binds it, and the scripts those import in turn; the build passes them (`preflight lint --build-scripts FILE`). Its calls into a dependency's build were left undecided. glint is told which compilations compile each file (the build runner's, the program's, or both), so a dependency's build script a build script imports by aegis's name is never aegis's module, and no file that imports aegis is left undecided by it. An import of a `.zon` file (`@import("build.zig.zon")`) is a file, never a module the build lacks.
 - The test step runs the suite beside the lint, not after it: a red lint skipped every unit test, so a gate on a package whose lint fails reported without its tests having run. Both run now, and the step reports and fails on each.

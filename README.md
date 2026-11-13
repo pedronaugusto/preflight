@@ -377,6 +377,15 @@ dev dependency with bay); a package that declares none has no `fuzz` step and fe
 nothing for one, and one that names a `fuzz_step` without it is refused. The fuzzing,
 the corpora and the shrinking are shakedown's; preflight wires the step.
 
+On GitHub the release tier's fuzz job does the same for `fuzz_minutes` of `ci/workflow.json`
+(15 by default, at most 330, 0 for none): `zig build ci-fuzz`, where `preflight fuzz-budget`
+spends the minutes in sessions one after another, each paced to what is left, since Zig's
+`--fuzz` counts runs and not time. The first finding fails the job, each finding's file
+printed in its log and summary (the tape found and the shrunk one); an input that crashed the
+fuzzer fails it too, kept at `f/crash`. The corpora are cached from run to run and kept with
+the findings as the run's artifact. Dispatching the caller with tier `fuzz` runs the job
+alone, for `fuzz-minutes` when given: fuzz a package there, not on the machine at hand.
+
 What is not fuzzed is visible. `zig build lint` reports, without failing, the parsers of
 untrusted input the package exports with no fuzz target: public functions named as
 parsers (`parse…`, `decode…`, `deserialize…`, `unpack…`, `unmarshal…`, `fromBytes…`)
@@ -498,7 +507,8 @@ The gate has two tiers, the second holding everything the first checks:
   ones), ReleaseSmall compiled on each system, every cross target with the ReleaseFast
   benchmarks, the links of every macOS and Windows target (a macOS one on a Mac only when its
   build links a framework), TSan, the fuzz campaigns and the hardened checks where
-  configured, and the Debug suite on Linux with Zig master. A green release run leaves its
+  configured, the fuzz job (`fuzz_minutes` of the package's properties, where it declares
+  shakedown), and the Debug suite on Linux with Zig master. A green release run leaves its
   proof, the artifact `preflight-release-<sha>`, which `preflight attest` looks for.
 
 The release tier also runs the Debug suite on Linux with Zig master,
@@ -562,6 +572,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 - `windows_git_latest`: upgrade Git for Windows first.
 - `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`:
   minutes, 20 by default.
+- `fuzz_minutes`: the release tier's fuzz job's minutes, 15 by default, at most 330; 0 for no
+  fuzz job. A dispatched fuzz run (tier `fuzz`) can give its own.
 
 `ci/workflow.json` is the declarative input, and the caller is wholly generated from it:
 both reusable-workflow references, the checkout pin, triggers, concurrency policy, the

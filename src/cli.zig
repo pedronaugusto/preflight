@@ -23,6 +23,7 @@ pub const Cli = struct {
         attest,
         profile: Profile,
         fuzz_campaign: Campaign,
+        fuzz_budget: Budget,
         unsharded: Unsharded,
         counts: Counts,
         executable: Executable,
@@ -217,6 +218,20 @@ pub const Campaign = struct {
     };
 };
 
+pub const Budget = struct {
+    minutes: ?u32 = null,
+    store: []const u8 = ".zig-cache/preflight-fuzz",
+    fuzzer: []const []const u8,
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "The fuzz job: the package's properties fuzzed for a budget of minutes, in shakedown-fuzz sessions, the first finding failing it with its shrunk tape",
+        .options = .{
+            .minutes = .{ .value_name = "N", .help = "The minutes to fuzz for; else PREFLIGHT_FUZZ_MINUTES, else ci/workflow.json's fuzz_minutes, else 15" },
+            .store = .{ .value_name = "DIR", .hint = .directory, .help = "Where the corpora and findings are kept, per package" },
+            .fuzzer = .{ .positional = true, .raw = true, .value_name = "FUZZER", .help = "shakedown-fuzz and its --package, --bay or --zig, and --step, after --" },
+        },
+    };
+};
+
 pub const Unsharded = struct {
     name: []const u8 = "test",
     pub const spec: ensign.Spec(@This()) = .{
@@ -349,6 +364,10 @@ test "the build's helper commands" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    const budget = (try parsed(a, &.{ "fuzz-budget", "--", "/s/shakedown-fuzz", "--package", "/p", "--step", "wire" })).command.fuzz_budget;
+    try std.testing.expectEqual(@as(?u32, null), budget.minutes);
+    try std.testing.expectEqualStrings(".zig-cache/preflight-fuzz", budget.store);
+    try std.testing.expectEqualStrings("wire", budget.fuzzer[4]);
     const campaign = (try parsed(a, &.{ "fuzz-campaign", "--cache", "/c", "--cwd", "/p", "--", "/z/zig", "build", "unit", "-Dci-hardened=true", "--fuzz=1000" })).command.fuzz_campaign;
     try std.testing.expectEqualStrings("/c", campaign.cache);
     try std.testing.expectEqual(5, campaign.build.len);

@@ -46,6 +46,37 @@ pub fn coexist(c: *src.Context) ![]const []const u8 {
     return names;
 }
 
+/// Whether the manifest declares the package `wanted`, among its dependencies or bay's
+/// development ones (`.dev_dependencies`): what the build finds among its packages
+/// (`configure.declared`), read without configuring it. A directory with no manifest declares none.
+pub fn declares(c: *src.Context, wanted: []const u8) !bool {
+    if (!try c.exists("build.zig.zon")) return false;
+    const manifest = try parsed(c);
+    for ([_][]const u8{ "dependencies", "dev_dependencies" }) |group| {
+        const value = field(manifest, group) orelse continue;
+        if (value != .struct_literal) continue;
+        for (value.struct_literal.names) |each| if (std.mem.eql(u8, each.get(manifest.zoir), wanted)) return true;
+    }
+    return false;
+}
+
+test "a manifest declares a package among its dependencies or its development ones" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    try std.testing.expect(!try declares(&c, "shakedown"));
+    for ([_][]const u8{ "dependencies", "dev_dependencies" }) |group| {
+        try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .p, .{s} = .{{ .shakedown = .{{ .path = \"../shakedown\" }} }} }}", .{group}) });
+        try std.testing.expect(try declares(&c, "shakedown"));
+        try std.testing.expect(!try declares(&c, "shake"));
+    }
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .p, .dependencies = .{} }" });
+    try std.testing.expect(!try declares(&c, "shakedown"));
+}
+
 /// A package by its identity: the name and fingerprint its `build.zig.zon` gives, each where
 /// written. glint knows a library (aegis) by both, under whatever name a program imports it.
 pub const Identity = struct { name: []const u8 = "", fingerprint: ?u64 = null };

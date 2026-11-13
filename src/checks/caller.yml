@@ -11,10 +11,14 @@ on:
   workflow_dispatch:
     inputs:
       tier:
-        description: ci (what every push and pull request runs) or release (the full matrix, which a tag requires)
+        description: ci (what every push and pull request runs), release (the full matrix, which a tag requires) or fuzz (the fuzz job alone)
         type: choice
-        options: [ci, release]
+        options: [ci, release, fuzz]
         default: ci
+      fuzz-minutes:
+        description: The fuzz job's minutes, when not ci/workflow.json's fuzz_minutes (at most 330)
+        type: string
+        default: ''
 concurrency:
   # Every push to main runs on its own commit, so each commit gets its status; a newer
   # update of a pull request replaces the run of the older; a dispatched or scheduled
@@ -31,5 +35,6 @@ jobs:
       tier: ${{ github.event_name == 'schedule' && 'release' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci' }}
       working-directory: @DIRECTORY@
       preflight-ref: @PIN@
-@MATRICES@      windows-git-latest: @WINDOWS_GIT@
+@MATRICES@      fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}
+      windows-git-latest: @WINDOWS_GIT@
       compile-once: @COMPILE_ONCE@

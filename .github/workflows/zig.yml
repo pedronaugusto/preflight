@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       tier:
-        description: ci (every push and pull request) or release (weekly, by dispatch, and before a tag)
+        description: ci (every push and pull request), release (weekly, by dispatch, and before a tag) or fuzz (the fuzz job alone, by dispatch)
         type: string
         default: ci
       working-directory:
@@ -26,6 +26,14 @@ on:
       release-run-matrix:
         type: string
         default: '{"include":[]}'
+      fuzz-matrix:
+        description: The fuzz job, zig build plan -- --tier fuzz; empty for a package with nothing to fuzz
+        type: string
+        default: '{"include":[]}'
+      fuzz-minutes:
+        description: A dispatched fuzz run's minutes, when not ci/workflow.json's fuzz_minutes
+        type: string
+        default: ''
       compile-once:
         type: boolean
         default: false
@@ -38,17 +46,20 @@ permissions:
   actions: read
 jobs:
   tier:
-    if: '!contains(fromJSON(''["ci","release"]''), inputs.tier)'
+    if: >-
+      !contains(fromJSON('["ci","release","fuzz"]'), inputs.tier) || inputs.tier == 'fuzz' && inputs.fuzz-matrix == '{"include":[]}'
     runs-on: ubuntu-latest
     steps:
       - env:
           TIER: ${{ inputs.tier }}
-        run: echo "tier must be ci or release, not '$TIER'" && exit 1
+        run: |
+          if [ "$TIER" = fuzz ]; then echo "fuzz: this package has no fuzz job: it declares no shakedown, or ci/workflow.json's fuzz_minutes is 0"; exit 1; fi
+          echo "tier must be ci, release or fuzz, not '$TIER'" && exit 1
   # The checks are built once, for every runner, and every job takes them: no
   # job compiles the toolchain. The same job tells a dispatched ci run whether its
   # branch changes documentation alone, which needs none of the gate.
   toolchain:
-    if: contains(fromJSON('["ci","release"]'), inputs.tier)
+    if: contains(fromJSON('["ci","release","fuzz"]'), inputs.tier)
     runs-on: ubuntu-latest
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
@@ -89,13 +100,15 @@ jobs:
         run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight skip
   gate:
     needs: toolchain
-    if: needs.toolchain.outputs.docs-only != 'true' && contains(fromJSON('["ci","release"]'), inputs.tier)
+    if: needs.toolchain.outputs.docs-only != 'true' && contains(fromJSON('["ci","release","fuzz"]'), inputs.tier)
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.job_timeout }}
+    # A dispatched fuzz run's minutes are its own, which the plan never saw: its job has
+    # GitHub's whole limit, and the budget (at most 330 minutes) ends it first.
+    timeout-minutes: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.ci-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -161,6 +174,16 @@ jobs:
         env:
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
+      # The fuzz job's corpora, from the last run that saved them: each run starts where the
+      # last one left the fuzzer, and saves what it adds.
+      - name: Restore the fuzz corpora
+        if: matrix.step == 'ci-fuzz'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/cache/f
+          key: preflight-fuzz-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            preflight-fuzz-${{ runner.os }}-
       - name: Run the gate
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
@@ -172,8 +195,9 @@ jobs:
           PREFLIGHT_TARGETS: ${{ matrix.targets }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
           # With the job's start, its deadline: a test running then ends named.
-          PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
+          PREFLIGHT_JOB_TIMEOUT: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
+          PREFLIGHT_FUZZ_MINUTES: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes || '' }}
         run: preflight run
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
@@ -183,6 +207,24 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: Save the fuzz corpora
+        if: always() && matrix.step == 'ci-fuzz'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/cache/f
+          key: preflight-fuzz-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # What the fuzz job found, each finding's tape and the shrunk one, and the corpora,
+      # an input that crashed the fuzzer among them (f/crash).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && matrix.step == 'ci-fuzz'
+        with:
+          name: fuzz-findings-${{ inputs.tier }}-${{ github.run_attempt }}
+          path: |
+            ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/findings
+            ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/cache/f
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -421,7 +463,8 @@ jobs:
   # shards. Only a green run's fold is the proof artifact.
   profile:
     needs: [toolchain, gate, compile, execute]
-    if: always() && needs.gate.result == 'success'
+    # The fuzz job runs no tests to time.
+    if: always() && needs.gate.result == 'success' && inputs.tier != 'fuzz'
     runs-on: ubuntu-latest
     env:
       FINISHED: ${{ (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') }}

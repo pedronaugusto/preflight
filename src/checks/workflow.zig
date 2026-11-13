@@ -246,11 +246,11 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     try relative(directory, true);
     var matrices: std.Io.Writer.Allocating = .init(a);
     defer matrices.deinit();
-    for ([_]matrix.Tier{ .ci, .release }) |tier| {
+    for ([_]matrix.Tier{ .ci, .release, .fuzz }) |tier| {
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         for ([_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run }, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            // The ci tier builds where it runs: no link is shared between its jobs.
-            if (tier == .ci and suffix.len != 0) continue;
+            // The ci tier builds where it runs, as the fuzz job does: no link is shared between their jobs.
+            if (tier != .release and suffix.len != 0) continue;
             try matrices.writer.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try matrix.include(a, group) });
         }
     }
@@ -356,10 +356,10 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     const second = try render(a, config, next_pin, ".", false, "ci.yml", 0);
     try std.testing.expect(std.mem.find(u8, second, first_pin) == null);
     try std.testing.expect(std.mem.find(u8, second, next_pin) != null);
-    for ([_]matrix.Tier{ .ci, .release }) |tier| {
+    for ([_]matrix.Tier{ .ci, .release, .fuzz }) |tier| {
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         for ([_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run }, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            if (tier == .ci and suffix.len != 0) continue;
+            if (tier != .release and suffix.len != 0) continue;
             const block = try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try matrix.include(a, group) });
             try std.testing.expect(std.mem.find(u8, second, block) != null);
         }
@@ -464,7 +464,7 @@ test "every caller runs the ci tier on each push to main and pull request, and t
     try std.testing.expect(std.mem.find(u8, plain, "  pull_request:\n") != null);
     try std.testing.expect(std.mem.find(u8, plain, try a.print("    - cron: '{s}'\n", .{try weekly(a, 0x1234)})) != null);
     try std.testing.expect(std.mem.find(u8, plain, "github.event_name == 'schedule' && 'release' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci'") != null);
-    try std.testing.expect(std.mem.find(u8, plain, "options: [ci, release]") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "options: [ci, release, fuzz]") != null);
     // Each push runs on its own commit; nothing confirms another run's, and the release tier runs weekly.
     try std.testing.expect(std.mem.find(u8, plain, "format('push-{0}', github.sha)") != null);
     for ([_][]const u8{ "merge_group", "attest", "status-only", "fast-matrix", "merge-matrix" }) |gone| try std.testing.expect(std.mem.find(u8, plain, gone) == null);

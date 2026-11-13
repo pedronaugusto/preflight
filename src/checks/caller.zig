@@ -10,7 +10,7 @@ const actions = @import("actions.zig");
 const workflow = @import("workflow.zig");
 const matrix = @import("matrix.zig");
 
-/// Adds `sdk_targets` to a gate configuration, read from the build in the gate's directory.
+/// Adds `sdk_targets` and `fuzzed` to a gate configuration, read from the build in the gate's directory.
 pub const Sdk = *const fn (*src.Context, *src.Value, []const u8) anyerror!void;
 
 /// A git command's outcome, its output trimmed.

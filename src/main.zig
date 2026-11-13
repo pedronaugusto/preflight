@@ -40,6 +40,11 @@ pub fn main(init: std.process.Init) !void {
             c.environ_map = init.environ_map;
             try checks.campaign.run(&c, args.cache, args.cwd, args.build);
         },
+        .fuzz_budget => |args| {
+            c.environ_map = init.environ_map;
+            c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
+            try checks.budget.run(&c, try checks.budget.minutes(&c, args.minutes, try c.options("ci/workflow.json")), args.store, args.fuzzer);
+        },
         .run => try runGate(c, init.environ_map),
         .skip => |args| try skipCommand(&c, init.environ_map, args),
         .attest => try checks.attest.run(c, init.environ_map),
@@ -105,10 +110,12 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(
     }
 }
 
-/// The macOS targets of `config` whose build links a framework, as `sdk_targets`: only their
-/// links need a Mac, with Apple's SDK; Zig links any other macOS target on Linux. Each is read
-/// from the build in `directory`, where the gate runs, configured for that target, so a
-/// framework linked for macOS alone counts.
+/// What the planner reads from the build in `directory`, where the gate runs, beside `config`:
+/// the macOS targets whose build links a framework, as `sdk_targets` (only their links need a
+/// Mac, with Apple's SDK; Zig links any other macOS target on Linux), each read from the build
+/// configured for that target, so a framework linked for macOS alone counts; and whether the
+/// build has the fuzz job's step, as `fuzzed`: it has when its manifest declares shakedown,
+/// read there without configuring the build.
 fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerror!void {
     if (config.* != .object) return;
     var gate = c.*;
@@ -127,6 +134,7 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
         if (try facts.linksFramework(c.a, snapshot)) try linking.append(.{ .string = name });
     }
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
+    try config.object.put(c.a, "fuzzed", .{ .bool = try checks.manifest.declares(&gate, "shakedown") });
 }
 
 /// `gate`: what a release needs beside its hosted release run, before `bay release` asks

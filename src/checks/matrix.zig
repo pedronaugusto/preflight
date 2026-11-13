@@ -101,7 +101,48 @@ const workflow_options = [_][]const u8{
     "riscv64_seconds",    "measured",
     "durations",          "sdk_targets",
     "policy",
+    // The fuzz job's minutes, and whether the build has its step (`ci-fuzz`), which `plan`
+    // and `gate` read from the build as they read `sdk_targets`.
+                "fuzz_minutes",
+    "fuzzed",
 };
+
+/// The minutes the fuzz job fuzzes for, `fuzz_minutes` in the configuration: 15 unless it
+/// says, 0 for no fuzz job. The job's own limit is these and 20 more, for the build that comes
+/// first and the session that ends last; GitHub ends a job at 360.
+pub fn fuzzMinutes(config: src.Value) !usize {
+    const value = src.get(config, "fuzz_minutes");
+    if (value == .null) return 15;
+    if (value != .integer or value.integer < 0 or value.integer > max_fuzz_minutes) {
+        problem = "fuzz_minutes: a whole number of minutes from 0 (no fuzz job) to 330";
+        return error.InvalidFuzzMinutes;
+    }
+    return @intCast(value.integer);
+}
+
+/// The most minutes a fuzz job fuzzes for: GitHub's 360, less the 20 its build and last
+/// session are given and 10 to spare.
+pub const max_fuzz_minutes = 330;
+
+/// The fuzz job: the package's properties under the fuzzer for its minutes (`ci-fuzz`), where
+/// the build has the step, which it has when the package declares shakedown, and its minutes
+/// are not 0. The release tier runs it, and a dispatched fuzz run runs it alone.
+fn fuzzJob(a: std.mem.Allocator, config: src.Value) !?Job {
+    const budget = try fuzzMinutes(config);
+    const fuzzed = src.get(config, "fuzzed");
+    if (fuzzed != .null and fuzzed != .bool) return error.InvalidWorkflowConfig;
+    if (budget == 0 or fuzzed != .bool or !fuzzed.bool) return null;
+    var job: Job = .{
+        .os = hosts[0],
+        .name = "fuzz",
+        .step = "ci-fuzz",
+        .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+        .setup = true,
+        .job_timeout = budget + 20,
+    };
+    job.cache_key = try key(a, job);
+    return job;
+}
 
 fn shardCount(value: src.Value) !usize {
     if (value == .null) return 1;
@@ -156,11 +197,19 @@ pub const Tier = enum {
     /// the ReleaseFast benchmarks and every cross target, the SDK links, ThreadSanitizer and the opt-in hardened
     /// checks; the run on Zig master joins it.
     release,
+    /// The fuzz job alone, by dispatch: a session fuzzes a package on GitHub's runners and not on
+    /// the machine at hand. The release tier runs it too.
+    fuzz,
 };
 
 /// The sole planner also owns opt-in native safety execution jobs, which only the release tier runs.
 pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
+    if (tier == .fuzz) {
+        try validate(a, config);
+        if (try fuzzJob(a, config)) |job| try jobs.append(a, job);
+        return jobs.toOwnedSlice(a);
+    }
     try jobs.appendSlice(a, try basePlan(a, config, tier));
     const policy = family.of(src.get(config, family.key)) catch {
         problem = family.refusal;
@@ -196,6 +245,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
             try jobs.append(a, job);
         };
     }
+    if (tier == .release) if (try fuzzJob(a, config)) |job| try jobs.append(a, job);
     try declaredJobs(a, config, tier, &jobs);
     return jobs.toOwnedSlice(a);
 }
@@ -239,6 +289,8 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
             if (tiers != .array or tiers.array.items.len == 0) return error.InvalidDeclaredJob;
             for (tiers.array.items) |item| {
                 const each = std.meta.stringToEnum(Tier, try src.string(item, "")) orelse return error.InvalidDeclaredJob;
+                // The fuzz tier is the fuzz job's alone.
+                if (each == .fuzz) return error.InvalidDeclaredJob;
                 if (each == tier) wanted = true;
             }
         }
@@ -308,6 +360,7 @@ fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     switch (tier) {
         .ci => return ciPlan(a, config),
         .release => {},
+        .fuzz => unreachable,
     }
     var jobs: std.ArrayList(Job) = .empty;
     // Every mode on every runner, so that a gate at hand on any of them proves its own system at
@@ -720,6 +773,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         }
     }
     for ([_][]const u8{ "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout" }) |name| _ = try minutes(config, name);
+    _ = try fuzzMinutes(config);
     for ([_][]const u8{ "compile_step", "setup_step", "before_tests_step" }) |name| {
         const value = src.get(config, name);
         if (value != .null and (value != .string or value.string.len == 0 or std.mem.findAny(u8, value.string, " \t\r\n") != null)) return error.InvalidWorkflowStep;
@@ -1263,6 +1317,7 @@ test "the ci tier executes macOS and Windows, and only the release tier ARM" {
             // Every mode on macOS (two shards), Windows and both ARM runners, and the
             // ReleaseSmall compiles of macOS and Windows.
             .release => 2 * 3 + 3 + 2 * 3 + 2,
+            .fuzz => unreachable,
         }), executed);
     }
 }
@@ -1513,4 +1568,50 @@ test "a cross compile's build runs with the jobs PREFLIGHT_JOBS allows, and with
         try environ.put("PREFLIGHT_JOBS", bad);
         try std.testing.expectError(error.InvalidJobs, jobsFrom(&environ));
     }
+}
+
+test "the fuzz job: the release tier's and a dispatched fuzz run's alone, where the build has its step, for its minutes and 20 more" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parse = struct {
+        fn value(allocator: std.mem.Allocator, text: []const u8) !src.Value {
+            return (try std.json.parseFromSlice(src.Value, allocator, text, .{})).value;
+        }
+    }.value;
+    const fuzzed = try parse(a, "{\"fuzzed\":true,\"build_args\":[\"-Dsuite=full\"]}");
+    const found = struct {
+        fn job(jobs: []const Job) ?Job {
+            for (jobs) |each| if (std.mem.eql(u8, each.step, "ci-fuzz")) return each;
+            return null;
+        }
+    }.job;
+    // Never the ci tier's.
+    try std.testing.expect(found(try plan(a, fuzzed, .ci)) == null);
+    const release = found(try plan(a, fuzzed, .release)).?;
+    try std.testing.expectEqualStrings("fuzz", release.name);
+    try std.testing.expectEqualStrings(hosts[0], release.os);
+    try std.testing.expectEqual(@as(usize, 35), release.job_timeout);
+    try std.testing.expect(release.setup);
+    try std.testing.expectEqualStrings("-Dci-lint=false -Dci-bench-smoke=false -Dsuite=full", release.args);
+    // A dispatched fuzz run is that job alone, the same job.
+    const alone = try plan(a, fuzzed, .fuzz);
+    try std.testing.expectEqual(@as(usize, 1), alone.len);
+    try std.testing.expectEqualStrings(release.cache_key, alone[0].cache_key);
+    try std.testing.expectEqual(@as(usize, 1), (try split(a, fuzzed, alone, .fuzz)).native.len);
+    // Its minutes, from the configuration.
+    try std.testing.expectEqual(@as(usize, 80), found(try plan(a, try parse(a, "{\"fuzzed\":true,\"fuzz_minutes\":60}"), .release)).?.job_timeout);
+    // None where the build has no fuzz step (it declares no shakedown), or its minutes are 0.
+    for ([_][]const u8{ "{}", "{\"fuzzed\":false}", "{\"fuzzed\":true,\"fuzz_minutes\":0}" }) |text| {
+        const config = try parse(a, text);
+        try std.testing.expect(found(try plan(a, config, .release)) == null);
+        try std.testing.expectEqual(@as(usize, 0), (try plan(a, config, .fuzz)).len);
+    }
+    // Minutes a hosted job cannot hold, or none, are refused.
+    for ([_][]const u8{ "{\"fuzz_minutes\":331}", "{\"fuzz_minutes\":-1}", "{\"fuzz_minutes\":\"15\"}" }) |text| {
+        try std.testing.expectError(error.InvalidFuzzMinutes, plan(a, try parse(a, text), .release));
+        try std.testing.expectError(error.InvalidFuzzMinutes, plan(a, try parse(a, text), .fuzz));
+    }
+    // The fuzz tier is the fuzz job's: a declared job cannot join it.
+    try std.testing.expectError(error.InvalidDeclaredJob, plan(a, try parse(a, "{\"jobs\":[{\"name\":\"more\",\"step\":\"more\",\"tiers\":[\"fuzz\"]}]}"), .release));
 }

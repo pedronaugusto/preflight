@@ -103,13 +103,16 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     try contains(caller, "preflight-ref: ${{ github.sha }}");
     try contains(caller, "working-directory: \"sample\"");
     var config = (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/workflow.json"), .{})).value;
-    // `plan` reads the macOS targets that link a framework from the sample's build: none does.
+    // `plan` reads the macOS targets that link a framework from the sample's build (none
+    // does), and whether it has the fuzz job's step: it has, as it declares shakedown.
     try config.object.put(a, "sdk_targets", .{ .array = .init(a) });
-    for ([_]matrix.Tier{ .ci, .release }) |tier| {
+    try config.object.put(a, "fuzzed", .{ .bool = true });
+    try std.testing.expectEqual(@as(usize, 1), (try matrix.plan(a, config, .fuzz)).len);
+    for ([_]matrix.Tier{ .ci, .release, .fuzz }) |tier| {
         const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
         const groups = [_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run };
         for (groups, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            if (tier == .ci and suffix.len != 0) continue;
+            if (tier != .release and suffix.len != 0) continue;
             try contains(caller, try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{
                 tier, suffix, try matrix.include(a, group),
             }));
@@ -205,7 +208,7 @@ test "the gate runs the step each planned job names, on the targets it names" {
     try contains(body, "STEP: ${{ matrix.step }}");
     try contains(body, "PREFLIGHT_TARGETS: ${{ matrix.targets }}");
     try contains(body, "hardened-fuzz");
-    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.ci-matrix) }}");
+    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}");
 }
 
 test "one job builds the checks, and the others take them" {
@@ -237,4 +240,34 @@ test "toolchain fuzz artifacts follow the configured shared local cache" {
         try contains(body, "path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v");
         try contains(body, "if-no-files-found: error");
     }
+}
+
+test "the fuzz job: dispatched alone or in the release tier, its corpora cached, its findings and corpora kept, red on a finding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const caller = try read(a, "src/checks/caller.yml");
+    try contains(caller, "options: [ci, release, fuzz]");
+    try contains(caller, "fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}");
+    const workflow = try read(a, ".github/workflows/zig.yml");
+    // A fuzz dispatch for a package with no fuzz job fails at once, saying why.
+    try contains(try job(workflow, "tier"), "inputs.tier == 'fuzz' && inputs.fuzz-matrix == '{\"include\":[]}'");
+    try contains(try job(workflow, "toolchain"), "contains(fromJSON('[\"ci\",\"release\",\"fuzz\"]'), inputs.tier)");
+    const gate = try job(workflow, "gate");
+    try contains(gate, "inputs.tier == 'fuzz' && inputs.fuzz-matrix ||");
+    // A dispatch's own minutes: the job holds GitHub's whole limit and the budget ends it.
+    try contains(gate, "timeout-minutes: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}");
+    try contains(gate, "PREFLIGHT_FUZZ_MINUTES: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes || '' }}");
+    const store = "${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/";
+    // The corpora come back before the gate and are saved after it, whatever it found.
+    const restore = std.mem.find(u8, gate, "uses: actions/cache/restore@").?;
+    const run = std.mem.find(u8, gate, "run: preflight run").?;
+    const save = std.mem.find(u8, gate, "uses: actions/cache/save@").?;
+    try std.testing.expect(restore < run and run < save);
+    try contains(gate, try a.print("path: {s}cache/f\n", .{store}));
+    try contains(gate, "      - name: Save the fuzz corpora\n        if: always() && matrix.step == 'ci-fuzz'\n");
+    // Findings, their tapes among them, and the corpora, an input that crashed the fuzzer too.
+    try contains(gate, try a.print("            {s}findings\n            {s}cache/f\n", .{ store, store }));
+    // The fuzz run times no tests.
+    try contains(try job(workflow, "profile"), "inputs.tier != 'fuzz'");
 }

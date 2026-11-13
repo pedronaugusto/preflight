@@ -90,7 +90,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
 /// The step a run of the build again runs for `name`: `ci-test`, the tests alone, where `name`
 /// is the package's tests step, which runs the source checks beside them; any other step as
 /// named. The source checks are the source checks job's, not each hardened run's.
-fn testsAlone(b: *std.Build, tests: *std.Build.Step, name: []const u8) []const u8 {
+pub fn testsAlone(b: *std.Build, tests: *std.Build.Step, name: []const u8) []const u8 {
     const named = b.top_level_steps.get(name) orelse return name;
     return if (&named.step == tests) "ci-test" else name;
 }

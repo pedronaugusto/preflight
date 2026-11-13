@@ -1476,6 +1476,39 @@ test "a fuzz test two test runs of one campaign hold is named before the fuzzers
     try std.testing.expect(std.mem.find(u8, twice.stderr, "is in use by another fuzzer") == null);
 }
 
+test "the fuzz job fails on an input the fuzzer finds failing, and keeps it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    if (builtin.target.os.tag == .windows or @bitSizeOf(usize) != 64) return;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // Known bad: nearly every input fails, so the first session finds one.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
+        \\const std = @import("std");
+        \\test "fails on most inputs" {
+        \\    try std.testing.fuzz({}, struct {
+        \\        fn one(_: void, smith: *std.testing.Smith) !void {
+        \\            var bytes: [1]u8 = undefined;
+        \\            smith.bytes(&bytes);
+        \\            if (bytes[0] != 0xaa) return error.SeededBadInput;
+        \\        }
+        \\    }.one, .{});
+        \\}
+        \\
+    });
+    var env = try std.testing.environ.createMap(a);
+    try env.put("PREFLIGHT_FUZZ_MINUTES", "1");
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-fuzz" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    try std.testing.expect(!command.succeeded(bad));
+    if (std.mem.find(u8, bad.stderr, "ci-fuzz: session 1 failed on an input the fuzzer kept at ") == null) std.debug.print("{s}", .{bad.stderr});
+    try std.testing.expect(std.mem.find(u8, bad.stderr, "ci-fuzz: session 1 failed on an input the fuzzer kept at ") != null);
+    // In the store the hosted job keeps as an artifact, under the package's name.
+    const name = std.Io.Dir.path.basename(try tmp.dir.realPathFileAlloc(std.testing.io, ".", a));
+    try tmp.dir.access(std.testing.io, try std.Io.Dir.path.join(a, &.{ ".zig-cache/preflight-fuzz", name, "cache/f/crash" }), .{});
+}
+
 test "timing records of two test runs with one name stay apart" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

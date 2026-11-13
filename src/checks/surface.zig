@@ -12,11 +12,17 @@
 //! changed declaration, a breaking change, but for a constant's value (which `added` lists)
 //! and a struct that requires fewer fields than it did.
 //!
+//! A facade is read through: an import of a module of the package's own (`pub const archive =
+//! core.archive` with `core = @import("relic_core")`, or `@import("relic_core").archive`) leads
+//! where the configured build binds the name in a module that compiles the file, as glint's
+//! lint reads it (`assembly.ModuleMap`), so the declaration is listed with its shape.
+//!
 //! What the lines cannot see: the body of a function that returns a type, an inferred error
 //! set (`!T`), which only the compiler's analysis knows, and the members of what another
 //! package's module declares (`@import("std")` is a line, not std's surface).
 const std = @import("std");
 const glint = @import("glint");
+const assembly = @import("glint/assembly.zig");
 const Ast = std.zig.Ast;
 
 /// A module the package exports: its name and root file, relative to the package's root.
@@ -27,14 +33,21 @@ const max_files = 4096;
 const max_depth = 32;
 
 /// The surface's lines, sorted and without repeats. `reader.read(a, path)` gives a file of the
-/// package by its path from the package's root, or null when it is not there. `io` is asked for
-/// a cancel before each file glint builds.
-pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: []const Module, reader: anytype) ![]const []const u8 {
+/// package by its path from the package's root, or null when it is not there. `builds.get()`
+/// gives the configured build's modules, whose bindings lead an import of a module of the
+/// package's own to its root; it is asked on the first import of a module, so a surface that
+/// imports none never configures the build. `io` is asked for a cancel before each file glint
+/// builds.
+pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: []const Module, reader: anytype, builds: anytype) ![]const []const u8 {
     var paths: std.ArrayList([]const u8) = .empty;
     var texts: std.ArrayList([]const u8) = .empty;
     var index: std.StringHashMapUnmanaged(u32) = .empty;
     var edges: std.ArrayList(glint.Project.Import) = .empty;
-    for (modules) |module| _ = try load(a, reader, try normalize(a, "", module.root), &paths, &texts, &index);
+    // One read of each file, for the module map and the project alike.
+    var cache: std.StringHashMapUnmanaged(?[]const u8) = .empty;
+    const cached: Cached(@TypeOf(reader)) = .{ .reader = reader, .cache = &cache };
+    var map: ?assembly.ModuleMap = null;
+    for (modules) |module| _ = try load(a, cached, try normalize(a, "", module.root), &paths, &texts, &index);
     // Each file's relative imports, read in turn: the files a module's root reaches.
     var next: usize = 0;
     while (next < paths.items.len) : (next += 1) {
@@ -44,12 +57,25 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: [
             if (tag != .builtin_call_two and tag != .builtin_call_two_comma) continue;
             const node: Ast.Node.Index = @fromBackingInt(@intCast(n));
             const spelling = importSpelling(&tree, node) orelse continue;
-            if (!std.mem.endsWith(u8, spelling, ".zig")) continue;
-            const target = normalize(a, std.Io.Dir.path.dirname(paths.items[next]) orelse "", spelling) catch continue;
-            const id = (try load(a, reader, target, &paths, &texts, &index)) orelse continue;
-            for (edges.items) |edge| {
-                if (edge.from == next and std.mem.eql(u8, edge.spelling, spelling)) break;
-            } else try edges.append(a, .{ .from = next, .spelling = spelling, .target = id });
+            // A relative file, or a module's root wherever the build binds the name in this file.
+            const targets: []const []const u8 = if (std.mem.endsWith(u8, spelling, ".zig"))
+                // glint-ignore: Z026 -- a file outside the package is another package's, no part of its surface
+                &.{normalize(a, std.Io.Dir.path.dirname(paths.items[next]) orelse "", spelling) catch continue}
+            else if (!moduleName(spelling)) continue else switch (try (map orelse mapped: {
+                map = try assembly.ModuleMap.init(a, try reached(a, try builds.get(), modules), Own(@TypeOf(cached)){ .a = a, .gpa = gpa, .reader = cached });
+                break :mapped map.?;
+            }).bound(a, paths.items[next], spelling, .program)) {
+                .paths => |roots| roots,
+                .unbound, .unknown => continue,
+            };
+            for (targets) |target| {
+                // Another package's module is a line, not its surface.
+                if (!own(target)) continue;
+                const id = (try load(a, cached, target, &paths, &texts, &index)) orelse continue;
+                for (edges.items) |edge| {
+                    if (edge.from == next and edge.target == id and std.mem.eql(u8, edge.spelling, spelling)) break;
+                } else try edges.append(a, .{ .from = next, .spelling = spelling, .target = id });
+            }
         }
         if (paths.items.len > max_files) return error.SurfaceTooLarge;
     }
@@ -183,6 +209,92 @@ fn load(a: std.mem.Allocator, reader: anytype, path: []const u8, paths: *std.Arr
     try texts.append(a, text);
     try index.put(a, path, id);
     return id;
+}
+
+/// Whether `path`, from the package's root, is the package's own file: inside it, and not a
+/// fetched package's or a build's cache.
+fn own(path: []const u8) bool {
+    if (path.len == 0 or std.Io.Dir.path.isAbsolute(path) or std.mem.startsWith(u8, path, "../")) return false;
+    for ([_][]const u8{ "zig-pkg/", ".zig-cache/", "zig-out/" }) |outside| if (std.mem.startsWith(u8, path, outside)) return false;
+    return true;
+}
+
+/// Whether an import names a module: not a file and not one of Zig's own.
+fn moduleName(spelling: []const u8) bool {
+    if (std.mem.endsWith(u8, spelling, ".zig") or std.mem.endsWith(u8, spelling, ".zon")) return false;
+    for ([_][]const u8{ "std", "builtin", "root" }) |own_name| if (std.mem.eql(u8, spelling, own_name)) return false;
+    return true;
+}
+
+/// A build's modules known already, for `list`.
+pub const Known = struct {
+    build: assembly.Build = .{},
+    pub fn get(known: Known) !assembly.Build {
+        return known.build;
+    }
+};
+
+/// `reader` with each file read once.
+fn Cached(comptime Reader: type) type {
+    return struct {
+        reader: Reader,
+        cache: *std.StringHashMapUnmanaged(?[]const u8),
+
+        pub fn read(files: @This(), a: std.mem.Allocator, path: []const u8) !?[]const u8 {
+            if (files.cache.get(path)) |text| return text;
+            const text = try files.reader.read(a, path);
+            try files.cache.put(a, try a.dupe(u8, path), text);
+            return text;
+        }
+    };
+}
+
+/// The modules of `build` a surface can reach: those rooted where an exported module is, and
+/// every module they import, transitively. The others (tests, benchmarks, tools) bind nothing
+/// the surface reads; each keeps its place, without its root, so that no file of theirs is read.
+fn reached(a: std.mem.Allocator, build: assembly.Build, modules: []const Module) !assembly.Build {
+    const kept = try a.alloc(bool, build.modules.len);
+    @memset(kept, false);
+    var pending: std.ArrayList(usize) = .empty;
+    for (build.modules, 0..) |module, which| {
+        const root = module.root orelse continue;
+        const path = try assembly.normalize(a, root);
+        for (modules) |exported| if (std.mem.eql(u8, path, try normalize(a, "", exported.root))) {
+            kept[which] = true;
+            try pending.append(a, which);
+            break;
+        };
+    }
+    while (pending.pop()) |which| for (build.modules[which].imports) |binding| {
+        if (kept[binding.module]) continue;
+        kept[binding.module] = true;
+        try pending.append(a, binding.module);
+    };
+    const out = try a.dupe(@TypeOf(build.modules[0]), build.modules);
+    for (out, kept) |*module, keep| if (!keep) {
+        module.root = null;
+        module.imports = &.{};
+    };
+    return .{ .modules = out, .std_dir = build.std_dir };
+}
+
+/// The package's own files as the module map reads them through `reader`: another package's
+/// file, or a build's, is none of the package's, and its imports are no part of the surface.
+fn Own(comptime Reader: type) type {
+    return struct {
+        a: std.mem.Allocator,
+        gpa: std.mem.Allocator,
+        reader: Reader,
+
+        pub fn read(files: @This(), path: []const u8) !?[]const u8 {
+            if (!own(path)) return null;
+            return files.reader.read(files.a, path);
+        }
+
+        pub fn importsOf(files: @This(), _: []const u8, bytes: []const u8) ![]const []const u8 {
+            return assembly.importNames(files.a, files.gpa, bytes);
+        }
+    };
 }
 
 /// `spelling` from `directory`, both relative to the package's root; outside it is an error.
@@ -626,7 +738,80 @@ pub const Files = struct {
 
 fn surfaceOf(a: std.mem.Allocator, entries: []const struct { []const u8, []const u8 }) ![]const []const u8 {
     const files: Files = .{ .entries = entries };
-    return list(a, std.testing.allocator, std.testing.io, &.{.{ .name = "pkg", .root = "src/root.zig" }}, files);
+    return list(a, std.testing.allocator, std.testing.io, &.{.{ .name = "pkg", .root = "src/root.zig" }}, files, Known{});
+}
+
+/// The surface of `entries` built as `build` binds its modules.
+fn surfaceIn(a: std.mem.Allocator, entries: []const struct { []const u8, []const u8 }, build: assembly.Build) ![]const []const u8 {
+    const files: Files = .{ .entries = entries };
+    return list(a, std.testing.allocator, std.testing.io, &.{.{ .name = "pkg", .root = "src/root.zig" }}, files, Known{ .build = build });
+}
+
+test "a surface that imports no module never asks for the build's modules" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const Unconfigurable = struct {
+        pub fn get(_: @This()) !assembly.Build {
+            return error.BuildNotConfigured;
+        }
+    };
+    const files: Files = .{ .entries = &.{ .{ "src/root.zig", "const std = @import(\"std\");\npub const inner = @import(\"inner.zig\");\n" }, .{ "src/inner.zig", "pub const limit: u32 = 1;\n" } } };
+    const lines = try list(arena.allocator(), std.testing.allocator, std.testing.io, &.{.{ .name = "pkg", .root = "src/root.zig" }}, files, Unconfigurable{});
+    try std.testing.expect(lines.len != 0);
+    const facade: Files = .{ .entries = &.{.{ "src/root.zig", "pub const archive = @import(\"pkg_core\").archive;\n" }} };
+    try std.testing.expectError(error.BuildNotConfigured, list(arena.allocator(), std.testing.allocator, std.testing.io, &.{.{ .name = "pkg", .root = "src/root.zig" }}, facade, Unconfigurable{}));
+}
+
+/// The package's module, which imports `pkg_core`, a module of its own at src/core/root.zig, and
+/// `dep`, another package's module.
+const facade_build: assembly.Build = .{ .modules = &.{
+    .{ .root = "src/root.zig", .imports = &.{ .{ .name = "pkg_core", .module = 1 }, .{ .name = "dep", .module = 2 } } },
+    .{ .root = "src/core/root.zig", .imports = &.{} },
+    .{ .root = "zig-pkg/dep/src/dep.zig", .imports = &.{} },
+} };
+
+const core_files = .{
+    .{ "src/core/root.zig", "pub const archive = @import(\"archive.zig\");\n" },
+    .{ "src/core/archive.zig", "pub const Archive = struct { path: []const u8, pub fn open(path: []const u8) Archive { return .{ .path = path }; } };\npub const limit: u32 = 8;\n" },
+    .{ "zig-pkg/dep/src/dep.zig", "pub const Dep = struct { x: u8 };\n" },
+};
+
+test "a facade's alias through a module of the package's own lists what the module declares, as a relative import does" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const direct = try surfaceIn(a, &(.{.{ "src/root.zig", "const core = @import(\"core/root.zig\");\npub const archive = core.archive;\n" }} ++ core_files), facade_build);
+    const aliased = try surfaceIn(a, &(.{.{ "src/root.zig", "const core = @import(\"pkg_core\");\npub const archive = core.archive;\n" }} ++ core_files), facade_build);
+    try std.testing.expectEqual(direct.len, aliased.len);
+    for (direct, aliased) |one, other| try std.testing.expectEqualStrings(one, other);
+    var open = false;
+    for (aliased) |line| open = open or std.mem.startsWith(u8, line, "pkg.archive.Archive.open");
+    try std.testing.expect(open);
+    // Without the build's bindings the module is a name, and its declarations no part of the list.
+    for (try surfaceIn(a, &(.{.{ "src/root.zig", "const core = @import(\"pkg_core\");\npub const archive = core.archive;\n" }} ++ core_files), .{})) |line| {
+        try std.testing.expect(!std.mem.startsWith(u8, line, "pkg.archive.Archive"));
+    }
+}
+
+test "a re-export of a module of the package's own lists what it declares; another package's module stays a line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const direct = try surfaceIn(a, &(.{.{ "src/root.zig", "pub const archive = @import(\"core/root.zig\").archive;\n" }} ++ core_files), facade_build);
+    const exported = try surfaceIn(a, &(.{.{ "src/root.zig", "pub const archive = @import(\"pkg_core\").archive;\npub const Dep = @import(\"dep\").Dep;\n" }} ++ core_files), facade_build);
+    var dep_lines: usize = 0;
+    for (exported) |line| {
+        if (std.mem.startsWith(u8, line, "pkg.Dep")) {
+            dep_lines += 1;
+            continue;
+        }
+        for (direct) |one| {
+            if (std.mem.eql(u8, one, line)) break;
+        } else return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(direct.len, exported.len - dep_lines);
+    // The other package's struct is not listed member by member.
+    for (exported) |line| try std.testing.expect(!std.mem.startsWith(u8, line, "pkg.Dep.x"));
 }
 
 test "a cancel while glint builds the surface's project ends the list with Canceled" {
@@ -641,7 +826,7 @@ test "a cancel while glint builds the surface's project ends the list with Cance
     });
     var canceled: Canceled = .init(std.testing.io, 0);
     const files: Files = .{ .entries = &.{.{ "src/root.zig", "pub const limit = 64;\n" }} };
-    try std.testing.expectError(error.Canceled, list(arena.allocator(), std.testing.allocator, canceled.io(), &.{.{ .name = "pkg", .root = "src/root.zig" }}, files));
+    try std.testing.expectError(error.Canceled, list(arena.allocator(), std.testing.allocator, canceled.io(), &.{.{ .name = "pkg", .root = "src/root.zig" }}, files, Known{}));
 }
 
 test "the surface lists public declarations through files, aliases and containers, and nothing private" {

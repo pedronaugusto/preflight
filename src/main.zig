@@ -157,7 +157,8 @@ fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
     };
     if (checks.release.held(c, src.policy(try c.options("ci/preflight.json")))) {
         try checks.release.versionAgrees(c);
-        try checks.release.changelogNamesChanges(c, try modules(c.a, args.module));
+        var builds: checks.release.Builds = .{ .c = c, .configure = configuredModules };
+        try checks.release.changelogNamesChanges(c, try modules(c.a, args.module), &builds);
     }
     if (c.errors != 0) return error.CheckFailed;
     try stdout(c.*, "gate: the caller, the version and the CHANGELOG hold; a tag needs a green release run on its commit\n");
@@ -300,18 +301,24 @@ fn modules(a: std.mem.Allocator, pairs: []const []const u8) ![]const checks.surf
     return list;
 }
 
+/// The configured build's modules, whose bindings the public surface reads a facade through.
+fn configuredModules(c: *src.Context) !checks.glint.assembly.Build {
+    return .{ .modules = try facts.buildModules(c.a, try facts.read(c.*, c.zig, &.{})) };
+}
+
 /// `surface`: the public surface of the modules the package exports, a line per declaration;
 /// with `--since <revision>`, what changed since it: `-` before a line removed or changed, `+`
 /// before one added. A release refuses a removed line without a `### Breaking` entry.
 fn surfaceCommand(c: *src.Context, args: @FieldType(Command, "surface")) !void {
+    if (args.zig_exe) |zig| c.zig = zig;
     const exported = try modules(c.a, args.module);
+    var builds: checks.release.Builds = .{ .c = c, .configure = configuredModules };
     var out: std.Io.Writer.Allocating = .init(c.a);
     if (args.since) |since| {
-        const gone = try checks.release.surfaceRemoved(c, since, exported);
-        const added = try checks.release.surfaceAdded(c, since, exported);
-        for (gone) |line| try out.writer.print("- {s}\n", .{line});
-        for (added) |line| try out.writer.print("+ {s}\n", .{line});
-    } else for (try checks.release.surfaceOf(c, exported)) |line| try out.writer.print("{s}\n", .{line});
+        const change = try checks.release.surfaceSince(c, since, exported, &builds);
+        for (change.removed) |line| try out.writer.print("- {s}\n", .{line});
+        for (change.added) |line| try out.writer.print("+ {s}\n", .{line});
+    } else for (try checks.release.surfaceOf(c, exported, &builds)) |line| try out.writer.print("{s}\n", .{line});
     try stdout(c.*, out.written());
 }
 
@@ -360,7 +367,8 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
         timer.end(c.*, log);
         if (c.errors != 0) return;
         timer = stage(c, "changelog");
-        try checks.release.changelogNamesChanges(c, exported);
+        var builds: checks.release.Builds = .{ .known = build };
+        try checks.release.changelogNamesChanges(c, exported, &builds);
         timer.end(c.*, log);
         if (c.errors != 0) return;
     }

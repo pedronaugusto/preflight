@@ -307,7 +307,8 @@ const Steps = struct {
         facts.has_side_effects = true;
         configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
         const surface = executable.run(b);
-        surface.addArg("surface");
+        // The build's modules, configured by this Zig, are what a facade is read through.
+        surface.addArgs(&.{ "surface", "--zig-exe", b.graph.zig_exe });
         exported(b, package, surface);
         surface.addPassthruArgs();
         surface.setCwd(package.path("."));

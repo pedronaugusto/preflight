@@ -128,6 +128,97 @@ fn join(a: std.mem.Allocator, directory: []const u8, name: []const u8) std.mem.A
     return normalize(a, try std.Io.Dir.path.join(a, &.{ directory, name }));
 }
 
+/// The configured build's modules as an import in one of its files reads them: which modules
+/// compile each file their roots reach through relative imports, and what a name imported in
+/// a file binds to there. glint's assembly reads the package's files through it, and the public
+/// surface (`surface.zig`) follows a facade into the package's own modules through it: one
+/// reading of the build's bindings for both.
+pub const ModuleMap = struct {
+    build: Build,
+    /// The configured modules whose sources reach a file through relative imports, by path.
+    modules_of: std.StringHashMapUnmanaged(std.ArrayList(u32)) = .empty,
+
+    /// What the modules of one compilation that compile a file bind a name to: nothing, each
+    /// root file (one, or several where those modules bind it apart), or a module with no root
+    /// file among them (`unknown`), which is no file to read.
+    pub const Bound = union(enum) { unbound, unknown, paths: []const []const u8 };
+    pub const In = enum { program, build };
+
+    /// The map of `build` over the files `files` holds: `files.read(path)` gives a file's text by
+    /// its path or null where there is none, and `files.importsOf(path, text)` the names it imports.
+    pub fn init(a: std.mem.Allocator, build: Build, files: anytype) !ModuleMap {
+        var map: ModuleMap = .{ .build = build };
+        for (build.modules, 0..) |module, which| {
+            const root = module.root orelse continue;
+            var pending: std.ArrayList([]const u8) = .empty;
+            const start = try normalize(a, root);
+            if (try map.mark(a, start, @intCast(which))) try pending.append(a, start);
+            while (pending.pop()) |path| {
+                const bytes = (try files.read(path)) orelse continue;
+                for (try files.importsOf(path, bytes)) |name| {
+                    if (!relativeFile(name)) continue;
+                    const target = try join(a, std.Io.Dir.path.dirname(path) orelse "", name);
+                    if (try map.mark(a, target, @intCast(which))) try pending.append(a, target);
+                }
+            }
+        }
+        return map;
+    }
+
+    fn mark(map: *ModuleMap, a: std.mem.Allocator, path: []const u8, module: u32) !bool {
+        const entry = try map.modules_of.getOrPut(a, path);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        for (entry.value_ptr.items) |earlier| if (earlier == module) return false;
+        try entry.value_ptr.append(a, module);
+        return true;
+    }
+
+    /// Whether a configured module compiles the file at `path`.
+    pub fn compiles(map: ModuleMap, path: []const u8) bool {
+        return map.modules_of.contains(path);
+    }
+
+    /// The configured modules that compile the file at `path`, by index in `build.modules`.
+    pub fn modulesOf(map: ModuleMap, path: []const u8) []const u32 {
+        return if (map.modules_of.get(path)) |modules| modules.items else &.{};
+    }
+
+    /// What the modules of one compilation that compile `from` bind `name` to.
+    pub fn bound(map: ModuleMap, a: std.mem.Allocator, from: []const u8, name: []const u8, in: In) !Bound {
+        var found: std.ArrayList([]const u8) = .empty;
+        for (map.modulesOf(from)) |which| {
+            if (map.build.modules[which].script != (in == .build)) continue;
+            for (map.build.modules[which].imports) |binding| {
+                if (!std.mem.eql(u8, binding.name, name)) continue;
+                const root = map.build.modules[binding.module].root orelse return .unknown;
+                const path = try normalize(a, root);
+                for (found.items) |earlier| {
+                    if (std.mem.eql(u8, earlier, path)) break;
+                } else try found.append(a, path);
+            }
+        }
+        return if (found.items.len == 0) .unbound else .{ .paths = found.items };
+    }
+};
+
+/// What `bytes` imports, each name once, in the order written. Text whose literals do not scan
+/// imports nothing here: glint's own parse of it reports the file as unusable.
+pub fn importNames(a: std.mem.Allocator, gpa: std.mem.Allocator, bytes: []const u8) ![]const []const u8 {
+    var scratch: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch.deinit();
+    const facts = glint.token.scan(scratch.allocator(), bytes, null) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return &.{},
+    };
+    var out: std.ArrayList([]const u8) = .empty;
+    for (facts.imports) |import| {
+        var seen = false;
+        for (out.items) |name| seen = seen or std.mem.eql(u8, name, import.name);
+        if (!seen) try out.append(a, try a.dupe(u8, import.name));
+    }
+    return out.items;
+}
+
 const Loader = struct {
     c: *src.Context,
     gpa: std.mem.Allocator,
@@ -135,8 +226,8 @@ const Loader = struct {
     std_file: ?[]const u8,
     /// A file's bytes, once read; null for a file that is not there.
     bytes: std.StringHashMapUnmanaged(?[]const u8) = .empty,
-    /// The configured modules whose sources reach a file through relative imports.
-    modules_of: std.StringHashMapUnmanaged(std.ArrayList(u32)) = .empty,
+    /// The configured modules, read over the files: empty until `membership`.
+    map: ModuleMap = .{ .build = .{} },
     /// What a file imports, by name, scanned once.
     names: std.StringHashMapUnmanaged([]const []const u8) = .empty,
     inputs: std.ArrayList(glint.Project.Input) = .empty,
@@ -170,38 +261,13 @@ const Loader = struct {
         const entry = try self.names.getOrPut(self.c.a, path);
         if (entry.found_existing) return entry.value_ptr.*;
         entry.value_ptr.* = &.{};
-        var scratch: std.heap.ArenaAllocator = .init(self.gpa);
-        defer scratch.deinit();
-        const facts = glint.token.scan(scratch.allocator(), bytes, null) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return entry.value_ptr.*,
-        };
-        var out: std.ArrayList([]const u8) = .empty;
-        for (facts.imports) |import| {
-            var seen = false;
-            for (out.items) |name| seen = seen or std.mem.eql(u8, name, import.name);
-            if (!seen) try out.append(self.c.a, try self.c.a.dupe(u8, import.name));
-        }
-        entry.value_ptr.* = out.items;
-        return out.items;
+        entry.value_ptr.* = try importNames(self.c.a, self.gpa, bytes);
+        return entry.value_ptr.*;
     }
 
     /// Which configured modules compile each file their roots reach.
     fn membership(self: *Loader) !void {
-        for (self.build.modules, 0..) |module, which| {
-            const root = module.root orelse continue;
-            var pending: std.ArrayList([]const u8) = .empty;
-            const start = try normalize(self.c.a, root);
-            if (try self.mark(start, @intCast(which))) try pending.append(self.c.a, start);
-            while (pending.pop()) |path| {
-                const bytes = (try self.read(path)) orelse continue;
-                for (try self.importsOf(path, bytes)) |name| {
-                    if (!relativeFile(name)) continue;
-                    const target = try join(self.c.a, std.Io.Dir.path.dirname(path) orelse "", name);
-                    if (try self.mark(target, @intCast(which))) try pending.append(self.c.a, target);
-                }
-            }
-        }
+        self.map = try ModuleMap.init(self.c.a, self.build, self);
     }
 
     /// Which compilations compile each input, as glint reads its imports in them: the
@@ -214,8 +280,7 @@ const Loader = struct {
         for (self.inputs.items, program, build) |input, *in_program, *in_build| {
             in_program.* = false;
             in_build.* = false;
-            const modules = self.modules_of.get(input.name) orelse continue;
-            for (modules.items) |which| {
+            for (self.map.modulesOf(input.name)) |which| {
                 if (self.build.modules[which].script) in_build.* = true else in_program.* = true;
             }
         }
@@ -242,14 +307,6 @@ const Loader = struct {
                 }
             };
         }
-    }
-
-    fn mark(self: *Loader, path: []const u8, module: u32) !bool {
-        const entry = try self.modules_of.getOrPut(self.c.a, path);
-        if (!entry.found_existing) entry.value_ptr.* = .empty;
-        for (entry.value_ptr.items) |earlier| if (earlier == module) return false;
-        try entry.value_ptr.append(self.c.a, module);
-        return true;
     }
 
     fn insideStd(self: *Loader, path: []const u8) bool {
@@ -339,7 +396,7 @@ const Loader = struct {
             if (!relativeFile(name)) return .{};
             const path = try join(self.c.a, std.Io.Dir.path.dirname(from) orelse "", name);
             const outside = std.mem.startsWith(u8, path, "..") or std.Io.Dir.path.isAbsolute(path);
-            if (outside and !self.insideStd(path) and !self.modules_of.contains(path)) return .{};
+            if (outside and !self.insideStd(path) and !self.map.compiles(path)) return .{};
             return .{ .every = try self.c.a.dupe([]const u8, &.{path}) };
         }
         const in_program: []const []const u8 = if (program == .paths) program.paths else &.{};
@@ -371,14 +428,9 @@ const Loader = struct {
     fn absent(self: *Loader, from: []const u8, name: []const u8) !bool {
         if (relativeFile(name)) return false;
         for ([_][]const u8{ "std", "builtin", "root" }) |own| if (std.mem.eql(u8, name, own)) return false;
-        if (!self.modules_of.contains(from)) return false;
+        if (!self.map.compiles(from)) return false;
         return try self.bound(from, name, .program) == .unbound and try self.bound(from, name, .build) == .unbound;
     }
-
-    /// What the modules of one compilation that compile a file bind a name to: nothing, each
-    /// root file (one, or several where those modules bind it apart), or a module with no root
-    /// file among them (`unknown`), which is no file to read.
-    const Bound = union(enum) { unbound, unknown, paths: []const []const u8 };
 
     /// Whether an import names a module: not a file (`.zig`, `.zon`) and not one of Zig's own.
     fn moduleName(name: []const u8) bool {
@@ -388,21 +440,8 @@ const Loader = struct {
     }
 
     /// What the modules of one compilation that compile `from` bind `name` to.
-    fn bound(self: *Loader, from: []const u8, name: []const u8, in: enum { program, build }) !Bound {
-        const modules = self.modules_of.get(from) orelse return .unbound;
-        var found: std.ArrayList([]const u8) = .empty;
-        for (modules.items) |which| {
-            if (self.build.modules[which].script != (in == .build)) continue;
-            for (self.build.modules[which].imports) |binding| {
-                if (!std.mem.eql(u8, binding.name, name)) continue;
-                const root = self.build.modules[binding.module].root orelse return .unknown;
-                const path = try normalize(self.c.a, root);
-                for (found.items) |earlier| {
-                    if (std.mem.eql(u8, earlier, path)) break;
-                } else try found.append(self.c.a, path);
-            }
-        }
-        return if (found.items.len == 0) .unbound else .{ .paths = found.items };
+    fn bound(self: *Loader, from: []const u8, name: []const u8, in: ModuleMap.In) !ModuleMap.Bound {
+        return self.map.bound(self.c.a, from, name, in);
     }
 };
 
@@ -445,7 +484,7 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
         // A selected file no module of the configured build compiles is in none of its
         // compilations: a module name it imports has no binding to read, which preflight names
         // once for the file, and glint reads as a name this build does not bind.
-        const uncompiled = from.selected and loader.build.modules.len != 0 and !loader.modules_of.contains(from.name);
+        const uncompiled = from.selected and loader.build.modules.len != 0 and !loader.map.compiles(from.name);
         var unbound: std.ArrayList([]const u8) = .empty;
         for (try loader.importsOf(from.name, from.bytes)) |name| {
             const lead = try loader.lead(from.name, name);

@@ -136,11 +136,13 @@ pub const Lint = struct {
 };
 
 pub const Surface = struct {
+    zig_exe: ?[]const u8 = null,
     since: ?[]const u8 = null,
     module: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The public declarations of the modules the package exports, a line per declaration",
         .options = .{
+            .zig_exe = zig_exe,
             .since = .{ .value_name = "REVISION", .help = "What changed since this revision: - before a line removed or changed, + before one added" },
             .module = module,
         },

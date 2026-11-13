@@ -43,7 +43,8 @@ pub fn main(init: std.process.Init) !void {
         .fuzz_budget => |args| {
             c.environ_map = init.environ_map;
             c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
-            try checks.budget.run(&c, try checks.budget.minutes(&c, args.minutes, try c.options("ci/workflow.json")), args.store, args.fuzzer);
+            const minutes = try checks.budget.minutes(&c, args.minutes, try c.options("ci/workflow.json"));
+            try checks.budget.run(&c, checks.budget.Span.literal("1m").saturatingMul(minutes), args.store, args.fuzzer);
         },
         .run => try runGate(c, init.environ_map),
         .skip => |args| try skipCommand(&c, init.environ_map, args),

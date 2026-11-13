@@ -1,21 +1,26 @@
 //! The fuzz job (`ci-fuzz`): the package's properties under the fuzzer for a budget of
 //! minutes. Zig's `--fuzz` takes a count of runs, never a time, so the budget is spent in
-//! shakedown-fuzz sessions one after another, each asked for the runs the last one's pace
-//! says fit what is left, until too little is left for another. The first finding ends it,
+//! shakedown-fuzz sessions one after another: the first small, each next asked for the runs
+//! the last one's measured rate says fit what is left, until too little is left for another.
+//! A run's cost is no constant (a package's properties differ, and so do their inputs), so the
+//! pace is no guarantee: the deadline is. A session still running when the budget is spent is
+//! ended there, its whole process group, and the job passes on what it fuzzed; the fuzzer has
+//! written its corpus as it grew. A finding written before the end still fails it. The first finding ends it,
 //! failed, with each finding's file printed: the test, the error, the tape the fuzzer found
 //! and the shrunk one to add to the property's `.regressions`. The store keeps the
 //! fuzzer's corpora (`<package>/cache/f`, and an input that crashed it, `f/crash`), which
 //! the hosted job caches from run to run and keeps as an artifact with the findings.
 const std = @import("std");
+const builtin = @import("builtin");
 const aegis = @import("aegis");
 const src = @import("source.zig");
 const matrix = @import("matrix.zig");
 
-/// The runs the first session asks for: few enough that a slow property still ends its
-/// session well inside any budget, and the build it begins with is measured with it.
-pub const first_limit: u64 = 100_000;
+/// The runs the first session asks for: few, so that its build and a slow property's pace are
+/// measured before any session is asked for many.
+pub const first_limit: u64 = 1_000;
 /// The fewest runs a session asks for.
-const least_limit: u64 = 10_000;
+const least_limit: u64 = 1_000;
 /// The spans the budget is reckoned in.
 pub const Span = aegis.units.Duration(.millisecond, u64);
 /// How long a session is meant to take once the pace is known: long enough that its build
@@ -25,6 +30,10 @@ const session_goal: Span = .literal("5m");
 const least_left: Span = .literal("30s");
 /// The shortest a session counts as having taken, so that a pace is never a division by zero.
 const least_took: Span = .literal("1s");
+/// How long a session asked to end at the deadline has before it is ended outright.
+const ending_grace: Span = .literal("10s");
+/// How often the watch on a session looks at the clock.
+const watch_step: Span = .literal("200ms");
 
 /// The minutes the job fuzzes for: `given` (`--minutes`), else `PREFLIGHT_FUZZ_MINUTES` (a
 /// dispatched run's `fuzz-minutes`) when set and not empty, else `fuzz_minutes` in the
@@ -69,11 +78,73 @@ fn elapsed(c: *src.Context, since: std.Io.Clock.Timestamp) Span {
     return Span.fromIoDuration(since.untilNow(c.io).raw, .down) catch .fromRaw(std.math.maxInt(u64));
 }
 
+/// How a session ended: of itself, passing or failing, or at the deadline.
+const Ended = enum { passed, failed, expired };
+
+/// The watch on a session: at `until` it asks the session's process group to end, and ends it
+/// outright `ending_grace` later, unless the session ended first (`done`).
+const Watch = struct {
+    io: std.Io,
+    group: std.posix.pid_t,
+    until: std.Io.Clock.Timestamp,
+    /// Whether the session has ended of itself, which the session's thread says.
+    session: aegis.Atomic(enum(u8) { running, ended }) = .init(.running),
+    /// Whether the watch ended it, which the watch says.
+    deadline: aegis.Atomic(enum(u8) { ahead, passed }) = .init(.ahead),
+
+    fn run(w: *Watch) void {
+        while (w.session.load(.acquire) != .ended) {
+            if (std.Io.Clock.Timestamp.compare(.now(w.io, .awake), .gte, w.until)) {
+                w.deadline.store(.passed, .release);
+                end(w.group, .TERM);
+                const grace: std.Io.Clock.Timestamp = .fromNow(w.io, .{ .raw = ending_grace.toIoDuration(), .clock = .awake });
+                while (w.session.load(.acquire) != .ended) {
+                    if (std.Io.Clock.Timestamp.compare(.now(w.io, .awake), .gte, grace)) return end(w.group, .KILL);
+                    // A cancel ends this program: the group ends with it.
+                    std.Io.sleep(w.io, watch_step.toIoDuration(), .awake) catch |err| switch (err) {
+                        error.Canceled => return end(w.group, .KILL),
+                    };
+                }
+                return;
+            }
+            // A cancel ends this program: the session's group ends with it.
+            std.Io.sleep(w.io, watch_step.toIoDuration(), .awake) catch |err| switch (err) {
+                error.Canceled => return end(w.group, .KILL),
+            };
+        }
+    }
+
+    /// Sends `signal` to every process of the group: the session, its build, the build's fuzzers.
+    fn end(group: std.posix.pid_t, signal: std.posix.SIG) void {
+        // glint-ignore: Z026 -- a group already gone has nothing left to end, and the session's own wait says how it ended
+        std.posix.kill(-group, signal) catch {};
+    }
+};
+
+/// Runs one session, `argv`, in a process group of its own, ended when `left` is spent.
+fn session(c: *src.Context, argv: []const []const u8, left: Span) !Ended {
+    if (builtin.target.os.tag == .windows) {
+        // Zig's fuzzer runs on no Windows host (`hardened-fuzz` says so), and the job runs on Linux.
+        c.fail("ci-fuzz: the fuzzer runs on Linux and macOS, not Windows", .{});
+        return .failed;
+    }
+    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .pgid = 0 });
+    var watch: Watch = .{ .io = c.io, .group = child.id.?, .until = .fromNow(c.io, .{ .raw = left.toIoDuration(), .clock = .awake }) };
+    const watcher = try std.Thread.spawn(.{}, Watch.run, .{&watch});
+    const term = child.wait(c.io);
+    watch.session.store(.ended, .release);
+    watcher.join();
+    const ended = try term;
+    if (watch.deadline.load(.acquire) == .passed) return .expired;
+    return if (ended == .exited and ended.exited == 0) .passed else .failed;
+}
+
 /// Runs `fuzzer` (shakedown-fuzz and the package, build and step it fuzzes) in sessions for
-/// `budget` minutes on the store `store`, and fails `c` on the first finding or on a session
-/// that failed without one.
-pub fn run(c: *src.Context, budget: usize, store: []const u8, fuzzer: []const []const u8) !void {
-    if (budget == 0) {
+/// `budget` on the store `store`, and fails `c` on the first finding or on a session that
+/// failed without one. A session the budget's end interrupts passes, unless it had written a
+/// finding.
+pub fn run(c: *src.Context, budget: Span, store: []const u8, fuzzer: []const []const u8) !void {
+    if (budget.eql(.literal("0s"))) {
         c.report("ci-fuzz: fuzz_minutes is 0: nothing to fuzz\n", .{});
         return;
     }
@@ -81,7 +152,7 @@ pub fn run(c: *src.Context, budget: usize, store: []const u8, fuzzer: []const []
     const root = try std.Io.Dir.cwd().realPathFileAlloc(c.io, store, c.a);
     // Findings an earlier run left here are not this run's.
     try clearFindings(c, root);
-    const whole = Span.literal("1m").saturatingMul(budget);
+    const whole = budget;
     const start: std.Io.Clock.Timestamp = .now(c.io, .awake);
     var limit = first_limit;
     var sessions: usize = 0;
@@ -89,11 +160,20 @@ pub fn run(c: *src.Context, budget: usize, store: []const u8, fuzzer: []const []
     while (true) {
         const began: std.Io.Clock.Timestamp = .now(c.io, .awake);
         const argv = try std.mem.concat(c.a, []const u8, &.{ fuzzer, &.{ "--store", root, "--sessions", "1", "--limit", try c.a.print("{d}", .{limit}) } });
-        var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
-        const term = try child.wait(c.io);
+        const ended = try session(c, argv, whole.saturatingSub(elapsed(c, start)));
         sessions += 1;
         asked += limit;
-        if (term != .exited or term.exited != 0) {
+        if (ended == .expired) {
+            // A finding written before the end is one all the same.
+            const found = try printFindings(c, root);
+            if (found != 0) {
+                c.fail("ci-fuzz: {d} finding(s) in session {d}, which the budget's end interrupted; each file above is one, and its minimal tape is the regression to keep", .{ found, sessions });
+                return;
+            }
+            c.report("ci-fuzz: {f} spent during session {d}, which was ended there; {d} session(s): no finding\n", .{ whole, sessions, sessions });
+            return;
+        }
+        if (ended == .failed) {
             const found = try printFindings(c, root);
             if (found != 0) {
                 c.fail("ci-fuzz: {d} finding(s) in session {d}; each file above is one, and its minimal tape is the regression to keep", .{ found, sessions });
@@ -108,7 +188,7 @@ pub fn run(c: *src.Context, budget: usize, store: []const u8, fuzzer: []const []
         if (left.compare(least_left) == .lt) break;
         limit = nextLimit(limit, took, left);
     }
-    c.report("ci-fuzz: {d} minute(s), {d} session(s), {d} runs asked: no finding\n", .{ budget, sessions, asked });
+    c.report("ci-fuzz: {f}, {d} session(s), {d} runs asked: no finding\n", .{ whole, sessions, asked });
 }
 
 /// Deletes `<package>/findings` under the store `root`, for each package the store holds.
@@ -215,6 +295,55 @@ test "a session asks for the runs that fit its goal or what is left, at most eig
     try std.testing.expectEqual(least_limit, nextLimit(100_000, .literal("1h"), .literal("31s")));
     // A session that took no measurable time counts as one second.
     try std.testing.expectEqual(@as(u64, 800_000), nextLimit(100_000, .literal("0s"), .literal("14m")));
+}
+
+/// A stand-in for shakedown-fuzz: a shell script that finds the store among its arguments, writes
+/// a finding there when `finds`, and runs past any budget, in a process of its own (`sleep`) as a
+/// session's build does.
+fn standIn(a: std.mem.Allocator, dir: std.Io.Dir, finds: bool) ![]const []const u8 {
+    const script =
+        \\while [ $# -gt 0 ]; do if [ "$1" = --store ]; then store=$2; fi; shift; done
+        \\
+    ;
+    const finding =
+        \\mkdir -p "$store/pkg/findings"
+        \\printf 'test: decode\nerror: Overflow\nfound: 0a0b\nminimal: 0a\n' > "$store/pkg/findings/decode.txt"
+        \\
+    ;
+    try dir.writeFile(std.testing.io, .{ .sub_path = "fuzzer.sh", .data = try std.mem.concat(a, u8, &.{ script, if (finds) finding else "", "sleep 600\n" }) });
+    return a.dupe([]const u8, &.{ "/bin/sh", try dir.realPathFileAlloc(std.testing.io, "fuzzer.sh", a) });
+}
+
+test "a session the budget's end interrupts is ended, its processes with it, and passes" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var held: std.Io.Writer.Allocating = .init(a);
+    var c: src.Context = .{ .a = a, .io = std.testing.io, .held = &held };
+    const began: std.Io.Clock.Timestamp = .now(c.io, .awake);
+    try run(&c, .literal("1s"), try std.Io.Dir.path.join(a, &.{ try tmp.dir.realPathFileAlloc(c.io, ".", a), "store" }), try standIn(a, tmp.dir, false));
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    try std.testing.expect(std.mem.find(u8, held.written(), "spent during session 1, which was ended there") != null);
+    // Ended at the deadline, not at the stand-in's ten minutes.
+    try std.testing.expect(elapsed(&c, began).compare(.literal("30s")) == .lt);
+}
+
+test "a finding written before the budget's end fails the job, printed with its shrunk tape" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var held: std.Io.Writer.Allocating = .init(a);
+    var c: src.Context = .{ .a = a, .io = std.testing.io, .held = &held };
+    try run(&c, .literal("1s"), try std.Io.Dir.path.join(a, &.{ try tmp.dir.realPathFileAlloc(c.io, ".", a), "store" }), try standIn(a, tmp.dir, true));
+    try std.testing.expectEqual(@as(usize, 1), c.errors);
+    try std.testing.expect(std.mem.find(u8, held.written(), "minimal: 0a\nkeep it: add \"0a\"") != null);
+    try std.testing.expect(std.mem.find(u8, held.written(), "which the budget's end interrupted") != null);
 }
 
 test "the budget is the flag, else the dispatched minutes, else the configuration's, else 15" {

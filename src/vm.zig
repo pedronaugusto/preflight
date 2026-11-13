@@ -47,6 +47,26 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Bui
 /// The machine a run's target needs.
 pub const Kind = enum { riscv64_linux, x86_64_freebsd };
 
+/// A machine's first process, preflight's own (vm/guest.zig, vm/freebsd/guest.zig), for that
+/// machine's target. It needs no image to compile: preflight's `check` compiles both, so the
+/// code a machine boots is built, and linted, on every host, not only under `-Dci-vm`.
+pub fn guestModule(b: *std.Build, pkg: *std.Build, kind: Kind) *std.Build.Module {
+    const target = switch (kind) {
+        .riscv64_linux => b.resolveTargetQuery(.{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .none }),
+        .x86_64_freebsd => b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .freebsd }),
+    };
+    return b.createModule(.{
+        .root_source_file = pkg.path(switch (kind) {
+            .riscv64_linux => "src/vm/guest.zig",
+            .x86_64_freebsd => "src/vm/freebsd/guest.zig",
+        }),
+        .target = target,
+        .optimize = .safe,
+        .link_libc = kind == .x86_64_freebsd,
+        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = target, .optimize = .safe }).module("aegis") }},
+    });
+}
+
 /// The runs each machine takes.
 const Runs = std.EnumArray(Kind, std.ArrayList(*std.Build.Step.Run));
 
@@ -65,13 +85,7 @@ fn riscv64Machine(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget
     // Fetched on first use: a build that asks for the machine configures again once they land.
     const alpine = pkg.dependencyLazy("alpine_riscv64", .{}) catch return null;
     const rootfs = pkg.dependencyLazy("alpine_riscv64_rootfs", .{}) catch return null;
-    const riscv64 = b.resolveTargetQuery(.{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .none });
-    const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = b.createModule(.{
-        .root_source_file = pkg.path("src/vm/guest.zig"),
-        .target = riscv64,
-        .optimize = .safe,
-        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = riscv64, .optimize = .safe }).module("aegis") }},
-    }) });
+    const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = guestModule(b, pkg, .riscv64_linux) });
     const vm = runner(b, pkg, host);
     const boot = b.addRunArtifact(vm);
     boot.addArg("image");
@@ -98,14 +112,7 @@ fn riscv64Machine(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget
 fn freebsdMachine(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget) ?Machine {
     const kernel_set = pkg.dependencyLazy("freebsd_amd64_kernel", .{}) catch return null;
     const runtime = pkg.dependencyLazy("freebsd_amd64_runtime", .{}) catch return null;
-    const freebsd = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .freebsd });
-    const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = b.createModule(.{
-        .root_source_file = pkg.path("src/vm/freebsd/guest.zig"),
-        .target = freebsd,
-        .optimize = .safe,
-        .link_libc = true,
-        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = freebsd, .optimize = .safe }).module("aegis") }},
-    }) });
+    const guest = b.addExecutable(.{ .name = "preflight-vm-init", .root_module = guestModule(b, pkg, .x86_64_freebsd) });
     const vm = runner(b, pkg, host);
     const make = b.addRunArtifact(vm);
     make.addArg("freebsd-image");

@@ -207,6 +207,90 @@ test "lint maps an options module whose options name paths, and a module rooted 
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
 }
 
+test "lint reads a name two modules that both compile a file bind to two files as either" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The test module and a second module over the same root, each binding `dep` to its own file.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    module.addImport("dep", b.createModule(.{ .root_source_file = b.path("src/first.zig") }));
+        \\    const other = b.createModule(.{ .root_source_file = module.root_source_file, .target = module.resolved_target, .imports = &.{.{ .name = "dep", .module = b.createModule(.{ .root_source_file = b.path("src/second.zig") }) }} });
+        \\    b.getInstallStep().dependOn(&b.addTest(.{ .root_module = other }).step);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/first.zig", .data = "pub const value: u32 = 1;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/second.zig", .data = "pub const value: u32 = 2;\n" });
+    const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ source, "\ntest \"reads either\" {\n    _ = @import(\"dep\").value;\n}\n" }) });
+    try edit(a, tmp.dir, "ci/layers.zig", ".except_targets = &.{ \"std\", \"builtin\" }", ".except_targets = &.{ \"std\", \"builtin\", \"dep\" }");
+    try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/first.zig\", \"src/second.zig\" } }");
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
+}
+
+test "lint reads a negative fixture the build compiles expecting its error, the package's own module bound as that compilation binds it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A ci/ fixture that must not compile (cloak's ci/weak_options.zig): its compilation is a
+    // step of the build expecting the error, never a `zig build-exe` a tool runs by hand.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const negative = b.addObject(.{ .name = "negative", .root_module = b.createModule(.{ .root_source_file = b.path("ci/negative.zig"), .target = module.resolved_target, .imports = &.{.{ .name = "preflight_sample", .module = module }} }) });
+        \\    negative.expect_errors = .{ .contains = "refused by design" };
+        \\    b.getInstallStep().dependOn(&negative.step);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/negative.zig", .data = "const sample = @import(\"preflight_sample\");\ncomptime {\n    _ = sample;\n    @compileError(\"refused by design\");\n}\n" });
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    // The build holds the fixture's error.
+    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a) }, .cwd = .{ .dir = tmp.dir } });
+    if (built.term != .exited or built.term.exited != 0) std.debug.print("{s}", .{built.stderr});
+    try std.testing.expect(built.term == .exited and built.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "no module of this build compiles it"));
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
+}
+
+test "lint names once a selected file no module of the build compiles, where it imports a module" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // Built by some other build, as a test machine's first process is: none of this one's modules.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/elsewhere.zig", .data = "const other = @import(\"other\");\nconst more = @import(\"more\");\npub fn f() u32 {\n    return other.value + more.value;\n}\n" });
+    // Declared to the layer check, which runs first, so what fails is glint's reading of it.
+    try edit(a, tmp.dir, "ci/layers.zig", ".except_targets = &.{ \"std\", \"builtin\" }", ".except_targets = &.{ \"std\", \"builtin\", \"other\", \"more\" }");
+    try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/elsewhere.zig\" } }");
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(linted.term == .exited and linted.term.exited != 0);
+    const said = "src/elsewhere.zig: no module of this build compiles it, so `other` and every module it imports have no binding to read";
+    if (std.mem.find(u8, linted.stderr, said) == null) std.debug.print("{s}", .{linted.stderr});
+    // Once for the file, naming its cause; glint refuses each import it could not read beside it.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, linted.stderr, said));
+}
+
 test "portable replay records timings and still rejects failed tests and leaked memory" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -314,23 +314,25 @@ const Loader = struct {
         return id;
     }
 
-    /// Where an import written in `from` leads in each compilation that compiles it.
+    /// Where an import written in `from` leads in each compilation that compiles it: each file
+    /// a module that compiles it binds the name to, several a choice glint reads as any.
     const Lead = struct {
-        /// Where it leads in every compilation of the file; null where it leads nowhere.
-        every: ?[]const u8 = null,
+        /// Where it leads in every compilation of the file; empty where it leads nowhere.
+        every: []const []const u8 = &.{},
         /// Where it leads in the program's and in the build runner's, when they bind it apart.
-        program: ?[]const u8 = null,
-        build: ?[]const u8 = null,
+        program: []const []const u8 = &.{},
+        build: []const []const u8 = &.{},
     };
 
     /// Where an import written in `from` leads, when the build says: `std`, a
     /// module the configuration binds the name to (whatever the name ends
     /// with: gantry's Zig frontend is the module `gantry.zig`), or else a
     /// relative file. The program and the build runner bind names apart: a file both
-    /// compile leads to each one's module, an edge apiece. A name two modules of one
-    /// compilation that both compile the file bind differently leads nowhere there.
+    /// compile leads to each one's modules, an edge apiece. Two modules of one compilation
+    /// that both compile the file and bind the name to different files lead to each there, a
+    /// choice; a binding to a module with no root file leads nowhere in that compilation.
     fn lead(self: *Loader, from: []const u8, name: []const u8) !Lead {
-        if (std.mem.eql(u8, name, "std")) return .{ .every = self.std_file };
+        if (std.mem.eql(u8, name, "std")) return .{ .every = if (self.std_file) |file| try self.c.a.dupe([]const u8, &.{file}) else &.{} };
         const program = try self.bound(from, name, .program);
         const build = try self.bound(from, name, .build);
         if (program == .unbound and build == .unbound) {
@@ -338,16 +340,27 @@ const Loader = struct {
             const path = try join(self.c.a, std.Io.Dir.path.dirname(from) orelse "", name);
             const outside = std.mem.startsWith(u8, path, "..") or std.Io.Dir.path.isAbsolute(path);
             if (outside and !self.insideStd(path) and !self.modules_of.contains(path)) return .{};
-            return .{ .every = path };
+            return .{ .every = try self.c.a.dupe([]const u8, &.{path}) };
         }
-        const in_program: ?[]const u8 = if (program == .path) program.path else null;
-        const in_build: ?[]const u8 = if (build == .path) build.path else null;
-        // One module wherever the name is bound: the edge holds in every compilation of the file.
-        if (program != .ambiguous and build != .ambiguous) {
-            if (in_program == null or in_build == null or std.mem.eql(u8, in_program.?, in_build.?))
-                return .{ .every = in_program orelse in_build };
+        const in_program: []const []const u8 = if (program == .paths) program.paths else &.{};
+        const in_build: []const []const u8 = if (build == .paths) build.paths else &.{};
+        // The same modules wherever the name is bound: the edges hold in every compilation.
+        if (program != .unknown and build != .unknown) {
+            if (in_program.len == 0 or in_build.len == 0 or samePaths(in_program, in_build))
+                return .{ .every = if (in_program.len != 0) in_program else in_build };
         }
         return .{ .program = in_program, .build = in_build };
+    }
+
+    /// Whether two lists name the same files, in any order.
+    fn samePaths(a: []const []const u8, b: []const []const u8) bool {
+        if (a.len != b.len) return false;
+        for (a) |one| {
+            for (b) |other| {
+                if (std.mem.eql(u8, one, other)) break;
+            } else return false;
+        }
+        return true;
     }
 
     /// Whether the build binds no module named `name` in any module that compiles `from`:
@@ -362,24 +375,34 @@ const Loader = struct {
         return try self.bound(from, name, .program) == .unbound and try self.bound(from, name, .build) == .unbound;
     }
 
-    const Bound = union(enum) { unbound, ambiguous, path: []const u8 };
+    /// What the modules of one compilation that compile a file bind a name to: nothing, each
+    /// root file (one, or several where those modules bind it apart), or a module with no root
+    /// file among them (`unknown`), which is no file to read.
+    const Bound = union(enum) { unbound, unknown, paths: []const []const u8 };
+
+    /// Whether an import names a module: not a file (`.zig`, `.zon`) and not one of Zig's own.
+    fn moduleName(name: []const u8) bool {
+        if (relativeFile(name)) return false;
+        for ([_][]const u8{ "std", "builtin", "root" }) |own| if (std.mem.eql(u8, name, own)) return false;
+        return true;
+    }
 
     /// What the modules of one compilation that compile `from` bind `name` to.
     fn bound(self: *Loader, from: []const u8, name: []const u8, in: enum { program, build }) !Bound {
         const modules = self.modules_of.get(from) orelse return .unbound;
-        var found: ?[]const u8 = null;
+        var found: std.ArrayList([]const u8) = .empty;
         for (modules.items) |which| {
             if (self.build.modules[which].script != (in == .build)) continue;
             for (self.build.modules[which].imports) |binding| {
                 if (!std.mem.eql(u8, binding.name, name)) continue;
-                const root = self.build.modules[binding.module].root orelse return .ambiguous;
+                const root = self.build.modules[binding.module].root orelse return .unknown;
                 const path = try normalize(self.c.a, root);
-                if (found) |earlier| {
-                    if (!std.mem.eql(u8, earlier, path)) return .ambiguous;
-                } else found = path;
+                for (found.items) |earlier| {
+                    if (std.mem.eql(u8, earlier, path)) break;
+                } else try found.append(self.c.a, path);
             }
         }
-        return if (found) |path| .{ .path = path } else .unbound;
+        return if (found.items.len == 0) .unbound else .{ .paths = found.items };
     }
 };
 
@@ -419,25 +442,38 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
     while (cursor < loader.inputs.items.len) : (cursor += 1) {
         const from = loader.inputs.items[cursor];
         var absent: std.ArrayList([]const u8) = .empty;
+        // A selected file no module of the configured build compiles is in none of its
+        // compilations: a module name it imports has no binding to read, which preflight names
+        // once for the file, and glint reads as a name this build does not bind.
+        const uncompiled = from.selected and loader.build.modules.len != 0 and !loader.modules_of.contains(from.name);
+        var unbound: std.ArrayList([]const u8) = .empty;
         for (try loader.importsOf(from.name, from.bytes)) |name| {
             const lead = try loader.lead(from.name, name);
-            if (lead.every == null and lead.program == null and lead.build == null) {
-                if (try loader.absent(from.name, name)) try absent.append(c.a, name);
+            if (lead.every.len == 0 and lead.program.len == 0 and lead.build.len == 0) {
+                if (try loader.absent(from.name, name)) {
+                    try absent.append(c.a, name);
+                } else if (uncompiled and Loader.moduleName(name)) {
+                    try absent.append(c.a, name);
+                    try unbound.append(c.a, name);
+                }
                 continue;
             }
-            const leads = [_]struct { ?[]const u8, ?glint.Project.Compilations }{
+            const leads = [_]struct { []const []const u8, ?glint.Project.Compilations }{
                 .{ lead.every, null }, .{ lead.program, .program }, .{ lead.build, .build },
             };
             for (leads) |each| {
-                const path, const compilation = each;
-                const found = (loader.load(path orelse continue, false, .production) catch |err| switch (err) {
-                    error.ProjectBudgetExceeded => return budget(c),
-                    else => return err,
-                }) orelse continue;
-                try imports.append(c.a, .{ .from = cursor, .spelling = name, .target = found, .compilation = compilation });
+                const targets, const compilation = each;
+                for (targets) |path| {
+                    const found = (loader.load(path, false, .production) catch |err| switch (err) {
+                        error.ProjectBudgetExceeded => return budget(c),
+                        else => return err,
+                    }) orelse continue;
+                    try imports.append(c.a, .{ .from = cursor, .spelling = name, .target = found, .compilation = compilation });
+                }
             }
         }
         loader.inputs.items[cursor].absent = try absent.toOwnedSlice(c.a);
+        if (unbound.items.len != 0) c.fail("glint: {s}: no module of this build compiles it, so `{s}` and every module it imports have no binding to read: build it in the package's own graph (its `check`), or leave it out of what glint reads", .{ from.name, unbound.items[0] });
     }
     try loader.compilations(imports.items);
     const project = glint.Project.init(gpa, loader.inputs.items, imports.items, .{ .io = c.io }) catch |err| switch (err) {
@@ -574,17 +610,20 @@ test "an import means what the configured build binds it to, in the module that 
         try std.testing.expectEqual(fingerprint, input.fingerprint);
     }
     var mapped: usize = 0;
-    var other_mapped = false;
+    var other: std.EnumSet(enum { first, second }) = .empty;
     for (project.imports) |import| {
         const from = project.at(import.from).input.name;
         const to = project.at(import.target).input.name;
         mapped += 1;
         if (std.mem.eql(u8, from, "src/root.zig") and std.mem.eql(u8, import.spelling, "lib")) try std.testing.expectEqualStrings("dep/lib.zig", to);
         if (std.mem.eql(u8, from, "src/root.zig") and std.mem.eql(u8, import.spelling, "std")) try std.testing.expectEqualStrings("stdlib/std.zig", to);
-        // helper.zig is compiled by two modules that bind `other` to different files.
-        if (std.mem.eql(u8, from, "src/helper.zig") and std.mem.eql(u8, import.spelling, "other")) other_mapped = true;
+        // helper.zig is compiled by two modules that bind `other` to different files: an edge
+        // to each, a choice glint reads as either.
+        if (std.mem.eql(u8, from, "src/helper.zig") and std.mem.eql(u8, import.spelling, "other")) {
+            if (std.mem.eql(u8, to, "dep/other.zig")) other.insert(.first) else if (std.mem.eql(u8, to, "dep/other2.zig")) other.insert(.second) else return error.TestUnexpectedResult;
+        }
     }
-    try std.testing.expect(!other_mapped);
+    try std.testing.expectEqual(@as(usize, 2), other.count());
     // lib, helper.zig, std and the files they bring: imports are recorded once per file and name.
     try std.testing.expect(mapped >= 8);
     var names: usize = 0;
@@ -764,11 +803,12 @@ test "a build script no selected file imports is read, unselected: bay's root, w
     try std.testing.expect(binds);
 }
 
-test "a file both compilations compile reads a name each binds apart as an edge apiece, and one compilation's two bindings as none of its own" {
+test "a file both compilations compile reads a name each binds apart as an edge apiece, and one compilation's two bindings as a choice of both" {
     // `src/shared.zig` is the program's (src/root.zig imports it) and the build runner's
     // (build.zig imports it). `lib` is the library's module in the program and the library's
     // build script in the build runner. In the twin a second module of the program compiles the
-    // file and binds `lib` elsewhere: the program's edge goes, the build runner's stays.
+    // file and binds `lib` elsewhere: the program has an edge to each, a choice glint reads as
+    // either, and the build runner's stays one.
     for ([_]bool{ false, true }) |split| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -800,19 +840,20 @@ test "a file both compilations compile reads a name each binds apart as an edge 
         defer assembly.deinit();
         try std.testing.expectEqual(@as(usize, 0), c.errors);
         const project = &assembly.project;
-        var program: ?[]const u8 = null;
+        var program: std.EnumSet(enum { library, fork }) = .empty;
         var build: ?[]const u8 = null;
         for (project.imports) |import| {
             if (!std.mem.eql(u8, project.at(import.from).input.name, "src/shared.zig")) continue;
             const target = project.at(import.target).input.name;
             switch (import.in) {
-                .program => program = target,
+                .program => if (std.mem.eql(u8, target, "zig-pkg/lib/src/lib.zig")) program.insert(.library) else if (std.mem.eql(u8, target, "zig-pkg/fork/lib.zig")) program.insert(.fork) else return error.TestUnexpectedResult,
                 .build => build = target,
                 .both => return error.TestUnexpectedResult,
             }
         }
         try std.testing.expectEqualStrings("zig-pkg/lib/build.zig", build.?);
-        if (split) try std.testing.expectEqual(null, program) else try std.testing.expectEqualStrings("zig-pkg/lib/src/lib.zig", program.?);
+        try std.testing.expect(program.contains(.library));
+        try std.testing.expectEqual(split, program.contains(.fork));
         for (project.sources) |source| {
             if (std.mem.eql(u8, source.input.name, "src/shared.zig")) try std.testing.expectEqual(.both, source.input.compilations);
             if (std.mem.eql(u8, source.input.name, "zig-pkg/lib/build.zig")) try std.testing.expectEqual(.build, source.input.compilations);

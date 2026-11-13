@@ -125,6 +125,12 @@ pub fn dev(b: *std.Build, _: type) void {
     check.dependOn(&tests.step);
     check.dependOn(&order.step);
     check.dependOn(&executable.step);
+    // What preflight ships that its own gate builds on no path: the structure check over the
+    // default layers (a consumer that declares none takes it) and each test machine's first
+    // process (built under -Dci-vm alone). Compiled here, they are built, and linted, on
+    // every host.
+    check.dependOn(&ci.structureChecker(b, package, package.path(ci.default_layers), gantry, gantry_zig, aegis).step);
+    for ([_]vm.Kind{ .riscv64_linux, .x86_64_freebsd }) |kind| check.dependOn(&b.addObject(.{ .name = "preflight-vm-init", .root_module = vm.guestModule(b, package, kind) }).step);
     // preflight gates its own sources with the checks it ships: the preflight
     // the gate finds among this build's dependencies is this package.
     ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{

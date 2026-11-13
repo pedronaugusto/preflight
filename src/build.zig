@@ -361,22 +361,8 @@ const Steps = struct {
     /// The source checks' steps, which `addCi` sets beside the tests once `ci-test` has them:
     /// the lint (glint's and the rest), or the rest alone with `-Dci-lint=false`, and the snippets.
     fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) [2]*std.Build.Step {
-        const host = ciTarget(b);
         // A package that declares no structure is held to none.
-        const layers = b.createModule(.{
-            .root_source_file = if (configure.exists(package, config.layers)) package.path(config.layers) else pkg.path("src/layers_default.zig"),
-            .target = host,
-            .imports = &.{.{ .name = "gantry", .module = gantry }},
-        });
-        const checker = b.addExecutable(.{
-            .name = "preflight-structure",
-            .root_module = b.createModule(.{
-                .root_source_file = pkg.path("src/structure.zig"),
-                .target = host,
-                .optimize = .debug,
-                .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "layers", .module = layers }, .{ .name = "aegis", .module = aegis } },
-            }),
-        });
+        const checker = structureChecker(b, pkg, if (configure.exists(package, config.layers)) package.path(config.layers) else pkg.path(default_layers), gantry, gantry_zig, aegis);
         var format_paths: std.ArrayList([]const u8) = .empty;
         var format_excluded: std.ArrayList(std.Build.LazyPath) = .empty;
         for ([_][]const u8{ "build.zig", "build.zig.zon" }) |path| {
@@ -550,4 +536,28 @@ fn releaseModes(b: *std.Build, config: Config) void {
         if (entry.reason.len == 0) lint.step.dependOn(&b.addFail(b.fmt("release: {s}: Config.release_fast needs the measurement that says why", .{entry.artifact})).step);
         if (!used.contains(entry.artifact)) lint.step.dependOn(&b.addFail(b.fmt("release: Config.release_fast names {s}, which no installed ReleaseFast or ReleaseSmall artifact is", .{entry.artifact})).step);
     }
+}
+
+/// The structure a package that declares none is held to: none (src/layers_default.zig).
+pub const default_layers = "src/layers_default.zig";
+
+/// The structure check, for the layers declared at `layers` (a package's own, or
+/// `default_layers`). preflight's own `check` compiles it over the default, which its own
+/// gate never takes, so the structure every consumer without layers gets is built and linted.
+pub fn structureChecker(b: *std.Build, pkg: *std.Build, layers: std.Build.LazyPath, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module) *std.Build.Step.Compile {
+    const host = ciTarget(b);
+    const declared = b.createModule(.{
+        .root_source_file = layers,
+        .target = host,
+        .imports = &.{.{ .name = "gantry", .module = gantry }},
+    });
+    return b.addExecutable(.{
+        .name = "preflight-structure",
+        .root_module = b.createModule(.{
+            .root_source_file = pkg.path("src/structure.zig"),
+            .target = host,
+            .optimize = .debug,
+            .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "layers", .module = declared }, .{ .name = "aegis", .module = aegis } },
+        }),
+    });
 }

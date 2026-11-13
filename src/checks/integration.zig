@@ -298,6 +298,35 @@ test "lint reads a module whose root the build copies, from a source directory o
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
 }
 
+test "lint reads a test runner of the package's own with the bindings of the test it runs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // reactor's bench/v11/runner.zig and preflight's src/runner.zig: a file Zig compiles as a
+    // test's runner, reaching the modules the test's root module binds.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const measured = b.addTest(.{ .name = "measured", .root_module = b.createModule(.{ .root_source_file = b.path("src/sample.zig"), .target = module.resolved_target, .imports = &.{.{ .name = "harness", .module = b.createModule(.{ .root_source_file = b.path("ci/harness.zig"), .target = module.resolved_target }) }} }) });
+        \\    measured.root_module.addAnonymousImport("std_runner", .{ .root_source_file = b.graph.path(.zig_lib, "compiler/test_runner.zig") });
+        \\    measured.test_runner = .{ .path = b.path("ci/runner.zig"), .mode = .simple };
+        \\    b.getInstallStep().dependOn(&measured.step);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/harness.zig", .data = "pub const rounds: u32 = 3;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/runner.zig", .data = "const builtin = @import(\"builtin\");\nconst harness = @import(\"harness\");\npub const std_runner = @import(\"std_runner\");\npub fn main() void {\n    for (0..harness.rounds) |_| {\n        for (builtin.test_functions) |test_fn| test_fn.func() catch |err| @panic(@errorName(err));\n    }\n}\n" });
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "no module of this build compiles it"));
+}
+
 test "lint names once a selected file no module of the build compiles, where it imports a module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -356,13 +356,22 @@ test "build protocol distinguishes compiler messages and rejects truncated unkno
 /// The configured modules, as lint resolves a name an import leads by: each
 /// module a compile step reaches, its root file where the build names one
 /// (generated roots are not on disk) and what each of its import names leads to.
-pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.BuildModule {
+/// `zig_lib` is Zig's library, where a module the build roots there is read (std's test
+/// runner, which preflight's runner takes as `preflight_default_test_runner`).
+pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot, zig_lib: ?[]const u8) ![]const src.BuildModule {
     const c = &snapshot.config;
     var indices: std.array_hash_map.Auto(C.Module.Index, void) = .empty;
     var pending: std.ArrayList(C.Module.Index) = .empty;
+    // A test's own runner (`test_runner`), which Zig compiles with the bindings of the test's
+    // root module: the runner's file is a module of its own over those bindings.
+    var runners: std.ArrayList(struct { path: C.LazyPath.Index, module: C.Module.Index }) = .empty;
     for (c.steps) |step| {
         const compiled = step.extended.cast(c, C.Step.Compile) orelse continue;
         try pending.append(a, compiled.root_module);
+        switch (compiled.test_runner.u) {
+            .default => {},
+            .simple, .server => |path| try runners.append(a, .{ .path = path, .module = compiled.root_module }),
+        }
     }
     while (pending.pop()) |id| {
         if ((try indices.getOrPut(a, id)).found_existing) continue;
@@ -377,7 +386,7 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
         for (table.items(.name), table.items(.module), bindings) |name, imported, *binding| {
             binding.* = .{ .name = name.slice(c), .module = indices.getIndex(imported).? };
         }
-        module.* = .{ .root = try rootPath(a, c, snapshot.package, configured.root_source_file), .imports = bindings };
+        module.* = .{ .root = try moduleRoot(a, c, snapshot.package, configured.root_source_file, zig_lib), .imports = bindings };
         // A generated root is named by its text: the step's index shifts between the builds of
         // each CI target (`unionModules`), and one text is one module whatever build made it.
         if (module.root == null) if (try optionsOf(a, c, configured.root_source_file)) |contents| {
@@ -394,7 +403,12 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
             }
         };
     }
-    return out;
+    var all: std.ArrayList(src.BuildModule) = .fromOwnedSlice(out);
+    for (runners.items) |runner| {
+        const root = (try moduleRoot(a, c, snapshot.package, @fromBackingInt(@backingInt(runner.path)), zig_lib)) orelse continue;
+        try all.append(a, .{ .root = root, .imports = all.items[indices.getIndex(runner.module).?].imports });
+    }
+    return all.items;
 }
 
 /// The modules of several configured builds as one list: the builds of each target a repository's
@@ -531,6 +545,16 @@ fn copiedExtension(c: *const C, directory: C.Step.WriteFile.Directory, extension
         for (excluded) |each| if (std.mem.eql(u8, each.slice(c), extension)) return false;
     }
     return true;
+}
+
+/// A module's root file as `rootPath` names it, or a file of Zig's library (`b.graph.path(.zig_lib,
+/// ...)`) where the build roots it there and preflight was told where the library is.
+fn moduleRoot(a: std.mem.Allocator, c: *const C, checked: C.Package.Index, index: C.LazyPath.OptionalIndex, zig_lib: ?[]const u8) !?[]const u8 {
+    const path = (index.unwrap() orelse return null).get(c);
+    if (path == .relative and path.relative.flags.base == .zig_lib) {
+        return try named(a, try Io.Dir.path.join(a, &.{ zig_lib orelse return null, path.relative.sub_path.slice(c) }));
+    }
+    return rootPath(a, c, checked, index);
 }
 
 /// Where a module's root file is, relative to the repository's root: the checked

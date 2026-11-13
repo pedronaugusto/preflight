@@ -232,7 +232,9 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     // The modules of the build for each target the CI runs, beside this machine's: a module only
     // one target's build adds is linted on every run, and an import of it names a module.
     var per_target: std.ArrayList([]const src.BuildModule) = .empty;
-    try per_target.append(a, try facts.buildModules(a, snapshot));
+    // Zig's library, where std is: `--zig-std` names its `std`.
+    const zig_lib = if (args.zig_std) |dir| std.Io.Dir.path.dirname(dir) else null;
+    try per_target.append(a, try facts.buildModules(a, snapshot, zig_lib));
     for (try src.items(src.get(try c.options("ci/workflow.json"), "targets"))) |target| {
         const name = checks.matrix.targetName(target) catch continue;
         const options = try std.mem.concat(a, []const u8, &.{ args.build_option, &.{try a.print("-Dtarget={s}", .{name})} });
@@ -240,7 +242,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
             c.fail("lint: the build for {s} could not be configured ({t}), so its modules are not mapped", .{ name, err });
             continue;
         };
-        try per_target.append(a, try facts.buildModules(a, built));
+        try per_target.append(a, try facts.buildModules(a, built, zig_lib));
     }
     const configured = try facts.unionModules(a, per_target.items);
     const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, a, .fromRaw(16 * 1024 * 1024))) else configured;

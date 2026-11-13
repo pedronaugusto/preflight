@@ -24,22 +24,85 @@ pub const Options = struct {
     /// Options the consumer gives the package, as `b.dependency(name, .{ ... })` does: `.http = false`
     /// proves a build without a feature the package makes optional. The base of every configuration.
     options: []const Option = &.{},
-    /// The builds checked: each is `options` with its configuration's variation on top (a
-    /// variation's option replaces the base's of the same name), built in a project directory of
-    /// its own. One empty configuration, the default, is the one build of `options` alone. A
-    /// package with optional features lists each combination it promises, so each is compiled.
-    configurations: []const Configuration = &.{.{}},
+    /// Retired: the package's configurations are `configurations` in `ci/workflow.json`, the one
+    /// list the consumer check and the ci tier's compile of the package's `check` both read.
+    /// Set, the build fails saying so.
+    configurations: ?[]const Configuration = null,
 };
 
-/// One build the consumer check makes.
+/// Retired with `Options.configurations`: the entries of `ci/workflow.json`'s `configurations`.
 pub const Configuration = struct {
-    /// The variation on `Options.options`.
     options: []const Option = &.{},
-    /// The modules this build's program imports, where its options leave one of
-    /// `Options.modules` out of the package (relic's `relic_lfs` without `.lfs`); null is
-    /// `Options.modules`.
     modules: ?[]const []const u8 = null,
 };
+
+/// One configuration the package promises, as `ci/workflow.json` declares it: a name, the
+/// options a build of the package is given (each replacing the base's of its name), and the
+/// modules a consumer's program imports in it, where its options leave one out of the package
+/// (relic's `relic_lfs` without `lfs`); null takes `Options.modules`. The ci tier compiles the
+/// package's `check` in each, and the consumer check builds a consumer in each.
+///
+///     "configurations": [
+///       {"name": "default", "options": {"http": true, "lfs": true}},
+///       {"name": "neither", "options": {"http": false, "lfs": false}, "modules": ["relic"]}
+///     ]
+pub const Declared = struct { name: []const u8, options: []const Option, modules: ?[]const []const u8 = null };
+
+/// The configurations `ci/workflow.json` declares for `package`, each checked against what the
+/// build declares: an option it does not declare, a value of another type than its option's (or
+/// no tag of its enum), or a module the package does not export fails, naming the entry, so a
+/// mistake there never quietly builds the default. None declared is the one default build.
+pub fn declared(b: *std.Build, package: *std.Build) union(enum) { ok: []const Declared, problem: []const u8 } {
+    const text = configure.read(package, "ci/workflow.json", 16 * 1024 * 1024) orelse return .{ .ok = &.{.{ .name = "default", .options = &.{} }} };
+    const config = std.json.parseFromSliceLeaky(std.json.Value, b.allocator, text, .{}) catch return .{ .problem = "ci/workflow.json: not JSON" };
+    const list = (if (config == .object) config.object.get("configurations") else null) orelse return .{ .ok = &.{.{ .name = "default", .options = &.{} }} };
+    if (list != .array or list.array.items.len == 0) return .{ .problem = "ci/workflow.json: configurations is a list of configurations, each {\"name\", \"options\", \"modules\"}" };
+    var out: std.ArrayList(Declared) = .empty;
+    for (list.array.items, 0..) |entry, index| {
+        const name = if (entry == .object) entry.object.get("name") else null;
+        if (name == null or name.? != .string or name.?.string.len == 0) return .{ .problem = b.fmt("ci/workflow.json: configuration {d} has no name", .{index + 1}) };
+        const at = name.?.string;
+        for (at) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '-' and byte != '_') return .{ .problem = b.fmt("ci/workflow.json: configuration {f}: a name is letters, digits, - and _, as a job and a directory take it", .{std.json.fmt(name.?, .{})}) };
+        var options: std.ArrayList(Option) = .empty;
+        if (entry.object.get("options")) |given| {
+            if (given != .object) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: options is an object of the package's options and their values", .{at}) };
+            for (given.object.keys(), given.object.values()) |option, value| {
+                const found = package.available_options_map.get(option) orelse b.available_options_map.get(option) orelse
+                    return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: the package declares no option {s}", .{ at, option }) };
+                const typed: ?Option = switch (found.type_id) {
+                    .bool => if (value == .bool) .{ .name = option, .value = .{ .flag = value.bool } } else null,
+                    .int => if (value == .integer) .{ .name = option, .value = .{ .number = value.integer } } else null,
+                    .string => if (value == .string) .{ .name = option, .value = .{ .text = value.string } } else null,
+                    .@"enum" => if (value == .string and tagged(found.enum_options, value.string)) .{ .name = option, .value = .{ .text = value.string } } else null,
+                    else => null,
+                };
+                options.append(b.allocator, typed orelse return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: option {s} is a {t} of the package's, which this value is not", .{ at, option, found.type_id }) }) catch @panic("OOM");
+            }
+        }
+        var modules: ?[]const []const u8 = null;
+        if (entry.object.get("modules")) |given| {
+            if (given != .array) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: modules is a list of the package's modules", .{at}) };
+            var names: std.ArrayList([]const u8) = .empty;
+            for (given.array.items) |module| {
+                if (module != .string or !package.modules.contains(module.string)) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: the package exports no module {f}", .{ at, std.json.fmt(module, .{}) }) };
+                names.append(b.allocator, module.string) catch @panic("OOM");
+            }
+            modules = names.items;
+        }
+        for (entry.object.keys()) |key| {
+            for ([_][]const u8{ "name", "options", "modules" }) |known| {
+                if (std.mem.eql(u8, key, known)) break;
+            } else return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: no field {s}; a configuration has a name, options and modules", .{ at, key }) };
+        }
+        out.append(b.allocator, .{ .name = at, .options = options.items, .modules = modules }) catch @panic("OOM");
+    }
+    return .{ .ok = out.items };
+}
+
+fn tagged(tags: ?[]const []const u8, value: []const u8) bool {
+    for (tags orelse return false) |tag| if (std.mem.eql(u8, tag, value)) return true;
+    return false;
+}
 
 /// One option of the dependency.
 pub const Option = struct {
@@ -79,13 +142,27 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     }
     const names = if (options.modules.len > 0) options.modules else &.{options.package};
     const step = configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package}));
-    const single = options.configurations.len == 1 and options.configurations[0].options.len == 0;
-    for (options.configurations, 0..) |configuration, index| {
+    if (options.configurations != null) {
+        step.dependOn(&b.addFail("addConsumerCheck .configurations: the package's configurations are `configurations` in ci/workflow.json, the one list the consumer check and the ci tier's compile of `check` read: {\"name\": \"no-http\", \"options\": {\"http\": false}, \"modules\": [...]}").step);
+        return;
+    }
+    const configurations = switch (declared(b, package)) {
+        .ok => |list| list,
+        .problem => |problem| {
+            // The package's own `check` in that configuration is the ci tier's: it fails too.
+            const fail = b.addFail(problem);
+            step.dependOn(&fail.step);
+            if (b.top_level_steps.get("check")) |check| check.step.dependOn(&fail.step);
+            return;
+        },
+    };
+    const single = configurations.len == 1 and configurations[0].options.len == 0;
+    for (configurations) |configuration| {
         const merged = combined(b.allocator, options.options, configuration.options);
         const build = b.addRunArtifact(consumer);
-        build.setName(b.fmt("check-consumer {s}", .{label(b, index, merged)}));
+        build.setName(b.fmt("check-consumer {s}", .{configuration.name}));
         build.addArg(b.graph.zig_exe);
-        const project = if (single) "preflight-consumer" else b.fmt("preflight-consumer/{s}", .{label(b, index, merged)});
+        const project = if (single) "preflight-consumer" else b.fmt("preflight-consumer/{s}", .{configuration.name});
         build.addDirectoryArg2(b.graph.path(.local_cache, project), .{});
         build.addDirectoryArg2(packages.getDirectory(), .{});
         build.addDirectoryArg2(package.path("."), .{});
@@ -109,13 +186,13 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     for (names) |name| {
         if (package.modules.get(name)) |module| {
             program.addImport(name, module);
-        } else if (!optional(options.configurations, name)) @panic(b.fmt("addConsumerCheck: the package has no module {s}", .{name}));
+        } else if (!optional(configurations, name)) @panic(b.fmt("addConsumerCheck: the package has no module {s}", .{name}));
     }
     step.dependOn(&b.addObject(.{ .name = "consumer-program", .root_module = program }).step);
 }
 
 /// Whether some configuration's modules leave `name` out.
-fn optional(configurations: []const Configuration, name: []const u8) bool {
+fn optional(configurations: []const Declared, name: []const u8) bool {
     for (configurations) |configuration| {
         const modules = configuration.modules orelse continue;
         for (modules) |module| {
@@ -136,19 +213,6 @@ fn combined(a: std.mem.Allocator, base: []const Option, variation: []const Optio
     }
     out.appendSlice(a, variation) catch @panic("OOM");
     return out.items;
-}
-
-/// A configuration's name, which its project directory and step take: its index and options,
-/// as `1-http=false-lfs=true`, so a failure says which build it was.
-fn label(b: *std.Build, index: usize, merged: []const Option) []const u8 {
-    var out: std.Io.Writer.Allocating = .init(b.allocator);
-    out.writer.print("{d}", .{index}) catch @panic("OOM");
-    for (merged) |option| switch (option.value) {
-        .flag => |flag| out.writer.print("-{s}={}", .{ option.name, flag }),
-        .number => |number| out.writer.print("-{s}={d}", .{ option.name, number }),
-        .text => |text| out.writer.print("-{s}={s}", .{ option.name, text }),
-    } catch @panic("OOM");
-    return out.written();
 }
 
 /// Puts `hash` and every package it depends on, transitively, into `closure`: with
@@ -391,8 +455,8 @@ test "a configuration is the base with its variation on top" {
 }
 
 test "a module is optional where a configuration leaves it out" {
-    const both: Configuration = .{};
-    const without: Configuration = .{ .options = &.{.{ .name = "lfs", .value = .{ .flag = false } }}, .modules = &.{"relic"} };
+    const both: Declared = .{ .name = "both", .options = &.{} };
+    const without: Declared = .{ .name = "no-lfs", .options = &.{.{ .name = "lfs", .value = .{ .flag = false } }}, .modules = &.{"relic"} };
     try std.testing.expect(!optional(&.{both}, "relic_lfs"));
     try std.testing.expect(optional(&.{ both, without }, "relic_lfs"));
     try std.testing.expect(!optional(&.{ both, without }, "relic"));

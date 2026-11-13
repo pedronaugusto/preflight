@@ -136,6 +136,24 @@ the options a consumer would (`.{ .name = "http", .value = .{ .flag = false } }`
 without its optional HTTP), so that a feature a package makes optional is built both ways.
 The consumer builds for the host in Debug.
 
+A package with optional features lists the configurations it promises once, as
+`configurations` in `ci/workflow.json`, and both checks read it: the consumer check builds a
+consumer in each, and the ci tier compiles the package's own `check` (`compile_step`) in each,
+in a job named for it (`check (no-http)`), so its tests, helpers and benchmarks compile
+without a feature too, not only the consumer's program:
+
+```json
+"configurations": [
+  {"name": "default", "options": {"http": true, "lfs": true}},
+  {"name": "neither", "options": {"http": false, "lfs": false}, "modules": ["relic"]}
+]
+```
+
+Each entry's options are the package's own, checked as the build configures: an option it
+does not declare, a value of another type, or a module it does not export fails `check` and
+`check-consumer`, naming the entry. `modules` names what a consumer's program imports where
+the options leave a module out.
+
 A build nested in the package (a conformance build against an emulator that is not yours, a
 fixture) that uses a package the root also pins takes the pin from the root:
 `preflight.addNestedBuild(b, package, .{ .directory = "conformance", .name = "pkg_conformance", .fingerprint = 0x..., .path_dependencies = &.{.{ .name = "pkg", .path = ".." }}, .shared = &.{"shakedown"}, .pins = &.{.{ .name = "emulator", .url = "...", .hash = "..." }}, .args = &.{"test"} })`

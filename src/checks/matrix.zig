@@ -105,6 +105,8 @@ const workflow_options = [_][]const u8{
     // and `gate` read from the build as they read `sdk_targets`.
                 "fuzz_minutes",
     "fuzzed",
+    // The configurations the package promises, which the build reads too (`consumer.declared`).
+                "configurations",
 };
 
 /// The minutes the fuzz job fuzzes for, `fuzz_minutes` in the configuration: 15 unless it
@@ -390,7 +392,52 @@ fn ciPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     const targets = try src.items(src.get(config, "targets"));
     if (targets.len > 0) try crossJobs(a, config, &jobs, targets, false);
     try jobs.append(a, try snippetsJob(a, config));
+    try configurationJobs(a, config, &jobs);
     return jobs.items;
+}
+
+/// The package's own compile (`compile_step`, `check` by default) in each configuration
+/// `configurations` declares, by its name: a configuration's options reach the package's
+/// tests, helpers and benchmarks only in a build of the package given them, so each is
+/// compiled once, as the consumer check builds a consumer in each. The build checks each
+/// entry against the options it declares; here each is read as the job's arguments.
+fn configurationJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
+    const declared = src.get(config, "configurations");
+    if (declared == .null) return;
+    if (declared != .array or declared.array.items.len == 0) return error.InvalidConfigurations;
+    const compile = try src.string(src.get(config, "compile_step"), "check");
+    for (declared.array.items) |entry| {
+        const name = src.get(entry, "name");
+        if (name != .string or name.string.len == 0) return error.InvalidConfigurations;
+        for (name.string) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '-' and byte != '_') {
+            problem = name.string;
+            return error.InvalidConfigurations;
+        };
+        var args: std.Io.Writer.Allocating = .init(a);
+        const options = src.get(entry, "options");
+        if (options != .null and options != .object) return error.InvalidConfigurations;
+        if (options == .object) for (options.object.keys(), options.object.values()) |option, value| {
+            switch (value) {
+                .bool => |flag| try args.writer.print(" -D{s}={}", .{ option, flag }),
+                .integer => |count| try args.writer.print(" -D{s}={d}", .{ option, count }),
+                .string => |text| {
+                    // The job's arguments are split at whitespace.
+                    if (text.len == 0 or std.mem.findAny(u8, text, " \t\r\n") != null) return error.InvalidConfigurations;
+                    try args.writer.print(" -D{s}={s}", .{ option, text });
+                },
+                else => return error.InvalidConfigurations,
+            }
+        };
+        var job: Job = .{
+            .os = hosts[0],
+            .name = try a.print("{s} ({s})", .{ compile, name.string }),
+            .step = compile,
+            .args = std.mem.trimStart(u8, try a.print("-Dci-lint=false{s}{s}", .{ args.written(), try buildArgs(a, src.get(config, "build_args")) }), " "),
+            .job_timeout = try minutes(config, "cross_job_timeout"),
+        };
+        job.cache_key = try key(a, job);
+        try jobs.append(a, job);
+    }
 }
 
 /// The test jobs of one host: each mode in the host's shard count.
@@ -1614,4 +1661,32 @@ test "the fuzz job: the release tier's and a dispatched fuzz run's alone, where 
     }
     // The fuzz tier is the fuzz job's: a declared job cannot join it.
     try std.testing.expectError(error.InvalidDeclaredJob, plan(a, try parse(a, "{\"jobs\":[{\"name\":\"more\",\"step\":\"more\",\"tiers\":[\"fuzz\"]}]}"), .release));
+}
+
+test "the ci tier compiles the package's check in each configuration it declares, by its name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parse = struct {
+        fn value(allocator: std.mem.Allocator, text: []const u8) !src.Value {
+            return (try std.json.parseFromSlice(src.Value, allocator, text, .{})).value;
+        }
+    }.value;
+    const config = try parse(a, "{\"configurations\": [{\"name\": \"default\", \"options\": {\"http\": true, \"lfs\": true}}, {\"name\": \"neither\", \"options\": {\"http\": false, \"lfs\": false}, \"modules\": [\"relic\"]}, {\"name\": \"level-3\", \"options\": {\"level\": 3, \"mode\": \"fast\"}}]}");
+    var found: usize = 0;
+    for (try plan(a, config, .ci)) |job| {
+        if (!std.mem.startsWith(u8, job.name, "check (")) continue;
+        found += 1;
+        try std.testing.expectEqualStrings("check", job.step);
+        if (std.mem.eql(u8, job.name, "check (neither)")) try std.testing.expectEqualStrings("-Dci-lint=false -Dhttp=false -Dlfs=false", job.args);
+        if (std.mem.eql(u8, job.name, "check (level-3)")) try std.testing.expectEqualStrings("-Dci-lint=false -Dlevel=3 -Dmode=fast", job.args);
+    }
+    try std.testing.expectEqual(@as(usize, 3), found);
+    // None declared, none planned; the release tier plans none of its own.
+    for (try plan(a, try parse(a, "{}"), .ci)) |job| try std.testing.expect(!std.mem.startsWith(u8, job.name, "check ("));
+    for (try plan(a, config, .release)) |job| try std.testing.expect(!std.mem.startsWith(u8, job.name, "check ("));
+    // A name a job and a directory cannot take, or a value the job's arguments cannot carry, is refused.
+    for ([_][]const u8{ "{\"configurations\": [{\"name\": \"no http\"}]}", "{\"configurations\": []}", "{\"configurations\": [{\"name\": \"x\", \"options\": {\"mode\": \"a b\"}}]}", "{\"configurations\": [{\"name\": \"x\", \"options\": {\"f\": 1.5}}]}" }) |text| {
+        try std.testing.expectError(error.InvalidConfigurations, plan(a, try parse(a, text), .ci));
+    }
 }

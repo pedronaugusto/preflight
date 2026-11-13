@@ -1652,6 +1652,64 @@ test "the fuzz job fails on an input the fuzzer finds failing, and keeps it" {
     try tmp.dir.access(std.testing.io, try std.Io.Dir.path.join(a, &.{ ".zig-cache/preflight-fuzz", name, "cache/f/crash" }), .{});
 }
 
+/// The fixture with a `feature` option (on by default) that its tests read, and a test that does
+/// not compile without it: a configuration of the package's own that only its own compile sees.
+fn featureFixture(a: std.mem.Allocator, dir: std.Io.Dir, workflow: []const u8) !void {
+    try fixture(a, dir);
+    try edit(a, dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n", "    const feature = b.option(bool, \"feature\", \"The optional feature\") orelse true;\n    const config = b.addOptions();\n    config.addOption(bool, \"feature\", feature);\n    module.addOptions(\"config\", config);\n    const tests = b.addTest(.{ .root_module = module });\n");
+    const text = try aegis.own.readFile(std.testing.io, dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    try dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ text, "\ntest \"rots without the feature\" {\n    comptime if (!@import(\"config\").feature) @compileError(\"this test rotted without the feature\");\n}\n" }) });
+    try dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = workflow });
+}
+
+test "a test that breaks only under a configuration's option fails the package's check in that configuration, as its ci job runs it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const workflow = "{\"configurations\": [{\"name\": \"default\", \"options\": {\"feature\": true}}, {\"name\": \"no-feature\", \"options\": {\"feature\": false}}]}";
+    try featureFixture(a, tmp.dir, workflow);
+    const config = (try std.json.parseFromSlice(src.Value, a, workflow, .{})).value;
+    const planner = @import("matrix.zig");
+    for ([_][]const u8{ "default", "no-feature" }) |name| {
+        const job = for (try planner.plan(a, config, .ci)) |each| {
+            if (std.mem.eql(u8, each.name, try a.print("check ({s})", .{name}))) break each;
+        } else return error.TestUnexpectedResult;
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), job.step });
+        var words = std.mem.tokenizeScalar(u8, job.args, ' ');
+        while (words.next()) |word| try argv.append(a, word);
+        const result = try std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = tmp.dir } });
+        if (std.mem.eql(u8, name, "default")) {
+            if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+            try std.testing.expect(command.succeeded(result));
+        } else {
+            try std.testing.expect(!command.succeeded(result));
+            if (std.mem.find(u8, result.stderr, "this test rotted without the feature") == null) std.debug.print("{s}", .{result.stderr});
+            try std.testing.expect(std.mem.find(u8, result.stderr, "this test rotted without the feature") != null);
+        }
+    }
+}
+
+test "a configuration naming an option the package does not declare fails its check, naming the configuration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try featureFixture(a, tmp.dir, "{\"configurations\": [{\"name\": \"typo\", \"options\": {\"featur\": false}}]}");
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(result));
+    if (std.mem.find(u8, result.stderr, "configuration typo: the package declares no option featur") == null) std.debug.print("{s}", .{result.stderr});
+    try std.testing.expect(std.mem.find(u8, result.stderr, "configuration typo: the package declares no option featur") != null);
+    // A value of another type than its option's, named likewise.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"wrong\", \"options\": {\"feature\": \"no\"}}]}" });
+    const wrong = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(wrong));
+    try std.testing.expect(std.mem.find(u8, wrong.stderr, "configuration wrong: option feature is a bool") != null);
+}
+
 test "timing records of two test runs with one name stay apart" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

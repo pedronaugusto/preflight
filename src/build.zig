@@ -346,7 +346,8 @@ const Steps = struct {
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
-        const source = steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
+        const lint = steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
+        const source = lint.checks;
         if (policy == .family) releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
@@ -357,11 +358,14 @@ const Steps = struct {
         // `-Dci-lint=false` leaves out glint's lint alone; the rest of the checks run either way.
         for (config.tests.dependencies.items) |dependency| steps.tests_only.dependOn(dependency);
         for ([_]*std.Build.Step{ config.tests, steps.ci }) |step| for (source) |source_check| step.dependOn(source_check);
+        // Once the source checks sit beside the tests, the steps an extra check runs are as the
+        // build will run them.
+        refuseReentry(b, package, config.config, &lint.runs);
     }
 
     /// The source checks' steps, which `addCi` sets beside the tests once `ci-test` has them:
     /// the lint (glint's and the rest), or the rest alone with `-Dci-lint=false`, and the snippets.
-    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) [2]*std.Build.Step {
+    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) Lint {
         // A package that declares no structure is held to none.
         const checker = structureChecker(b, pkg, if (configure.exists(package, config.layers)) package.path(config.layers) else pkg.path(default_layers), gantry, gantry_zig, aegis);
         var format_paths: std.ArrayList([]const u8) = .empty;
@@ -428,9 +432,55 @@ const Steps = struct {
         snippets.setCwd(package.path("."));
         const snippets_step = configure.claim(b, "snippets", "Check the documented snippets, each region as zig build docs renders it");
         snippets_step.dependOn(&snippets.step);
-        return .{ if (steps.lint_enabled) steps.lint else &source.step, snippets_step };
+        return .{ .checks = .{ if (steps.lint_enabled) steps.lint else &source.step, snippets_step }, .runs = .{ &checks.step, &source.step, &fixing.step } };
     }
 };
+
+/// The source checks' steps, and the runs of the lint that run the configuration's
+/// `extra_checks`: the lint, the lint less glint's, and `fix`'s.
+const Lint = struct { checks: [2]*std.Build.Step, runs: [3]*std.Build.Step };
+
+/// Each of the configuration's `extra_checks` that runs a step of this build reaching `runs`,
+/// the lint's runs that run the extra checks, fails them, naming the check and the step: the
+/// lint would run the check, the check the step, and the step the lint again, without end
+/// (cloak's `zig build test`, the step its tests and its lint both sit under).
+fn refuseReentry(b: *std.Build, package: *std.Build, config_path: []const u8, runs: []const *std.Build.Step) void {
+    const text = configure.read(package, config_path, 64 * 1024 * 1024) orelse return;
+    // A configuration that is no JSON object is the lint's to refuse, by name.
+    const config = std.json.parseFromSliceLeaky(std.json.Value, b.allocator, text, .{}) catch return;
+    if (config != .object) return;
+    const commands = config.object.get("extra_checks") orelse return;
+    if (commands != .array) return;
+    for (commands.array.items) |command| {
+        if (command != .array) continue;
+        var words: std.ArrayList([]const u8) = .empty;
+        for (command.array.items) |word| if (word == .string) words.append(b.allocator, word.string) catch @panic("OOM");
+        // One not `zig build ...` the lint refuses by name.
+        if (words.items.len < 2 or !std.mem.eql(u8, words.items[0], "zig") or !std.mem.eql(u8, words.items[1], "build")) continue;
+        for (words.items[2..]) |word| {
+            // What follows `--` goes to the steps' runs, and is no step.
+            if (std.mem.eql(u8, word, "--")) break;
+            if (std.mem.startsWith(u8, word, "-")) continue;
+            const top = b.top_level_steps.get(word) orelse continue;
+            if (!reaches(b, &top.step, runs)) continue;
+            const refusal = b.addFail(b.fmt("preflight: the extra check `{s}` runs the step `{s}`, which runs the lint that runs the extra checks, so each run would start another without end; run the check's work under a step the lint does not sit under", .{ std.mem.join(b.allocator, " ", words.items) catch @panic("OOM"), word }));
+            for (runs) |run| run.dependOn(&refusal.step);
+        }
+    }
+}
+
+/// Whether `from`, or a step it depends on, is one of `targets`.
+fn reaches(b: *std.Build, from: *std.Build.Step, targets: []const *std.Build.Step) bool {
+    var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+    var stack: std.ArrayList(*std.Build.Step) = .empty;
+    stack.append(b.allocator, from) catch @panic("OOM");
+    while (stack.pop()) |step| {
+        if ((seen.getOrPut(b.allocator, step) catch @panic("OOM")).found_existing) continue;
+        for (targets) |target| if (step == target) return true;
+        stack.appendSlice(b.allocator, step.dependencies.items) catch @panic("OOM");
+    }
+    return false;
+}
 
 fn forceTests(step: *std.Build.Step) void {
     if (step.cast(std.Build.Step.Run)) |run| {

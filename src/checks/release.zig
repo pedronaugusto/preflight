@@ -157,21 +157,52 @@ fn declarationPath(line: []const u8, modules: []const surface.Module) []const u8
 
 /// Whether `text` names the declaration at `path` in code form: a code span holding the path
 /// (`S.run`), its module's name before it (`pkg.S.run`), or either with its parameters after it
-/// (`S.run(size: u32)`). A word in prose is not a name: `y` names no field `S.y`.
+/// (`S.run(size: u32)`); a type function's container is named with its parameters as a reader
+/// writes it (`Ring(T, N).head` for the surface's `Ring().head`). A word in prose is not a name:
+/// `y` names no field `S.y`.
 fn namesCode(text: []const u8, path: []const u8, modules: []const surface.Module) bool {
     if (path.len == 0) return false;
     var spans = std.mem.splitScalar(u8, text, '`');
     // The text before the first backtick is prose; then code and prose take turns.
     _ = spans.next();
     while (spans.next()) |span| {
-        const named = std.mem.trim(u8, span[0 .. std.mem.findScalar(u8, span, '(') orelse span.len], " ");
-        if (std.mem.eql(u8, named, path)) return true;
+        const named = std.mem.trim(u8, span, " ");
+        if (spanNames(named, path)) return true;
         for (modules) |module| {
-            if (named.len == module.name.len + 1 + path.len and std.mem.startsWith(u8, named, module.name) and named[module.name.len] == '.' and std.mem.endsWith(u8, named, path)) return true;
+            if (named.len > module.name.len and std.mem.startsWith(u8, named, module.name) and named[module.name.len] == '.' and spanNames(named[module.name.len + 1 ..], path)) return true;
         }
         _ = spans.next() orelse break;
     }
     return false;
+}
+
+/// Whether a code span is `path`: the same names, each parameter list in the span standing for a
+/// type function's `()` in the path, and one after the last name (a function's) read as none.
+fn spanNames(span: []const u8, path: []const u8) bool {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < span.len) {
+        if (span[i] != '(') {
+            if (j == path.len or span[i] != path[j]) return false;
+            i += 1;
+            j += 1;
+            continue;
+        }
+        var depth: usize = 0;
+        while (i < span.len) : (i += 1) {
+            if (span[i] == '(') depth += 1;
+            if (span[i] == ')') {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+        } else return false;
+        i += 1;
+        if (std.mem.startsWith(u8, path[j..], "()")) {
+            j += 2;
+        } else return j == path.len and i == span.len;
+    }
+    // A type function named without its parameters (`bounded.Budget`) is still it.
+    return j == path.len or std.mem.eql(u8, path[j..], "()");
 }
 
 test "a breaking entry names a declaration in code form, with its container" {
@@ -190,6 +221,18 @@ test "a breaking entry names a declaration in code form, with its container" {
     try std.testing.expect(!namesCode("- `runner` takes a size.\n", "run", &modules));
     // The text between two spans is prose.
     try std.testing.expect(!namesCode("- `a` and run and `b`.\n", "run", &modules));
+    // A type function's container, named with its parameters as a reader writes it: a surface
+    // line names it `Ring()`.
+    try std.testing.expectEqualStrings("bounded.Ring().head", declarationPath("pkg.bounded.Ring().head field: usize", &modules));
+    try std.testing.expect(namesCode("- `bounded.Ring(T, N).head` is `aegis_head`.\n", "bounded.Ring().head", &modules));
+    try std.testing.expect(namesCode("- `pkg.bounded.Ring(T, N).head` is gone.\n", "bounded.Ring().head", &modules));
+    try std.testing.expect(namesCode("- `bounded.Budget(Repr)` requires less.\n", "bounded.Budget()", &modules));
+    try std.testing.expect(namesCode("- `int.Checked(Repr).shl(amount: u4)` takes a narrower amount.\n", "int.Checked().shl", &modules));
+    try std.testing.expect(namesCode("- `Lent(T)` is gone.\n", "Lent", &modules));
+    try std.testing.expect(namesCode("- `bounded.Budget` requires less.\n", "bounded.Budget()", &modules));
+    // Another container's field, or the container where its field is meant, is no name of it.
+    try std.testing.expect(!namesCode("- `bounded.Ring(T, N)` is gone.\n", "bounded.Ring().head", &modules));
+    try std.testing.expect(!namesCode("- `bounded.RingBuffer(T).head` is gone.\n", "bounded.Ring().head", &modules));
     const text = "# Changelog\n\n## [Unreleased]\n\n### Breaking\n\n- `a` is gone.\n\n### Added\n\n- `b`.\n\n## [0.2.0] - 2026-02-01\n\n### Removed\n\n- `c`.\n\n## [0.1.0] - 2026-01-01\n\n### Breaking\n\n- `d`.\n";
     const said = try breakingSince(std.testing.allocator, text, changelog.parseVersion("0.1.0"));
     defer std.testing.allocator.free(said);

@@ -327,6 +327,89 @@ test "lint reads a test runner of the package's own with the bindings of the tes
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "no module of this build compiles it"));
 }
 
+test "lint reads a module a build step makes as an external module: translate-c's output and a Run step's output file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // hull's sdl and vt (translate-c) and ghostty_themes (a host tool's output): bytes that
+    // exist only after a build step runs, so the configuration holds none to read.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const defs = b.addTranslateC(.{ .root_source_file = b.path("ci/defs.h"), .target = module.resolved_target.?, .optimize = .debug }).createModule();
+        \\    const tool = b.addExecutable(.{ .name = "table-tool", .root_module = b.createModule(.{ .root_source_file = b.path("ci/tool.zig"), .target = b.graph.host }) });
+        \\    const table = b.addRunArtifact(tool).addOutputFileArg2("table.zig", .{});
+        \\    const reader = b.addObject(.{ .name = "reader", .root_module = b.createModule(.{ .root_source_file = b.path("ci/reads_made.zig"), .target = module.resolved_target, .imports = &.{
+        \\        .{ .name = "defs", .module = defs },
+        \\        .{ .name = "table", .module = b.createModule(.{ .root_source_file = table }) },
+        \\    } }) });
+        \\    b.getInstallStep().dependOn(&reader.step);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/defs.h", .data = "#define ANSWER 42\nint add(int a, int b);\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/tool.zig", .data = "const std = @import(\"std\");\npub fn main(init: std.process.Init) !void {\n    const args = try init.minimal.args.toSlice(init.arena.allocator());\n    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = args[1], .data = \"pub const rows: u32 = 3;\\n\" });\n}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/reads_made.zig", .data = "const defs = @import(\"defs\");\nconst table = @import(\"table\");\ncomptime {\n    _ = defs.ANSWER;\n    _ = table.rows;\n}\n" });
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "no module of this build compiles it"));
+}
+
+test "a test compiled with a runner of the package's own and never run is a harness, owed no run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // reactor's bench/v11: a suite its own runner drives at bench time, compiled by check alone.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const harness = b.addTest(.{ .name = "harness", .root_module = b.createModule(.{ .root_source_file = b.path("ci/suite.zig"), .target = module.resolved_target }) });
+        \\    harness.test_runner = .{ .path = b.path("ci/harness_runner.zig"), .mode = .simple };
+        \\    b.getInstallStep().dependOn(&harness.step);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/suite.zig", .data = "test \"measured\" {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/harness_runner.zig", .data = "const builtin = @import(\"builtin\");\npub fn main() void {\n    for (builtin.test_functions) |test_fn| test_fn.func() catch |err| @panic(@errorName(err));\n}\n" });
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "never run"));
+}
+
+test "glint reads the public surface from the package's exported roots: a type reached through a private alias is no part of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    // The exported root leaks a private type; the helper, reached through a private alias, is
+    // the package's alone, so its `pub` is no surface.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ source, "\nconst helper = @import(\"helper.zig\");\nconst Private = struct { x: u8 };\npub const Leak = struct { inner: Private };\npub fn shown() u8 {\n    const kept: helper.Shown = .{ .inner = .{ .y = 1 } };\n    return kept.inner.y;\n}\n" }) });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/helper.zig", .data = "const Hidden = struct { y: u8 };\npub const Shown = struct { inner: Hidden };\n" });
+    try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/helper.zig\" } }");
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const leak = std.mem.find(u8, linted.stderr, "src/sample.zig") != null and std.mem.find(u8, linted.stderr, "private type 'Private'") != null;
+    if (!leak or std.mem.find(u8, linted.stderr, "private type 'Hidden'") != null) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(leak);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "private type 'Hidden'"));
+}
+
 test "lint names once a selected file no module of the build compiles, where it imports a module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

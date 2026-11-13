@@ -683,6 +683,12 @@ pub fn testRoots(a: std.mem.Allocator, snapshot: Snapshot, steps: []const []cons
         const root = try testRoot(a, snapshot, compiled) orelse continue;
         any = true;
         if (ran.contains(root)) continue;
+        // A test compiled with a runner of its own is a harness: its runner is a program that
+        // decides what runs and when (reactor's bench/v11, at bench time), so no run is owed here.
+        switch (compiled.test_runner.u) {
+            .default => {},
+            .simple, .server => continue,
+        }
         const entry = try unrun.getOrPut(a, root);
         if (!entry.found_existing) entry.value_ptr.* = .empty;
         // A test compiled again for another target or as an object keeps its name.

@@ -25,6 +25,9 @@ pub const Build = struct {
     modules: []const src.BuildModule = &.{},
     /// Zig's `lib/std`; without it `std` stays unresolved.
     std_dir: ?[]const u8 = null,
+    /// The root of each module the package exports (each `b.addModule`'s): glint reads the
+    /// public surface as what these reach through `pub` declarations.
+    exported: []const []const u8 = &.{},
 };
 
 pub const Selected = struct { path: []const u8, kind: Policy.Kind };
@@ -138,9 +141,10 @@ pub const ModuleMap = struct {
     /// The configured modules whose sources reach a file through relative imports, by path.
     modules_of: std.StringHashMapUnmanaged(std.ArrayList(u32)) = .empty,
 
-    /// What the modules of one compilation that compile a file bind a name to: nothing, each
-    /// root file (one, or several where those modules bind it apart), or a module with no root
-    /// file among them (`unknown`), which is no file to read.
+    /// What the modules of one compilation that compile a file bind a name to: nothing, or each
+    /// root file (one, or several where those modules bind it apart). A module whose root the
+    /// configuration holds no bytes of (translate-c's output, a Run step's output file) is
+    /// `externalPath`'s: bodiless, read by glint as an external module.
     pub const Bound = union(enum) { unbound, unknown, paths: []const []const u8 };
     pub const In = enum { program, build };
 
@@ -190,8 +194,7 @@ pub const ModuleMap = struct {
             if (map.build.modules[which].script != (in == .build)) continue;
             for (map.build.modules[which].imports) |binding| {
                 if (!std.mem.eql(u8, binding.name, name)) continue;
-                const root = map.build.modules[binding.module].root orelse return .unknown;
-                const path = try normalize(a, root);
+                const path = if (map.build.modules[binding.module].root) |root| try normalize(a, root) else try externalPath(a, binding.name);
                 for (found.items) |earlier| {
                     if (std.mem.eql(u8, earlier, path)) break;
                 } else try found.append(a, path);
@@ -200,6 +203,12 @@ pub const ModuleMap = struct {
         return if (found.items.len == 0) .unbound else .{ .paths = found.items };
     }
 };
+
+/// The name preflight gives a module whose bytes exist only after a build step runs, as glint's
+/// command line spells one (`--external NAME`): no file, a bodiless input glint reads as external.
+fn externalPath(a: std.mem.Allocator, name: []const u8) ![]const u8 {
+    return a.print("<external {s}>", .{name});
+}
 
 /// What `bytes` imports, each name once, in the order written. Text whose literals do not scan
 /// imports nothing here: glint's own parse of it reports the file as unusable.
@@ -349,6 +358,12 @@ const Loader = struct {
         if (self.index.get(path)) |known| {
             if (selected) self.inputs.items[known].selected = true;
             return known;
+        }
+        if (std.mem.startsWith(u8, path, "<external ")) {
+            const id: u32 = @intCast(self.inputs.items.len);
+            try self.inputs.append(self.c.a, .{ .name = path, .bytes = "", .stem = path["<external ".len .. path.len - 1], .selected = false, .external = true });
+            try self.index.put(self.c.a, path, id);
+            return id;
         }
         const bytes = (try self.read(path)) orelse return null;
         if (self.inputs.items.len >= max_files or bytes.len > max_bytes - self.total) return error.ProjectBudgetExceeded;
@@ -515,6 +530,13 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
         if (unbound.items.len != 0) c.fail("glint: {s}: no module of this build compiles it, so `{s}` and every module it imports have no binding to read: build it in the package's own graph (its `check`), or leave it out of what glint reads", .{ from.name, unbound.items[0] });
     }
     try loader.compilations(imports.items);
+    // The roots of the modules the package exports: the public surface starts there.
+    for (build.exported) |root| {
+        const path = try normalize(c.a, root);
+        for (loader.inputs.items) |*input| if (std.mem.eql(u8, input.name, path)) {
+            input.exported = true;
+        };
+    }
     const project = glint.Project.init(gpa, loader.inputs.items, imports.items, .{ .io = c.io }) catch |err| switch (err) {
         error.ProjectBudgetExceeded => return budget(c),
         error.Canceled => return error.Canceled,
@@ -740,7 +762,14 @@ test "an options module the build generates whole is read as its module's file, 
     var release = false;
     var later = false;
     for (project.imports) |import| {
-        if (std.mem.eql(u8, import.spelling, "later")) later = true;
+        // Bytes the build writes only as it runs: an external module, bodiless and never linted.
+        if (std.mem.eql(u8, import.spelling, "later")) {
+            later = true;
+            const input = project.at(import.target).input;
+            try std.testing.expectEqualStrings("<external later>", input.name);
+            try std.testing.expect(input.external and !input.selected and input.bytes.len == 0);
+            continue;
+        }
         if (!std.mem.eql(u8, import.spelling, "release")) continue;
         release = true;
         const input = project.at(import.target).input;
@@ -749,7 +778,7 @@ test "an options module the build generates whole is read as its module's file, 
         try std.testing.expect(!input.selected);
     }
     try std.testing.expect(release);
-    try std.testing.expect(!later);
+    try std.testing.expect(later);
 }
 
 test "a build script reads a dependency's script by the dependency's name, and its manifest as a file, never a module it lacks" {

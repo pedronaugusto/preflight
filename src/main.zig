@@ -248,7 +248,10 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     }
     const configured = try facts.unionModules(a, per_target.items);
     const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, a, .fromRaw(16 * 1024 * 1024))) else configured;
-    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std }, try modules(a, args.module), .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
+    const exported = try modules(a, args.module);
+    const exported_roots = try a.alloc([]const u8, exported.len);
+    for (exported_roots, exported) |*root, module| root.* = module.root;
+    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);

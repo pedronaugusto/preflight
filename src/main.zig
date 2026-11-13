@@ -303,7 +303,8 @@ fn modules(a: std.mem.Allocator, pairs: []const []const u8) ![]const checks.surf
 
 /// The configured build's modules, whose bindings the public surface reads a facade through.
 fn configuredModules(c: *src.Context) !checks.glint.assembly.Build {
-    return .{ .modules = try facts.buildModules(c.a, try facts.read(c.*, c.zig, &.{})) };
+    // A module rooted in Zig's library is no module of the package's own: the surface reads none.
+    return .{ .modules = try facts.buildModules(c.a, try facts.read(c.*, c.zig, &.{}), null) };
 }
 
 /// `surface`: the public surface of the modules the package exports, a line per declaration;

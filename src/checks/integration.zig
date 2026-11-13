@@ -268,6 +268,36 @@ test "lint reads a negative fixture the build compiles expecting its error, the 
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
 }
 
+test "lint reads a module whose root the build copies, from a source directory or as one file, as the file it copies" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // ensign's second aegis: a dependency's sources copied to another path, a module of their own.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    const copies = b.addWriteFiles();
+        \\    const copied_dir = copies.addCopyDirectory(b.path("src"), "copy", .{ .include_extensions = &.{".zig"} });
+        \\    const copied_file = copies.addCopyFile(b.path("src/sample.zig"), "one/sample.zig");
+        \\    const reader = b.addObject(.{ .name = "reader", .root_module = b.createModule(.{ .root_source_file = b.path("ci/reads_copy.zig"), .target = module.resolved_target, .imports = &.{
+        \\        .{ .name = "copied", .module = b.createModule(.{ .root_source_file = copied_dir.path(b, "sample.zig"), .target = module.resolved_target }) },
+        \\        .{ .name = "single", .module = b.createModule(.{ .root_source_file = copied_file, .target = module.resolved_target }) },
+        \\    } }) });
+        \\    b.getInstallStep().dependOn(&reader.step);
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/reads_copy.zig", .data = "const copied = @import(\"copied\");\nconst single = @import(\"single\");\ncomptime {\n    _ = copied;\n    _ = single;\n}\n" });
+    const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
+    try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
+    try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
+}
+
 test "lint names once a selected file no module of the build compiles, where it imports a module" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

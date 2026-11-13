@@ -387,6 +387,11 @@ pub fn buildModules(a: std.mem.Allocator, snapshot: Snapshot) ![]const src.Build
             const generated = configured.root_source_file.unwrap().?.get(c).generated;
             module.root = try named(a, try a.print(".preflight-generated/{x:0>16}/{s}", .{ std.hash.Wyhash.hash(0, contents), generated.sub_path.slice(c) }));
             module.contents = contents;
+        } else if (copyOf(c, configured.root_source_file)) |copied| {
+            // The same bytes as the file it copies, which the module reads as that file.
+            if (try rootPath(a, c, snapshot.package, @fromBackingInt(@backingInt(copied.source)))) |source| {
+                module.root = if (copied.under.len == 0) source else try named(a, try Io.Dir.path.join(a, &.{ source, copied.under }));
+            }
         };
     }
     return out;
@@ -491,6 +496,41 @@ fn embedOf(c: *const C, index: C.LazyPath.OptionalIndex) ?[]const u8 {
         for (files.embeds.slice) |embed| if (std.mem.eql(u8, embed.sub_path.slice(c), path.generated.sub_path.slice(c))) return embed.contents.slice(c);
     }
     return null;
+}
+
+/// The source a WriteFile step copies to `index`, the root of a module: a file it copies
+/// (`addCopyFile`), or a directory it copies (`addCopyDirectory`) with the path under it, where
+/// the directory's extension filters let the file through. A file it embeds is `embedOf`'s.
+fn copyOf(c: *const C, index: C.LazyPath.OptionalIndex) ?struct { source: C.LazyPath.Index, under: []const u8 } {
+    const path = (index.unwrap() orelse return null).get(c);
+    if (path != .generated or path.generated.flags.up != 0) return null;
+    const wanted = path.generated.sub_path.slice(c);
+    for (c.steps) |step| {
+        const files = step.extended.cast(c, C.Step.WriteFile) orelse continue;
+        if (files.generated_directory != path.generated.index) continue;
+        for (files.copies.slice) |copy| if (std.mem.eql(u8, copy.sub_path.slice(c), wanted)) return .{ .source = copy.src_file, .under = "" };
+        for (files.directories.slice) |directory| {
+            const base = directory.sub_path.slice(c);
+            const under = if (base.len == 0) wanted else if (wanted.len > base.len and std.mem.startsWith(u8, wanted, base) and wanted[base.len] == '/') wanted[base.len + 1 ..] else continue;
+            if (!copiedExtension(c, directory, Io.Dir.path.extension(under))) continue;
+            return .{ .source = directory.src_path, .under = under };
+        }
+    }
+    return null;
+}
+
+/// Whether a directory copy takes a file of `extension`: one its includes name, where it has
+/// them, and none its excludes name.
+fn copiedExtension(c: *const C, directory: C.Step.WriteFile.Directory, extension: []const u8) bool {
+    if (directory.include_extensions.slice(c)) |included| {
+        for (included) |each| {
+            if (std.mem.eql(u8, each.slice(c), extension)) break;
+        } else return false;
+    }
+    if (directory.exclude_extensions.slice(c)) |excluded| {
+        for (excluded) |each| if (std.mem.eql(u8, each.slice(c), extension)) return false;
+    }
+    return true;
 }
 
 /// Where a module's root file is, relative to the repository's root: the checked

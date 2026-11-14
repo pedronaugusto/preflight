@@ -1,13 +1,28 @@
 const std = @import("std");
 const gantry = @import("gantry");
 const src = @import("source.zig");
+const assembly = @import("glint/assembly.zig");
 
-pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !void {
+/// The namespace layout of `sources`. A file the build roots a module at (`modules`, the build's
+/// configured modules) is no namespace's member: it is reached by its module's name, never
+/// through an entry file, so a directory of such roots (spectra's kernels, one module each for
+/// the CPU features its instructions need) needs no entry, and roots sharing a name's prefix
+/// belong in no directory of that name.
+pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value, modules: []const src.BuildModule) !void {
     var globs: gantry.rules.Globs = .{ .arena = c.a };
     const tests = try globs.list(.path, try src.testPaths(c.a, config));
-    var directories: std.StringHashMap(std.ArrayList([]const u8)) = .init(c.a);
+    var roots: std.StringHashMapUnmanaged(void) = .empty;
+    for (modules) |module| {
+        if (module.script) continue;
+        try roots.put(c.a, try assembly.normalize(c.a, module.root orelse continue), {});
+    }
+    var grouped: std.ArrayList(src.Source) = .empty;
     for (sources) |s| {
-        if (gantry.rules.anyOf(tests, s.path)) continue;
+        if (gantry.rules.anyOf(tests, s.path) or roots.contains(try assembly.normalize(c.a, s.path))) continue;
+        try grouped.append(c.a, s);
+    }
+    var directories: std.StringHashMap(std.ArrayList([]const u8)) = .init(c.a);
+    for (grouped.items) |s| {
         const directory = std.Io.Dir.path.dirname(s.path) orelse continue;
         const group = try directories.getOrPut(directory);
         if (!group.found_existing) group.value_ptr.* = .empty;
@@ -30,13 +45,13 @@ pub fn layout(c: *src.Context, sources: []const src.Source, config: src.Value) !
         }
         if (count != 1) c.fail("{s}: namespace has {d} files; give it one adjacent {s}.zig entry", .{ directory, members.len, name });
     }
-    try flatNamespaces(c, sources, config, tests);
+    try flatNamespaces(c, grouped.items, config);
 }
 
-fn flatNamespaces(c: *src.Context, sources: []const src.Source, config: src.Value, tests: []const *const gantry.rules.Pattern) !void {
+/// `grouped`: the sources that belong to a namespace, tests and module roots left out.
+fn flatNamespaces(c: *src.Context, grouped: []const src.Source, config: src.Value) !void {
     var groups = std.StringHashMap(std.ArrayList([]const u8)).init(c.a);
-    for (sources) |s| {
-        if (gantry.rules.anyOf(tests, s.path)) continue;
+    for (grouped) |s| {
         const parent = std.Io.Dir.path.dirname(s.path) orelse ".";
         const base = std.Io.Dir.path.basename(s.path);
         const stem = base[0 .. base.len - 4];

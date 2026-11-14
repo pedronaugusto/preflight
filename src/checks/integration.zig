@@ -433,6 +433,42 @@ test "lint names once a selected file no module of the build compiles, where it 
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, linted.stderr, said));
 }
 
+test "the namespace layout leaves out a file the build roots a module at: a directory of module roots needs no entry, files it imports still do" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // spectra's kernels: a module each, built with the CPU features its instructions need,
+    // imported by its module's name, sharing a directory and a name's prefix and no namespace.
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    module.addImport("kernel_wide", b.createModule(.{ .root_source_file = b.path("src/kernels/x86_wide.zig"), .target = target }));
+        \\    module.addImport("kernel_narrow", b.createModule(.{ .root_source_file = b.path("src/kernels/x86_narrow.zig"), .target = target }));
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.createDirPath(io, "src/kernels");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/kernels/x86_wide.zig", .data = "pub const lanes: u32 = 32;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/kernels/x86_narrow.zig", .data = "pub const lanes: u32 = 16;\n" });
+    const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ source, "\ntest \"each kernel's lanes\" {\n    try @import(\"std\").testing.expect(@import(\"kernel_wide\").lanes > @import(\"kernel_narrow\").lanes);\n}\n" }) });
+    try edit(a, tmp.dir, "ci/layers.zig", ".except_targets = &.{ \"std\", \"builtin\" }", ".except_targets = &.{ \"std\", \"builtin\", \"kernel_wide\", \"kernel_narrow\" }");
+    try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/kernels/*.zig\" } }");
+    const roots = try lintFixture(a, tmp.dir);
+    if (!command.succeeded(roots)) std.debug.print("{s}", .{roots.stderr});
+    try std.testing.expect(command.succeeded(roots));
+    // Two files the wide kernel imports by path are a namespace of that directory's, as before.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/kernels/x86_wide.zig", .data = "pub const lanes: u32 = @import(\"scan.zig\").width + @import(\"table.zig\").width;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/kernels/scan.zig", .data = "pub const width: u32 = 16;\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/kernels/table.zig", .data = "pub const width: u32 = 16;\n" });
+    const members = try lintFixture(a, tmp.dir);
+    try std.testing.expect(!command.succeeded(members));
+    if (std.mem.find(u8, members.stderr, "src/kernels: namespace has 2 files; give it one adjacent kernels.zig entry") == null) std.debug.print("{s}", .{members.stderr});
+    try std.testing.expect(std.mem.find(u8, members.stderr, "src/kernels: namespace has 2 files; give it one adjacent kernels.zig entry") != null);
+}
+
 test "portable replay records timings and still rejects failed tests and leaked memory" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

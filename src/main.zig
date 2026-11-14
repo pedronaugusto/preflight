@@ -353,7 +353,7 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
         if (c.errors != 0) return;
     }
     var timer = stage(c, "namespace layout");
-    try checks.policy.layout(c, sources, config);
+    try checks.policy.layout(c, sources, config, build.modules);
     timer.end(c.*, log);
     if (c.errors != 0) return;
     // The documented snippets are a check of their own (`snippets`), which a lint

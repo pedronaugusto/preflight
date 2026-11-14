@@ -15,12 +15,18 @@ pub const Profile = struct {
     /// A step executing concurrent tests, not a compile-only step.
     tsan_step: []const u8 = "test",
 };
-pub const Options = struct { active: bool, tsan: bool };
+pub const Options = struct {
+    active: bool,
+    tsan: bool,
+    /// `-Dci-fuzzing`: this build is a fuzzing session's, which the fuzz steps ask for by name.
+    fuzzing: bool = false,
+};
 
 pub fn declare(b: *std.Build) Options {
     return .{
         .active = b.option(bool, "ci-hardened", "Runtime safety enabled for this opt-in test configuration") orelse false,
         .tsan = b.option(bool, "ci-tsan", "Execute native x86_64 or aarch64 Linux or macOS tests with ThreadSanitizer") orelse false,
+        .fuzzing = b.option(bool, "ci-fuzzing", "A fuzzing session's build, as the fuzz and ci-fuzz steps ask for it: the tests the fuzz step runs are built with LLVM, whose coverage Zig's fuzzer reads") orelse false,
     };
 }
 
@@ -147,10 +153,28 @@ fn apply(b: *std.Build, step: *std.Build.Step, options: Options, seen: *std.Auto
     for (step.dependencies.items) |dep| apply(b, dep, options, seen, modules);
 }
 
+/// A fuzzing session's build (`-Dci-fuzzing`): every test that `roots` build is built with LLVM.
+/// Zig's fuzzer reads a test's coverage from the PCs its instrumentation lists, and the
+/// self-hosted x86_64 backend lists none: the fuzzer stops on an empty coverage file
+/// (uplink's run 43494285972). A fuzzing build that `--fuzz` rebuilds keeps the backend.
+pub fn fuzzing(b: *std.Build, roots: []const *std.Build.Step) void {
+    var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+    for (roots) |step| llvm(b, step, &seen);
+}
+
+fn llvm(b: *std.Build, step: *std.Build.Step, seen: *std.AutoHashMapUnmanaged(*std.Build.Step, void)) void {
+    const entry = seen.getOrPut(b.allocator, step) catch @panic("OOM");
+    if (entry.found_existing) return;
+    if (step.cast(std.Build.Step.Compile)) |artifact| if (artifact.kind.isTest()) {
+        artifact.use_llvm = true;
+    };
+    for (step.dependencies.items) |dep| llvm(b, dep, seen);
+}
+
 fn forward(b: *std.Build, run: *std.Build.Step.Run) void {
     for (b.user_input_options.keys(), b.user_input_options.values()) |name, value| {
         var control = false;
-        for ([_][]const u8{ "ci-hardened", "ci-tsan", "ci-lint", "ci-bench-smoke" }) |key| if (std.mem.eql(u8, name, key)) {
+        for ([_][]const u8{ "ci-hardened", "ci-tsan", "ci-fuzzing", "ci-lint", "ci-bench-smoke" }) |key| if (std.mem.eql(u8, name, key)) {
             control = true;
         };
         if (control) continue;

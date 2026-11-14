@@ -2815,6 +2815,30 @@ test "toolchain hardened selects LLVM for the native fuzz rebuild" {
     try std.testing.expect(command.succeeded(result));
 }
 
+test "toolchain a fuzzing build builds the fuzz step's tests with LLVM, and only a fuzzing build" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
+    // The fixture fuzzes its tests (no fuzz step of its own): the step the fuzzer runs.
+    const modified = try std.mem.replaceOwned(u8, a, build, "preflight.addConsumerCheck(b, b,",
+        \\const backend = b.step("backend-proof", "Require LLVM for the fuzz step's tests");
+        \\if (tests.use_llvm != true) backend.dependOn(&b.addFail("the fuzz step's tests are not built with LLVM").step);
+        \\preflight.addConsumerCheck(b, b,
+    );
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
+    const fuzzing = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "backend-proof", "-Dci-fuzzing=true" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(fuzzing)) std.debug.print("{s}", .{fuzzing.stderr});
+    try std.testing.expect(command.succeeded(fuzzing));
+    // Without it the backend stays the package's: the ci tier's test jobs build as they did.
+    const plain = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "backend-proof" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(plain));
+    try std.testing.expect(std.mem.find(u8, plain.stderr, "the fuzz step's tests are not built with LLVM") != null);
+}
+
 test "toolchain hardened leaves a module that takes its artifact's mode taking it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

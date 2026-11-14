@@ -393,7 +393,10 @@ test binary has a property (the fuzzer refuses a binary with none). The fuzzer a
 properties are the package's own shakedown, which the build that calls `addCi` declares (a
 dev dependency with bay); a package that declares none has no `fuzz` step and fetches
 nothing for one, and one that names a `fuzz_step` without it is refused. The fuzzing,
-the corpora and the shrinking are shakedown's; preflight wires the step.
+the corpora and the shrinking are shakedown's; preflight wires the step. Each session's
+build is given `-Dci-fuzzing=true`, which builds the tests the fuzz step runs with LLVM,
+whose instrumentation lists the coverage Zig's fuzzer reads (the self-hosted x86_64
+backend's lists none); without it the backend is the package's.
 
 On GitHub the release tier's fuzz job does the same for `fuzz_minutes` of `ci/workflow.json`
 (15 by default, at most 330, 0 for none): `zig build ci-fuzz`, where `preflight fuzz-budget`

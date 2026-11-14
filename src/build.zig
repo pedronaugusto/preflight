@@ -262,6 +262,7 @@ const Steps = struct {
         const roots: []const *std.Build.Step = &roots_buffer;
         const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
+        if (steps.profile_options.fuzzing) hardened.fuzzing(b, roots);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null, executable);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         // `check` compiles, running nothing: here, all `ci-check` does (the tests, the programs

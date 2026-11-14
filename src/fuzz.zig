@@ -24,6 +24,8 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, step: []c
     // The runner builds the step itself, as this same build: `bay dev` under bay, else zig build.
     if (configure.bay(b, package)) |bay| run.addArgs(&.{ "--bay", bay }) else run.addArgs(&.{ "--zig", b.graph.zig_exe });
     run.addArgs(&.{ "--step", step });
+    // A fuzzing build, asked for by name: its tests are built as the fuzzer reads them.
+    run.addArgs(&.{ "--build-arg", "-Dci-fuzzing=true" });
     run.addPassthruArgs();
     run.has_side_effects = true;
     configure.claim(b, "fuzz", "Fuzz the check properties off the landing path, corpora and findings outside the package: -- --limit 10M --sessions 1 --store ~/shakedown-fuzz --filter <test>").dependOn(&run.step);
@@ -35,7 +37,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, step: []c
     job.addArg("--package");
     job.addDirectoryArg2(package.path("."), .{});
     if (configure.bay(b, package)) |bay| job.addArgs(&.{ "--bay", bay }) else job.addArgs(&.{ "--zig", b.graph.zig_exe });
-    job.addArgs(&.{ "--step", hardened.testsAlone(b, tests, step) });
+    job.addArgs(&.{ "--step", hardened.testsAlone(b, tests, step), "--build-arg", "-Dci-fuzzing=true" });
     job.setCwd(package.path("."));
     job.has_side_effects = true;
     configure.claim(b, "ci-fuzz", "The fuzz job: the check properties fuzzed for ci/workflow.json's fuzz_minutes (PREFLIGHT_FUZZ_MINUTES), failing on the first finding with its shrunk tape; corpora and findings in .zig-cache/preflight-fuzz").dependOn(&job.step);

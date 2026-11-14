@@ -136,6 +136,8 @@ pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module 
             std.mem.eql(u8, tree.tokenSlice(tree.nodeData(receiver).node_and_token[1]), "modules"))
         put: {
             if (call.ast.params.len != 3) return null;
+            // Another package's module handed on is that package's surface, a line in this one's.
+            if (dependencyModule(&tree, call.ast.params[2])) continue;
             break :put .{ 1, try createdRoot(a, &tree, call.ast.params[2], 0) };
         } else continue;
         const name = (try stringLiteral(a, &tree, constantValue(&tree, call.ast.params[name_at]) orelse return null)) orelse return null;
@@ -147,6 +149,16 @@ pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module 
         }
     }
     return out.items;
+}
+
+/// Whether `node` is a module a dependency of the build gives (`dependency.module("name")`),
+/// directly or through a constant in scope.
+fn dependencyModule(tree: *const Ast, node: Ast.Node.Index) bool {
+    var buffer: [1]Ast.Node.Index = undefined;
+    const call = tree.fullCall(&buffer, constantValue(tree, node) orelse return false) orelse return false;
+    if (tree.nodeTag(call.ast.fn_expr) != .field_access or call.ast.params.len != 1) return false;
+    _, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
+    return std.mem.eql(u8, tree.tokenSlice(method), "module");
 }
 
 /// What a module's options say of its root: a literal `b.path("...")`, none given, or unknown.
@@ -1173,8 +1185,20 @@ test "a module put in the build's modules is read through the helper of the file
     for ([_][]const u8{
         "pub fn build(b: *@import(\"std\").Build) void {\n    put(b, b.createModule(.{ .root_source_file = b.path(\"src/pkg.zig\") }));\n}\nfn put(b: *@import(\"std\").Build, module: *@import(\"std\").Build.Module) void {\n    b.modules.put(b.allocator, \"pkg\", module) catch @panic(\"OOM\");\n}\n",
         "pub fn build(b: *@import(\"std\").Build) void {\n    b.modules.put(b.allocator, \"pkg\", make(b, true)) catch @panic(\"OOM\");\n}\nfn make(b: *@import(\"std\").Build, wide: bool) *@import(\"std\").Build.Module {\n    if (wide) return b.createModule(.{ .root_source_file = b.path(\"src/wide.zig\") });\n    return b.createModule(.{ .root_source_file = b.path(\"src/pkg.zig\") });\n}\n",
-        "pub fn build(b: *@import(\"std\").Build) void {\n    b.modules.put(b.allocator, \"pkg\", b.dependency(\"other\", .{}).module(\"other\")) catch @panic(\"OOM\");\n}\n",
     }) |text| try std.testing.expectEqual(@as(?[]const Module, null), try declaredModules(a, text));
+    // Another package's module put again under a name (visor 0.5.9 hands on morse's) is that
+    // package's surface, a line in this one's: it is left out, whatever names it.
+    const reexported = (try declaredModules(a,
+        \\pub fn build(b: *@import("std").Build) void {
+        \\    const morse = b.dependency("morse", .{});
+        \\    _ = b.addModule("visor", .{ .root_source_file = b.path("src/visor.zig") });
+        \\    b.modules.put(b.allocator, b.graph.dupeString("morse"), morse.module("morse")) catch @panic("OOM");
+        \\    const other = b.dependency("other", .{}).module("other");
+        \\    b.modules.put(b.allocator, "other", other) catch @panic("OOM");
+        \\}
+    )).?;
+    try std.testing.expectEqual(@as(usize, 2), reexported.len);
+    try std.testing.expectEqualStrings("visor", reexported[1].name);
 }
 
 test "an addModule's name or options held in a constant in scope are read through it; a parameter, a variable or another function's constant is not" {

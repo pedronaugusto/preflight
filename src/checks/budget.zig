@@ -149,6 +149,14 @@ pub fn run(c: *src.Context, budget: Span, store: []const u8, fuzzer: []const []c
         c.report("ci-fuzz: fuzz_minutes is 0: nothing to fuzz\n", .{});
         return;
     }
+    // A shakedown older than the options it is given (`--build-arg`, bee3c3e) prints its usage
+    // and stops each session, which read as a session that failed with nothing kept (ladar's
+    // run 43630558654); its usage names what it takes, so the run asks it first.
+    const usage = try seam.run(c.a, c.io, .{ .argv = &.{ fuzzer[0], "--help" }, .cwd = c.childCwd(), .environ_map = c.environ_map }, .line);
+    if (missingOption(fuzzer, try std.mem.concat(c.a, u8, &.{ usage.stdout, usage.stderr }))) |option| {
+        c.fail("ci-fuzz: the package's shakedown-fuzz ({s}) takes no {s}, which the fuzz step gives it (each session's build is a fuzzing build, -Dci-fuzzing): pin shakedown at main bee3c3e or later", .{ fuzzer[0], option });
+        return;
+    }
     try std.Io.Dir.cwd().createDirPath(c.io, store);
     const root = try std.Io.Dir.cwd().realPathFileAlloc(c.io, store, c.a);
     // Findings an earlier run left here are not this run's.
@@ -190,6 +198,16 @@ pub fn run(c: *src.Context, budget: Span, store: []const u8, fuzzer: []const []c
         limit = nextLimit(limit, took, left);
     }
     c.report("ci-fuzz: {f}, {d} session(s), {d} runs asked: no finding\n", .{ whole, sessions, asked });
+}
+
+/// The option `fuzzer` is given that its shakedown-fuzz's `usage` does not name; null when it
+/// names them all.
+fn missingOption(fuzzer: []const []const u8, usage: []const u8) ?[]const u8 {
+    for (fuzzer[1..]) |arg| {
+        if (!std.mem.startsWith(u8, arg, "--")) continue;
+        if (std.mem.find(u8, usage, arg) == null) return arg;
+    }
+    return null;
 }
 
 /// Deletes `<package>/findings` under the store `root`, for each package the store holds.
@@ -282,6 +300,16 @@ fn append(c: src.Context, path: []const u8, text: []const u8) !void {
     writer.pos = (try file.stat(c.io)).size;
     try writer.interface.writeAll(text);
     try writer.interface.flush();
+}
+
+test "a shakedown-fuzz whose usage lacks an option the step gives it is named before any session" {
+    const fuzzer = [_][]const u8{ "/s/shakedown-fuzz", "--package", "/p", "--step", "wire", "--build-arg", "-Dci-fuzzing=true" };
+    // acd95d3's usage, which ladar's fuzz job ran, and bee3c3e's.
+    const old = "usage: shakedown-fuzz [--package dir] [--store dir] [--limit 10M] [--step test] [--filter test] [--sessions n] [--zig path] [--bay path]\n";
+    const new = "usage: shakedown-fuzz [--package dir] [--store dir] [--limit 10M] [--step test] [--filter test] [--sessions n] [--zig path] [--bay path] [--build-arg arg]...\n";
+    try std.testing.expectEqualStrings("--build-arg", missingOption(&fuzzer, old).?);
+    try std.testing.expectEqual(null, missingOption(&fuzzer, new));
+    try std.testing.expectEqual(null, missingOption(fuzzer[0..5], old));
 }
 
 test "a session asks for the runs that fit its goal or what is left, at most eight times the last" {

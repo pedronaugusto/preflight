@@ -36,5 +36,5 @@ jobs:
       working-directory: @DIRECTORY@
       preflight-ref: @PIN@
 @MATRICES@      fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}
-      windows-git-latest: @WINDOWS_GIT@
+      held-git: @HELD_GIT@
       compile-once: @COMPILE_ONCE@

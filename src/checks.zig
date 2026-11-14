@@ -10,6 +10,7 @@ pub const glint = @import("checks/glint.zig");
 pub const fuzz = @import("checks/fuzz.zig");
 pub const campaign = @import("checks/campaign.zig");
 pub const budget = @import("checks/budget.zig");
+pub const heldgit = @import("checks/heldgit.zig");
 pub const integration = @import("checks/integration.zig");
 pub const profile = @import("checks/profile.zig");
 pub const paths = @import("checks/paths.zig");
@@ -20,6 +21,7 @@ pub const release = @import("checks/release.zig");
 pub const surface = @import("checks/surface.zig");
 pub const caller = @import("checks/caller.zig");
 pub const command = @import("checks/command.zig");
+pub const input = @import("checks/input.zig");
 pub const phases = @import("checks/phases.zig");
 pub const counts = @import("checks/counts.zig");
 
@@ -33,6 +35,7 @@ test {
     _ = @import("plain.zig");
     _ = @import("record.zig");
     _ = @import("checks/counts.zig");
+    _ = @import("checks/input.zig");
     _ = @import("vm.zig");
     _ = @import("vm/cpio.zig");
     _ = @import("vm/host.zig");
@@ -53,6 +56,7 @@ test {
     _ = source;
     _ = campaign;
     _ = budget;
+    _ = heldgit;
     _ = policy;
     _ = imports;
     _ = docs;

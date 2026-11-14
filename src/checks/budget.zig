@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const aegis = @import("aegis");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 const matrix = @import("matrix.zig");
 
 /// The runs the first session asks for: few, so that its build and a slow property's pace are
@@ -221,7 +222,7 @@ fn printFindings(c: *src.Context, root: []const u8) !usize {
         while (try files.next(c.io)) |file| {
             if (file.kind != .file) continue;
             const path = try std.Io.Dir.path.join(c.a, &.{ root, folder, file.name });
-            const bytes = try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, c.a, .fromRaw(1024 * 1024));
+            const bytes = try seam.file(c.io, std.Io.Dir.cwd(), path, c.a, .record);
             count += 1;
             // shakedown-fuzz wrote it, from what the package's tests printed: input until read.
             const finding = aegis.input.Untrusted([]const u8).init(bytes).parse({}, Finding.read) catch {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const src = @import("source.zig");
+const heldgit = @import("heldgit.zig");
 const family = @import("../family.zig");
 const preflight_order = @import("preflight_order");
 
@@ -91,7 +92,7 @@ const workflow_options = [_][]const u8{
     "cross_seconds",      "compile_once",
     "portable_hosts",     "hardened",
     "compile_step",       "setup_step",
-    "before_tests_step",  "windows_git_latest",
+    "before_tests_step",  "git",
     "test_job_timeout",   "windows_job_timeout",
     "source_job_timeout", "cross_job_timeout",
     // The seconds of tests a riscv64 job holds; then `ci/costs.json` and `ci/durations.json`,
@@ -811,6 +812,14 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         problem = name;
         return error.ObsoleteTrigger;
     };
+    if (config.object.contains("windows_git_latest")) {
+        problem = "windows_git_latest is gone: a package holds one git on every job, Windows' as that Git for Windows release; name it with `preflight held-git-pin <version>`";
+        return error.ObsoleteWindowsGit;
+    }
+    _ = heldgit.parse(config) catch |err| {
+        problem = heldgit.problem;
+        return err;
+    };
     for (config.object.keys()) |name| {
         for (workflow_options ++ obsolete ++ obsolete_sanitizer) |known| {
             if (std.mem.eql(u8, name, known)) break;
@@ -832,7 +841,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
     for (host_names ++ arm_host_names ++ .{ emulated_host_name, freebsd_host_name, tsan_name }) |host| _ = try shardCount(src.get(shards, host));
-    for ([_][]const u8{ "compile_once", "windows_git_latest" }) |name| {
+    for ([_][]const u8{"compile_once"}) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
     }

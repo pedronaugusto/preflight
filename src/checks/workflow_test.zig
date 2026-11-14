@@ -2,6 +2,7 @@
 const std = @import("std");
 const root = @import("test_options").root;
 const matrix = @import("matrix.zig");
+const heldgit = @import("heldgit.zig");
 
 fn read(a: std.mem.Allocator, path: []const u8) ![]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, try std.Io.Dir.path.join(a, &.{ root, path }), a, .limited(1024 * 1024));
@@ -47,6 +48,16 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
         }
         try std.testing.expect(std.mem.find(u8, body, "id: tools4") == null);
         try contains(body, "PREFLIGHT_PREPARED: 'true'");
+        // A cold build of the held git takes longer than tools alone: it has a step and a
+        // deadline of its own, once, before the attempts; a compile job holds none.
+        const held = std.mem.find(u8, body, "      - name: Hold the package's git\n");
+        try std.testing.expectEqual(!std.mem.eql(u8, name, "compile"), held != null);
+        if (held) |start| {
+            const step = body[start .. std.mem.findPos(u8, body, start + 1, "      - ") orelse body.len];
+            try contains(step, "        timeout-minutes: 30\n");
+            try contains(step, " --held-git\n");
+            try std.testing.expect(start < std.mem.find(u8, body, "id: tools1").?);
+        }
     }
 }
 
@@ -66,7 +77,9 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     defer arena.deinit();
     const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "master");
     try contains(body, "    continue-on-error: true\n");
-    try contains(body, "    timeout-minutes: 60\n");
+    // A held git's build (30 minutes) raises the bound by as much, and only for a package
+    // that names one.
+    try contains(body, "    timeout-minutes: ${{ inputs.held-git != '' && 90 || 60 }}\n");
     var total: usize = 0;
     var steps: usize = 0;
     var deadlines: usize = 0;
@@ -83,7 +96,8 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
         }
     }
     try std.testing.expectEqual(steps, deadlines);
-    try std.testing.expect(total < 60);
+    // The held git's 30 minutes apart, the steps fit the bound of a package without one.
+    try std.testing.expect(total - 30 < 60);
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
@@ -270,4 +284,25 @@ test "the fuzz job: dispatched alone or in the release tier, its corpora cached,
     try contains(gate, try a.print("            {s}findings\n            {s}cache/f\n", .{ store, store }));
     // The fuzz run times no tests.
     try contains(try job(workflow, "profile"), "inputs.tier != 'fuzz'");
+}
+
+test "the held git's build is cached by its release, the recipe and the machine, restored before the tools and saved after the tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const text = try read(a, ".github/workflows/zig.yml");
+    const key = try a.print("key: preflight-git-${{{{ inputs.held-git }}}}-r{d}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-", .{heldgit.recipe});
+    for ([_][]const u8{ "gate", "master", "execute" }) |name| {
+        const body = try job(text, name);
+        const restore = std.mem.find(u8, body, "- name: Restore the held git") orelse return error.MissingRestore;
+        const tools = std.mem.find(u8, body, "id: tools1") orelse return error.MissingSetupAttempt;
+        const save = std.mem.find(u8, body, "- name: Save the held git") orelse return error.MissingSave;
+        try std.testing.expect(restore < tools and tools < save);
+        try std.testing.expectEqual(2, std.mem.count(u8, body, key));
+        try std.testing.expect(std.mem.find(u8, body[save..], "steps.held_git.outputs.cache-hit != 'true'") != null);
+    }
+    try std.testing.expect(std.mem.find(u8, try job(text, "compile"), "held git") == null);
+    const setup = try read(a, ".github/actions/setup/action.yml");
+    try contains(setup, "PREFLIGHT_GIT_STORE=${RUNNER_TEMP}/preflight-git");
+    try std.testing.expect(std.mem.find(u8, setup, "choco") == null);
 }

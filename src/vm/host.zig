@@ -8,20 +8,23 @@
 //! system and the machine's first process (vm/guest.zig). `preflight-vm install
 //! <kernel> <initrd> <rootfs> <initrd-out> <package>...` adds the Alpine packages
 //! a package's tests need to it, installed by Alpine's own `apk` on the machine.
+//! `preflight-vm overlay <initrd> <tree> <initrd-out>` adds a tree under
+//! `/usr/local`: the package's held git, built for the machine.
 //! `preflight-vm run <kernel> <initrd> <program> [args...]` runs one program on
 //! it: the build puts it in front of each run of a riscv64 test or program.
 //! `preflight-vm freebsd-image` and `freebsd-run` do the same for x86_64 FreeBSD
 //! on FreeBSD's own kernel under KVM (vm/freebsd.zig).
 const std = @import("std");
-const aegis = @import("aegis");
 const builtin = @import("builtin");
 const Io = std.Io;
 const cpio = @import("cpio.zig");
+const seam = @import("input.zig");
 const freebsd = @import("freebsd.zig");
 
 const usage =
     \\usage: preflight-vm image <alpine> <rootfs> <init> <kernel-out> <initrd-out>
     \\       preflight-vm install <kernel> <initrd> <rootfs> <initrd-out> <package>...
+    \\       preflight-vm overlay <initrd> <tree> <initrd-out>
     \\       preflight-vm run <kernel> <initrd> <program> [args...]
     \\       preflight-vm freebsd-image <kernel-set> <runtime-image> <init> <kernel-out> <root-out>
     \\       preflight-vm freebsd-run <kernel> <root> <program> [args...]
@@ -43,6 +46,10 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     }
     if (args.len >= 7 and std.mem.eql(u8, args[1], "install")) return install(io, gpa, .{ .kernel = args[2], .initrd = args[3], .rootfs = args[4], .out = args[5] }, args[6..]);
+    if (args.len == 5 and std.mem.eql(u8, args[1], "overlay")) {
+        try overlay(io, gpa, args[2], args[3], args[4]);
+        return 0;
+    }
     if (args.len >= 5 and std.mem.eql(u8, args[1], "run")) return run(io, gpa, init.environ_map, args[2], args[3], args[4..]);
     if (args.len == 7 and std.mem.eql(u8, args[1], "freebsd-image")) {
         try freebsd.image(io, gpa, .{ .kernel_set = args[2], .runtime = args[3], .init = args[4], .kernel = args[5], .root = args[6] });
@@ -63,9 +70,8 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     const cwd = Io.Dir.cwd();
     var alpine = try cwd.openDir(io, paths.alpine, .{});
     defer alpine.close(io);
-    const limit: u64 = 512 * 1024 * 1024;
 
-    const kernel = try aegis.own.readFile(io, alpine, "boot/vmlinuz-lts", gpa, .fromRaw(limit));
+    const kernel = try seam.file(io, alpine, "boot/vmlinuz-lts", gpa, .part);
     const raw_kernel = if (std.mem.startsWith(u8, kernel, "\x1f\x8b")) try gunzip(gpa, kernel) else kernel;
     try cwd.writeFile(io, .{ .sub_path = paths.kernel, .data = raw_kernel });
 
@@ -79,7 +85,7 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     defer rootfs.close(io);
     try addTree(io, gpa, &archive, rootfs, &.{}, null);
 
-    const initramfs = try gunzip(gpa, try aegis.own.readFile(io, alpine, "boot/initramfs-lts", gpa, .fromRaw(limit)));
+    const initramfs = try gunzip(gpa, try seam.file(io, alpine, "boot/initramfs-lts", gpa, .part));
     var modules: cpio.Reader = .{ .bytes = initramfs };
     while (try modules.next()) |entry| {
         const name = std.mem.trimStart(u8, entry.name, "./");
@@ -88,8 +94,8 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     }
 
     try archive.add(.{ .name = "preflight", .kind = .directory, .mode = 0o755 });
-    try archive.add(.{ .name = "preflight/modules.squashfs", .kind = .file, .mode = 0o644, .data = try aegis.own.readFile(io, alpine, "boot/modloop-lts", gpa, .fromRaw(limit)) });
-    try archive.add(.{ .name = "init", .kind = .file, .mode = 0o755, .data = try aegis.own.readFile(io, cwd, paths.init, gpa, .fromRaw(limit)) });
+    try archive.add(.{ .name = "preflight/modules.squashfs", .kind = .file, .mode = 0o644, .data = try seam.file(io, alpine, "boot/modloop-lts", gpa, .part) });
+    try archive.add(.{ .name = "init", .kind = .file, .mode = 0o755, .data = try seam.file(io, cwd, paths.init, gpa, .part) });
     try archive.finish();
     try file_writer.interface.flush();
 }
@@ -99,6 +105,20 @@ fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
 /// so files are root's, 0755 or 0644. A tree unpacked over `over` keeps that
 /// tree's links where it has a directory: what it holds goes through the link.
 fn addTree(io: Io, gpa: std.mem.Allocator, archive: *cpio.Writer, root: Io.Dir, leave: []const []const u8, over: ?Io.Dir) !void {
+    return addTreeUnder(io, gpa, archive, root, "", leave, over);
+}
+
+/// `addTree` with every member named under `under` (`usr/local`), its parents first.
+fn addTreeUnder(io: Io, gpa: std.mem.Allocator, archive: *cpio.Writer, root: Io.Dir, under: []const u8, leave: []const []const u8, over: ?Io.Dir) !void {
+    if (under.len != 0) {
+        var parents = std.mem.splitScalar(u8, under, '/');
+        var at: usize = 0;
+        while (parents.next()) |part| {
+            at += part.len;
+            try archive.add(.{ .name = under[0..at], .kind = .directory, .mode = 0o755 });
+            at += 1;
+        }
+    }
     var walker = try root.walk(gpa);
     defer walker.deinit();
     var link_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -116,21 +136,42 @@ fn addTree(io: Io, gpa: std.mem.Allocator, archive: *cpio.Writer, root: Io.Dir, 
                     };
                     if (stat) |found| if (found.kind == .sym_link) continue;
                 }
-                try archive.add(.{ .name = entry.path, .kind = .directory, .mode = 0o755 });
+                try archive.add(.{ .name = try named(gpa, under, entry.path), .kind = .directory, .mode = 0o755 });
             },
             .sym_link => {
-                const len = try root.readLink(io, entry.path, &link_buffer);
-                try archive.add(.{ .name = entry.path, .kind = .symlink, .mode = 0o777, .data = link_buffer[0..len] });
+                const target = try seam.link(io, root, entry.path, &link_buffer);
+                try archive.add(.{ .name = try named(gpa, under, entry.path), .kind = .symlink, .mode = 0o777, .data = target });
             },
             .file => {
                 const stat = try root.statFile(io, entry.path, .{});
                 const executable = stat.permissions.toMode() & 0o111 != 0;
-                const data = try aegis.own.readFile(io, root, entry.path, gpa, .fromRaw(512 * 1024 * 1024));
-                try archive.add(.{ .name = entry.path, .kind = .file, .mode = if (executable) 0o755 else 0o644, .data = data });
+                const data = try seam.file(io, root, entry.path, gpa, .part);
+                try archive.add(.{ .name = try named(gpa, under, entry.path), .kind = .file, .mode = if (executable) 0o755 else 0o644, .data = data });
             },
             else => return error.UnsupportedRootMember,
         }
     }
+}
+
+fn named(gpa: std.mem.Allocator, under: []const u8, path: []const u8) ![]const u8 {
+    return if (under.len == 0) path else gpa.print("{s}/{s}", .{ under, path });
+}
+
+/// The boot image with a tree added under `/usr/local` (the package's held git, built for the
+/// machine), as a further archive the kernel unpacks over the image.
+fn overlay(io: Io, gpa: std.mem.Allocator, initrd: []const u8, tree: []const u8, out_path: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    const out = try cwd.createFile(io, out_path, .{});
+    defer out.close(io);
+    var buffer: [64 * 1024]u8 = undefined;
+    var file_writer = out.writer(io, &buffer);
+    try file_writer.interface.writeAll(try seam.file(io, cwd, initrd, gpa, .image));
+    var archive: cpio.Writer = .{ .out = &file_writer.interface };
+    var root = try cwd.openDir(io, tree, .{ .iterate = true });
+    defer root.close(io);
+    try addTreeUnder(io, gpa, &archive, root, "usr/local", &.{}, null);
+    try archive.finish();
+    try file_writer.interface.flush();
 }
 
 fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
@@ -227,32 +268,6 @@ const InstallPaths = struct { kernel: []const u8, initrd: []const u8, rootfs: []
 /// Where the machine's `apk` installs, on the run's share.
 const install_root = "/run/preflight/root";
 
-/// The repositories `apk` installs from: the release's own (`release`, its root file
-/// system's list), and when a package names `@edge`, Alpine's edge beside them under
-/// that tag, the same mirror with `edge` for the release's directory. A tagged
-/// repository gives only the packages that name its tag, and what they need that
-/// the release lacks; edge is signed by the release's own keys.
-fn repositories(gpa: std.mem.Allocator, release: []const u8, packages: []const []const u8) ![]const u8 {
-    for (packages) |package| {
-        if (std.mem.find(u8, package, "@edge") != null) break;
-    } else return release;
-    var out: std.ArrayList(u8) = .empty;
-    try out.appendSlice(gpa, release);
-    if (release.len > 0 and release[release.len - 1] != '\n') try out.append(gpa, '\n');
-    var lines = std.mem.tokenizeScalar(u8, release, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#' or line[0] == '@') continue;
-        // `https://dl-cdn.alpinelinux.org/alpine/v3.24/main`: the release is the
-        // directory before the repository's own.
-        const repository = std.mem.findScalarLast(u8, line, '/') orelse continue;
-        const version = std.mem.findScalarLast(u8, line[0..repository], '/') orelse continue;
-        if (!std.mem.startsWith(u8, line[version + 1 .. repository], "v")) continue;
-        try out.print(gpa, "@edge {s}/edge{s}\n", .{ line[0..version], line[repository..] });
-    }
-    return out.items;
-}
-
 /// The boot image with `packages` added: Alpine's `apk` installs them and what they
 /// need on the machine, from the release's own repositories over QEMU's user
 /// network, into a root on the run's share, trusting the release's own signing
@@ -278,11 +293,12 @@ fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []cons
     var key_files = keys.iterate();
     while (try key_files.next(io)) |key| {
         if (key.kind != .file) continue;
-        const data = try aegis.own.readFile(io, keys, key.name, gpa, .fromRaw(64 * 1024));
+        const data = try seam.file(io, keys, key.name, gpa, .text);
         try run_dir.writeFile(io, .{ .sub_path = try gpa.print("root/etc/apk/keys/{s}", .{key.name}), .data = data });
     }
-    const release = try aegis.own.readFile(io, rootfs, "etc/apk/repositories", gpa, .fromRaw(64 * 1024));
-    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = try repositories(gpa, release, packages) });
+    const release = try seam.file(io, rootfs, "etc/apk/repositories", gpa, .text);
+    // The release's repositories alone: edge drops the build a pin names, so no package comes from it.
+    try run_dir.writeFile(io, .{ .sub_path = "root/etc/apk/repositories", .data = release });
 
     var guest_argv: std.ArrayList(u8) = .empty;
     for ([_][]const u8{ "/sbin/apk", "add", "--root", install_root, "--initdb", "--usermode", "--no-scripts", "--no-cache", "--no-progress" }) |arg| try appendEntry(gpa, &guest_argv, arg);
@@ -306,7 +322,7 @@ fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []cons
     defer out.close(io);
     var buffer: [64 * 1024]u8 = undefined;
     var file_writer = out.writer(io, &buffer);
-    try file_writer.interface.writeAll(try aegis.own.readFile(io, cwd, paths.initrd, gpa, .fromRaw(1024 * 1024 * 1024)));
+    try file_writer.interface.writeAll(try seam.file(io, cwd, paths.initrd, gpa, .image));
     var archive: cpio.Writer = .{ .out = &file_writer.interface };
     var root = try run_dir.openDir(io, "root", .{ .iterate = true });
     defer root.close(io);
@@ -369,10 +385,10 @@ fn boot(io: Io, gpa: std.mem.Allocator, kernel: []const u8, initrd: []const u8, 
     forward.detach();
     const term = try child.wait(io);
 
-    const status = aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(256)) catch "";
+    const status = seam.file(io, cwd, status_path, gpa, .text) catch "";
     if (parseStatus(status)) |ending| return ending;
     try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: the machine ended ({any}) without its program's status \"{s}\"; its console:\n", .{ term, std.mem.trimEnd(u8, status, "\n") }));
-    const log = aegis.own.readFile(io, cwd, try gpa.print("{s}/console", .{run_path}), gpa, .fromRaw(16 * 1024 * 1024)) catch "";
+    const log = seam.file(io, cwd, try gpa.print("{s}/console", .{run_path}), gpa, .console) catch "";
     try Io.File.stderr().writeStreamingAll(io, log[log.len -| 8192..]);
     return error.MachineFailed;
 }
@@ -407,11 +423,10 @@ fn forwardInput(io: Io, to: Io.File) void {
     var chunk: [16 * 1024]u8 = @splat(0);
     var out_buffer: [16 * 1024 + 4]u8 = undefined;
     var output = to.writerStreaming(io, &out_buffer);
-    const stdin = Io.File.stdin();
     while (true) {
         // The end of the host's input, or a read of it that failed: the program's input ends either
         // way. A cancel ends the forwarding itself, at once.
-        const n = stdin.readStreaming(io, &.{&chunk}) catch |err| switch (err) {
+        const n = seam.chunk(io, &chunk) catch |err| switch (err) {
             error.Canceled => return,
             else => 0,
         };
@@ -444,19 +459,6 @@ fn raiseOwn(sig: u32) noreturn {
         std.posix.raise(signal) catch {};
     }
     std.process.exit(@truncate(128 +% sig)); // safe: an exit code is a byte, as a shell takes 128 + a signal
-}
-
-test "edge joins the release's repositories under its tag only when a package names it" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const release = "https://dl-cdn.alpinelinux.org/alpine/v3.24/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.24/community\n";
-    try std.testing.expectEqualStrings(release, try repositories(a, release, &.{ "git", "tree" }));
-    try std.testing.expectEqualStrings(release ++
-        \\@edge https://dl-cdn.alpinelinux.org/alpine/edge/main
-        \\@edge https://dl-cdn.alpinelinux.org/alpine/edge/community
-        \\
-    , try repositories(a, release, &.{ "tree", "git@edge=2.56.0-r0" }));
 }
 
 test "a path is left out when it is one of those named or lies under one" {

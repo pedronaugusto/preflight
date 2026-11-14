@@ -505,10 +505,49 @@ The machine is Alpine's minimal system. Tests that need more of it, such as `git
 on the machine, over QEMU's user network, when the build first makes it. They come
 from the release's repositories, verified by its signing keys. Alpine keeps only the
 newest build of a package there, so a fresh cache takes the release's current build,
-as a hosted runner's tools are its image's. A package newer than the release has comes
-from Alpine's edge, named with the build it is: `git@edge=2.56.0-r0`. Edge moves on,
-so an entry from it without `=` and a version is refused; when edge has another build,
-the machine is not made and apk names the package, where an unstated one would drift.
+as a hosted runner's tools are its image's. An entry from a tagged repository
+(`git@edge`) is refused: edge drops the build an entry names, so the machine would
+stop being made. A package whose tests need a git newer than the release's names its
+held git (below), which is on the machine already; `git` in `vm_packages` beside it is
+refused.
+
+### Held git
+
+A package whose tests compare against git names one git release in `ci/workflow.json`,
+and every job that runs its tests runs that git, on every host and the riscv64 machine,
+where it ran whatever the runner's image had:
+
+```json
+{"git": {"version": "2.56.0", "sha256": "<the release tarball's>",
+         "windows": {"x86_64": "<Git-2.56.0-64-bit.exe's>", "aarch64": "<Git-2.56.0-arm64.exe's>"}}}
+```
+
+`preflight held-git-pin 2.56.0` writes it: it fetches git's release tarball from
+kernel.org and Git for Windows' two installers of that release, and writes their sha256s,
+so a move to another git is a diff that shows them. A run reads no checksum from the
+network: a download that does not match the configuration fails by name. A package that
+names no git keeps the runner's.
+
+On Windows the job installs Git for Windows' release over the runner's, its installer
+checked against the hash. Everywhere else `zig build ci-held-git` builds git from the
+tarball with `zig cc` for a target named outright (`aarch64-macos.13.0`,
+`x86_64-linux-gnu.2.31`, `aarch64-linux-gnu.2.31`, `riscv64-linux-musl`), against zlib,
+LibreSSL and curl built from the releases `build.zig.zon` pins by hash, fetched only by a
+build that makes one. No compiler, header or library of the host's enters: the build reads
+what each of its programs links (Mach-O load commands, ELF `DT_NEEDED`) and fails on a
+library that is neither a pinned source nor the platform's base (the SDK's on macOS,
+glibc's on Linux; the riscv64 build is static and links none), and on one named twice. A build is kept in a store
+(`PREFLIGHT_GIT_STORE`, else `preflight-git` in Zig's global cache) by release, recipe and
+target, which a hosted job caches under that name, and is first on the path of the steps
+after it, its program in `PREFLIGHT_GIT`. On the machine at hand `zig build ci-held-git`
+builds it; a hosted job builds it in a step of its own (`preflight prepare --held-git`, 30 minutes),
+before its tools' attempts.
+
+It holds what the family's interop suites run through git: HTTP and HTTPS as a client
+(TLS and a SOCKS proxy through curl), the daemon, `http-backend`, credential helpers,
+iconv (the platform's own) and, on macOS, the fsmonitor daemon. Perl's, Python's and Tcl's
+commands, translations, PCRE and expat are left out, and a test that asks for one fails by
+the command's name.
 
 ### Hosted gate
 
@@ -590,7 +629,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
   with three attempts of five minutes; `before_tests_step`: a step run before the tests.
-- `windows_git_latest`: upgrade Git for Windows first.
+- `git`: the held git every test job runs (above), written by `preflight held-git-pin`.
+  `windows_git_latest` is refused: it took whatever release was newest that day.
 - `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`:
   minutes, 20 by default.
 - `fuzz_minutes`: the release tier's fuzz job's minutes, 15 by default, at most 330; 0 for no
@@ -744,7 +784,7 @@ For example:
 
 These flags must be individual whitespace-free `-D` arguments. Malformed
 triples, arrays, CPUs, shard counts, booleans and portable-host declarations are
-refused. `windows_git_latest` controls the shared Windows Git setup. A
+refused, and so is `windows_git_latest` (the held git replaces it). A
 workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test.
 `fast_shards` splits the Linux Debug tests; the source checks and the cross
 compile are jobs of their own. `cross_jobs` sets how many jobs share the cross

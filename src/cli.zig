@@ -16,7 +16,7 @@ pub const Cli = struct {
         gate: Gate,
         targets: Targets,
         setup,
-        prepare,
+        prepare: Prepare,
         fetch,
         run,
         skip: Skip,
@@ -24,6 +24,8 @@ pub const Cli = struct {
         profile: Profile,
         fuzz_campaign: Campaign,
         fuzz_budget: Budget,
+        held_git: HeldGit,
+        held_git_pin: HeldGitPin,
         unsharded: Unsharded,
         counts: Counts,
         executable: Executable,
@@ -39,7 +41,6 @@ pub const Cli = struct {
         .description = "A package runs these through its build (bay generate, bay gate, ...), which passes the Zig and the modules it exports; the hosted workflows call the rest.",
         .commands = .{
             .setup = .{ .help = "A hosted job's setup: the macOS SDK and Zig's global cache, written to the job's environment" },
-            .prepare = .{ .help = "Run the step that installs the job's external tools, when it has one" },
             .fetch = .{ .help = "Fetch the package's dependencies, retried, for the build arguments in BUILD_ARGS" },
             .run = .{ .help = "Run a hosted job: STEP with BUILD_ARGS, its setup first, timed" },
             .attest = .{ .help = "Whether the commit has a green release run, by its proof artifact: bay release asks it before it tags" },
@@ -54,6 +55,16 @@ const module: ensign.Option = .{ .value_name = "NAME=ROOT", .help = "A module th
 const working_directory: ensign.Option = .{ .value_name = "DIR", .hint = .directory, .help = "Where the planned jobs run, when not the repository's root (preflight's own gate runs its sample there)" };
 const workflow_config: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json of the working directory by default" };
 const build_option: ensign.Option = .{ .value_name = "-DNAME=VALUE", .help = "An option the build was configured with, repeated, so the configured graph is the build's" };
+
+pub const Prepare = struct {
+    held_git: bool = false,
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Set up the job's external tools: the held git ci/workflow.json names (ci-held-git), then the package's setup step, when it has one",
+        .options = .{
+            .held_git = .{ .negatable = false, .help = "The held git alone, which a hosted job holds in a step of its own; a hosted job's setup step leaves it to that step" },
+        },
+    };
+};
 
 pub const Plan = struct {
     zig_exe: ?[]const u8 = null,
@@ -234,6 +245,44 @@ pub const Budget = struct {
     };
 };
 
+pub const HeldGit = struct {
+    zig_exe: ?[]const u8 = null,
+    config: []const u8 = "ci/workflow.json",
+    store: ?[]const u8 = null,
+    target: ?[]const u8 = null,
+    zlib: ?[]const u8 = null,
+    libressl: ?[]const u8 = null,
+    curl: ?[]const u8 = null,
+    sdk: ?[]const u8 = null,
+    copy_to: ?[]const u8 = null,
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "The held git ci/workflow.json names, in the store: Git for Windows' release installed, else git built from its release tarball with zig cc and the pinned sources; put first on a hosted job's path",
+        .options = .{
+            .zig_exe = zig_exe,
+            .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration naming the held git" },
+            .store = .{ .value_name = "DIR", .hint = .directory, .help = "Where builds are kept, by release, recipe and target; PREFLIGHT_GIT_STORE, else preflight-git in Zig's global cache" },
+            .target = .{ .value_name = "TRIPLE", .help = "The target to build for, as riscv64-linux-musl; this machine's by default" },
+            .zlib = .{ .value_name = "DIR", .hint = .directory, .help = "zlib's pinned source" },
+            .libressl = .{ .value_name = "DIR", .hint = .directory, .help = "LibreSSL's pinned source" },
+            .curl = .{ .value_name = "DIR", .hint = .directory, .help = "curl's pinned source" },
+            .sdk = .{ .value_name = "DIR", .hint = .directory, .help = "The macOS SDK a macOS build links the base libraries and frameworks of" },
+            .copy_to = .{ .value_name = "DIR", .hint = .directory, .help = "Copy the build here as well (the riscv64 machine's image takes it)" },
+        },
+    };
+};
+
+pub const HeldGitPin = struct {
+    version: []const u8,
+    config: []const u8 = "ci/workflow.json",
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Name a git release as the package's held git: its tarball's and Git for Windows installers' hashes, fetched and written to ci/workflow.json for the diff to show",
+        .options = .{
+            .version = .{ .positional = true, .value_name = "VERSION", .help = "The release, as 2.56.0" },
+            .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration to write it to" },
+        },
+    };
+};
+
 pub const Unsharded = struct {
     name: []const u8 = "test",
     pub const spec: ensign.Spec(@This()) = .{
@@ -357,6 +406,8 @@ test "the hosted workflows' commands" {
     defer arena.deinit();
     const a = arena.allocator();
     for ([_][]const u8{ "skip", "attest", "prepare", "run", "fetch", "setup" }) |name| _ = try parsed(a, &.{name});
+    try std.testing.expect((try parsed(a, &.{ "prepare", "--held-git" })).command.prepare.held_git);
+    try std.testing.expect(!(try parsed(a, &.{"prepare"})).command.prepare.held_git);
     const profile = (try parsed(a, &.{ "profile", "--durations", "pkg/ci/durations.json", "--output", ".preflight-timings/durations.json", "--costs", "pkg/ci/costs.json", "--costs-output", ".preflight-timings/costs.json" })).command.profile;
     try std.testing.expectEqualStrings(".preflight-timings", profile.input);
     try std.testing.expectEqualStrings(".preflight-timings/costs.json", profile.costs_output.?);

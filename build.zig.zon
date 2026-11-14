@@ -17,6 +17,26 @@
             .lazy = true,
         },
 
+        // A package's held git (`git` in ci/workflow.json, src/held.zig): the libraries it is
+        // built with by zig cc, from their releases, fetched only by a build that makes one.
+        .held_git_zlib = .{
+            .url = "https://zlib.net/fossils/zlib-1.4.tar.gz",
+            .hash = "N-V-__8AAH8jNwA7ifHRJdWx5n5meIjOQ9mcAFjvxxAwm4-V",
+            .lazy = true,
+        },
+
+        .held_git_libressl = .{
+            .url = "https://cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.1.tar.gz",
+            .hash = "N-V-__8AADBN4gHfLWHDoRWHHg7r9Qz0KhZNJ9zLmiuVT_rn",
+            .lazy = true,
+        },
+
+        .held_git_curl = .{
+            .url = "https://curl.se/download/curl-8.23.0.tar.xz",
+            .hash = "N-V-__8AAMjlVwEcWK62Y1lzKj6sh05jXE34tX5QTb_1ROK9",
+            .lazy = true,
+        },
+
         // The riscv64 test machine (`-Dci-vm`): Alpine Linux's kernel, its modules and
         // its root file system, fetched only by a build that runs on the machine.
         .alpine_riscv64 = .{

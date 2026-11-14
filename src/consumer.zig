@@ -84,7 +84,11 @@ pub fn declared(b: *std.Build, package: *std.Build) union(enum) { ok: []const De
             if (given != .array) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: modules is a list of the package's modules", .{at}) };
             var names: std.ArrayList([]const u8) = .empty;
             for (given.array.items) |module| {
-                if (module != .string or !package.modules.contains(module.string)) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: the package exports no module {f}", .{ at, std.json.fmt(module, .{}) }) };
+                if (module != .string) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: modules is a list of the package's modules", .{at}) };
+                // The modules this build exports are its options' (strand exports strand_schema only
+                // with `schema`): a configuration of no options is this build, checked here; one of its
+                // own options by its consumer's build, which takes them and names a module it lacks.
+                if (options.items.len == 0 and !package.modules.contains(module.string)) return .{ .problem = b.fmt("ci/workflow.json: configuration {s}: the package exports no module {f}", .{ at, std.json.fmt(module, .{}) }) };
                 names.append(b.allocator, module.string) catch @panic("OOM");
             }
             modules = names.items;

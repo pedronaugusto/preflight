@@ -1850,6 +1850,39 @@ test "a configuration naming an option the package does not declare fails its ch
     try std.testing.expect(std.mem.find(u8, wrong.stderr, "configuration wrong: option feature is a bool") != null);
 }
 
+test "a configuration's modules are its options' own: one the default build does not export is checked by that configuration's consumer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // strand's strand_schema: a module the package exports only with an option the default leaves off.
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
+        \\    if (b.option(bool, "schema", "The schema module") orelse false) _ = b.addModule("sample_schema", .{ .root_source_file = b.path("src/schema.zig") });
+        \\    const tests = b.addTest(.{ .root_module = module });
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/schema.zig", .data = "pub const fields: u32 = 3;\n" });
+    try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/schema.zig\" } }");
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"plain\"}, {\"name\": \"schema\", \"options\": {\"schema\": true}, \"modules\": [\"preflight_sample\", \"sample_schema\"]}]}" });
+    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(built)) std.debug.print("{s}\n", .{built.stderr});
+    try std.testing.expect(command.succeeded(built));
+    // A module the configuration's own build lacks fails there, by name.
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"plain\"}, {\"name\": \"schema\", \"options\": {\"schema\": true}, \"modules\": [\"preflight_sample\", \"sample_shcema\"]}]}" });
+    const misspelt = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(misspelt));
+    if (std.mem.find(u8, misspelt.stderr, "sample_shcema") == null) std.debug.print("{s}\n", .{misspelt.stderr});
+    try std.testing.expect(std.mem.find(u8, misspelt.stderr, "sample_shcema") != null);
+    // A configuration of no options is this build: a module it does not export fails as it configures.
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"plain\", \"modules\": [\"sample_schema\"]}]}" });
+    const plain = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    try std.testing.expect(!command.succeeded(plain));
+    try std.testing.expect(std.mem.find(u8, plain.stderr, "configuration plain: the package exports no module \"sample_schema\"") != null);
+}
+
 test "timing records of two test runs with one name stay apart" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

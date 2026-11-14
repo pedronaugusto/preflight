@@ -106,11 +106,15 @@ fn collect(c: *src.Context, root: []const u8, scope: Scope, found: *std.array_ha
     }
 }
 
-/// Whether `directory` is a package of its own: a nested build with its own `build.zig.zon`,
-/// whose files only that build compiles, with the modules it binds. Its imports would not
-/// resolve in this build's lint, so it is left to that build.
+/// Whether `directory` is a build of its own: one with its own `build.zig.zon`, or its own
+/// `build.zig`, the build root `zig build` runs there, whose manifest `addNestedBuild` writes
+/// under the cache from the package's. Its files only that build compiles, with the modules it
+/// binds; its imports would not resolve in this build's lint, so it is left to that build.
 fn nested(c: *src.Context, directory: []const u8) !bool {
-    return try c.exists(try std.Io.Dir.path.join(c.a, &.{ directory, "build.zig.zon" }));
+    for ([_][]const u8{ "build.zig.zon", "build.zig" }) |name| {
+        if (try c.exists(try std.Io.Dir.path.join(c.a, &.{ directory, name }))) return true;
+    }
+    return false;
 }
 
 /// A path in one lexical form: `/` separators, no `.` or `..` components
@@ -567,13 +571,31 @@ test "default selection is what the package ships and the directories a reposito
     defer arena.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "src/a.zig", "src/deep/b.zig", "bench/run.zig", "examples/use.zig", "ci/layers.zig", "conformance/build.zig", "build.zig", "src/note.md", "zig-pkg/dep/x.zig", "src/zig-out/y.zig", ".zig-cache/z.zig", "docs/skip.zig", "bench/zig-pkg/q.zig", "bench/emulator/build.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
+    for ([_][]const u8{ "src/a.zig", "src/deep/b.zig", "bench/run.zig", "examples/use.zig", "ci/layers.zig", "conformance/run.zig", "build.zig", "src/note.md", "zig-pkg/dep/x.zig", "src/zig-out/y.zig", ".zig-cache/z.zig", "docs/skip.zig", "bench/zig-pkg/q.zig", "bench/emulator/build.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
     var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
     const config = try parsed(c.a, "{}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
     try std.testing.expectEqual(@as(usize, 7), paths.len);
-    for ([_][]const u8{ "bench/run.zig", "build.zig", "ci/layers.zig", "conformance/build.zig", "examples/use.zig", "src/a.zig", "src/deep/b.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
+    for ([_][]const u8{ "bench/run.zig", "build.zig", "ci/layers.zig", "conformance/run.zig", "examples/use.zig", "src/a.zig", "src/deep/b.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "a directory with a build.zig of its own is a nested build, left out, its manifest in the tree or written by addNestedBuild under the cache" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // morse's and visor's conformance builds: a build.zig and its sources, the manifest written
+    // from the package's at configure time, the emulator's modules bound only there.
+    for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/main.zig", "conformance/deep/c.zig", "bench/run.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    for ([_][]const u8{ "{}", "{\"glint_paths\":[\"conformance\"]}" }) |text| {
+        const config = try parsed(c.a, text);
+        const policy = (try policy_module.parse(&c, config, test_shipped)).?;
+        const paths = (try select(&c, policy)).?;
+        try std.testing.expectEqual(@as(usize, 2), paths.len);
+        for ([_][]const u8{ "bench/run.zig", "src/a.zig" }, paths) |want, got| try std.testing.expectEqualStrings(want, got);
+    }
 }
 
 test "a nested build kept beside what ships is its own package, left out; one inside what ships is linted with it" {

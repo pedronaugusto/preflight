@@ -4,6 +4,7 @@ const std = @import("std");
 const src = @import("source.zig");
 const zon = @import("../zon.zig");
 const matrix = @import("matrix.zig");
+const heldgit = @import("heldgit.zig");
 const family = @import("../family.zig");
 
 const template = @embedFile("caller.yml");
@@ -255,8 +256,8 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         }
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
-    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@WEEKLY@", "@MATRICES@", "@WINDOWS_GIT@", "@COMPILE_ONCE@" };
-    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), try weekly(a, seed), matrices.written(), try boolean(config, "windows_git_latest"), try boolean(config, "compile_once") };
+    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@WEEKLY@", "@MATRICES@", "@HELD_GIT@", "@COMPILE_ONCE@" };
+    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), try weekly(a, seed), matrices.written(), try heldGit(a, config), try boolean(config, "compile_once") };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -276,6 +277,13 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         }
     }
     return text.toOwnedSlice();
+}
+
+/// The caller's `held-git`: the release and its tarball's hash, which the hosted jobs' cache of
+/// the held git is named by, or empty for a package that holds none.
+fn heldGit(a: std.mem.Allocator, config: src.Value) ![]const u8 {
+    const held = (try heldgit.parse(config)) orelse return "''";
+    return a.print("'{s}-{s}'", .{ held.version, held.sha256[0..12] });
 }
 
 fn boolean(config: src.Value, name: []const u8) ![]const u8 {

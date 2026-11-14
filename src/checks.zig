@@ -10,6 +10,7 @@ pub const glint = @import("checks/glint.zig");
 pub const fuzz = @import("checks/fuzz.zig");
 pub const campaign = @import("checks/campaign.zig");
 pub const budget = @import("checks/budget.zig");
+pub const heldgit = @import("checks/heldgit.zig");
 pub const integration = @import("checks/integration.zig");
 pub const profile = @import("checks/profile.zig");
 pub const paths = @import("checks/paths.zig");
@@ -53,6 +54,7 @@ test {
     _ = source;
     _ = campaign;
     _ = budget;
+    _ = heldgit;
     _ = policy;
     _ = imports;
     _ = docs;

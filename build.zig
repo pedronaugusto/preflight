@@ -50,7 +50,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }) });
         probe.dependOn(&b.addRunArtifact(tests).step);
-        vm.add(b, probe, b, b.graph.host, &.{});
+        const machine_tool = program(b, b, ci.ciTarget(b)) orelse return;
+        vm.add(b, probe, b, b, .{ .compiled = machine_tool }, b.graph.host, &.{});
     }
     const executable = program(b, b, ci.ciTarget(b)) orelse return;
     b.installArtifact(executable);

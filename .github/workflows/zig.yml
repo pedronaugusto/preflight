@@ -37,10 +37,10 @@ on:
       compile-once:
         type: boolean
         default: false
-      windows-git-latest:
-        description: Upgrade Git for Windows before setting up test tools
-        type: boolean
-        default: false
+      held-git:
+        description: The package's held git (`git` in ci/workflow.json), by its release and its tarball's hash, which names its build's cache; empty for none
+        type: string
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -120,7 +120,6 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
-          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ matrix.directory || inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
@@ -148,30 +147,42 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           command -v qemu-system-x86_64
+      # The package's held git: its build, kept from run to run by its release, preflight's
+      # recipe and the machine (the riscv64 machine's own builds in its tests' step).
+      - name: Restore the held git
+        id: held_git
+        if: matrix.setup && inputs.held-git != ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/preflight-git
+          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - name: Set up test tools (attempt 1/3)
         id: tools1
         if: matrix.setup
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         continue-on-error: true
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         continue-on-error: true
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
         run: preflight prepare
       # The fuzz job's corpora, from the last run that saved them: each run starts where the
@@ -199,6 +210,12 @@ jobs:
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
           PREFLIGHT_FUZZ_MINUTES: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes || '' }}
         run: preflight run
+      - name: Save the held git
+        if: always() && matrix.setup && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/preflight-git
+          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:
@@ -289,21 +306,36 @@ jobs:
           build-args: -Doptimize=debug -Dci-lint=false
           working-directory: ${{ inputs.working-directory }}
           build-key: master-linux-debug
+      # The package's held git: its build, kept from run to run by its release, preflight's
+      # recipe and the machine (the riscv64 machine's own builds in its tests' step).
+      - name: Restore the held git
+        id: held_git
+        if: inputs.held-git != ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/preflight-git
+          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-none
       - name: Set up test tools (attempt 1/3)
         id: tools1
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         continue-on-error: true
+        env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         continue-on-error: true
+        env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
+        env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run the Debug suite on Zig master
         id: suite
@@ -314,6 +346,12 @@ jobs:
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: 'true'
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" run
+      - name: Save the held git
+        if: always() && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/preflight-git
+          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-none
       - name: Report
         timeout-minutes: 1
         if: always()
@@ -342,7 +380,6 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
-          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
@@ -401,7 +438,6 @@ jobs:
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         with:
-          windows-git-latest: ${{ inputs.windows-git-latest }}
           working-directory: ${{ inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
@@ -410,25 +446,40 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ inputs.working-directory }}/zig-out/preflight
+      # The package's held git: its build, kept from run to run by its release, preflight's
+      # recipe and the machine (the riscv64 machine's own builds in its tests' step).
+      - name: Restore the held git
+        id: held_git
+        if: matrix.setup && inputs.held-git != ''
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/preflight-git
+          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - name: Set up test tools (attempt 1/3)
         id: tools1
         if: matrix.setup
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         continue-on-error: true
         working-directory: ${{ inputs.working-directory }}
+        env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
         run: preflight prepare
       - name: Set up test tools (attempt 2/3)
         id: tools2
         if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         continue-on-error: true
         working-directory: ${{ inputs.working-directory }}
+        env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
         run: preflight prepare
       - name: Set up test tools (attempt 3/3)
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}
         working-directory: ${{ inputs.working-directory }}
+        env:
+          PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}
         run: preflight prepare
       - name: Run test executables
         working-directory: ${{ inputs.working-directory }}
@@ -442,6 +493,12 @@ jobs:
           # With the job's start, its deadline: a test running then ends named.
           PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
         run: preflight run
+      - name: Save the held git
+        if: always() && matrix.setup && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/preflight-git
+          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:

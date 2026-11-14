@@ -8,6 +8,8 @@
 //! vm/freebsd.zig (`ci-vm=freebsd`, an x86_64 Linux host's only). Each machine is pinned
 //! by hash in preflight's manifest and fetched only by a build that runs on it.
 const std = @import("std");
+const held = @import("held.zig");
+const Tool = @import("tool.zig").Tool;
 
 /// How many times slower a test runs on the machine than on the host, at most:
 /// QEMU translates every instruction of a whole system, on one host thread per
@@ -20,18 +22,20 @@ pub const slowdown = 10;
 /// (vm/freebsd.zig), which runs under KVM and so is refused by name on a host
 /// other than x86_64 Linux. `pkg` is the preflight whose sources and pins the machines
 /// come from, each fetched only when a run needs it; `packages` are the Alpine
-/// packages installed on the riscv64 machine beside its minimal system. Called
-/// after every other part of the gate has added its runs.
-pub fn add(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, host: std.Build.ResolvedTarget, packages: []const []const u8) void {
-    for (packages) |package| if (refusal(package)) |reason| {
-        tests.dependOn(&b.addFail(b.fmt("vm_packages: {s}: {s}", .{ package, reason })).step);
+/// packages installed on the riscv64 machine beside its minimal system; the package's held
+/// git (`git` in its ci/workflow.json), built for the machine, joins them. Called after every
+/// other part of the gate has added its runs.
+pub fn add(b: *std.Build, tests: *std.Build.Step, package: *std.Build, pkg: *std.Build, tool: Tool, host: std.Build.ResolvedTarget, packages: []const []const u8) void {
+    const holds_git = held.named(package);
+    for (packages) |entry| if (refusal(entry, holds_git)) |reason| {
+        tests.dependOn(&b.addFail(b.fmt("vm_packages: {s}: {s}", .{ entry, reason })).step);
         return;
     };
     var runs: Runs = .initFill(.empty);
     var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
     visit(b, tests, &runs, &seen);
     if (runs.get(.riscv64_linux).items.len > 0) {
-        const machine = riscv64Machine(b, pkg, host, packages) orelse return;
+        const machine = riscv64Machine(b, package, pkg, tool, host, packages, holds_git) orelse return;
         for (runs.get(.riscv64_linux).items) |run| machine.wrap(b, run);
     }
     if (runs.get(.x86_64_freebsd).items.len > 0) {
@@ -80,8 +84,9 @@ fn runner(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget) *std.B
 }
 
 /// The riscv64 Linux machine: Alpine's kernel and root file system with preflight's
-/// first process, and the packages installed on it; null until its pins are fetched.
-fn riscv64Machine(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget, packages: []const []const u8) ?Machine {
+/// first process, the packages installed on it and the package's held git; null until its
+/// pins are fetched.
+fn riscv64Machine(b: *std.Build, package: *std.Build, pkg: *std.Build, tool: Tool, host: std.Build.ResolvedTarget, packages: []const []const u8, holds_git: bool) ?Machine {
     // Fetched on first use: a build that asks for the machine configures again once they land.
     const alpine = pkg.dependencyLazy("alpine_riscv64", .{}) catch return null;
     const rootfs = pkg.dependencyLazy("alpine_riscv64_rootfs", .{}) catch return null;
@@ -104,7 +109,18 @@ fn riscv64Machine(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget
         install.addArgs(packages);
         break :installed out;
     };
-    return .{ .runner = vm, .command = "run", .kernel = kernel, .image = initrd };
+    const image = if (!holds_git) initrd else with_git: {
+        // Built on the host with zig cc for the machine, as every held git is, and kept in the store.
+        const build = held.run(b, package, pkg, tool, "riscv64-linux-musl") orelse return null;
+        build.addArg("--copy-to");
+        const tree = build.addOutputDirectoryArg("held-git");
+        const add_git = b.addRunArtifact(vm);
+        add_git.addArg("overlay");
+        add_git.addFileArg(initrd);
+        add_git.addDirectoryArg2(tree, .{});
+        break :with_git add_git.addOutputFileArg2("initrd-git.cpio", .{});
+    };
+    return .{ .runner = vm, .command = "run", .kernel = kernel, .image = image };
 }
 
 /// The x86_64 FreeBSD machine: FreeBSD's kernel set and runtime image with
@@ -155,28 +171,26 @@ fn visit(b: *std.Build, step: *std.Build.Step, runs: *Runs, seen: *std.AutoHashM
     runs.getPtr(kind).append(b.allocator, run) catch @panic("OOM");
 }
 
-/// Why a `vm_packages` entry is refused, or null. An entry is apk's own: a package
-/// from the release (`git`), or one from Alpine's edge (`git@edge=2.56.0-r0`), which
-/// moves on where a release keeps its packages' lines, so it states the build it is:
-/// when edge has another, apk fails making the machine, naming the package, where an
-/// unstated one would drift with edge.
-pub fn refusal(entry: []const u8) ?[]const u8 {
-    const at = std.mem.findScalar(u8, entry, '@') orelse return null;
-    const compare = std.mem.findAny(u8, entry, "<>=~") orelse return "a package from edge states its version, name@edge=version";
-    if (compare < at or !std.mem.eql(u8, entry[at + 1 .. compare], "edge")) return "the one repository beside the release is edge, name@edge=version";
-    if (entry[compare] != '=' or compare + 1 == entry.len or std.mem.findAny(u8, entry[compare + 1 ..], "<>=~") != null) return "a package from edge states its version exactly, name@edge=version";
+/// Why a `vm_packages` entry is refused, or null. An entry is a package of the release's
+/// repositories, as apk names it (`openssl`, `bash=5.3.3-r1`). A tagged repository is
+/// refused: edge keeps no build a pin names once it has the next (relic's
+/// `git@edge=2.56.0-r0` stopped the machine being made when edge moved to 2.56.1), so a
+/// pin from it always rots. git is refused beside the package's held git, which the
+/// machine has already, built from git's own release.
+pub fn refusal(entry: []const u8, holds_git: bool) ?[]const u8 {
+    if (std.mem.findScalar(u8, entry, '@') != null) return "a package comes from the release's repositories: edge drops the build a pin names; for git, name the held git (`preflight held-git-pin <version>`), built from git's own release";
+    const name = entry[0 .. std.mem.findAny(u8, entry, "<>=~") orelse entry.len];
+    if (holds_git and std.mem.eql(u8, name, "git")) return "the machine has the package's held git (ci/workflow.json's git); a second git would shadow it";
     return null;
 }
 
-test "a package from edge states its version exactly, and edge is the one other repository" {
-    try std.testing.expectEqual(null, refusal("git"));
-    try std.testing.expectEqual(null, refusal("git=2.54.0-r0"));
-    try std.testing.expectEqual(null, refusal("git@edge=2.56.0-r0"));
-    try std.testing.expect(refusal("git@edge") != null);
-    try std.testing.expect(refusal("git@edge>=2.56.0-r0") != null);
-    try std.testing.expect(refusal("git@edge~2.56") != null);
-    try std.testing.expect(refusal("git@edge=") != null);
-    try std.testing.expect(refusal("git@testing=2.56.0-r0") != null);
+test "a package comes from the release, never edge, and git is the held one where the package holds one" {
+    try std.testing.expectEqual(null, refusal("git", false));
+    try std.testing.expectEqual(null, refusal("bash=5.3.3-r1", true));
+    try std.testing.expect(refusal("git", true) != null);
+    try std.testing.expect(refusal("git=2.54.0-r0", true) != null);
+    try std.testing.expect(refusal("git@edge=2.56.0-r0", false) != null);
+    try std.testing.expect(refusal("openssl@testing", false) != null);
 }
 
 /// The machine a run for `target` needs on `host`, or null for one the host runs itself.

@@ -9,6 +9,7 @@ pub const nested = @import("nested.zig");
 const bench = @import("bench.zig");
 const fuzz = @import("fuzz.zig");
 const hardened = @import("hardened.zig");
+const held = @import("held.zig");
 const vm = @import("vm.zig");
 const family = @import("family.zig");
 const Tool = @import("tool.zig").Tool;
@@ -49,14 +50,13 @@ pub const Config = struct {
     /// declares none has no `fuzz` step. Naming a step requires shakedown.
     fuzz_step: ?[]const u8 = null,
     /// Alpine Linux packages the tests need on the riscv64 machine (`-Dci-vm`)
-    /// beside its minimal system, by Alpine's names (`git`, `openssl`). Alpine's
+    /// beside its minimal system, by Alpine's names (`openssl`, `bash`). Alpine's
     /// `apk` installs them on the machine when the build makes it, from the
     /// release's own repositories, verified by the release's own keys; a build
-    /// that runs nothing on the machine fetches nothing. A package newer than the
-    /// release has comes from Alpine's edge, with the build it is stated exactly
-    /// (`git@edge=2.56.0-r0`): edge moves on, and when it has another build the
-    /// machine is not made, apk naming the package, where an unstated one would
-    /// drift with it.
+    /// that runs nothing on the machine fetches nothing. A tagged repository
+    /// (`@edge`) is refused: edge drops the build a pin names. The package's held
+    /// git (`git` in ci/workflow.json) is on the machine already, built from git's
+    /// own release, and `git` beside it is refused.
     vm_packages: []const []const u8 = &.{},
 };
 
@@ -264,6 +264,7 @@ const Steps = struct {
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         if (steps.profile_options.fuzzing) hardened.fuzzing(b, roots);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null, executable);
+        held.add(b, package, pkg, executable);
         hardened.add(b, package, config.tests, config.hardened, steps.profile_options, executable);
         // `check` compiles, running nothing: here, all `ci-check` does (the tests, the programs
         // they run, an example among them, the installed artifacts, the public modules and the
@@ -352,7 +353,7 @@ const Steps = struct {
         if (policy == .family) releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
         // Last, so that every run the gate added is in front of the machine too.
-        if (steps.vm) vm.add(b, config.tests, pkg, host, config.vm_packages);
+        if (steps.vm) vm.add(b, config.tests, package, pkg, executable, host, config.vm_packages);
         // `ci-test`, the hosted test jobs' step, is the tests as every walk above left them;
         // only then do the source checks join `test` and `ci` here, beside the tests, not before
         // them: a red one still runs the suite, and the step reports and fails on each.

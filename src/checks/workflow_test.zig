@@ -2,6 +2,7 @@
 const std = @import("std");
 const root = @import("test_options").root;
 const matrix = @import("matrix.zig");
+const heldgit = @import("heldgit.zig");
 
 fn read(a: std.mem.Allocator, path: []const u8) ![]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, try std.Io.Dir.path.join(a, &.{ root, path }), a, .limited(1024 * 1024));
@@ -36,7 +37,10 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             const start = std.mem.find(u8, body, marker) orelse return error.MissingSetupAttempt;
             const end = std.mem.findPos(u8, body, start, "      - ") orelse body.len;
             const step = body[start..end];
-            try contains(step, "        timeout-minutes: 5\n");
+            // Building the held git from cold takes longer than tools alone; a compile job holds none.
+            const runs_tests = !std.mem.eql(u8, name, "compile");
+            try contains(step, if (runs_tests) "        timeout-minutes: ${{ inputs.held-git != '' && 30 || 5 }}\n" else "        timeout-minutes: 5\n");
+            try std.testing.expectEqual(runs_tests, std.mem.find(u8, step, "PREFLIGHT_HELD_GIT: ${{ inputs.held-git }}") != null);
             try contains(step, " prepare\n");
             try std.testing.expectEqual(attempt < 3, std.mem.find(u8, step, "continue-on-error: true") != null);
             if (attempt > 1) {
@@ -270,4 +274,25 @@ test "the fuzz job: dispatched alone or in the release tier, its corpora cached,
     try contains(gate, try a.print("            {s}findings\n            {s}cache/f\n", .{ store, store }));
     // The fuzz run times no tests.
     try contains(try job(workflow, "profile"), "inputs.tier != 'fuzz'");
+}
+
+test "the held git's build is cached by its release, the recipe and the machine, restored before the tools and saved after the tests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const text = try read(a, ".github/workflows/zig.yml");
+    const key = try a.print("key: preflight-git-${{{{ inputs.held-git }}}}-r{d}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-", .{heldgit.recipe});
+    for ([_][]const u8{ "gate", "master", "execute" }) |name| {
+        const body = try job(text, name);
+        const restore = std.mem.find(u8, body, "- name: Restore the held git") orelse return error.MissingRestore;
+        const tools = std.mem.find(u8, body, "id: tools1") orelse return error.MissingSetupAttempt;
+        const save = std.mem.find(u8, body, "- name: Save the held git") orelse return error.MissingSave;
+        try std.testing.expect(restore < tools and tools < save);
+        try std.testing.expectEqual(2, std.mem.count(u8, body, key));
+        try std.testing.expect(std.mem.find(u8, body[save..], "steps.held_git.outputs.cache-hit != 'true'") != null);
+    }
+    try std.testing.expect(std.mem.find(u8, try job(text, "compile"), "held git") == null);
+    const setup = try read(a, ".github/actions/setup/action.yml");
+    try contains(setup, "PREFLIGHT_GIT_STORE=${RUNNER_TEMP}/preflight-git");
+    try std.testing.expect(std.mem.find(u8, setup, "choco") == null);
 }

@@ -33,7 +33,15 @@ pub fn main(init: std.process.Init) !void {
         },
         .setup => try setup(c, init.environ_map),
         // The hosted workflow owns the attempt deadlines and retries.
-        .prepare => if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} })),
+        .prepare => {
+            // The held git first: a setup step of the package's may run git itself.
+            // A hosted job holds it where it runs tests (`PREFLIGHT_HELD_GIT`), not where it compiles.
+            const hosted = std.mem.eql(u8, init.environ_map.get("GITHUB_ACTIONS") orelse "", "true");
+            const held_git: []const u8 = init.environ_map.get("PREFLIGHT_HELD_GIT") orelse "";
+            const tests = held_git.len != 0;
+            if (src.get(try c.options("ci/workflow.json"), "git") != .null and (tests or !hosted)) try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{"ci-held-git"} }));
+            if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
+        },
         .profile => |args| try profileCommand(c, args),
         .fetch => for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv),
         .fuzz_campaign => |args| {
@@ -46,6 +54,8 @@ pub fn main(init: std.process.Init) !void {
             const minutes = try checks.budget.minutes(&c, args.minutes, try c.options("ci/workflow.json"));
             try checks.budget.run(&c, checks.budget.Span.literal("1m").saturatingMul(minutes), args.store, args.fuzzer);
         },
+        .held_git => |args| try heldGitCommand(&c, init.environ_map, args),
+        .held_git_pin => |args| try checks.heldgit.pin(&c, args.config, args.version),
         .run => try runGate(c, init.environ_map),
         .skip => |args| try skipCommand(&c, init.environ_map, args),
         .attest => try checks.attest.run(c, init.environ_map),
@@ -606,4 +616,56 @@ fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, targ
         defer timer.end(c, log);
         try checks.command.execute(c, argv);
     }
+}
+
+/// `held-git`: the held git the configuration names, installed (Windows) or built into the
+/// store, and on a hosted job put first on the path of the steps after it.
+fn heldGitCommand(c: *src.Context, environ: *const std.process.Environ.Map, args: @import("cli.zig").HeldGit) !void {
+    const heldgit = checks.heldgit;
+    if (args.zig_exe) |zig| c.zig = zig;
+    const held = (heldgit.parse(try c.options(args.config)) catch {
+        c.fail("held-git: {s}: {s}", .{ args.config, heldgit.problem });
+        return error.CheckFailed;
+    }) orelse {
+        c.fail("held-git: {s} names no held git (`preflight held-git-pin <version>` names one)", .{args.config});
+        return error.CheckFailed;
+    };
+    const store = args.store orelse try heldgit.defaultStore(c, environ);
+    const target = if (args.target) |text| try std.zig.system.resolveTargetQuery(c.io, try std.Target.Query.parse(.{ .arch_os_abi = text })) else builtin.target;
+    if (target.os.tag == .windows) {
+        if (args.target != null or builtin.target.os.tag != .windows) {
+            c.fail("held-git: Git for Windows is installed on the Windows machine that runs it, not built", .{});
+            return error.CheckFailed;
+        }
+        return heldgit.installWindows(c, environ, held, builtin.target.cpu.arch, store);
+    }
+    const p = heldgit.platform(target) orelse {
+        c.fail("held-git: no held git is built for {s}-{s}-{s}", .{ @tagName(target.cpu.arch), @tagName(target.os.tag), @tagName(target.abi) });
+        return error.CheckFailed;
+    };
+    const sdk = args.sdk orelse if (p.kind == .macos) (environ.get("SDKROOT") orelse sdk: {
+        const said = try std.process.run(c.a, c.io, .{ .argv = &.{ "xcrun", "--show-sdk-path" } });
+        if (!checks.command.succeeded(said)) {
+            c.fail("held-git: a macOS build links the SDK's base libraries; name it with --sdk or SDKROOT", .{});
+            return error.CheckFailed;
+        }
+        break :sdk std.mem.trimEnd(u8, said.stdout, "\r\n");
+    }) else null;
+    const missing = for ([_]?[]const u8{ args.zlib, args.libressl, args.curl }) |dir| {
+        if (dir == null) break true;
+    } else false;
+    if (missing) {
+        c.fail("held-git: the pinned sources are the build's to pass (--zlib, --libressl, --curl): run `zig build ci-held-git`", .{});
+        return error.CheckFailed;
+    }
+    const out = try heldgit.build(c, environ, held, p, .{ .zig = c.zig, .zlib = args.zlib.?, .libressl = args.libressl.?, .curl = args.curl.?, .sdk = sdk, .jobs = std.Thread.getCpuCount() catch 4 }, store);
+    if (args.copy_to) |to| {
+        try std.Io.Dir.cwd().createDirPath(c.io, to);
+        try checks.command.execute(c.*, &.{ "cp", "-R", try c.a.print("{s}/.", .{out}), to });
+    }
+    if (args.target != null) return;
+    const bin = try std.fs.path.join(c.a, &.{ out, "bin" });
+    if (environ.get("GITHUB_PATH")) |path_file| try append(c.*, path_file, try c.a.print("{s}\n", .{bin}));
+    if (environ.get("GITHUB_ENV")) |env_file| try append(c.*, env_file, try c.a.print("PREFLIGHT_GIT={s}\n", .{try std.fs.path.join(c.a, &.{ bin, "git" })}));
+    c.report("held-git: {s} first on the path\n", .{bin});
 }

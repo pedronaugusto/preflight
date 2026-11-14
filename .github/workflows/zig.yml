@@ -75,6 +75,11 @@ jobs:
       - uses: ./.preflight/.github/actions/toolchain
         with:
           preflight-ref: ${{ inputs.preflight-ref }}
+      # The run checks the package with the preflight its manifest pins: a caller not made
+      # again at a re-pin would run an older preflight than the build calls.
+      - name: Check the package pins the preflight this caller runs
+        working-directory: ${{ inputs.working-directory }}
+        run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight pin --ref ${{ inputs.preflight-ref }}
       # preflight keeps its own run's toolchain ninety days, for the callers
       # pinned to its commit; a caller's run keeps it for the run.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

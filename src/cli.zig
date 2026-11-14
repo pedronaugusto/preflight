@@ -26,6 +26,7 @@ pub const Cli = struct {
         fuzz_budget: Budget,
         held_git: HeldGit,
         held_git_pin: HeldGitPin,
+        pin: Pin,
         unsharded: Unsharded,
         counts: Counts,
         executable: Executable,
@@ -185,6 +186,18 @@ pub const Skip = struct {
     pub const spec: ensign.Spec(@This()) = .{
         .about = "Whether the change is documentation alone, which a fast run does not test",
         .options = .{ .config = .{ .value_name = "FILE", .hint = .file, .help = "The source checks' configuration, whose documentation a docs-only change is checked against" } },
+    };
+};
+
+pub const Pin = struct {
+    ref: []const u8,
+    manifest: []const u8 = "build.zig.zon",
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Whether the package's manifest pins the preflight its caller runs: a hosted run's first check, so a caller not made again at a re-pin never runs an older preflight than the build calls",
+        .options = .{
+            .ref = .{ .value_name = "COMMIT", .help = "The preflight commit the caller runs (its preflight-ref)" },
+            .manifest = .{ .value_name = "FILE", .hint = .file, .help = "The manifest whose preflight pin is compared" },
+        },
     };
 };
 
@@ -408,6 +421,8 @@ test "the hosted workflows' commands" {
     for ([_][]const u8{ "skip", "attest", "prepare", "run", "fetch", "setup" }) |name| _ = try parsed(a, &.{name});
     try std.testing.expect((try parsed(a, &.{ "prepare", "--held-git" })).command.prepare.held_git);
     try std.testing.expect(!(try parsed(a, &.{"prepare"})).command.prepare.held_git);
+    const pin = (try parsed(a, &.{ "pin", "--ref", "c2f1d775a45316a76daf72dcb750c6e343044669" })).command.pin;
+    try std.testing.expectEqualStrings("build.zig.zon", pin.manifest);
     const profile = (try parsed(a, &.{ "profile", "--durations", "pkg/ci/durations.json", "--output", ".preflight-timings/durations.json", "--costs", "pkg/ci/costs.json", "--costs-output", ".preflight-timings/costs.json" })).command.profile;
     try std.testing.expectEqualStrings(".preflight-timings", profile.input);
     try std.testing.expectEqualStrings(".preflight-timings/costs.json", profile.costs_output.?);

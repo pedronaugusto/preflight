@@ -57,6 +57,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .held_git => |args| try heldGitCommand(&c, init.environ_map, args),
         .held_git_pin => |args| try checks.heldgit.pin(&c, args.config, args.version),
+        .pin => |args| try checks.workflow.checkPin(&c, args.manifest, args.ref),
         .run => try runGate(c, init.environ_map),
         .skip => |args| try skipCommand(&c, init.environ_map, args),
         .attest => try checks.attest.run(c, init.environ_map),

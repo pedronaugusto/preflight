@@ -130,6 +130,28 @@ pub fn pinned(c: src.Context, manifest_path: []const u8) ![]const u8 {
     return pin;
 }
 
+/// Whether the manifest at `manifest_path` pins preflight at `ref`, the commit whose preflight
+/// the caller's run builds and runs. A re-pin whose caller was not made again runs an older
+/// preflight than the package's build calls (shakedown's run 43546396875: `lint --skip-glint`
+/// unknown to the caller's 132fb179, the build pinning c2f1d775), so a run refuses it by name
+/// before anything is built. A manifest naming preflight by path (preflight's own sample) runs
+/// the preflight it sits in, and is not compared.
+pub fn checkPin(c: *src.Context, manifest_path: []const u8, ref: []const u8) !void {
+    const pin = pinned(c.*, manifest_path) catch |err| switch (err) {
+        error.MissingPublishedPreflightPin => {
+            c.report("pin: {s} pins no published preflight; the run's is the caller's, {s}\n", .{ manifest_path, ref });
+            return;
+        },
+        else => |e| return e,
+    };
+    if (std.mem.eql(u8, pin, ref)) {
+        c.report("pin: {s} pins preflight {s}, the caller's\n", .{ manifest_path, ref });
+        return;
+    }
+    c.fail("pin: {s} pins preflight {s}, and the caller runs {s}: the caller was not made again at the re-pin, so this run would check the package with another preflight than its build calls; make it again (`bay generate`, or `zig build generate`) and commit it", .{ manifest_path, pin, ref });
+    return error.StaleCaller;
+}
+
 /// The configuration at `path`, with what the last merge or release run measured
 /// beside it: the phases' costs (`costs.json`) as `measured`, and each test's
 /// seconds (`durations.json`) as `durations`.
@@ -395,6 +417,12 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     // A package developed with bay pins preflight as a dev dependency.
     try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .url = \"{s}#{s}\" }} }} }}", .{ repository, first_pin }) });
     try std.testing.expectEqualStrings(first_pin, try pinned(c, "build.zig.zon"));
+    // A run's caller and its manifest name one preflight, or the run stops before it builds.
+    var checked = c;
+    try checkPin(&checked, "build.zig.zon", first_pin);
+    try std.testing.expectError(error.StaleCaller, checkPin(&checked, "build.zig.zon", next_pin));
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{ .preflight = .{ .path = \"..\" } } }" });
+    try checkPin(&checked, "build.zig.zon", next_pin);
     const malformed = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":\"true\"}", .{})).value;
     try std.testing.expectError(error.InvalidWorkflowBoolean, render(a, malformed, first_pin, ".", false, "ci.yml", 0));
 }

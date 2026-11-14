@@ -584,7 +584,10 @@ conclusion. The master suite uses `test-job-timeout` as its step deadline, cappe
 minutes to preserve that budget.
 
 Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
-that commit as `preflight-ref` and the tier as `tier`. Every action `zig.yml` and its
+that commit as `preflight-ref` and the tier as `tier`. A run checks it before it builds
+anything (`preflight pin --ref`): a manifest that pins another preflight than the caller
+runs, a re-pin whose caller was not made again, stops the run by name, since its jobs
+would run an older preflight than the build calls. Every action `zig.yml` and its
 composite actions use is pinned by commit, its release in a comment beside it, and the gate
 holds a repository's own workflows to the same: a `uses:` under `.github` that names a tag
 or a branch, which the action's owners can move, fails it by file and line. The sample caller in this

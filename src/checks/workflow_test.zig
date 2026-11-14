@@ -61,6 +61,16 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
     }
 }
 
+test "a run stops before it builds when the package pins another preflight than its caller runs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "toolchain");
+    const toolchain = std.mem.find(u8, body, "- uses: ./.preflight/.github/actions/toolchain") orelse return error.TestExpectedToolchain;
+    const check = std.mem.find(u8, body, "preflight pin --ref ${{ inputs.preflight-ref }}\n") orelse return error.TestExpectedPinCheck;
+    const upload = std.mem.find(u8, body, "- uses: actions/upload-artifact@") orelse return error.TestExpectedUpload;
+    try std.testing.expect(toolchain < check and check < upload);
+}
+
 test "the Zig master leg has bay on the path before its setup fetches through it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

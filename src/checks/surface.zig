@@ -104,11 +104,13 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: [
 }
 
 /// The modules a `build.zig` exports, as its text says them: each `addModule("name", .{
-/// .root_source_file = b.path("root") })`, with `build.zig` itself, which a build that
-/// depends on the package imports. The name or the options may be a constant in the call's
-/// scope that holds the literal (`const options: Module.CreateOptions = .{ ... }`). Null when an
-/// `addModule` says either through anything else: what such a build exports is known only by
-/// running it.
+/// .root_source_file = b.path("root") })`, and each module put in the build's modules by name
+/// (`b.modules.put(gpa, "name", module)`) that a `createModule` or `addModule` of the file makes,
+/// directly or as the one value a function of the file returns; with `build.zig` itself, which
+/// a build that depends on the package imports. A name, options or module may be a constant in
+/// the call's scope that holds it (`const options: Module.CreateOptions = .{ ... }`). Null when
+/// an export says any of them through anything else: what such a build exports is known only
+/// by running it, and a build read as exporting less than it does would hide what it removed.
 pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module {
     var tree = try Ast.parse(a, try a.dupeSentinel(u8, text, 0), .{});
     defer tree.deinit(a);
@@ -123,23 +125,98 @@ pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module 
         var buffer: [1]Ast.Node.Index = undefined;
         const call = tree.fullCall(&buffer, @fromBackingInt(@intCast(n))) orelse continue;
         if (tree.nodeTag(call.ast.fn_expr) != .field_access) continue;
-        _, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
-        if (!std.mem.eql(u8, tree.tokenSlice(method), "addModule")) continue;
-        if (call.ast.params.len != 2) return null;
-        const name = (try stringLiteral(a, &tree, constantValue(&tree, call.ast.params[0]) orelse return null)) orelse return null;
-        var fields: [2]Ast.Node.Index = undefined;
-        const options = tree.fullStructInit(&fields, constantValue(&tree, call.ast.params[1]) orelse return null) orelse return null;
-        for (options.ast.fields) |field| {
-            if (!std.mem.eql(u8, tree.tokenSlice(tree.firstToken(field) - 2), "root_source_file")) continue;
-            var inner: [1]Ast.Node.Index = undefined;
-            const path = tree.fullCall(&inner, field) orelse return null;
-            if (tree.nodeTag(path.ast.fn_expr) != .field_access or path.ast.params.len != 1) return null;
-            _, const named = tree.nodeData(path.ast.fn_expr).node_and_token;
-            if (!std.mem.eql(u8, tree.tokenSlice(named), "path")) return null;
-            try out.append(a, .{ .name = name, .root = (try stringLiteral(a, &tree, path.ast.params[0])) orelse return null });
+        const receiver, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
+        const spelled = tree.tokenSlice(method);
+        // The module's name, and where the call says what it is.
+        const name_at: usize, const root: Root = if (std.mem.eql(u8, spelled, "addModule")) said: {
+            if (call.ast.params.len != 2) return null;
+            break :said .{ 0, try optionsRoot(a, &tree, call.ast.params[1]) };
+        } else if ((std.mem.eql(u8, spelled, "put") or std.mem.eql(u8, spelled, "putNoClobber")) and
+            tree.nodeTag(receiver) == .field_access and
+            std.mem.eql(u8, tree.tokenSlice(tree.nodeData(receiver).node_and_token[1]), "modules"))
+        put: {
+            if (call.ast.params.len != 3) return null;
+            break :put .{ 1, try createdRoot(a, &tree, call.ast.params[2], 0) };
+        } else continue;
+        const name = (try stringLiteral(a, &tree, constantValue(&tree, call.ast.params[name_at]) orelse return null)) orelse return null;
+        switch (root) {
+            .unknown => return null,
+            // A module with no Zig root of its own exports no declarations.
+            .none => continue,
+            .path => |path| try out.append(a, .{ .name = name, .root = path }),
         }
     }
     return out.items;
+}
+
+/// What a module's options say of its root: a literal `b.path("...")`, none given, or unknown.
+const Root = union(enum) { unknown, none, path: []const u8 };
+
+/// The root a module's options name, the options a struct literal or a constant holding one.
+fn optionsRoot(a: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index) !Root {
+    var fields: [2]Ast.Node.Index = undefined;
+    const options = tree.fullStructInit(&fields, constantValue(tree, node) orelse return .unknown) orelse return .unknown;
+    for (options.ast.fields) |field| {
+        if (!std.mem.eql(u8, tree.tokenSlice(tree.firstToken(field) - 2), "root_source_file")) continue;
+        var inner: [1]Ast.Node.Index = undefined;
+        const path = tree.fullCall(&inner, field) orelse return .unknown;
+        if (tree.nodeTag(path.ast.fn_expr) != .field_access or path.ast.params.len != 1) return .unknown;
+        _, const named = tree.nodeData(path.ast.fn_expr).node_and_token;
+        if (!std.mem.eql(u8, tree.tokenSlice(named), "path")) return .unknown;
+        return .{ .path = (try stringLiteral(a, tree, path.ast.params[0])) orelse return .unknown };
+    }
+    return .none;
+}
+
+/// The root of the module `node` evaluates to: a `createModule` or `addModule` call of the file,
+/// or a call of a function of the file whose one return gives such a module, followed at most
+/// `max_helpers` functions deep.
+fn createdRoot(a: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index, depth: u8) !Root {
+    const max_helpers = 4;
+    if (depth == max_helpers) return .unknown;
+    var buffer: [1]Ast.Node.Index = undefined;
+    const call = tree.fullCall(&buffer, constantValue(tree, node) orelse return .unknown) orelse return .unknown;
+    switch (tree.nodeTag(call.ast.fn_expr)) {
+        .field_access => {
+            _, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
+            const spelled = tree.tokenSlice(method);
+            if (std.mem.eql(u8, spelled, "createModule") and call.ast.params.len == 1) return optionsRoot(a, tree, call.ast.params[0]);
+            if (std.mem.eql(u8, spelled, "addModule") and call.ast.params.len == 2) return optionsRoot(a, tree, call.ast.params[1]);
+            return .unknown;
+        },
+        .identifier => {
+            const returned = soleReturn(tree, tree.tokenSlice(tree.nodeMainToken(call.ast.fn_expr))) orelse return .unknown;
+            return createdRoot(a, tree, returned, depth + 1);
+        },
+        else => return .unknown,
+    }
+}
+
+/// The value of the one `return` in the body of the file's top-level function `name`; null when
+/// there is no such function, or it returns from more than one place or without a value.
+fn soleReturn(tree: *const Ast, name: []const u8) ?Ast.Node.Index {
+    const tags = tree.nodes.items(.tag);
+    for (tree.rootDecls()) |decl| {
+        if (tree.nodeTag(decl) != .fn_decl) continue;
+        const proto_node, const body = tree.nodeData(decl).node_and_node;
+        var buffer: [1]Ast.Node.Index = undefined;
+        const proto = tree.fullFnProto(&buffer, proto_node) orelse continue;
+        const named = proto.name_token orelse continue;
+        if (!std.mem.eql(u8, tree.tokenSlice(named), name)) continue;
+        const first = tree.firstToken(body);
+        const last = tree.lastToken(body);
+        var found: ?Ast.Node.Index = null;
+        for (tags, 0..) |tag, n| {
+            if (tag != .@"return") continue;
+            const at: Ast.Node.Index = @fromBackingInt(@intCast(n));
+            const token = tree.nodeMainToken(at);
+            if (token < first or token > last) continue;
+            if (found != null) return null;
+            found = tree.nodeData(at).opt_node.unwrap() orelse return null;
+        }
+        return found;
+    }
+    return null;
 }
 
 /// The expression `node` stands for: itself, or, when it is a name, the value of the one
@@ -1066,6 +1143,38 @@ test "the modules a build exports are read from its literal addModule calls, and
     try std.testing.expectEqualStrings("src/pkg.zig", modules[1].root);
     try std.testing.expectEqualStrings("src/extra.zig", modules[2].root);
     try std.testing.expectEqual(@as(?[]const Module, null), try declaredModules(a, "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", .{ .root_source_file = root(b) });\n}\n"));
+}
+
+test "a module put in the build's modules is read through the helper of the file that creates it; one the text cannot follow makes the exports unknown" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // warp 0.4.4's shape: the module made by a function of the file, then put by name.
+    const modules = (try declaredModules(a,
+        \\const std = @import("std");
+        \\pub fn build(b: *std.Build) void {
+        \\    const target = b.standardTargetOptions(.{});
+        \\    const module = warpModule(b, target);
+        \\    b.modules.put(b.allocator, "warp", module) catch @panic("OOM");
+        \\    b.modules.put(b.allocator, "warp.direct", b.createModule(.{ .root_source_file = b.path("src/direct.zig") })) catch @panic("OOM");
+        \\}
+        \\fn warpModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+        \\    const root = b.createModule(.{ .root_source_file = b.path("src/warp.zig"), .target = target });
+        \\    addImports(b, root);
+        \\    return root;
+        \\}
+    )).?;
+    try std.testing.expectEqual(@as(usize, 3), modules.len);
+    try std.testing.expectEqualStrings("warp", modules[1].name);
+    try std.testing.expectEqualStrings("src/warp.zig", modules[1].root);
+    try std.testing.expectEqualStrings("warp.direct", modules[2].name);
+    try std.testing.expectEqualStrings("src/direct.zig", modules[2].root);
+    // Read as exporting nothing, a build like these would hide every removal since its tag.
+    for ([_][]const u8{
+        "pub fn build(b: *@import(\"std\").Build) void {\n    put(b, b.createModule(.{ .root_source_file = b.path(\"src/pkg.zig\") }));\n}\nfn put(b: *@import(\"std\").Build, module: *@import(\"std\").Build.Module) void {\n    b.modules.put(b.allocator, \"pkg\", module) catch @panic(\"OOM\");\n}\n",
+        "pub fn build(b: *@import(\"std\").Build) void {\n    b.modules.put(b.allocator, \"pkg\", make(b, true)) catch @panic(\"OOM\");\n}\nfn make(b: *@import(\"std\").Build, wide: bool) *@import(\"std\").Build.Module {\n    if (wide) return b.createModule(.{ .root_source_file = b.path(\"src/wide.zig\") });\n    return b.createModule(.{ .root_source_file = b.path(\"src/pkg.zig\") });\n}\n",
+        "pub fn build(b: *@import(\"std\").Build) void {\n    b.modules.put(b.allocator, \"pkg\", b.dependency(\"other\", .{}).module(\"other\")) catch @panic(\"OOM\");\n}\n",
+    }) |text| try std.testing.expectEqual(@as(?[]const Module, null), try declaredModules(a, text));
 }
 
 test "an addModule's name or options held in a constant in scope are read through it; a parameter, a variable or another function's constant is not" {

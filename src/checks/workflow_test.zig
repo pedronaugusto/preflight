@@ -294,6 +294,12 @@ test "the fuzz job: dispatched alone or in the release tier, its corpora cached,
     try contains(gate, try a.print("            {s}findings\n            {s}cache/f\n", .{ store, store }));
     // The fuzz run times no tests.
     try contains(try job(workflow, "profile"), "inputs.tier != 'fuzz'");
+    // A red gate is folded (its test jobs are the gate's), and never the proof: the proof's
+    // name needs the gate's success with the rest (relic's run 43621719158 left no records).
+    const profile = try job(workflow, "profile");
+    try contains(profile, "if: always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') && inputs.tier != 'fuzz'\n");
+    try contains(profile, "FINISHED: ${{ needs.gate.result == 'success' && ");
+    try contains(profile, "name: ${{ env.FINISHED == 'true' && 'preflight' || 'records' }}-");
 }
 
 test "the held git's build is cached by its release, the recipe and the machine, restored before the tools and saved after the tests" {

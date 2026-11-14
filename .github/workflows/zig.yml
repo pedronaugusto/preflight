@@ -533,11 +533,13 @@ jobs:
   # shards. Only a green run's fold is the proof artifact.
   profile:
     needs: [toolchain, gate, compile, execute]
-    # The fuzz job runs no tests to time.
-    if: always() && needs.gate.result == 'success' && inputs.tier != 'fuzz'
+    # The fuzz job runs no tests to time. A red gate is folded too (`--partial`): its test
+    # jobs are the gate's, and one that ran out of time leaves the record that sizes its
+    # shards next time; only a run that went green throughout is the proof.
+    if: always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') && inputs.tier != 'fuzz'
     runs-on: ubuntu-latest
     env:
-      FINISHED: ${{ (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') }}
+      FINISHED: ${{ needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

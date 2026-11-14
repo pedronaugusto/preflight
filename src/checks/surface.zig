@@ -105,8 +105,10 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: [
 
 /// The modules a `build.zig` exports, as its text says them: each `addModule("name", .{
 /// .root_source_file = b.path("root") })`, with `build.zig` itself, which a build that
-/// depends on the package imports. Null when an `addModule` says either through anything
-/// but a literal: what such a build exports is known only by running it.
+/// depends on the package imports. The name or the options may be a constant in the call's
+/// scope that holds the literal (`const options: Module.CreateOptions = .{ ... }`). Null when an
+/// `addModule` says either through anything else: what such a build exports is known only by
+/// running it.
 pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module {
     var tree = try Ast.parse(a, try a.dupeSentinel(u8, text, 0), .{});
     defer tree.deinit(a);
@@ -124,9 +126,9 @@ pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module 
         _, const method = tree.nodeData(call.ast.fn_expr).node_and_token;
         if (!std.mem.eql(u8, tree.tokenSlice(method), "addModule")) continue;
         if (call.ast.params.len != 2) return null;
-        const name = (try stringLiteral(a, &tree, call.ast.params[0])) orelse return null;
+        const name = (try stringLiteral(a, &tree, constantValue(&tree, call.ast.params[0]) orelse return null)) orelse return null;
         var fields: [2]Ast.Node.Index = undefined;
-        const options = tree.fullStructInit(&fields, call.ast.params[1]) orelse return null;
+        const options = tree.fullStructInit(&fields, constantValue(&tree, call.ast.params[1]) orelse return null) orelse return null;
         for (options.ast.fields) |field| {
             if (!std.mem.eql(u8, tree.tokenSlice(tree.firstToken(field) - 2), "root_source_file")) continue;
             var inner: [1]Ast.Node.Index = undefined;
@@ -138,6 +140,57 @@ pub fn declaredModules(a: std.mem.Allocator, text: []const u8) !?[]const Module 
         }
     }
     return out.items;
+}
+
+/// The expression `node` stands for: itself, or, when it is a name, the value of the one
+/// constant of that name whose scope holds `node` (one declared before it in a block around it,
+/// or at the file's top level). Null for a name bound any other way (a parameter, a variable,
+/// a capture), whose value is known only by running the build. Zig refuses a name that shadows
+/// another, so at most one constant is in scope; more than one found is not trusted.
+fn constantValue(tree: *const Ast, node: Ast.Node.Index) ?Ast.Node.Index {
+    if (tree.nodeTag(node) != .identifier) return node;
+    const spelling = tree.tokenSlice(tree.nodeMainToken(node));
+    const at = tree.firstToken(node);
+    const tags = tree.nodes.items(.tag);
+    var found: ?Ast.Node.Index = null;
+    for (tags, 0..) |tag, n| {
+        switch (tag) {
+            .simple_var_decl, .local_var_decl, .aligned_var_decl, .global_var_decl => {},
+            else => continue,
+        }
+        const decl_node: Ast.Node.Index = @fromBackingInt(@intCast(n));
+        const decl = tree.fullVarDecl(decl_node) orelse continue;
+        if (tree.tokenTag(decl.ast.mut_token) != .keyword_const) continue;
+        if (!std.mem.eql(u8, tree.tokenSlice(decl.ast.mut_token + 1), spelling)) continue;
+        const value = decl.ast.init_node.unwrap() orelse continue;
+        if (!inScope(tree, decl_node, at)) continue;
+        if (found != null) return null;
+        found = value;
+    }
+    return found;
+}
+
+/// Whether the declaration `decl` is visible at token `at`: declared at the file's top level, or
+/// before `at` in the innermost block around it that also holds `at`.
+fn inScope(tree: *const Ast, decl: Ast.Node.Index, at: Ast.TokenIndex) bool {
+    for (tree.rootDecls()) |root| if (root == decl) return true;
+    const first = tree.firstToken(decl);
+    if (tree.lastToken(decl) >= at) return false;
+    // The innermost block around the declaration: the one with the fewest tokens.
+    var block: ?[2]Ast.TokenIndex = null;
+    for (tree.nodes.items(.tag), 0..) |tag, n| {
+        switch (tag) {
+            .block, .block_semicolon, .block_two, .block_two_semicolon => {},
+            else => continue,
+        }
+        const around: Ast.Node.Index = @fromBackingInt(@intCast(n));
+        const range: [2]Ast.TokenIndex = .{ tree.firstToken(around), tree.lastToken(around) };
+        if (range[0] > first or range[1] < first) continue;
+        if (block) |inner| if (range[1] - range[0] >= inner[1] - inner[0]) continue;
+        block = range;
+    }
+    const inner = block orelse return false;
+    return inner[0] <= at and at <= inner[1];
 }
 
 /// The string a literal node holds; null for any other expression.
@@ -1012,6 +1065,68 @@ test "the modules a build exports are read from its literal addModule calls, and
     try std.testing.expectEqualStrings("pkg", modules[1].name);
     try std.testing.expectEqualStrings("src/pkg.zig", modules[1].root);
     try std.testing.expectEqualStrings("src/extra.zig", modules[2].root);
-    try std.testing.expectEqual(@as(?[]const Module, null), try declaredModules(a, "pub fn build(b: *@import(\"std\").Build) void {\n    const name = \"pkg\";\n    _ = b.addModule(name, .{ .root_source_file = b.path(\"src/pkg.zig\") });\n}\n"));
     try std.testing.expectEqual(@as(?[]const Module, null), try declaredModules(a, "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", .{ .root_source_file = root(b) });\n}\n"));
+}
+
+test "an addModule's name or options held in a constant in scope are read through it; a parameter, a variable or another function's constant is not" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // uplink 0.10.2's shape: each module's options a typed constant of the function that adds it,
+    // beside a constant of the same name in another function that it must not be read from.
+    const modules = (try declaredModules(a,
+        \\const std = @import("std");
+        \\const prefix = "pkg";
+        \\pub fn build(b: *std.Build) void {
+        \\    const wire_options: std.Build.Module.CreateOptions = .{
+        \\        .root_source_file = b.path("src/wire.zig"),
+        \\        .target = b.graph.host,
+        \\    };
+        \\    const wire = b.addModule(prefix ++ ".wire", wire_options);
+        \\    _ = wire;
+        \\    if (b.option(bool, "client", "") orelse true) {
+        \\        const name = "pkg";
+        \\        const root_options: std.Build.Module.CreateOptions = .{ .root_source_file = b.path("src/pkg.zig") };
+        \\        _ = b.addModule(name, root_options);
+        \\    }
+        \\}
+        \\fn other(b: *std.Build) void {
+        \\    const root_options: std.Build.Module.CreateOptions = .{ .root_source_file = b.path("src/wrong.zig") };
+        \\    _ = root_options;
+        \\}
+    ));
+    // `prefix ++ ".wire"` is computed, so this build is not read; take that call out and it is.
+    try std.testing.expectEqual(@as(?[]const Module, null), modules);
+    const read = (try declaredModules(a,
+        \\const std = @import("std");
+        \\const wire_name = "pkg.wire";
+        \\pub fn build(b: *std.Build) void {
+        \\    const wire_options: std.Build.Module.CreateOptions = .{
+        \\        .root_source_file = b.path("src/wire.zig"),
+        \\        .target = b.graph.host,
+        \\    };
+        \\    _ = b.addModule(wire_name, wire_options);
+        \\    if (b.option(bool, "client", "") orelse true) {
+        \\        const name = "pkg";
+        \\        const root_options: std.Build.Module.CreateOptions = .{ .root_source_file = b.path("src/pkg.zig") };
+        \\        _ = b.addModule(name, root_options);
+        \\    }
+        \\}
+        \\fn other(b: *std.Build) void {
+        \\    const root_options: std.Build.Module.CreateOptions = .{ .root_source_file = b.path("src/wrong.zig") };
+        \\    _ = root_options;
+        \\}
+    )).?;
+    try std.testing.expectEqual(@as(usize, 3), read.len);
+    try std.testing.expectEqualStrings("pkg.wire", read[1].name);
+    try std.testing.expectEqualStrings("src/wire.zig", read[1].root);
+    try std.testing.expectEqualStrings("pkg", read[2].name);
+    try std.testing.expectEqualStrings("src/pkg.zig", read[2].root);
+    // Options from outside the function, or in a variable that may change before the call, are
+    // known only by running the build.
+    for ([_][]const u8{
+        "pub fn build(b: *@import(\"std\").Build) void {\n    add(b, .{ .root_source_file = b.path(\"src/pkg.zig\") });\n}\nfn add(b: *@import(\"std\").Build, options: @import(\"std\").Build.Module.CreateOptions) void {\n    _ = b.addModule(\"pkg\", options);\n}\n",
+        "pub fn build(b: *@import(\"std\").Build) void {\n    var options: @import(\"std\").Build.Module.CreateOptions = .{ .root_source_file = b.path(\"src/pkg.zig\") };\n    options.root_source_file = b.path(\"src/other.zig\");\n    _ = b.addModule(\"pkg\", options);\n}\n",
+        "pub fn build(b: *@import(\"std\").Build) void {\n    _ = b.addModule(\"pkg\", options);\n}\nfn other(b: *@import(\"std\").Build) void {\n    const options: @import(\"std\").Build.Module.CreateOptions = .{ .root_source_file = b.path(\"src/pkg.zig\") };\n    _ = options;\n}\n",
+    }) |text| try std.testing.expectEqual(@as(?[]const Module, null), try declaredModules(a, text));
 }

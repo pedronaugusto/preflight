@@ -1,6 +1,7 @@
 //! Running the commands a gate is made of: once, or retried with backoff
 //! where the network may fail them.
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
 
 /// Runs `argv` in the context's directory and fails unless it exits 0. Its output is this
@@ -16,8 +17,11 @@ pub fn succeeded(result: std.process.RunResult) bool {
     return result.term == .exited and result.term.exited == 0;
 }
 
+/// A wait between attempts, in whole seconds.
+const Wait = aegis.units.Duration(.second, u32);
+
 /// The waits between attempts: 5 s, then 10 s.
-pub const backoff = [_]std.Io.Duration{ .fromSeconds(5), .fromSeconds(10) };
+pub const backoff = [_]std.Io.Duration{ Wait.literal("5s").toIoDuration(), Wait.literal("10s").toIoDuration() };
 
 /// Runs `argv` up to three times, waiting `backoff` on `c.io` between
 /// attempts, for a fetch the network may fail.

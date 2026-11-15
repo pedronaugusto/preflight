@@ -189,7 +189,7 @@ fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, 
     try removeRun(io, gpa, run_path);
     switch (try ending) {
         .exited => |code| return code,
-        .signal => |sig| raiseOwn(sig),
+        .signal => |sig| raiseOwn(io, sig),
     }
 }
 
@@ -210,7 +210,7 @@ fn freebsdRun(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Enviro
     try removeRun(io, gpa, run_path);
     switch (ending) {
         .exited => |code| return code,
-        .signal => |sig| if (freebsd.linuxSignal(sig)) |linux_sig| raiseOwn(linux_sig) else std.process.exit(@intCast(128 + sig)), // safe: classify takes no signal above freebsd.max_signal, 126, so 128 + it is a byte, as a shell's exit code for it
+        .signal => |sig| if (freebsd.linuxSignal(sig)) |linux_sig| raiseOwn(io, linux_sig) else std.process.exit(@intCast(128 + sig)), // safe: classify takes no signal above freebsd.max_signal, 126, so 128 + it is a byte, as a shell's exit code for it
     }
 }
 
@@ -335,7 +335,7 @@ fn installIn(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []co
             try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: apk could not install {s} (exit {d})\n", .{ try std.mem.join(gpa, " ", packages), code }));
             return code;
         },
-        .signal => |sig| raiseOwn(sig),
+        .signal => |sig| raiseOwn(io, sig),
     }
 
     const out = try cwd.createFile(io, paths.out, .{});
@@ -480,17 +480,42 @@ pub fn parseStatus(text: []const u8) ?Ending {
 
 /// Ends this process by the signal that ended the program, so that the build sees
 /// the crash as its own. Linux numbers signals alike on every architecture it runs
-/// tests on; a host that numbers them otherwise ends with 128 + the number.
-fn raiseOwn(sig: u32) noreturn {
+/// tests on; a host that numbers them otherwise ends with 128 + the number. A
+/// program the machine's kernel killed or stopped (SIGKILL, SIGSTOP: no process
+/// sets their action, and std's sigaction asserts it is not asked to) ends this
+/// one with 128 + the signal, the signal named on standard error.
+fn raiseOwn(io: Io, sig: u32) noreturn {
     const code: u8 = @truncate(128 +% sig); // safe: an exit code is a byte, as a shell takes 128 + a signal
     if (builtin.target.os.tag == .linux and sig > 0 and sig < 32) {
         const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: checked to lie between 1 and 31 above
+        if (uncatchable(signal)) |name| {
+            var line: [128]u8 = undefined;
+            const text = std.fmt.bufPrint(&line, "preflight-vm: the program ended by SIG{s} ({d}), which no process can catch: exit {d}\n", .{ name, sig, code }) catch std.process.exit(code);
+            Io.File.stderr().writeStreamingAll(io, text) catch std.process.exit(code);
+            std.process.exit(code);
+        }
         var default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
         std.posix.sigaction(signal, &default, null);
         // A raise that fails ends the process as one whose signal is ignored does below.
         std.posix.raise(signal) catch std.process.exit(code);
     }
     std.process.exit(code);
+}
+
+/// The name of `signal` when no process can set its action or catch it.
+fn uncatchable(signal: std.posix.SIG) ?[]const u8 {
+    return switch (signal) {
+        .KILL => "KILL",
+        .STOP => "STOP",
+        else => null,
+    };
+}
+
+test "a program the kernel killed or stopped ends the run by its exit code, its signal named, and sets no action for it" {
+    try std.testing.expectEqualStrings("KILL", uncatchable(.KILL).?);
+    try std.testing.expectEqualStrings("STOP", uncatchable(.STOP).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(.ABRT));
+    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(.SEGV));
 }
 
 test "a path is left out when it is one of those named or lies under one" {

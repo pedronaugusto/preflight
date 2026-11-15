@@ -6,8 +6,9 @@
 //!
 //! The machine's root is the ISO 9660 image, which cannot be written, so the
 //! program's root is the machine's memory (tmpfs at /preflight/root): FreeBSD's
-//! system directories in it read-only (nullfs), its own devices and /tmp, and the
-//! host's directories at their host paths, bound from the host's 9p share. That share
+//! system directories in it read-only (nullfs), its own devices (devfs, with every
+//! open descriptor at /dev/fd: fdescfs) and /tmp, and the host's directories at their
+//! host paths, bound from the host's 9p share. That share
 //! and the run's are mounted outside the program's root (/preflight/host and
 //! /preflight/run), which the first process takes as its root once it is made, so
 //! the program reaches only the directories bound into it.
@@ -48,7 +49,7 @@ const wait_step: aegis.units.Duration(.millisecond, u32) = .literal("10ms");
 
 /// The modules the machine's devices and file systems need; GENERIC builds in the rest,
 /// tmpfs among them.
-const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "nullfs" };
+const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "nullfs", "fdescfs" };
 /// The directories of FreeBSD's system the program sees, read-only: every other path
 /// in its root is the machine's memory, so that the host's directories can be made
 /// at their paths.
@@ -186,7 +187,9 @@ fn interfaceName(comptime text: []const u8) [16]u8 {
 
 /// The program's root in the machine's memory, at `new_root` (a directory of the
 /// ISO image): the system's directories read-only, its own devices, a /tmp and a
-/// /var/tmp anyone writes.
+/// /var/tmp anyone writes. Its /dev/fd is fdescfs, as a FreeBSD system's fstab
+/// mounts it: devfs alone lists descriptors 0, 1 and 2 there, so a test that reads
+/// a process's open descriptors from it (conduit's close_all) saw no others.
 fn makeRoot(io: Io, gpa: std.mem.Allocator) !void {
     try mount("tmpfs", new_root, "tmpfs", &.{.{ "mode", "755" }}, 0);
     const dir = Io.Dir.cwd();
@@ -197,6 +200,7 @@ fn makeRoot(io: Io, gpa: std.mem.Allocator) !void {
     }
     for ([_][:0]const u8{ new_root ++ "/dev", new_root ++ "/tmp", new_root ++ "/var/tmp" }) |path| try dir.createDirPath(io, path);
     try mount("devfs", new_root ++ "/dev", "devfs", &.{}, 0);
+    try mount("fdescfs", new_root ++ "/dev/fd", "fdescfs", &.{}, 0);
     try mount("tmpfs", new_root ++ "/tmp", "tmpfs", &.{.{ "mode", "1777" }}, 0);
     try mount("tmpfs", new_root ++ "/var/tmp", "tmpfs", &.{.{ "mode", "1777" }}, 0);
 }

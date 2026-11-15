@@ -32,6 +32,9 @@ const module_mount = "/run/modules";
 const run_mount = "/run/preflight";
 const host_mount = "/run/host";
 const guest_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/// The package's held git, which the build overlays under /usr/local (vm.zig): the
+/// machine's `PREFLIGHT_GIT` when it is there, as the host's job names its own.
+const held_git = "/usr/local/bin/git";
 
 pub fn main(init: std.process.Init) void {
     const io = init.io;
@@ -385,9 +388,13 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
     for (program.environ) |entry| {
         // The machine's own programs and login shell, and its home for the user.
         if (std.mem.startsWith(u8, entry, "PATH=") or std.mem.startsWith(u8, entry, "SHELL=") or std.mem.startsWith(u8, entry, "HOME=")) continue;
+        // The host's held git is a host program: the machine's is its own, if any.
+        if (std.mem.startsWith(u8, entry, "PREFLIGHT_GIT=")) continue;
         try env.append(gpa, entry.ptr);
     }
     try env.append(gpa, guest_path);
+    if (linux.errno(linux.faccessat(linux.AT.FDCWD, held_git, linux.X_OK, 0)) == .SUCCESS)
+        try env.append(gpa, "PREFLIGHT_GIT=" ++ held_git);
     try env.append(gpa, "SHELL=/bin/sh");
     try env.append(gpa, (try gpa.printSentinel("HOME={s}", .{program.home}, 0)).ptr);
     const env_z = try env.toOwnedSliceSentinel(gpa, null);

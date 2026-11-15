@@ -304,6 +304,8 @@ fn launch(gpa: std.mem.Allocator, program: Program, ports: Ports) !Ending {
     for (program.environ) |item| {
         // The machine's own programs and login shell, and its home for the user.
         if (std.mem.startsWith(u8, item, "PATH=") or std.mem.startsWith(u8, item, "SHELL=") or std.mem.startsWith(u8, item, "HOME=")) continue;
+        // The host's held git is a host program, and this machine has none of the package's.
+        if (std.mem.startsWith(u8, item, "PREFLIGHT_GIT=")) continue;
         try env.append(gpa, item.ptr);
     }
     try env.append(gpa, guest_path);

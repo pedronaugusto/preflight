@@ -532,8 +532,9 @@ On Windows the job installs Git for Windows' release over the runner's, its inst
 checked against the hash. Everywhere else `zig build ci-held-git` builds git from the
 tarball with `zig cc` for a target named outright (`aarch64-macos.13.0`,
 `x86_64-linux-gnu.2.31`, `aarch64-linux-gnu.2.31`, `riscv64-linux-musl`), against zlib,
-LibreSSL and curl built from the releases `build.zig.zon` pins by hash, fetched only by a
-build that makes one. No compiler, header or library of the host's enters: the build reads
+LibreSSL and curl built from the releases `build.zig.zon` pins by hash, fetched by any build
+of a package that names a held git (its `zig build` reads them while it configures, whatever
+step it runs) and by no other. No compiler, header or library of the host's enters: the build reads
 what each of its programs links (Mach-O load commands, ELF `DT_NEEDED`) and fails on a
 library that is neither a pinned source nor the platform's base (the SDK's on macOS,
 glibc's on Linux; the riscv64 build is static and links none), and on one named twice. A build is kept in a store

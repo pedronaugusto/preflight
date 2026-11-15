@@ -1,8 +1,8 @@
 //! `ci-held-git`: the held git `ci/workflow.json` names (`git`), which a hosted job's
 //! `preflight prepare` asks for before its tests: Git for Windows' release installed on
 //! Windows, else git built from its release tarball into the store with zig cc and the
-//! sources preflight pins (zlib, LibreSSL, curl), each fetched only by a build that asks for
-//! it. The command (`checks/heldgit.zig`) builds and checks; this passes it the sources.
+//! sources preflight pins (zlib, LibreSSL, curl), fetched by every build of a package that
+//! names a held git, as it configures, and by no other. The command (`checks/heldgit.zig`) builds and checks; this passes it the sources.
 const std = @import("std");
 const configure = @import("configure.zig");
 const Tool = @import("tool.zig").Tool;

@@ -18,22 +18,23 @@
         },
 
         // A package's held git (`git` in ci/workflow.json, src/held.zig): the libraries it is
-        // built with by zig cc, from their releases, fetched only by a build that makes one.
+        // built with by zig cc, from their releases, fetched by every build of a package that
+        // names a held git (as it configures) and by no other.
         .held_git_zlib = .{
             .url = "https://zlib.net/fossils/zlib-1.4.tar.gz",
-            .hash = "N-V-__8AAH8jNwA7ifHRJdWx5n5meIjOQ9mcAFjvxxAwm4-V",
+            .hash = "N-V-__8AAH8jNwDPTrkJ1_Rx__jQMDeVEmuPIIHps-wt3xza",
             .lazy = true,
         },
 
         .held_git_libressl = .{
             .url = "https://cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.1.tar.gz",
-            .hash = "N-V-__8AADBN4gHfLWHDoRWHHg7r9Qz0KhZNJ9zLmiuVT_rn",
+            .hash = "N-V-__8AADBN4gH9JKvGfVRy-_l1AWqXMdYoKyNIC_kQsRms",
             .lazy = true,
         },
 
         .held_git_curl = .{
             .url = "https://curl.se/download/curl-8.23.0.tar.xz",
-            .hash = "N-V-__8AAMjlVwEcWK62Y1lzKj6sh05jXE34tX5QTb_1ROK9",
+            .hash = "N-V-__8AAMjlVwH79yAHsK65VUcPuhOO6BWgpLDvvnlWPLly",
             .lazy = true,
         },
 

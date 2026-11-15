@@ -6,6 +6,7 @@ const std = @import("std");
 const aegis = @import("aegis");
 const glint = @import("glint");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 const fetched = @import("manifest.zig");
 pub const policy = @import("glint/policy.zig");
 pub const assembly = @import("glint/assembly.zig");
@@ -103,7 +104,7 @@ fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const gli
 
 /// The escapes a lint before reported (its `escapes.txt`, kept), each with the rules it covered.
 fn escapeRecord(c: *src.Context, path: []const u8) !?[]const glint.Fix.Escaped {
-    const bytes = aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, c.a, .fromRaw(16 << 20)) catch |err| {
+    const bytes = seam.document(c.io, std.Io.Dir.cwd(), path, c.a, .list) catch |err| {
         c.fail("glint: {s}: the escapes before were not read ({t})", .{ path, err });
         return null;
     };
@@ -133,8 +134,8 @@ fn assertions(c: *src.Context, project: *const glint.Project, report: *const gli
         if (n.functions == 0) continue;
         text.writer.print("| `{s}` | {d} | {d} | {d} |\n", .{ project.at(file.file).input.name, n.functions, n.asserted, n.total() }) catch @panic("OOM");
     }
-    // glint-ignore: Z026 -- a summary that cannot be written leaves the line printed above
-    appendTo(c.*, c.directory(), path, text.written()) catch {};
+    // The summary is a copy for the hosted job: one not written leaves the line printed above.
+    appendTo(c.*, c.directory(), path, text.written()) catch |err| c.report("preflight: assertions: the job's summary {s} was not written ({t})\n", .{ path, err });
 }
 
 fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report, release: bool) void {
@@ -227,7 +228,7 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
 fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendored {
     var out: std.ArrayList(policy.Vendored) = .empty;
     for (chosen.vendored) |entry| {
-        const bytes = aegis.own.readFile(c.io, c.directory(), entry.path, c.a, .fromRaw(64 << 20)) catch |err| {
+        const bytes = seam.document(c.io, c.directory(), entry.path, c.a, .whole) catch |err| {
             c.fail("vendored: {s}: not read ({t})", .{ entry.path, err });
             continue;
         };
@@ -266,8 +267,8 @@ fn ruleName(chosen: policy.Policy, rule: glint.Rule) []const u8 {
 /// when the run's report holds only the first `printed`.
 fn summarizeSites(c: *src.Context, sites: []const u8) void {
     const dir = c.directory();
-    // glint-ignore: Z026 -- a summary that cannot be written leaves the file, named in the report
-    if (c.summary_path) |path| appendTo(c.*, dir, path, c.a.print("<details><summary>glint: every incomplete site</summary>\n\n```\n{s}```\n</details>\n", .{sites}) catch @panic("OOM")) catch {};
+    // The summary is a copy for the hosted job: one not written leaves the list's file, named in the report.
+    if (c.summary_path) |path| appendTo(c.*, dir, path, c.a.print("<details><summary>glint: every incomplete site</summary>\n\n```\n{s}```\n</details>\n", .{sites}) catch @panic("OOM")) catch |err| c.report("preflight: glint: the job's summary {s} was not written ({t})\n", .{ path, err });
 }
 
 /// Writes a list in the package's cache, whole, empty when the run has none: its path,
@@ -298,11 +299,6 @@ fn appendTo(c: src.Context, dir: std.Io.Dir, path: []const u8, text: []const u8)
     writer.pos = (try file.stat(c.io)).size;
     try writer.interface.writeAll(text);
     try writer.interface.flush();
-}
-
-/// The one-based line of a byte offset.
-fn lineAt(bytes: []const u8, offset: u32) usize {
-    return 1 + std.mem.count(u8, bytes[0..@min(offset, bytes.len)], "\n");
 }
 
 fn parsed(a: std.mem.Allocator, text: []const u8) !src.Value {

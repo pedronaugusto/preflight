@@ -280,7 +280,11 @@ pub fn builtOn(c: *src.Context) ![]const []const u8 {
         const path = try c.a.dupe(u8, entry.path);
         std.mem.replaceScalar(u8, path, '\\', '/');
         const directory = std.Io.Dir.path.dirnamePosix(path) orelse continue;
-        const pins = gantry.manifests.parse(c.a, "build.zig.zon", try c.read(path)) catch continue;
+        const pins = gantry.manifests.parse(c.a, "build.zig.zon", try c.read(path)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // `nested` reports a manifest that does not parse; what it pins is not read here.
+            error.InvalidManifest, error.InvalidEscape, error.UnsupportedManifest => continue,
+        };
         for (pins) |pin| {
             if (pin.origin != .local) continue;
             const target = try std.Io.Dir.path.resolveAllocPosix(c.a, &.{ directory, pin.source });

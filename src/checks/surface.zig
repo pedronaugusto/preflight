@@ -59,8 +59,11 @@ pub fn list(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, modules: [
             const spelling = importSpelling(&tree, node) orelse continue;
             // A relative file, or a module's root wherever the build binds the name in this file.
             const targets: []const []const u8 = if (std.mem.endsWith(u8, spelling, ".zig"))
-                // glint-ignore: Z026 -- a file outside the package is another package's, no part of its surface
-                &.{normalize(a, std.Io.Dir.path.dirname(paths.items[next]) orelse "", spelling) catch continue}
+                &.{normalize(a, std.Io.Dir.path.dirname(paths.items[next]) orelse "", spelling) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    // A file outside the package is another package's, no part of its surface.
+                    error.OutsidePackage => continue,
+                }}
             else if (!moduleName(spelling)) continue else switch (try (map orelse mapped: {
                 map = try assembly.ModuleMap.init(a, try reached(a, try builds.get(), modules), Own(@TypeOf(cached)){ .a = a, .gpa = gpa, .reader = cached });
                 break :mapped map.?;
@@ -487,8 +490,8 @@ const Walk = struct {
         return w.project.handle(file);
     }
 
-    fn tree(w: *Walk, file: glint.Project.FileId) *const Ast {
-        return w.project.syntax(w.handle(file)) catch unreachable; // unreachable: file indexes come from the project
+    fn tree(w: *Walk, file: glint.Project.FileId) glint.Project.QueryError!*const Ast {
+        return w.project.syntax(w.handle(file));
     }
 
     fn add(w: *Walk, comptime fmt: []const u8, args: anytype) !void {
@@ -496,8 +499,8 @@ const Walk = struct {
     }
 
     /// The scope glint's model gives the container at `node` (the file's own at the root).
-    fn scopeOf(w: *Walk, file: glint.Project.FileId, node: Ast.Node.Index) ?glint.Scope.Id {
-        const scopes = w.project.scopes(w.handle(file)) catch unreachable; // unreachable: the handle is the project's own
+    fn scopeOf(w: *Walk, file: glint.Project.FileId, node: Ast.Node.Index) glint.Project.QueryError!?glint.Scope.Id {
+        const scopes = try w.project.scopes(w.handle(file));
         if (node == .root) return scopes[0].id;
         for (scopes) |scope| if (scope.kind == .container and scope.node == node) return scope.id;
         return null;
@@ -513,9 +516,9 @@ const Walk = struct {
             const entry = try w.names.getOrPut(w.a, .{ .file = file, .node = node });
             if (!entry.found_existing or prefix.len < entry.value_ptr.len or (prefix.len == entry.value_ptr.len and std.mem.lessThan(u8, prefix, entry.value_ptr.*))) entry.value_ptr.* = prefix;
         }
-        const t = w.tree(file);
-        const scope = w.scopeOf(file, node) orelse return;
-        const declarations = w.project.declarations(w.handle(file)) catch unreachable; // unreachable: file indexes come from the project
+        const t = try w.tree(file);
+        const scope = (try w.scopeOf(file, node)) orelse return;
+        const declarations = try w.project.declarations(w.handle(file));
         var required: std.ArrayList([]const u8) = .empty;
         // An enum's tags and a union's fields, `_` left out: what an exhaustive switch names.
         var named: std.ArrayList([]const u8) = .empty;
@@ -578,7 +581,7 @@ const Walk = struct {
     /// type) type { return struct { ... }; }`), under `path`: what each of its `return`s
     /// gives, as far as the project shows it.
     fn made(w: *Walk, path: []const u8, file: glint.Project.FileId, proto_node: Ast.Node.Index, depth: usize) !void {
-        const t = w.tree(file);
+        const t = try w.tree(file);
         var buffer: [1]Ast.Node.Index = undefined;
         const proto = t.fullFnProto(&buffer, proto_node) orelse return;
         const returned = proto.ast.return_type.unwrap() orelse return;
@@ -601,7 +604,7 @@ const Walk = struct {
     }
 
     fn variable(w: *Walk, prefix: []const u8, file: glint.Project.FileId, node: Ast.Node.Index, depth: usize) !void {
-        const t = w.tree(file);
+        const t = try w.tree(file);
         const decl = t.fullVarDecl(node) orelse return;
         const name = t.tokenSlice(decl.ast.mut_token + 1);
         const path = try w.a.print("{s}.{s}", .{ prefix, name });
@@ -631,7 +634,7 @@ const Walk = struct {
                 return w.head(place);
             },
             .expression => |place| {
-                const t = w.tree(place.file);
+                const t = try w.tree(place.file);
                 if (t.fullIf(place.node)) |choice| if (choice.ast.else_expr.unwrap()) |otherwise| {
                     const then = try w.describe(path, place.file, choice.ast.then_expr, depth + 1);
                     const other = try w.describe(path, place.file, otherwise, depth + 1);
@@ -646,7 +649,7 @@ const Walk = struct {
     /// `extern union`; a file is a struct.
     fn head(w: *Walk, place: Place) ![]const u8 {
         if (place.node == .root) return "struct";
-        const t = w.tree(place.file);
+        const t = try w.tree(place.file);
         var last = t.firstToken(place.node);
         while (t.tokenTag(last + 1) != .l_brace) last += 1;
         return w.span(place.file, t, t.firstToken(place.node), last, &.{}, 0);
@@ -665,7 +668,7 @@ const Walk = struct {
     fn resolve(w: *Walk, file: glint.Project.FileId, node: Ast.Node.Index, depth: usize) Resolved {
         const here: Resolved = .{ .expression = .{ .file = file, .node = node } };
         if (depth > max_depth) return here;
-        const t = w.tree(file);
+        const t = w.tree(file) catch return here;
         if (isContainer(t, node)) return .{ .container = .{ .file = file, .node = node } };
         switch (t.nodeTag(node)) {
             .builtin_call_two, .builtin_call_two_comma => {
@@ -689,7 +692,7 @@ const Walk = struct {
                     .container => |place| place,
                     .expression => return here,
                 };
-                const scope = w.scopeOf(outer.file, outer.node) orelse return here;
+                const scope = (w.scopeOf(outer.file, outer.node) catch return here) orelse return here;
                 const scopes = w.project.scopes(w.handle(outer.file)) catch return here;
                 const index = scopes[@backingInt(scope)].names.get(t.tokenSlice(member)) orelse return here;
                 return w.declared(outer.file, index, depth) orelse here;
@@ -703,7 +706,7 @@ const Walk = struct {
         const declarations = w.project.declarations(w.handle(file)) catch return null;
         const declaration = declarations[@backingInt(index)];
         if (declaration.kind != .variable) return null;
-        const t = w.tree(file);
+        const t = w.tree(file) catch return null;
         const decl = t.fullVarDecl(declaration.node) orelse return null;
         if (decl.ast.type_node != .none) return null;
         const init = decl.ast.init_node.unwrap() orelse return null;
@@ -760,7 +763,7 @@ const Walk = struct {
         return switch (w.resolve(file, node, depth)) {
             .container => |place| w.names.get(place) orelse spelled,
             .expression => |place| if (place.file == file and place.node == node) spelled else {
-                const target = w.tree(place.file);
+                const target = try w.tree(place.file);
                 return w.span(place.file, target, target.firstToken(place.node), target.lastToken(place.node), &.{}, depth + 1);
             },
         };

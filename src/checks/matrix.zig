@@ -43,6 +43,24 @@ fn minutes(config: src.Value, name: []const u8) !usize {
     return @intCast(value.integer);
 }
 
+/// How much slower than a native runner a kind of job runs its tests: preflight's measure, the
+/// same for every package, so a package names one budget per kind (`test_job_timeout` and the
+/// rest) and a slower job takes it scaled, never a budget of its own.
+const Slowdown = enum(u8) {
+    native = 1,
+    /// A FreeBSD guest under KVM: native code, with its boot and the host's files over 9p.
+    kvm = 2,
+    /// LLVM's ThreadSanitizer, which instruments every memory access and synchronization.
+    tsan = 3,
+    /// A riscv64 guest under QEMU's TCG, which translates every instruction.
+    qemu = 4,
+};
+
+/// `name`'s minutes for a job that runs `slowdown` times slower, at most GitHub's 360.
+fn scaled(config: src.Value, name: []const u8, slowdown: Slowdown) !usize {
+    return @min(360, try minutes(config, name) * @backingInt(slowdown));
+}
+
 pub const Job = struct {
     os: []const u8,
     name: []const u8,
@@ -242,7 +260,7 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
                 .args = try a.print("-Dci-lint=false -Dci-bench-smoke=false{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
                 .shard = shard,
                 .setup = true,
-                .job_timeout = try minutes(config, "test_job_timeout"),
+                .job_timeout = try scaled(config, "test_job_timeout", if (std.mem.eql(u8, step, "hardened-tsan")) .tsan else .native),
             };
             job.cache_key = try key(a, job);
             try jobs.append(a, job);
@@ -482,7 +500,7 @@ fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Jo
             .shard = shard,
             .setup = true,
             .machine = .riscv64,
-            .job_timeout = try minutes(config, "test_job_timeout"),
+            .job_timeout = try scaled(config, "test_job_timeout", .qemu),
         });
     }
 }
@@ -535,7 +553,7 @@ fn freebsdJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
             .shard = shard,
             .setup = true,
             .machine = .freebsd,
-            .job_timeout = try minutes(config, "test_job_timeout"),
+            .job_timeout = try scaled(config, "test_job_timeout", .kvm),
         });
     }
 }
@@ -1349,6 +1367,24 @@ test "no cross job is dealt more compiling than its cross_job_timeout leaves, an
     try std.testing.expectError(error.CrossJobPastTimeout, crossJobs(a, fixed, &jobs, try src.items(src.get(fixed, "targets")), false));
 }
 
+test "an emulated or instrumented job takes its kind's budget times preflight's slowdown for it, at most 360" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":30,\"policy\":\"family\"}", .{})).value;
+    var seen: usize = 0;
+    for (try plan(a, config, .release)) |job| {
+        const want: ?usize = if (std.mem.startsWith(u8, job.name, "hardened-tsan")) 90 else if (std.mem.startsWith(u8, job.name, "test (riscv64-linux")) 120 else if (std.mem.startsWith(u8, job.name, "test (x86_64-freebsd")) 60 else if (std.mem.startsWith(u8, job.name, "test (ubuntu-latest, Debug)")) 30 else null;
+        if (want) |minutes_wanted| {
+            try std.testing.expectEqual(minutes_wanted, job.job_timeout);
+            seen += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), seen);
+    const long = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":120,\"policy\":\"family\"}", .{})).value;
+    for (try plan(a, long, .release)) |job| if (std.mem.startsWith(u8, job.name, "test (riscv64-linux")) try std.testing.expectEqual(@as(usize, 360), job.job_timeout);
+}
+
 test "every compile and link job of the release tier takes cross_job_timeout, none Job's default" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1554,7 +1590,8 @@ test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitiz
     for (try plan(a, config, .release)) |job| for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, &counts) |step, *count| {
         if (!std.mem.eql(u8, job.step, step)) continue;
         count.* += 1;
-        try std.testing.expectEqual(@as(usize, 45), job.job_timeout);
+        // ThreadSanitizer's job runs the suite instrumented: preflight's slowdown for it.
+        try std.testing.expectEqual(@as(usize, if (std.mem.eql(u8, step, "hardened-tsan")) 135 else 45), job.job_timeout);
         if (std.mem.eql(u8, step, "hardened-fuzz")) try std.testing.expectEqualStrings("", job.shard) else try std.testing.expect(job.shard.len > 0);
     };
     try std.testing.expectEqual([_]usize{ 2, 1, 8 }, counts);
@@ -1563,7 +1600,7 @@ test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitiz
     var tsan: usize = 0;
     for (try plan(a, plain, .release)) |job| if (std.mem.eql(u8, job.step, "hardened-tsan")) {
         tsan += 1;
-        try std.testing.expectEqual(@as(usize, 20), job.job_timeout);
+        try std.testing.expectEqual(@as(usize, 60), job.job_timeout);
     };
     try std.testing.expectEqual(@as(usize, 3), tsan);
     try std.testing.expectError(error.InvalidShardCount, validate(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"tsan\":0}}", .{})).value));

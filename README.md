@@ -638,7 +638,10 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 - `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`:
   minutes, 20 by default: the test jobs', the Windows test jobs', the source checks' and
   the compile jobs' (the cross compiles, the release tier's ReleaseSmall compiles and the
-  links), so every job a plan makes takes its budget from one of them.
+  links), so every job a plan makes takes its budget from one of them. A job that runs slower
+  than a native runner takes its kind's budget times preflight's measure of how much slower,
+  the same for every package, at most 360: the ThreadSanitizer job 3, the FreeBSD machine under
+  KVM 2, the riscv64 machine under QEMU 4.
 - `fuzz_minutes`: the release tier's fuzz job's minutes, 15 by default, at most 330; 0 for no
   fuzz job. A dispatched fuzz run (tier `fuzz`) can give its own.
 

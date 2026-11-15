@@ -12,11 +12,12 @@ const Tool = @import("tool.zig").Tool;
 /// declares none has no `fuzz` step, as it has no properties, and no `ci-fuzz`, so the planner
 /// gives it no fuzz job. `tool` is preflight's program, which spends the fuzz job's budget.
 pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, step: []const u8, named: bool, tool: Tool) void {
-    const dep = (configure.declared(b, "shakedown", .{ .target = b.graph.host, .optimize = .safe }) catch return) orelse {
+    if (!configure.declares(b, "shakedown")) {
         if (!named) return;
         tests.dependOn(&b.addFail("addCi .fuzz_step: the fuzzer is shakedown's, as are the properties it fuzzes; declare shakedown: a dev dependency with bay, else a lazy one").step);
         return;
-    };
+    }
+    const dep = configure.lazy(b, "shakedown", .{ .target = b.graph.host, .optimize = .safe }) orelse return;
     const fuzzer = dep.artifact("shakedown-fuzz");
     const run = b.addRunArtifact(fuzzer);
     run.addArg("--package");

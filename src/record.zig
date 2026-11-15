@@ -191,12 +191,12 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         });
     }
     if (state.ours.contains(artifact)) {
-        // Not `enableProtocolMode`, though 0.17 deprecates this for it:
-        // Zig 0.17's test runner reads its cache directory and seed from
-        // argv, which only `.zig_test` passes, and a `.protocol` run cannot
-        // fuzz. std's own `addRunArtifact` still sets `.zig_test`.
-        // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; this needs .zig_test
-        if (run.stdio != .zig_test) run.enableTestRunnerMode();
+        // `.zig_test`, set here as std's own `addRunArtifact` sets it, not
+        // `enableProtocolMode`'s `.protocol`, for which 0.17 deprecates
+        // `enableTestRunnerMode`: Zig 0.17's test runner reads its cache
+        // directory and seed from argv, which only `.zig_test` passes, and a
+        // `.protocol` run cannot fuzz.
+        run.stdio = .zig_test;
     }
     // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     if (options.test_timeout.toNanoseconds() != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});

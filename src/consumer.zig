@@ -5,6 +5,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const configure = @import("configure.zig");
+const input = @import("build/input.zig");
 const plain = @import("plain.zig");
 const nested = @import("nested.zig");
 const zon_text = @import("zon.zig");
@@ -125,7 +126,7 @@ const Shape = struct {
 /// is generated under the cache, so the package keeps no consumer files of its own.
 pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     if (b.pkg_hash.len != 0) return;
-    const pkg = (b.dependencyLazy("preflight", .{}) catch return).builder;
+    const pkg = (configure.lazy(b, "preflight", .{}) orelse return).builder;
     const consumer = b.addExecutable(.{ .name = "preflight-consumer", .root_module = b.createModule(.{
         .root_source_file = pkg.path("src/consumer.zig"),
         .target = b.graph.host,
@@ -260,7 +261,7 @@ pub fn main(init: std.process.Init) !void {
     const root = try cwd.realPathFileAlloc(io, args[4], a);
     const in_place = try std.Io.Dir.path.relativeAlloc(a, directory, null, directory, root);
     std.mem.replaceScalar(u8, in_place, '\\', '/');
-    const text = try aegis.own.readFile(io, cwd, args[5], a, .fromRaw(16 * 1024 * 1024));
+    const text = try input.file(io, cwd, args[5], a, .program);
     var modules: std.ArrayList([]const u8) = .empty;
     var dependency_options: std.ArrayList(Option) = .empty;
     for (args[8..]) |arg| {
@@ -271,8 +272,8 @@ pub fn main(init: std.process.Init) !void {
     // a third at two revisions link both, which bay's one selection hides.
     var global: OwnedDir = .init(try cwd.openDir(io, args[7], .{}));
     defer global.deinit(io);
-    const package_manifest = try aegis.own.readFile(io, cwd, try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" }), a, .fromRaw(1024 * 1024));
-    const found = try plain.conflicts(a, io, package_manifest, shape.package, .{ .global = global.borrow().*, .zig = args[1] });
+    const package_manifest = try input.file(io, cwd, try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" }), a, .manifest);
+    const found = try plain.conflicts(a, io, package_manifest, shape.package, .{ .global = .of(global.borrow().*), .zig = args[1] });
     if (found.len != 0) {
         var buffer: [1024]u8 = undefined;
         var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);

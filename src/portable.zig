@@ -114,8 +114,9 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, checker: 
         run.setCwd(if (command.scratch) b.tmpPath() else package.path(command.cwd orelse "."));
         if (command.zig_lib_place) |place| run.step.dependOn(writeZigLib(b, place));
         run.has_side_effects = true;
-        // glint-ignore: Z011 -- the deprecation names enableProtocolMode, which sets .protocol; the recorded command needs .zig_test
-        if (command.test_runner) run.enableTestRunnerMode();
+        // The recorded command needs `.zig_test`, which `addRunArtifact` sets; the deprecated
+        // `enableTestRunnerMode` set it, and `enableProtocolMode`, named for it, sets `.protocol`.
+        if (command.test_runner) run.stdio = .zig_test;
         run.step.dependOn(&executable.step);
         execute.dependOn(&run.step);
         if (command.test_runner) replayed.append(b.allocator, &run.step) catch @panic("OOM");

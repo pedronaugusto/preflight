@@ -1,8 +1,8 @@
 //! Repository files the build script reads, declared to Zig's configuration
 //! cache so that creating, changing or deleting one configures the build again.
 const std = @import("std");
-const aegis = @import("aegis");
 const family = @import("family.zig");
+const input = @import("build/input.zig");
 
 /// Whether `sub_path`, relative to the build root, exists. The root and each
 /// directory on the way are declared, so the answer cannot go stale.
@@ -20,13 +20,13 @@ pub fn exists(b: *std.Build, sub_path: []const u8) bool {
 }
 
 /// The contents of the file at `sub_path`, relative to the build root, at most `limit` bytes, or
-/// null when it does not exist. Read through aegis's whole-file read, which aegis's build.zig
-/// gives a build script.
+/// null when it does not exist. Read in the build helper's input seam, through aegis's whole-file
+/// read, which aegis's build.zig gives a build script.
 pub fn read(b: *std.Build, sub_path: []const u8, limit: u64) ?[]const u8 {
     if (!exists(b, sub_path)) return null;
     b.dependOnFileContents(b.path(sub_path));
     const path = b.root.join(b.allocator, sub_path) catch @panic("OOM");
-    return aegis.own.readFile(b.graph.io, path.root_dir.handle, path.sub_path, b.allocator, .fromRaw(limit)) catch |err|
+    return input.file(b.graph.io, path.root_dir.handle, path.sub_path, b.allocator, .{ .configured = limit }) catch |err|
         std.debug.panic("{s}: {t}", .{ sub_path, err });
 }
 
@@ -78,10 +78,26 @@ test "a build's outputs, fetched packages and hidden directories are not sources
 /// what it builds for them is the package's own, so they never hold a second
 /// copy of a package beside the package's.
 pub fn declared(b: *std.Build, name: []const u8, args: anytype) error{LazyDependencyNeeded}!?*std.Build.Dependency {
+    if (!declares(b, name)) return null;
+    return try b.dependencyLazy(name, args);
+}
+
+/// Whether the package under test `b` declares a dependency named `name`.
+pub fn declares(b: *std.Build, name: []const u8) bool {
     for (b.available_deps) |dependency| {
-        if (std.mem.eql(u8, dependency[0], name)) return try b.dependencyLazy(name, args);
+        if (std.mem.eql(u8, dependency[0], name)) return true;
     }
-    return null;
+    return false;
+}
+
+/// The dependency `name` of `b`, or null while it is lazy and not fetched yet. Zig fetches it
+/// once this configure pass ends and configures again, so a caller given null ends its part of
+/// the pass, as Zig's own `lazyDependency` caller does.
+pub fn lazy(b: *std.Build, name: []const u8, args: anytype) ?*std.Build.Dependency {
+    return b.dependencyLazy(name, args) catch |err| switch (err) {
+        // Marked for the fetch: the next pass has it.
+        error.LazyDependencyNeeded => null,
+    };
 }
 
 /// bay, when `b` is a development build: the one that runs it (`BAY`), else the

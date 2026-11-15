@@ -120,7 +120,7 @@ pub fn addCi(b: *std.Build, package: *std.Build, config: Config) void {
     defer configure.refuseTaken(b, package, config.tests);
     // The gate reruns its tests with its own options, which only `b` declares.
     if (config.tests.owner != b) config.tests.dependOn(&b.addFail("addCi .tests: the tests the gate runs are a step of the build that calls addCi; with bay, define them in dev").step);
-    const tools = b.dependencyLazy("preflight", .{}) catch return;
+    const tools = configure.lazy(b, "preflight", .{}) orelse return;
     steps.install(b, package, tools.builder, config);
 }
 
@@ -225,7 +225,7 @@ const Steps = struct {
     /// `package` is the package checked; `pkg` is the preflight whose sources and tools the gate runs.
     fn install(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
-        const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = host, .optimize = .debug, .zig = true }) catch return;
+        const gantry_dep = configure.lazy(pkg, "gantry", .{ .target = host, .optimize = .debug, .zig = true }) orelse return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
         const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
         // The structure program reads its configuration through preflight's own aegis.
@@ -288,58 +288,7 @@ const Steps = struct {
         // After the projection read `check`, so it never reads its own objects back.
         check.dependOn(steps.objects);
         if (config.portable_tests) portable.add(b, package, config.tests, executable, counted.names);
-        const plan = executable.run(b);
-        plan.addArg("plan");
-        plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
-        plan.addPassthruArgs();
-        plan.setCwd(package.path("."));
-        configure.claim(b, "plan", "Plan a tier's matrices for the hosted caller").dependOn(&plan.step);
-        // The caller made again for the pins: bay runs it after a train moves them.
-        const generate = executable.run(b);
-        generate.addArgs(&.{ "generate", "--zig-exe", b.graph.zig_exe });
-        generate.addPassthruArgs();
-        generate.setCwd(package.path("."));
-        generate.has_side_effects = true;
-        configure.claim(b, "generate", "Make the caller workflow again for the package's pins and ci/workflow.json, where it is (.github/workflows/ci.yml when there is none)").dependOn(&generate.step);
-        const facts = executable.run(b);
-        facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
-        configurationOptions(b, facts);
-        facts.addPassthruArgs();
-        facts.setCwd(package.path("."));
-        facts.has_side_effects = true;
-        configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
-        const surface = executable.run(b);
-        // The build's modules, configured by this Zig, are what a facade is read through.
-        surface.addArgs(&.{ "surface", "--zig-exe", b.graph.zig_exe });
-        exported(b, package, surface);
-        surface.addPassthruArgs();
-        surface.setCwd(package.path("."));
-        surface.has_side_effects = true;
-        configure.claim(b, "surface", "List the public declarations of the modules the package exports; -- --since <tag> lists what changed").dependOn(&surface.step);
-        // The gate a release runs (`bay release`): what a release needs beside its hosted
-        // release run, in seconds. Releasing is bay's; preflight verifies.
-        const gate = executable.run(b);
-        gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
-        exported(b, package, gate);
-        gate.addPassthruArgs();
-        gate.setCwd(package.path("."));
-        gate.has_side_effects = true;
-        configure.claim(b, "gate", "What a release needs beside its hosted release run: the caller, the version and the CHANGELOG").dependOn(&gate.step);
-        const cache = executable.run(b);
-        cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
-        cache.setCwd(package.path("."));
-        configure.claim(b, "cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
-        const docs = executable.run(b);
-        docs.addArgs(&.{ "docs", "--config", config.config, "--zig-exe", b.graph.zig_exe });
-        docs.addPassthruArgs();
-        docs.setCwd(package.path("."));
-        configure.claim(b, "docs", "Render a configured documentation region").dependOn(&docs.step);
-        const deprecations = executable.run(b);
-        deprecations.addArgs(&.{ "deprecations", "--std" });
-        deprecations.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
-        deprecations.addPassthruArgs();
-        deprecations.setCwd(package.path("."));
-        configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
+        addCommandSteps(b, package, executable, config);
         // The steps CI runs tests under, whose runs make a file a test root: `ci` holds the
         // tests, and the fuzzer and the hardened profile run the steps they name.
         var test_steps: std.ArrayList([]const u8) = .empty;
@@ -426,7 +375,7 @@ const Steps = struct {
         fixing.addPassthruArgs();
         fixing.setCwd(package.path("."));
         fixing.has_side_effects = true;
-        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (the aegis pack's old escapes and names rewritten as glint-ignore), then report what is left").dependOn(&fixing.step);
+        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (the aegis pack's old escapes and names rewritten in glint's suppression form), then report what is left").dependOn(&fixing.step);
         // The documented snippets alone: a lint that fails, or refuses its configuration,
         // never hides a broken one, and the hosted plan runs them as a job of their own.
         const snippets = executable.run(b);
@@ -438,6 +387,64 @@ const Steps = struct {
     }
 };
 
+/// The steps that run one of the checks program's commands over `package`: the caller's plan
+/// and its regeneration, the build's facts and public surface, the release gate, the cache's
+/// pruning, the documentation regions and the deprecation codemod.
+fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config: Config) void {
+    const plan = executable.run(b);
+    plan.addArg("plan");
+    plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+    plan.addPassthruArgs();
+    plan.setCwd(package.path("."));
+    configure.claim(b, "plan", "Plan a tier's matrices for the hosted caller").dependOn(&plan.step);
+    // The caller made again for the pins: bay runs it after a train moves them.
+    const generate = executable.run(b);
+    generate.addArgs(&.{ "generate", "--zig-exe", b.graph.zig_exe });
+    generate.addPassthruArgs();
+    generate.setCwd(package.path("."));
+    generate.has_side_effects = true;
+    configure.claim(b, "generate", "Make the caller workflow again for the package's pins and ci/workflow.json, where it is (.github/workflows/ci.yml when there is none)").dependOn(&generate.step);
+    const facts = executable.run(b);
+    facts.addArgs(&.{ "facts", "--zig-exe", b.graph.zig_exe });
+    configurationOptions(b, facts);
+    facts.addPassthruArgs();
+    facts.setCwd(package.path("."));
+    facts.has_side_effects = true;
+    configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
+    const surface = executable.run(b);
+    // The build's modules, configured by this Zig, are what a facade is read through.
+    surface.addArgs(&.{ "surface", "--zig-exe", b.graph.zig_exe });
+    exported(b, package, surface);
+    surface.addPassthruArgs();
+    surface.setCwd(package.path("."));
+    surface.has_side_effects = true;
+    configure.claim(b, "surface", "List the public declarations of the modules the package exports; -- --since <tag> lists what changed").dependOn(&surface.step);
+    // The gate a release runs (`bay release`): what a release needs beside its hosted
+    // release run, in seconds. Releasing is bay's; preflight verifies.
+    const gate = executable.run(b);
+    gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
+    exported(b, package, gate);
+    gate.addPassthruArgs();
+    gate.setCwd(package.path("."));
+    gate.has_side_effects = true;
+    configure.claim(b, "gate", "What a release needs beside its hosted release run: the caller, the version and the CHANGELOG").dependOn(&gate.step);
+    const cache = executable.run(b);
+    cache.addArgs(&.{ "cache", "--path", ".zig-cache" });
+    cache.setCwd(package.path("."));
+    configure.claim(b, "cache", "Prune compiled products while preserving packages and tools").dependOn(&cache.step);
+    const docs = executable.run(b);
+    docs.addArgs(&.{ "docs", "--config", config.config, "--zig-exe", b.graph.zig_exe });
+    docs.addPassthruArgs();
+    docs.setCwd(package.path("."));
+    configure.claim(b, "docs", "Render a configured documentation region").dependOn(&docs.step);
+    const deprecations = executable.run(b);
+    deprecations.addArgs(&.{ "deprecations", "--std" });
+    deprecations.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+    deprecations.addPassthruArgs();
+    deprecations.setCwd(package.path("."));
+    configure.claim(b, "deprecations", "List what this Zig release deprecated, rewritten; -- --write applies it").dependOn(&deprecations.step);
+}
+
 /// The source checks' steps, and the runs of the lint that run the configuration's
 /// `extra_checks`: the lint, the lint less glint's, and `fix`'s.
 const Lint = struct { checks: [2]*std.Build.Step, runs: [3]*std.Build.Step };
@@ -448,8 +455,11 @@ const Lint = struct { checks: [2]*std.Build.Step, runs: [3]*std.Build.Step };
 /// (cloak's `zig build test`, the step its tests and its lint both sit under).
 fn refuseReentry(b: *std.Build, package: *std.Build, config_path: []const u8, runs: []const *std.Build.Step) void {
     const text = configure.read(package, config_path, 64 * 1024 * 1024) orelse return;
-    // A configuration that is no JSON object is the lint's to refuse, by name.
-    const config = std.json.parseFromSliceLeaky(std.json.Value, b.allocator, text, .{}) catch return;
+    const config = std.json.parseFromSliceLeaky(std.json.Value, b.allocator, text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => @panic("OOM"),
+        // A configuration that is no JSON object is the lint's to refuse, by name.
+        else => return,
+    };
     if (config != .object) return;
     const commands = config.object.get("extra_checks") orelse return;
     if (commands != .array) return;

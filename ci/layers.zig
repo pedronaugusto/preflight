@@ -6,9 +6,9 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "supported Zig versions", .patterns = &.{"src/zig_version.zig"} },
     .{ .name = "family policy", .patterns = &.{"src/family.zig"} },
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig" } },
-    .{ .name = "test runner", .patterns = &.{"src/runner.zig"} },
+    .{ .name = "test runner", .patterns = &.{ "src/runner/input.zig", "src/runner.zig" } },
     .{ .name = "test machine", .patterns = &.{ "src/vm/input.zig", "src/vm/cpio.zig", "src/vm/iso9660.zig", "src/vm/ustar.zig", "src/vm/guest.zig", "src/vm/freebsd/guest.zig", "src/vm/freebsd.zig", "src/vm/host.zig" } },
-    .{ .name = "build helper", .patterns = &.{ "src/vm.zig", "src/held.zig", "src/configure.zig", "src/bench.zig", "src/fuzz.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/plain.zig", "src/owned.zig", "src/nested.zig", "src/library_path.zig", "src/tool.zig", "src/build.zig" } },
+    .{ .name = "build helper", .patterns = &.{ "src/build/input.zig", "src/vm.zig", "src/held.zig", "src/configure.zig", "src/bench.zig", "src/fuzz.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/plain.zig", "src/owned.zig", "src/nested.zig", "src/library_path.zig", "src/tool.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{ "src/checks/*.zig", "src/checks/glint/*.zig" } },
     .{ .name = "deprecation codemod", .patterns = &.{ "src/deprecations/*.zig", "src/deprecations.zig" } },
     .{ .name = "configuration validation", .patterns = &.{"src/facts/*.zig"} },
@@ -16,7 +16,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "structure rules", .patterns = &.{"src/structure/check.zig"} },
     .{ .name = "command line", .patterns = &.{"src/cli.zig"} },
     .{ .name = "check index", .patterns = &.{"src/checks.zig"} },
-    .{ .name = "structure runner", .patterns = &.{ "src/structure.zig", "src/layers_default.zig" } },
+    .{ .name = "structure runner", .patterns = &.{ "src/structure/input.zig", "src/structure.zig", "src/layers_default.zig" } },
     .{ .name = "commands", .patterns = &.{"src/main.zig"} },
 };
 pub const required = [_][]const u8{ "src/main.zig", "src/structure.zig", "src/build.zig", "src/runner.zig", "src/order.zig", "src/timings.zig", "src/watchdog.zig" };

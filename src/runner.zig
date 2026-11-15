@@ -9,14 +9,12 @@ const order_module = @import("preflight_order");
 const options = @import("preflight_runner_options");
 const bound = @import("preflight_watchdog");
 const inbound = @import("runner/input.zig");
-// glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
 /// The options module carries its own copy of the enum.
 const log_level = @field(std.log.Level, @tagName(options.test_log_level));
-// glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 var errors: std.atomic.Value(usize) = .init(0);
 var order: []usize = &.{};
 /// The job's deadline, `PREFLIGHT_DEADLINE`, which a hosted job's runner sets.
@@ -217,13 +215,11 @@ const Fuzzing = if (builtin.fuzz) struct {
 
     export fn runner_futex_wait(ptr: *const u32, expected: u32) bool {
         @disableInstrumentation();
-        // glint-ignore: A007 -- boundary: the fuzzer's own ABI: std's fuzzer waits on a word of its own through this export, which its runner gives
         return threaded.io().futexWait(u32, ptr, expected) == error.Canceled;
     }
 
     export fn runner_futex_wake(ptr: *const u32, waiters: u32) void {
         @disableInstrumentation();
-        // glint-ignore: A007 -- boundary: the fuzzer's own ABI: std's fuzzer wakes a word of its own through this export, which its runner gives
         threaded.io().futexWake(u32, ptr, waiters);
     }
 
@@ -278,7 +274,6 @@ fn report(comptime format: []const u8, args: anytype) void {
 /// which test and phase it was in.
 const Watchdog = struct {
     name: []const u8,
-    // glint-ignore: A007 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     phase: std.atomic.Value(Phase) = .init(.body),
     done: std.Io.Event = .unset,
     thread: ?std.Thread = null,
@@ -307,7 +302,6 @@ const Watchdog = struct {
         var line: [512]u8 = undefined;
         var text: std.Io.Writer = .fixed(&line);
         const name = watchdog.name;
-        // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
         const phase = watchdog.phase.load(.acquire);
         // A line longer than the buffer is written as far as it fits, and ends marked cut.
@@ -317,8 +311,8 @@ const Watchdog = struct {
             .over_limit => text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch cut(&text),
         }
         var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
-        // glint-ignore: Z026 -- the process ends next either way; a lost line cannot be reported anywhere else
-        stderr.interface.writeAll(text.buffered()) catch {};
+        // The process ends next either way: a line lost on stderr has nowhere else to go.
+        stderr.interface.writeAll(text.buffered()) catch std.process.exit(1);
         std.process.exit(1);
     }
 
@@ -640,9 +634,7 @@ const Supervisor = struct {
     /// A pipe whose write end only the supervisor holds; the tests' process
     /// holds the read end, which ends when the supervisor does.
     const Lifeline = struct {
-        // glint-ignore: A015 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         read: std.Io.File,
-        // glint-ignore: A015 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         write: std.Io.File,
 
         /// Both ends close on exec and are not inherited; the spawn passes the
@@ -929,9 +921,7 @@ const Supervisor = struct {
 /// their stdout, where what they and their processes write reaches the build
 /// as a test's output.
 const Protocol = struct {
-    // glint-ignore: A015 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     in: std.Io.File,
-    // glint-ignore: A015 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     out: std.Io.File,
 
     fn claim() !Protocol {
@@ -1066,7 +1056,6 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
             fuzz_called = false;
         }
     }
-    // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
     try recorder.record(io, test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{
@@ -1107,7 +1096,6 @@ fn terminal(init: std.process.Init.Minimal) !void {
         const leaks = testing.allocator_instance.deinit();
         Backing.end();
         watchdog.phase.store(.reporting, .release);
-        // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         try recorder.record(io, test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
     }

@@ -117,8 +117,11 @@ const Watch = struct {
 
     /// Sends `signal` to every process of the group: the session, its build, the build's fuzzers.
     fn end(group: std.posix.pid_t, signal: std.posix.SIG) void {
-        // glint-ignore: Z026 -- a group already gone has nothing left to end, and the session's own wait says how it ended
-        std.posix.kill(-group, signal) catch {};
+        std.posix.kill(-group, signal) catch |err| switch (err) {
+            // A group already gone has nothing left to end: the session's own wait says how it ended.
+            error.ProcessNotFound => {},
+            else => |e| std.log.err("ci-fuzz: the session's process group {d} was not sent SIG{t}: {t}", .{ group, signal, e }),
+        };
     }
 };
 

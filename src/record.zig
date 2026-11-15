@@ -43,10 +43,8 @@ pub const TestTimeout = union(enum) {
             .default => default_limit,
             .bound => |custom| bound: {
                 if (std.mem.trim(u8, custom.reason, " ").len == 0) break :bound null;
-                // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
                 const ns = @max(custom.limit.toNanoseconds(), 1);
                 if (ns > std.math.maxInt(u64)) break :bound null;
-                // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
                 break :bound .fromNanoseconds(ns);
             },
             .off => |reason| if (std.mem.trim(u8, reason, " ").len == 0) null else .zero,
@@ -175,7 +173,6 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         // Another run of an artifact given the runner already: it takes it as the first did.
     } else if (artifact.test_runner != null) {
         // That runner neither arms the watchdog nor reads the shard.
-        // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         if (options.test_timeout.toNanoseconds() != 0) refuse("{s}: a test runner of its own arms no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
         const unsharded = context.checker.run(b);
         unsharded.addArgs(&.{ "unsharded", artifact.name });
@@ -198,7 +195,6 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         // `.protocol` run cannot fuzz.
         run.stdio = .zig_test;
     }
-    // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
     if (options.test_timeout.toNanoseconds() != 0 and singleThreaded(artifact)) refuse("{s}: a single-threaded build has no watchdog; set .test_timeout = .{{ .off = reason }}", b, run, .{artifact.name});
 }
 

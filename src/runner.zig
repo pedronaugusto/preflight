@@ -8,6 +8,7 @@ const timings = @import("preflight_timings");
 const order_module = @import("preflight_order");
 const options = @import("preflight_runner_options");
 const bound = @import("preflight_watchdog");
+const inbound = @import("runner/input.zig");
 // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
 const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
@@ -114,7 +115,7 @@ const Fuzzing = if (builtin.fuzz) struct {
         }
         abi.fuzzer_init(.fromSlice(cache_dir orelse return error.MissingCacheDir));
         const protocol = try Protocol.claim();
-        reader = protocol.in.readerStreaming(io, &input);
+        reader = inbound.protocol(io, protocol.in, &input);
         writer = protocol.out.writerStreaming(io, &output);
         server = .{ .in = &reader.interface, .out = &writer.interface };
         try server.serveStringMessage(.zig_version, builtin.zig_version_string);
@@ -208,8 +209,10 @@ const Fuzzing = if (builtin.fuzz) struct {
 
     export fn runner_stop_input_poller() void {
         @disableInstrumentation();
+        // The poller ends only when canceled, or when reading fails, which ends the process:
+        // held in every build, as the fuzzer's next step relies on it.
         const ended = poller.cancel(threaded.io());
-        std.debug.assert(ended == error.Canceled);
+        if (ended != error.Canceled) fail("preflight test runner, fuzzing: the build's inputs stopped before their poller was canceled\n", .{});
     }
 
     export fn runner_futex_wait(ptr: *const u32, expected: u32) bool {
@@ -263,7 +266,11 @@ fn report(comptime format: []const u8, args: anytype) void {
     var buffer: [64]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer);
     defer std.debug.unlockStderr();
-    stderr.file_writer.interface.print(format, args) catch return;
+    // stderr is where the runner reports: a line lost there is counted as an error logged, so
+    // the test it was about fails rather than passing with what it said lost.
+    stderr.file_writer.interface.print(format, args) catch {
+        _ = errors.fetchAdd(1, .monotonic);
+    };
 }
 
 /// Ends the process when one test, its Io teardown included, outlasts the
@@ -303,18 +310,24 @@ const Watchdog = struct {
         // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
         const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
         const phase = watchdog.phase.load(.acquire);
+        // A line longer than the buffer is written as far as it fits, and ends marked cut.
         switch (bound.ending(wait)) {
-            // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
-            .not_started => text.print("\npreflight: watchdog: {s} did not start: the job's time had run out before its turn; seed {d}\n", .{ name, testing.random_seed }) catch {},
-            // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
-            .job_ran_out => text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {d} ms into it; phase {t}; seed {d}\n", .{ name, wait.limit.toMilliseconds(), phase, testing.random_seed }) catch {},
-            // glint-ignore: Z026 -- a line longer than the buffer is cut, and what fits is still written
-            .over_limit => text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch {},
+            .not_started => text.print("\npreflight: watchdog: {s} did not start: the job's time had run out before its turn; seed {d}\n", .{ name, testing.random_seed }) catch cut(&text),
+            .job_ran_out => text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {f} into it; phase {t}; seed {d}\n", .{ name, wait.limit, phase, testing.random_seed }) catch cut(&text),
+            .over_limit => text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch cut(&text),
         }
         var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         // glint-ignore: Z026 -- the process ends next either way; a lost line cannot be reported anywhere else
         stderr.interface.writeAll(text.buffered()) catch {};
         std.process.exit(1);
+    }
+
+    /// Ends a line that filled `text`, a fixed buffer, with a mark that it was cut.
+    fn cut(text: *std.Io.Writer) void {
+        const mark = "...\n";
+        const at = @min(text.end, text.buffer.len - mark.len);
+        @memcpy(text.buffer[at..][0..mark.len], mark);
+        text.end = at + mark.len;
     }
 };
 
@@ -386,7 +399,7 @@ const FuzzNames = struct {
             error.PathAlreadyExists => {},
             else => |e| return e,
         }
-        const holder = try dir.readFile(io, key, buffer);
+        const holder = try inbound.file(io, dir, key, buffer);
         if (std.mem.eql(u8, holder, own)) return null;
         const space = std.mem.findScalar(u8, holder, ' ') orelse return "another test binary";
         return holder[space + 1 ..];
@@ -431,7 +444,7 @@ fn serve(init: std.process.Init.Minimal) !void {
     var input: [4096]u8 = undefined;
     var output: [4096]u8 = undefined;
     const protocol = try Protocol.claim();
-    var reader = protocol.in.readerStreaming(io, &input);
+    var reader = inbound.protocol(io, protocol.in, &input);
     var writer = protocol.out.writerStreaming(io, &output);
     var server: std.zig.Server = .{ .in = &reader.interface, .out = &writer.interface };
     try server.serveStringMessage(.zig_version, builtin.zig_version_string);
@@ -587,8 +600,11 @@ const Supervisor = struct {
                     .SUCCESS => {},
                     else => return,
                 }
-                // glint-ignore: Z026 -- a cancel only shortens the wait between two signals
-                sio.sleep(.fromMilliseconds(10), .awake) catch {};
+                // A cancel only shortens the waits between signals: the tree is still ended,
+                // and the cancel is armed again for the caller's next cancelation point.
+                sio.sleep(.fromMilliseconds(10), .awake) catch |err| switch (err) {
+                    error.Canceled => sio.recancel(),
+                };
             }
         }
 
@@ -671,8 +687,13 @@ const Supervisor = struct {
     fn awaitEnd(end: std.Io.File) void {
         var byte: [1]u8 = undefined;
         // Nothing is ever written: a read returns when the write end closes.
-        // glint-ignore: Z026 -- an ending, an error or a byte all mean the lifeline is done
-        _ = end.readStreaming(io, &.{&byte}) catch {};
+        if (inbound.chunk(io, end, &byte)) |_| {
+            // A byte, which nothing writes, still means the lifeline is done.
+        } else |err| switch (err) {
+            error.EndOfStream => {},
+            // A read that failed leaves the supervisor unheard: ended on as if it were gone.
+            else => |e| report("preflight test runner: the lifeline failed ({t}): ending the tests as their supervisor would\n", .{e}),
+        }
         // The supervisor is gone and cannot end the tree: this process leads
         // its group, and ends with every process in it. On Windows the job
         // did when the supervisor's handle to it closed.
@@ -690,11 +711,12 @@ const Supervisor = struct {
     /// follows is never canceled.
     fn pump(sio: std.Io, from: std.Io.File, to: std.Io.File, quiet: std.Io.Timeout) !Pumped {
         var buffer: [4096]u8 = @splat(0);
+        const data: [1][]u8 = .{&buffer};
         var storage: [1]std.Io.Operation.Storage = undefined;
         var batch: std.Io.Batch = .init(&storage);
         defer batch.cancel(sio);
         while (true) {
-            batch.addAt(0, .{ .file_read_streaming = .{ .file = from, .data = &.{&buffer} } });
+            batch.addAt(0, inbound.streaming(from, &data));
             var stop: ?Pumped = null;
             batch.awaitConcurrent(sio, quiet) catch |err| switch (err) {
                 error.Timeout => stop = .quiet,
@@ -721,8 +743,7 @@ const Supervisor = struct {
         var buffer: [1024]u8 = undefined;
         var writer = to.writerStreaming(sio, &buffer);
         const w = &writer.interface;
-        // glint-ignore: A011 -- design: std alone, as the test runner and build module every package compiles (aegis's own too) must be
-        try w.print("\npreflight: the tests' process ended, and processes it started still hold its output {d} ms later:\n", .{release.toMilliseconds()});
+        try w.print("\npreflight: the tests' process ended, and processes it started still hold its output {f} later:\n", .{release});
         switch (builtin.target.os.tag) {
             .linux => try listHolders(sio, output, w),
             .macos => try Darwin.listHolders(output, w),
@@ -738,26 +759,47 @@ const Supervisor = struct {
         var proc = try std.Io.Dir.openDirAbsolute(sio, "/proc", .{ .iterate = true });
         defer proc.close(sio);
         var processes = proc.iterate();
+        var own_number: [16]u8 = undefined;
+        const own_pid = try std.mem.print(&own_number, "{d}", .{std.os.linux.getpid()});
         while (try processes.next(sio)) |process| {
-            const pid = std.fmt.parseUnsigned(u32, process.name, 10) catch continue;
-            if (pid == std.os.linux.getpid()) continue;
+            // A process's entry is named by its number; the others (self, net) are no process.
+            const pid = process.name;
+            if (pid.len == 0 or std.mem.findNone(u8, pid, "0123456789") != null) continue;
+            if (std.mem.eql(u8, pid, own_pid)) continue;
             var path: [64]u8 = undefined;
-            // A process that ended since the listing has no descriptors left to read.
-            var fds = proc.openDir(sio, try std.mem.print(&path, "{d}/fd", .{pid}), .{ .iterate = true }) catch continue;
+            var fds = proc.openDir(sio, try std.mem.print(&path, "{s}/fd", .{pid}), .{ .iterate = true }) catch |err| switch (err) {
+                // A process that ended since the listing has no descriptors left to read, and
+                // another user's are not this one's to read.
+                error.FileNotFound, error.AccessDenied, error.PermissionDenied => continue,
+                error.Canceled => |e| return e,
+                else => |e| {
+                    try w.print("  pid {s}: its descriptors unread: {t}\n", .{ pid, e });
+                    continue;
+                },
+            };
             defer fds.close(sio);
             var descriptors = fds.iterate();
             const holds = while (descriptors.next(sio) catch null) |fd| {
                 var target: [64]u8 = @splat(0);
-                const len = fds.readLink(sio, fd.name, &target) catch continue;
-                if (std.mem.eql(u8, target[0..len], pipe)) break true;
+                const named = inbound.link(sio, fds, fd.name, &target) catch |err| switch (err) {
+                    // A descriptor closed since the listing names nothing, and one whose
+                    // target outgrows the buffer is no pipe: a pipe's name fits it.
+                    error.FileNotFound, error.NameTooLong => continue,
+                    error.Canceled => |e| return e,
+                    else => |e| {
+                        try w.print("  pid {s}: descriptor {s} unread: {t}\n", .{ pid, fd.name, e });
+                        continue;
+                    },
+                };
+                if (std.mem.eql(u8, named, pipe)) break true;
             } else false;
             if (!holds) continue;
             var line: [512]u8 = @splat(0);
-            const command = proc.readFile(sio, try std.mem.print(&path, "{d}/cmdline", .{pid}), &line) catch line[0..0];
+            const command = inbound.file(sio, proc, try std.mem.print(&path, "{s}/cmdline", .{pid}), &line) catch line[0..0];
             for (command) |*byte| if (byte.* == 0) {
                 byte.* = ' ';
             };
-            try w.print("  pid {d}: {s}\n", .{ pid, std.mem.trimEnd(u8, command, " ") });
+            try w.print("  pid {s}: {s}\n", .{ pid, std.mem.trimEnd(u8, command, " ") });
         }
     }
 
@@ -864,8 +906,8 @@ const Supervisor = struct {
                 var only = std.posix.sigemptyset();
                 std.posix.sigaddset(&only, sig);
                 std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &only, null);
-                // glint-ignore: Z026 -- a signal this process cannot raise ends it below, with the shell's code for that signal
-                std.posix.raise(sig) catch {};
+                // A signal this process cannot raise ends it below, with the shell's code for that signal.
+                std.posix.raise(sig) catch |err| report("preflight test runner: the tests' signal {t} not raised here ({t}): exiting with the shell's code for it\n", .{ sig, err });
                 std.process.exit(128 +| @as(u8, @truncate(@backingInt(sig))));
             },
             .stopped, .unknown => std.process.exit(1),

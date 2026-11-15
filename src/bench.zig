@@ -1,8 +1,8 @@
 //! Build and execution wiring. Measuring and comparison belong to shakedown.
 const std = @import("std");
-const aegis = @import("aegis");
 const configure = @import("configure.zig");
 const family = @import("family.zig");
+const input = @import("build/input.zig");
 
 /// A repository's benchmark programs and their package modules.
 pub const Bench = struct {
@@ -108,25 +108,34 @@ fn provenance(b: *std.Build) []const u8 {
     const cwd = b.root.toString(b.allocator) catch @panic("OOM");
     // A linked worktree keeps its HEAD in its own git directory and the branches in the
     // repository's common one.
-    const git = std.process.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir" }, .cwd = .{ .path = cwd }, .stdout_limit = .limited(32768), .stderr_limit = .limited(32768) }) catch return "source-archive";
+    const git = input.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir" }, .cwd = .{ .path = cwd } }, .line) catch return "source-archive";
     if (git.term != .exited or git.term.exited != 0) return "source-archive";
     var lines = std.mem.tokenizeAny(u8, git.stdout, "\r\n");
     const directory = lines.next() orelse return "source-archive";
     const common = lines.next() orelse return "source-archive";
     const head_path = b.fmt("{s}/HEAD", .{directory});
     b.dependOnFileContents(.{ .cwd_relative = head_path });
-    const head = aegis.own.readFile(b.graph.io, std.Io.Dir.cwd(), head_path, b.allocator, .fromRaw(32768)) catch return "source-archive";
+    const head = input.file(b.graph.io, std.Io.Dir.cwd(), head_path, b.allocator, .head) catch return "source-archive";
     // A nested package still records its repository's real commit. Both loose
     // and packed refs are configuration inputs, rather than cached git guesses.
     if (std.mem.startsWith(u8, head, "ref: ")) {
         const ref = b.fmt("{s}/{s}", .{ common, std.mem.trim(u8, head[5..], "\r\n") });
         b.dependOnDirectoryMetadata(.{ .cwd_relative = std.Io.Dir.path.dirname(ref).? });
-        if (std.Io.Dir.cwd().access(b.graph.io, ref, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = ref }) else |_| {}
+        if (std.Io.Dir.cwd().access(b.graph.io, ref, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = ref }) else |err| switch (err) {
+            // A ref git keeps packed has no file of its own: packed-refs, below, holds it.
+            error.FileNotFound => {},
+            // A ref the build cannot declare could change unseen, and the commit with it.
+            else => return "source-archive",
+        }
     }
     b.dependOnDirectoryMetadata(.{ .cwd_relative = directory });
     const packed_path = b.fmt("{s}/packed-refs", .{common});
-    if (std.Io.Dir.cwd().access(b.graph.io, packed_path, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = packed_path }) else |_| {}
-    const result = std.process.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "HEAD" }, .cwd = .{ .path = cwd }, .stdout_limit = .limited(1024), .stderr_limit = .limited(32768) }) catch return "source-archive";
+    if (std.Io.Dir.cwd().access(b.graph.io, packed_path, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = packed_path }) else |err| switch (err) {
+        // A repository whose refs are all loose has none.
+        error.FileNotFound => {},
+        else => return "source-archive",
+    }
+    const result = input.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "HEAD" }, .cwd = .{ .path = cwd } }, .line) catch return "source-archive";
     if (result.term != .exited or result.term.exited != 0) return "source-archive";
     return std.mem.trim(u8, result.stdout, "\r\n");
 }
@@ -136,12 +145,8 @@ fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.P
     // A benchmark measures through the shakedown the package declares, the one its tests
     // link; `imports` gives the package's own modules, and one way is the only way.
     if (mod.import_table.contains("shakedown")) std.debug.panic("bench.imports gives `shakedown`: preflight adds the one the package declares; leave it out of the list", .{});
-    if (measured) {
-        const found = configure.declared(b, "shakedown", .{ .target = bench.target, .optimize = optimize });
-        // unreachable: `add` fetched it first, and says `measured` only for a package that declares it
-        const dep = (found catch unreachable).?;
-        mod.addImport("shakedown", dep.module("shakedown"));
-    }
+    // `add` says `measured` only for a package that declares shakedown, and fetched it first.
+    if (measured) mod.addImport("shakedown", b.dependency("shakedown", .{ .target = bench.target, .optimize = optimize }).module("shakedown"));
     const metadata = b.addOptions();
     metadata.addOption([]const u8, "commit", commit);
     const root = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, package.root.toString(b.allocator) catch @panic("OOM"), b.allocator) catch @panic("benchmark root unavailable");

@@ -5,8 +5,8 @@
 //! nested build's sources, and the package may be the root or a dependency, as in a development
 //! build. The build runs this file as a program to assemble and run the nested build.
 const std = @import("std");
-const aegis = @import("aegis");
 const configure = @import("configure.zig");
+const input = @import("build/input.zig");
 const zon = @import("zon.zig");
 
 /// A package pinned by its source and hash.
@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
     var next: usize = 5;
     while (next < args.len and !std.mem.eql(u8, args[next], "--")) : (next += 1) try copy(io, a, source, target, args[next]);
     if (next == args.len) return error.MissingNestedArguments;
-    const text = try aegis.own.readFile(io, cwd, args[4], a, .fromRaw(1024 * 1024));
+    const text = try input.file(io, cwd, args[4], a, .manifest);
     try target.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try relocate(a, text, nested, out) });
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ args[1], "build" });

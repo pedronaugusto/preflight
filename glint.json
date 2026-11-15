@@ -3,7 +3,7 @@
     {"file": "src/vm/guest.zig", "rules": ["P007"], "reason": "the Linux guest's init: it is the system calls that bring the VM up"},
     {"file": "src/vm/freebsd/guest.zig", "rules": ["P007"], "reason": "the FreeBSD guest's init: it is the system calls that bring the VM up"},
     {"file": "src/runner.zig", "rules": ["P007"], "reason": "the test runner's per-OS layer: the process, pipe and console calls std's checked layer does not give it"},
-    {"file": "src/checks/input.zig", "rules": ["A009"], "reason": "the checks' input seam (and the commands', above them): the files they read (fuzz findings, the held git's programs and installers) and the programs whose output they read, each held to a limit named there; everything else in the checks parses the bytes it hands back"},
+    {"file": "src/checks/input.zig", "rules": ["A009"], "reason": "the checks' input seam (and that of the layers above them: the configured build facts, the deprecation codemod, the commands): the files they read (fuzz findings, the held git's programs and installers, the sources and workflows the lint and the gate read, the configuration a build wrote) and the programs whose output they read, each held to a limit named there; everything else parses the bytes it hands back"},
     {"file": "src/vm/input.zig", "rules": ["A009"], "reason": "the test machine's input seam on its host side: the boot images it reads, each held to a limit named there"}
   ]
 }

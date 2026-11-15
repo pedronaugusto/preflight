@@ -1,7 +1,7 @@
 //! A merge or release run's per-test records refresh the durations the next shards balance by.
 const std = @import("std");
-const aegis = @import("aegis");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 
 /// Seconds per test name, per target column (`windows-Debug`).
 pub const Durations = struct {
@@ -92,7 +92,7 @@ const Records = struct {
     line: usize = 0,
 
     fn open(c: src.Context, dir: std.Io.Dir, root: []const u8, path: []const u8) !Records {
-        const text = try aegis.own.readFile(c.io, dir, path, c.a, .fromRaw(64 * 1024 * 1024));
+        const text = try seam.document(c.io, dir, path, c.a, .whole);
         return .{ .c = c, .root = root, .path = try c.a.dupe(u8, path), .lines = std.mem.splitScalar(u8, text, '\n') };
     }
 

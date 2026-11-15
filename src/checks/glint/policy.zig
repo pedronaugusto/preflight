@@ -4,8 +4,8 @@
 const std = @import("std");
 const gantry = @import("gantry");
 const glint = @import("glint");
-const aegis = @import("aegis");
 const src = @import("../source.zig");
+const seam = @import("../input.zig");
 const family = @import("../../family.zig");
 
 /// Work glint may do on one run. The largest repository preflight checks fits in
@@ -502,7 +502,7 @@ fn nameOf(rule: glint.Rule) []const u8 {
 /// The options the repository's glint.json sets, onto `base`: each key it writes, and none it
 /// leaves out, so preflight's defaults hold where it is silent. No glint.json sets none.
 fn glintOptions(c: *src.Context, base: *glint.Config) !void {
-    const bytes = aegis.own.readFile(c.io, c.directory(), "glint.json", c.a, .fromRaw(1 << 20)) catch |err| switch (err) {
+    const bytes = seam.document(c.io, c.directory(), "glint.json", c.a, .source) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };

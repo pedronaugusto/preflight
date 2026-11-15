@@ -4,9 +4,9 @@
 //! says so. bay releases (`bay release`); preflight only verifies, reading CHANGELOG.md with
 //! bay's own reader of it.
 const std = @import("std");
-const aegis = @import("aegis");
 const changelog = @import("changelog");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 const family = @import("../family.zig");
 const zon = @import("../zon.zig");
 const surface = @import("surface.zig");
@@ -249,7 +249,7 @@ fn listed(a: std.mem.Allocator, lines: []const []const u8) ![]const u8 {
 }
 
 fn git(c: src.Context, argv: []const []const u8) !std.process.RunResult {
-    return std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
+    return seam.runReport(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map }, .text);
 }
 
 fn succeeded(result: std.process.RunResult) bool {
@@ -491,7 +491,7 @@ const Fixture = struct {
     fn git(f: *Fixture, args: []const []const u8) !void {
         const a = f.arena.allocator();
         const argv = try std.mem.concat(a, []const u8, &.{ &.{ "git", "-c", "user.name=Preflight", "-c", "user.email=preflight@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false" }, args });
-        const result = try std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = f.tmp.dir }, .environ_map = &f.env });
+        const result = try seam.runReport(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = f.tmp.dir }, .environ_map = &f.env }, .text);
         if (!succeeded(result)) return error.FixtureGitFailed;
     }
 
@@ -505,7 +505,7 @@ const Fixture = struct {
     }
 
     fn read(f: *Fixture, path: []const u8) ![]const u8 {
-        return aegis.own.readFile(std.testing.io, f.tmp.dir, path, f.arena.allocator(), .fromRaw(1 << 20));
+        return seam.file(std.testing.io, f.tmp.dir, path, f.arena.allocator(), .record);
     }
 
     fn unreleased(f: *Fixture, body: []const u8) !void {

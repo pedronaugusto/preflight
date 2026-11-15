@@ -3,11 +3,11 @@
 //! the build's own configuration, so that a name means what the compiler
 //! will take it to mean.
 const std = @import("std");
-const aegis = @import("aegis");
 const builtin = @import("builtin");
 const glint = @import("glint");
 const configure = @import("../../configure.zig");
 const src = @import("../source.zig");
+const seam = @import("../input.zig");
 const policy_module = @import("policy.zig");
 const manifest = @import("../manifest.zig");
 const Policy = policy_module.Policy;
@@ -15,7 +15,6 @@ const Policy = policy_module.Policy;
 /// Files and bytes one project holds: glint's own bounds.
 const max_files: usize = 4096;
 const max_bytes: usize = 128 * 1024 * 1024;
-const max_file: usize = 16 * 1024 * 1024;
 
 pub const Error = std.mem.Allocator.Error || std.Io.Dir.ReadFileAllocError || glint.Project.InitError || error{ProjectBudgetExceeded};
 
@@ -258,7 +257,7 @@ const Loader = struct {
             entry.value_ptr.* = contents;
             return contents;
         };
-        entry.value_ptr.* = aegis.own.readFile(self.c.io, self.c.directory(), path, self.c.a, .fromRaw(max_file)) catch |err| switch (err) {
+        entry.value_ptr.* = seam.document(self.c.io, self.c.directory(), path, self.c.a, .source) catch |err| switch (err) {
             error.FileNotFound => null,
             else => {
                 _ = self.bytes.remove(path);
@@ -345,7 +344,7 @@ const Loader = struct {
         const entry = try self.manifests.getOrPut(self.c.a, dir);
         if (entry.found_existing) return entry.value_ptr.*;
         const path = try std.Io.Dir.path.join(self.c.a, &.{ dir, "build.zig.zon" });
-        entry.value_ptr.* = if (aegis.own.readFile(self.c.io, self.c.directory(), path, self.c.a, .fromRaw(max_file))) |bytes|
+        entry.value_ptr.* = if (seam.document(self.c.io, self.c.directory(), path, self.c.a, .source)) |bytes|
             try manifest.identity(self.c.a, bytes)
         else |err| switch (err) {
             error.FileNotFound, error.NotDir => null,

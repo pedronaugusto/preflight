@@ -9,6 +9,7 @@
 //! entries (NM, PX, SL). A hard link is a second record of the same extent. Every
 //! date is the epoch, so the same members give the same image.
 const std = @import("std");
+const aegis = @import("aegis");
 
 pub const block = 2048;
 
@@ -340,7 +341,7 @@ fn writeDirectories(a: std.mem.Allocator, out: *std.Io.Writer, nodes: []const No
             at += writeRecord(sector[at..], target.lba, target.size, flags, r.id, su);
         }
         try out.writeAll(&sector);
-        std.debug.assert(written == nodes[d].size / block);
+        aegis.assert.invariant(written == nodes[d].size / block, "a directory's records fill the blocks its layout gave it");
     }
 }
 
@@ -408,8 +409,8 @@ const Flags = enum(u8) { file = 0, directory = 2 };
 /// Writes one directory record at the start of `out` and returns its length.
 fn writeRecord(out: []u8, lba: u32, size: u32, flags: Flags, id: []const u8, su: []const u8) usize {
     const len = 33 + id.len + (1 - id.len % 2) + su.len;
-    std.debug.assert(len <= 255);
-    std.debug.assert(len <= out.len);
+    aegis.assert.invariant(len <= 255, "a directory record's length is a byte");
+    aegis.assert.invariant(len <= out.len, "a directory record fits where it is written");
     @memset(out[0..len], 0);
     out[0] = @intCast(len); // safe: at most 255, asserted
     both32(out[2..10], lba);

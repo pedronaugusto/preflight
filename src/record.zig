@@ -149,7 +149,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         const runner = b.addOptions();
         // The generated options schema is raw u64, validated by TestTimeout.duration and
         // wrapped by the runner.
-        runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds())); // glint-ignore: A011 -- no-danger: validated export range
+        runner.addOption(u64, "test_timeout_ns", @intCast(options.test_timeout.toNanoseconds()));
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         const name = recordName(b, artifact, &state.names);
         state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");

@@ -490,7 +490,7 @@ fn raiseOwn(io: Io, sig: u32) noreturn {
         const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: checked to lie between 1 and 31 above
         if (uncatchable(signal)) |name| {
             var line: [128]u8 = undefined;
-            const text = std.fmt.bufPrint(&line, "preflight-vm: the program ended by SIG{s} ({d}), which no process can catch: exit {d}\n", .{ name, sig, code }) catch std.process.exit(code);
+            const text = std.mem.print(&line, "preflight-vm: the program ended by SIG{s} ({d}), which no process can catch: exit {d}\n", .{ name, sig, code }) catch std.process.exit(code);
             Io.File.stderr().writeStreamingAll(io, text) catch std.process.exit(code);
             std.process.exit(code);
         }

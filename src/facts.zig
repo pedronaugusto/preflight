@@ -3,12 +3,15 @@ const std = @import("std");
 const aegis = @import("aegis");
 const builtin = @import("builtin");
 const src = @import("checks/source.zig");
+const seam = @import("checks/input.zig");
 const zig_version = @import("zig_version.zig");
 pub const configuration = @import("facts/configuration.zig");
 pub const revisions = @import("facts/revisions.zig");
 const C = std.Build.Configuration;
 const Io = std.Io;
 const limit = 64 * 1024 * 1024;
+/// A wait on a program the reader runs, in whole seconds.
+const Seconds = aegis.units.Duration(.second, u32);
 
 /// A configured build, and the package checked in it: the root package, or,
 /// under bay, the root's dependency at the package's own directory, since the
@@ -41,7 +44,7 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
         c.report("preflight: the configured-build reader supports {s}; this one was built with Zig {s}\n", .{ zig_version.supported, builtin.zig_version_string });
         return error.UnsupportedConfigurationVersion;
     };
-    const version = try std.process.run(c.a, c.io, .{ .argv = &.{ zig, "version" }, .stdout_limit = .limited(1024), .stderr_limit = .limited(1024), .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromSeconds(30) } } });
+    const version = try seam.run(c.a, c.io, .{ .argv = &.{ zig, "version" }, .timeout = .{ .duration = .{ .clock = .awake, .raw = Seconds.literal("30s").toIoDuration() } } }, .line);
     try successful(version.term);
     if (!std.mem.eql(u8, std.mem.trim(u8, version.stdout, "\r\n"), builtin.zig_version_string)) return error.UnsupportedCompilerVersion;
     var argv: std.ArrayList([]const u8) = .empty;
@@ -81,7 +84,12 @@ fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) ![]const C.
     var instances: std.ArrayList(C.Package.Index) = .empty;
     for (owners.keys()) |owner| {
         const package = owner.get(config) orelse continue;
-        const path = build_root.realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch continue;
+        const path = build_root.realPathFileAlloc(c.io, package.root_path.slice(config), c.a) catch |err| switch (err) {
+            // A root that is not there (a package not fetched) is not the checked package's,
+            // which resolved as `here`.
+            error.FileNotFound, error.NotDir => continue,
+            else => return err,
+        };
         if (std.mem.eql(u8, path, here)) try instances.append(c.a, owner);
     }
     if (instances.items.len == 0) return error.PackageNotInDevelopmentBuild;
@@ -91,7 +99,7 @@ fn checkedPackage(c: src.Context, bay: []const u8, config: *const C) ![]const C.
 /// The development build's root, as `bay locate --dev` names it. A bay that cannot say,
 /// one from before `locate` among them, fails the read with what it wrote.
 pub fn developmentRoot(c: src.Context, bay: []const u8) ![]const u8 {
-    const located = try std.process.run(c.a, c.io, .{ .argv = &.{ bay, "locate", "--dev" }, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout_limit = .limited(1 << 16), .stderr_limit = .limited(1 << 16) });
+    const located = try seam.run(c.a, c.io, .{ .argv = &.{ bay, "locate", "--dev" }, .cwd = c.childCwd(), .environ_map = c.environ_map }, .line);
     if (located.term != .exited or located.term.exited != 0) {
         c.report("preflight: `{s} locate --dev` failed, and the checked package's root is read from the development build's root it names; a bay with `locate` names it:\n{s}\n", .{ bay, std.mem.trim(u8, located.stderr, "\r\n") });
         return error.BayLocateFailed;
@@ -103,7 +111,7 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdin = .pipe, .stdout = .pipe, .stderr = .pipe });
     var streams: Io.File.MultiReader.Buffer(2) = undefined;
     var multi: Io.File.MultiReader = undefined;
-    multi.init(c.a, c.io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    seam.pipes(&multi, c.a, c.io, streams.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer multi.deinit();
     // The child ends before its readers do: on Windows, deinit waits for every pending read,
     // and a build left waiting for its next message on stdin never ends one. Killing it
@@ -125,7 +133,11 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
             // What the build wrote to stderr says why; it ends after saying so.
             while (multi.fill(4096, protocol_timeout)) |_| {
                 if (multi.reader(1).bufferedLen() > limit) break;
-            } else |_| {}
+            } else |err| switch (err) {
+                // The build ended: what it wrote is all there.
+                error.EndOfStream => {},
+                else => c.report("preflight: the build's error output was not read to its end ({t})\n", .{err}),
+            }
             c.report("preflight: the build failed to configure ({s}):\n{s}\n", .{ try std.mem.join(c.a, " ", argv), multi.reader(1).buffered() });
             return error.BuildConfigurationFailed;
         }
@@ -135,7 +147,7 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         const config_path = try notification(c.a, &reader);
         // A poisoned configuration is deleted at clean exit. Read it while
         // the server is alive; never race a path notification against exit.
-        const bytes = try aegis.own.readFile(c.io, c.directory(), config_path, c.a, .fromRaw(limit));
+        const bytes = try seam.document(c.io, c.directory(), config_path, c.a, .whole);
         const config = try configuration.load(c.a, bytes);
         var buffer: [16]u8 = undefined;
         var writer = child.stdin.?.writerStreaming(c.io, &buffer);
@@ -153,7 +165,7 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         return .{ .config = config, .path = config_path, .bytes = bytes };
     }
 }
-const protocol_timeout: Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(120), .clock = .awake } };
+const protocol_timeout: Io.Timeout = .{ .duration = .{ .raw = Seconds.literal("120s").toIoDuration(), .clock = .awake } };
 /// Reads until `count` bytes of the protocol are there. A build that ends
 /// before it has said what it configured has failed, and what it wrote to
 /// stderr is why: that is what `c` reports.

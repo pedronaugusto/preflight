@@ -60,3 +60,60 @@ test "a read past its limit fails, and one within it is the file's bytes" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big", .data = big });
     try std.testing.expectError(error.StreamTooLong, file(std.testing.io, tmp.dir, "big", std.testing.allocator, .record));
 }
+
+// The package's own files, a header a program here wrote, and what a build prints: the checks'
+// context reads the package it runs on through `packageFile`, the fuzz campaign reads its
+// coverage files' headers through `header`, and the integration suite runs its fixtures'
+// builds through `build`.
+
+/// The most of a package's own file a read takes: its manifest, its configuration, a source or a
+/// document a check reads whole, a sample file a fixture copies. A package's largest is a
+/// generated source, well under this.
+pub const package_file_limit: aegis.units.Bytes(u64) = .fromRaw(64 * 1024 * 1024);
+
+/// The file at `path` under `dir`, one of the package's own, at most `package_file_limit`'s
+/// bytes, owned by the caller.
+pub fn packageFile(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: std.mem.Allocator) aegis.own.ReadFileError![]u8 {
+    return aegis.own.readFile(io, dir, path, gpa, package_file_limit);
+}
+
+/// The first `@sizeOf(T)` bytes of the file `path` under `dir`, as the `T` a program on this
+/// machine laid out there (a fuzzer's coverage header); null when the file holds fewer bytes,
+/// as one its writer is still creating does. Only those bytes are read.
+pub fn header(comptime T: type, io: std.Io, dir: std.Io.Dir, path: []const u8) (std.Io.File.OpenError || std.Io.File.Reader.Error)!?T {
+    const opened = try dir.openFile(io, path, .{});
+    defer opened.close(io);
+    var buffer: [@sizeOf(T)]u8 = undefined;
+    var reader = opened.reader(io, &buffer);
+    const taken = reader.interface.takeStructPointer(T) catch |err| switch (err) {
+        error.EndOfStream => return null,
+        error.ReadFailed => return reader.err.?,
+    };
+    return taken.*;
+}
+
+/// The most of a build's output, and of its error output, a run takes: `zig build` of a step,
+/// `zig fmt`, `git` in a fixture. What the compiler, the tests and the checks print is a few MB
+/// at the most.
+pub const build_output_limit: std.Io.Limit = .limited(16 * 1024 * 1024);
+
+/// `options`' program, a build or a tool run on a package, run to its end, its output and error
+/// output held to `build_output_limit`; one that writes more fails the run
+/// (`error.StreamTooLong`).
+pub fn build(gpa: std.mem.Allocator, io: std.Io, options: std.process.RunOptions) std.process.RunError!std.process.RunResult {
+    var held = options;
+    held.stdout_limit = build_output_limit;
+    held.stderr_limit = build_output_limit;
+    return std.process.run(gpa, io, held);
+}
+
+test "a header is the file's first bytes, and a file shorter than one has none" {
+    const Pair = extern struct { a: u32, b: u32 };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const pair: Pair = .{ .a = 7, .b = 35 };
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "whole", .data = std.mem.asBytes(&pair) });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "partial", .data = "x" });
+    try std.testing.expectEqual(pair, (try header(Pair, std.testing.io, tmp.dir, "whole")).?);
+    try std.testing.expectEqual(@as(?Pair, null), try header(Pair, std.testing.io, tmp.dir, "partial"));
+}

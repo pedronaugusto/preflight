@@ -193,7 +193,7 @@ fn dropRetired(c: *src.Context, path: []const u8, config: *src.Value) !void {
 /// `c` reading and writing from `top`, the repository's top opened.
 fn atTop(c: *src.Context, top: std.Io.Dir) src.Context {
     var at_top = c.*;
-    at_top.dir = top;
+    at_top.dir = .of(top);
     return at_top;
 }
 

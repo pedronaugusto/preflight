@@ -133,7 +133,7 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     var gate = c.*;
     var job_dir: src.OwnedDir = .init(try c.directory().openDir(c.io, directory, .{}));
     defer job_dir.deinit(c.io);
-    gate.dir = job_dir.borrow().*;
+    gate.dir = .of(job_dir.borrow().*);
     // The gate's build is developed with bay or not on its own account (preflight's sample is not).
     gate.bay = if (gate.developedWithBay()) c.bay orelse "bay" else null;
     var linking: std.json.Array = .init(c.a);

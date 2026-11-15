@@ -501,7 +501,7 @@ const Fixture = struct {
     }
 
     fn context(f: *Fixture) src.Context {
-        return .{ .a = f.arena.allocator(), .io = std.testing.io, .dir = f.tmp.dir, .environ_map = &f.env, .held = &f.held };
+        return .{ .a = f.arena.allocator(), .io = std.testing.io, .dir = .of(f.tmp.dir), .environ_map = &f.env, .held = &f.held };
     }
 
     fn read(f: *Fixture, path: []const u8) ![]const u8 {
@@ -686,7 +686,7 @@ test "the newest tag in history is the base whatever the headings say, and a CHA
     var sample = f.context();
     const sample_dir = try f.tmp.dir.openDir(std.testing.io, "sample", .{});
     defer sample_dir.close(std.testing.io);
-    sample.dir = sample_dir;
+    sample.dir = .of(sample_dir);
     try changelogUnbound(&sample, &package_modules);
     try std.testing.expectEqual(@as(usize, 0), sample.errors);
 }
@@ -699,7 +699,7 @@ test "a shallow clone and a failing git are errors, never a surface compared wit
     var shallow = f.context();
     const shallow_dir = try f.tmp.dir.openDir(std.testing.io, "shallow", .{});
     defer shallow_dir.close(std.testing.io);
-    shallow.dir = shallow_dir;
+    shallow.dir = .of(shallow_dir);
     try changelogUnbound(&shallow, &package_modules);
     try std.testing.expectEqual(@as(usize, 1), shallow.errors);
     try std.testing.expect(std.mem.find(u8, f.held.written(), "this clone is shallow") != null);

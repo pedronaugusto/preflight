@@ -571,7 +571,7 @@ test "default selection is what the package ships and the directories a reposito
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     for ([_][]const u8{ "src/a.zig", "src/deep/b.zig", "bench/run.zig", "examples/use.zig", "ci/layers.zig", "conformance/run.zig", "build.zig", "src/note.md", "zig-pkg/dep/x.zig", "src/zig-out/y.zig", ".zig-cache/z.zig", "docs/skip.zig", "bench/zig-pkg/q.zig", "bench/emulator/build.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -587,7 +587,7 @@ test "a directory with a build.zig of its own is a nested build, left out, its m
     // morse's and visor's conformance builds: a build.zig and its sources, the manifest written
     // from the package's at configure time, the emulator's modules bound only there.
     for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/main.zig", "conformance/deep/c.zig", "bench/run.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     for ([_][]const u8{ "{}", "{\"glint_paths\":[\"conformance\"]}" }) |text| {
         const config = try parsed(c.a, text);
         const policy = (try policy_module.parse(&c, config, test_shipped)).?;
@@ -603,7 +603,7 @@ test "a nested build kept beside what ships is its own package, left out; one in
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     for ([_][]const u8{ "src/a.zig", "conformance/build.zig", "conformance/build.zig.zon", "conformance/main.zig", "bench/run.zig", "bench/emulator/build.zig.zon", "bench/emulator/main.zig", "src/vendor/build.zig.zon", "src/vendor/x.zig" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -621,7 +621,7 @@ test "named paths add to what the package ships, never narrow it, and fail when 
     defer tmp.cleanup();
     for ([_][]const u8{ "src/a.zig", "bench/run.zig", "docs/skip.zig", "tools/t.zig", "README.md" }) |path| try write(tmp.dir, path, "pub const x = 1;\n");
     var held: std.Io.Writer.Allocating = .init(arena.allocator());
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir, .held = &held };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir), .held = &held };
     var config = try parsed(c.a, "{\"glint_paths\":[\"./tools/t.zig\"]}");
     var policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -637,7 +637,7 @@ test "named paths add to what the package ships, never narrow it, and fail when 
     // A selection that finds nothing is an error, not a pass over nothing.
     var bare = std.testing.tmpDir(.{});
     defer bare.cleanup();
-    c.dir = bare.dir;
+    c.dir = .of(bare.dir);
     c.errors = 0;
     config = try parsed(c.a, "{}");
     try bare.dir.createDirPath(std.testing.io, "src");
@@ -674,7 +674,7 @@ test "an import means what the configured build binds it to, in the module that 
         .{ .root = "src/helper.zig", .imports = &second },
         .{ .root = null, .imports = &.{} },
     };
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -736,7 +736,7 @@ test "a ZON file a Zig file imports is read with it, as ZON: build.zig's build.z
     try write(tmp.dir, "build.zig", "const manifest = @import(\"build.zig.zon\");\npub fn build(b: *@import(\"std\").Build) void {\n    _ = b;\n    _ = manifest.version;\n}\n");
     try write(tmp.dir, "build.zig.zon", ".{ .name = .pkg, .version = \"0.1.0\", .fingerprint = 0x1c0ffee, .paths = .{\"src\"} }\n");
     const modules = [_]src.BuildModule{.{ .root = "src/root.zig", .imports = &.{} }};
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -772,7 +772,7 @@ test "an options module the build generates whole is read as its module's file, 
         // Written only as the build runs (an option naming a path): no text to read.
         .{ .root = null, .imports = &.{} },
     };
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -818,7 +818,7 @@ test "a build script reads a dependency's script by the dependency's name, and i
         .{ .root = "zig-pkg/tools/build.zig", .imports = &.{}, .script = true },
         .{ .root = "src/root.zig", .imports = &.{} },
     };
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -868,7 +868,7 @@ test "a build script no selected file imports is read, unselected: bay's root, w
         .{ .root = "build.zig", .imports = &.{}, .script = true },
         .{ .root = "src/root.zig", .imports = &.{} },
     };
-    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
     const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
     const policy = (try policy_module.parse(&c, config, test_shipped)).?;
     const paths = (try select(&c, policy)).?;
@@ -921,7 +921,7 @@ test "a file both compilations compile reads a name each binds apart as an edge 
             .{ .root = if (split) "src/other.zig" else null, .imports = &to_fork },
             .{ .root = "zig-pkg/fork/lib.zig", .imports = &.{} },
         };
-        var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = tmp.dir };
+        var c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
         const config = try parsed(c.a, "{\"glint_paths\":[\"src\"],\"test_support\":[]}");
         const policy = (try policy_module.parse(&c, config, test_shipped)).?;
         const paths = (try select(&c, policy)).?;

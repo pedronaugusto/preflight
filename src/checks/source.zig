@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const seam = @import("input.zig");
 const Io = std.Io;
 const gantry = @import("gantry");
@@ -14,7 +15,7 @@ pub const Context = struct {
     a: std.mem.Allocator,
     io: std.Io,
     /// The package's directory, the caller's; the working directory when null.
-    dir: ?std.Io.Dir = null,
+    dir: ?aegis.own.Unowned(std.Io.Dir) = null,
     errors: usize = 0,
     summary_path: ?[]const u8 = null,
     /// The Zig that runs the configured commands: the one running the build, else the first on PATH.
@@ -73,12 +74,12 @@ pub const Context = struct {
     }
 
     pub fn directory(c: Context) std.Io.Dir {
-        return if (c.dir) |dir| dir else .cwd();
+        return if (c.dir) |dir| dir.get() else .cwd();
     }
 
     /// Where a child process runs: `dir`, or this process's own directory.
     pub fn childCwd(c: Context) std.process.Child.Cwd {
-        return if (c.dir) |dir| .{ .dir = dir } else .inherit;
+        return if (c.dir) |dir| .{ .dir = dir.get() } else .inherit;
     }
 
     /// Writes to stderr, as a command-line tool reports. A reader of stderr that has gone
@@ -432,7 +433,7 @@ test "a configuration that is there and cannot be read is the error, not every d
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "preflight.json", .data = "{\"compile_step\": \"build\"}" });
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const c: Context = .{ .a = arena.allocator(), .io = fio.io(), .dir = tmp.dir };
+    const c: Context = .{ .a = arena.allocator(), .io = fio.io(), .dir = .of(tmp.dir) };
     try std.testing.expect(!try c.exists("absent.json"));
     try std.testing.expectEqual(@as(usize, 0), (try c.options("absent.json")).object.count());
     try fio.setPlan(&.{.{ .at = .{ .nth = .{ .call = .dirAccess, .n = 1 } }, .fault = .{ .fail = error.AccessDenied } }});

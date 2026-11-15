@@ -66,7 +66,7 @@ test "a manifest declares a package among its dependencies or its development on
     const a = arena.allocator();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var c: src.Context = .{ .a = a, .io = std.testing.io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .of(tmp.dir) };
     try std.testing.expect(!try declares(&c, "shakedown"));
     for ([_][]const u8{ "dependencies", "dev_dependencies" }) |group| {
         try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .p, .{s} = .{{ .shakedown = .{{ .path = \"../shakedown\" }} }} }}", .{group}) });
@@ -187,7 +187,7 @@ test "a package ships its build, its sources and what a user reads, and nothing 
     defer tmp.cleanup();
     for (shipped) |file| try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "" });
     for ([_][]const u8{ "src", "bench", ".github", "data", "fixtures" }) |dir| try tmp.dir.createDirPath(io, dir);
-    var c: src.Context = .{ .a = a, .io = io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = a, .io = io, .dir = .of(tmp.dir) };
     const exact = shipped ++ [_][]const u8{"src"};
     try check(&c, &exact, &.{"src"}, .null);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
@@ -208,7 +208,7 @@ test "a path .paths names must exist" {
     defer tmp.cleanup();
     for (shipped) |file| if (!std.mem.eql(u8, file, "LICENSE")) try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "" });
     try tmp.dir.createDirPath(io, "src");
-    var c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = .of(tmp.dir) };
     try check(&c, &(shipped ++ [_][]const u8{"src"}), &.{"src"}, .null);
     try std.testing.expectEqual(@as(usize, 1), c.errors);
     // Nor is a file the package does not have required of it.
@@ -223,7 +223,7 @@ test "the manifest's .coexist names the packages that may meet in two revisions,
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = tmp.dir };
+    var c: src.Context = .{ .a = arena.allocator(), .io = io, .dir = .of(tmp.dir) };
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = ".{ .name = .app, .version = \"0.1.0\", .coexist = .{ .strand, .warp } }" });
     const named = try coexist(&c);
     try std.testing.expectEqual(@as(usize, 2), named.len);

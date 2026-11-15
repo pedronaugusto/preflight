@@ -147,13 +147,13 @@ const Pax = struct {
 };
 
 /// A ustar header for the tests, its checksum filled in.
-fn testHeader(name: []const u8, kind: u8, size: usize, link: []const u8) [header_len]u8 {
+fn testHeader(name: []const u8, kind: u8, size: usize, link: []const u8) std.mem.PrintError![header_len]u8 {
     var h: [header_len]u8 = @splat(0);
     @memcpy(h[0..name.len], name);
-    _ = std.mem.print(h[100..107], "{o:0>7}", .{@as(u32, 0o755)}) catch unreachable; // unreachable: seven digits fit
-    _ = std.mem.print(h[108..115], "{o:0>7}", .{@as(u32, 0)}) catch unreachable; // unreachable: seven digits fit
-    _ = std.mem.print(h[116..123], "{o:0>7}", .{@as(u32, 5)}) catch unreachable; // unreachable: seven digits fit
-    _ = std.mem.print(h[124..135], "{o:0>11}", .{size}) catch unreachable; // unreachable: eleven digits fit a test's sizes
+    _ = try std.mem.print(h[100..107], "{o:0>7}", .{@as(u32, 0o755)});
+    _ = try std.mem.print(h[108..115], "{o:0>7}", .{@as(u32, 0)});
+    _ = try std.mem.print(h[116..123], "{o:0>7}", .{@as(u32, 5)});
+    _ = try std.mem.print(h[124..135], "{o:0>11}", .{size});
     h[156] = kind;
     @memcpy(h[157..][0..link.len], link);
     @memcpy(h[257..263], "ustar\x00");
@@ -161,7 +161,7 @@ fn testHeader(name: []const u8, kind: u8, size: usize, link: []const u8) [header
     @memset(h[148..156], ' ');
     var sum: u32 = 0;
     for (h) |b| sum += b;
-    _ = std.mem.print(h[148..155], "{o:0>6}\x00", .{sum}) catch unreachable; // unreachable: six digits fit
+    _ = try std.mem.print(h[148..155], "{o:0>6}\x00", .{sum});
     return h;
 }
 
@@ -169,15 +169,15 @@ test "an archive's files, links and directories are read, a hard link with its t
     var archive: std.ArrayList(u8) = .empty;
     defer archive.deinit(std.testing.allocator);
     const a = std.testing.allocator;
-    try archive.appendSlice(a, &testHeader("bin/", '5', 0, ""));
-    try archive.appendSlice(a, &testHeader("bin/test", '0', 5, ""));
+    try archive.appendSlice(a, &(try testHeader("bin/", '5', 0, "")));
+    try archive.appendSlice(a, &(try testHeader("bin/test", '0', 5, "")));
     try archive.appendSlice(a, "test\n" ++ @as([507]u8, @splat(0)));
-    try archive.appendSlice(a, &testHeader("bin/[", '1', 0, "bin/test"));
-    try archive.appendSlice(a, &testHeader("lib/libc.so", '2', 0, "libc.so.7"));
+    try archive.appendSlice(a, &(try testHeader("bin/[", '1', 0, "bin/test")));
+    try archive.appendSlice(a, &(try testHeader("lib/libc.so", '2', 0, "libc.so.7")));
     const pax = "30 path=usr/share/a-long-name\n";
-    try archive.appendSlice(a, &testHeader("PaxHeader", 'x', pax.len, ""));
+    try archive.appendSlice(a, &(try testHeader("PaxHeader", 'x', pax.len, "")));
     try archive.appendSlice(a, pax ++ @as([512 - pax.len]u8, @splat(0)));
-    try archive.appendSlice(a, &testHeader("short", '0', 0, ""));
+    try archive.appendSlice(a, &(try testHeader("short", '0', 0, "")));
     try archive.appendSlice(a, &@as([1024]u8, @splat(0)));
 
     var r: Reader = .{ .bytes = archive.items };
@@ -204,12 +204,12 @@ test "a pax size is the member's, not that of the extended header after it" {
     defer archive.deinit(std.testing.allocator);
     const a = std.testing.allocator;
     const size = "10 size=5\n";
-    try archive.appendSlice(a, &testHeader("PaxHeader", 'x', size.len, ""));
+    try archive.appendSlice(a, &(try testHeader("PaxHeader", 'x', size.len, "")));
     try archive.appendSlice(a, size ++ @as([512 - size.len]u8, @splat(0)));
     const path = "30 path=usr/share/a-long-name\n";
-    try archive.appendSlice(a, &testHeader("PaxHeader", 'x', path.len, ""));
+    try archive.appendSlice(a, &(try testHeader("PaxHeader", 'x', path.len, "")));
     try archive.appendSlice(a, path ++ @as([512 - path.len]u8, @splat(0)));
-    try archive.appendSlice(a, &testHeader("short", '0', 0, ""));
+    try archive.appendSlice(a, &(try testHeader("short", '0', 0, "")));
     try archive.appendSlice(a, "test\n" ++ @as([507]u8, @splat(0)));
     try archive.appendSlice(a, &@as([1024]u8, @splat(0)));
 
@@ -221,13 +221,13 @@ test "a pax size is the member's, not that of the extended header after it" {
 }
 
 test "a damaged archive is refused, not read past its end" {
-    var bad = testHeader("f", '0', 100, "");
+    var bad = try testHeader("f", '0', 100, "");
     var r: Reader = .{ .bytes = &bad };
     try std.testing.expectError(error.Truncated, r.next());
     bad[0] = 'g';
     r = .{ .bytes = &bad };
     try std.testing.expectError(error.BadChecksum, r.next());
-    var device = testHeader("dev/null", '3', 0, "");
+    var device = try testHeader("dev/null", '3', 0, "");
     r = .{ .bytes = &device };
     try std.testing.expectError(error.UnsupportedMember, r.next());
     r = .{ .bytes = (&bad)[0..100] };

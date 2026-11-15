@@ -636,7 +636,9 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
 - `git`: the held git every test job runs (above), written by `preflight held-git-pin`.
   `windows_git_latest` is refused: it took whatever release was newest that day.
 - `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`:
-  minutes, 20 by default.
+  minutes, 20 by default: the test jobs', the Windows test jobs', the source checks' and
+  the compile jobs' (the cross compiles, the release tier's ReleaseSmall compiles and the
+  links), so every job a plan makes takes its budget from one of them.
 - `fuzz_minutes`: the release tier's fuzz job's minutes, 15 by default, at most 330; 0 for no
   fuzz job. A dispatched fuzz run (tier `fuzz`) can give its own.
 

@@ -693,6 +693,9 @@ pub fn targetName(target: src.Value) src.TypeError![]const u8 {
 const unmeasured_target_seconds = 90;
 /// The seconds of compiling one cross job is given, when `cross_seconds` does not say.
 const default_cross_seconds = 200;
+/// What a cross job spends before it compiles (checkout, Zig, caches, the toolchain), which
+/// its `cross_job_timeout` must leave room for: relic's jobs took about four minutes.
+const cross_setup_seconds = 300;
 
 /// The seconds `name` takes to compile, as the last release run
 /// measured them (`ci/costs.json`, which the plan reads as `measured`), the
@@ -746,14 +749,24 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
             return costs[x] > costs[y];
         }
     }.longer);
+    // A job holds at most what its own bound leaves after its setup, so no plan deals a job
+    // more compiling than `cross_job_timeout` lets it finish (relic's 975 s target in 20
+    // minutes ended two jobs at their bound, run 43737703239); a target past that is refused.
+    const room = @as(f64, @floatFromInt(try minutes(config, "cross_job_timeout") * 60)) - cross_setup_seconds;
+    const heaviest = std.mem.max(f64, cost);
+    if (heaviest > room) {
+        problem = try a.print("{s} takes {d:.0} s to compile, more than the {d:.0} s a cross job's cross_job_timeout leaves after its setup: raise cross_job_timeout", .{ try targetName(targets[std.mem.indexOfMax(f64, cost)]), heaviest, room });
+        return error.CrossTargetPastTimeout;
+    }
     // A job cannot be shorter than the longest target, so more jobs stop helping there.
-    const limit = @max(number(budget) orelse default_cross_seconds, std.mem.max(f64, cost));
+    const limit = @min(@max(number(budget) orelse default_cross_seconds, heaviest), room);
     const assignment = try a.alloc(usize, targets.len);
     const load = try a.alloc(f64, targets.len);
     var count: usize = if (wanted == .null) 1 else @min(std.math.cast(usize, wanted.integer) orelse return error.InvalidCrossJobs, targets.len);
+    var longest: f64 = 0;
     while (true) : (count += 1) {
         @memset(load[0..count], 0);
-        var longest: f64 = 0;
+        longest = 0;
         for (order) |index| {
             var least: usize = 0;
             for (load[0..count], 0..) |seconds, group| if (seconds < load[least]) {
@@ -764,6 +777,10 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
             longest = @max(longest, load[least]);
         }
         if (wanted != .null or count == targets.len or longest <= limit) break;
+    }
+    if (longest > room) {
+        problem = try a.print("cross_jobs {d} puts {d:.0} s of compiling in one job, more than the {d:.0} s its cross_job_timeout leaves after its setup: raise cross_job_timeout or cross_jobs", .{ count, longest, room });
+        return error.CrossJobPastTimeout;
     }
     for (0..count) |group| {
         var names: std.ArrayList(u8) = .empty;
@@ -802,7 +819,8 @@ pub fn fastTargets(a: std.mem.Allocator, config: src.Value) ![]src.Value {
 
 fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
     const compile = try src.string(src.get(config, "compile_step"), "check");
-    for (hosts) |host| try jobs.append(a, .{ .os = host, .name = try a.print("compile ({s}, ReleaseSmall)", .{host}), .step = compile, .args = "-Doptimize=small" });
+    // A compile job, as the cross ones: `cross_job_timeout` is its budget, not Job's default.
+    for (hosts) |host| try jobs.append(a, .{ .os = host, .name = try a.print("compile ({s}, ReleaseSmall)", .{host}), .step = compile, .args = "-Doptimize=small", .job_timeout = try minutes(config, "cross_job_timeout") });
     try crossJobs(a, config, jobs, try src.items(src.get(config, "targets")), true);
 }
 
@@ -873,7 +891,7 @@ fn sdkJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !
         var text: std.Io.Writer.Allocating = .init(a);
         defer text.deinit();
         for (options) |arg| try text.writer.print("{s}{s}", .{ if (text.written().len == 0) "" else " ", arg });
-        try jobs.append(a, .{ .os = host, .name = try a.print("{s}link ({s})", .{ if (std.mem.eql(u8, host, hosts[0])) "" else "SDK ", name }), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link });
+        try jobs.append(a, .{ .os = host, .name = try a.print("{s}link ({s})", .{ if (std.mem.eql(u8, host, hosts[0])) "" else "SDK ", name }), .step = "ci-link", .args = try text.toOwnedSlice(), .setup = true, .operation = .link, .job_timeout = try minutes(config, "cross_job_timeout") });
     }
 }
 
@@ -1309,6 +1327,46 @@ test "the ci tier runs macOS and Windows Debug natively, every shard building it
     try std.testing.expectEqual(jobs.len, tiers.native.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.compile.len);
     try std.testing.expectEqual(@as(usize, 0), tiers.run.len);
+}
+
+test "no cross job is dealt more compiling than its cross_job_timeout leaves, and a target that cannot fit is refused by name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // relic's run 43737703239: aarch64-windows-gnu measured 975 s, in jobs bounded at 20 minutes.
+    const measured = "\"measured\":{\"phases\":{\"compile aarch64-windows-gnu\":975,\"compile x86_64-linux-gnu\":400,\"compile aarch64-linux-gnu\":400}}";
+    const fits = (try std.json.parseFromSlice(src.Value, a, try a.print("{{\"targets\":[\"aarch64-windows-gnu\",\"x86_64-linux-gnu\",\"aarch64-linux-gnu\"],\"cross_seconds\":2000,\"cross_job_timeout\":25,{s}}}", .{measured}), .{})).value;
+    var jobs: std.ArrayList(Job) = .empty;
+    try crossJobs(a, fits, &jobs, try src.items(src.get(fits, "targets")), false);
+    // 25 minutes less 300 s of setup leaves 1200 s: the 975 s target needs a job of its own.
+    try std.testing.expect(jobs.items.len >= 2);
+    const tight = (try std.json.parseFromSlice(src.Value, a, try a.print("{{\"targets\":[\"aarch64-windows-gnu\",\"x86_64-linux-gnu\"],{s}}}", .{measured}), .{})).value;
+    jobs.clearRetainingCapacity();
+    try std.testing.expectError(error.CrossTargetPastTimeout, crossJobs(a, tight, &jobs, try src.items(src.get(tight, "targets")), false));
+    try std.testing.expect(std.mem.find(u8, problem, "aarch64-windows-gnu takes 975 s") != null);
+    const fixed = (try std.json.parseFromSlice(src.Value, a, try a.print("{{\"targets\":[\"aarch64-windows-gnu\",\"x86_64-linux-gnu\",\"aarch64-linux-gnu\"],\"cross_jobs\":1,\"cross_job_timeout\":25,{s}}}", .{measured}), .{})).value;
+    jobs.clearRetainingCapacity();
+    try std.testing.expectError(error.CrossJobPastTimeout, crossJobs(a, fixed, &jobs, try src.items(src.get(fixed, "targets")), false));
+}
+
+test "every compile and link job of the release tier takes cross_job_timeout, none Job's default" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // strand's ReleaseSmall compiles took 20m44s and 20m19s against a fixed 20 (run 43741335353).
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\",\"x86_64-windows-msvc\",\"aarch64-macos\"],\"sdk_targets\":[\"x86_64-windows-msvc\"],\"cross_job_timeout\":45,\"policy\":\"family\"}", .{})).value;
+    var compiles: usize = 0;
+    var links: usize = 0;
+    for (try plan(a, config, .release)) |job| {
+        const small = std.mem.endsWith(u8, job.name, ", ReleaseSmall)");
+        const cross = std.mem.startsWith(u8, job.name, "Cross compile");
+        const link = job.operation == .link;
+        if (small) compiles += 1;
+        if (link) links += 1;
+        if (small or cross or link) try std.testing.expectEqual(@as(usize, 45), job.job_timeout);
+    }
+    try std.testing.expectEqual(@as(usize, 3), compiles);
+    try std.testing.expect(links > 0);
 }
 
 test "the release tier is the full matrix: every mode on every host, ReleaseSmall on each system, cross targets and the source checks" {

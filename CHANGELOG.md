@@ -63,6 +63,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The held git's build copies its pinned sources by their absolute paths: a build names them inside the package (`./zig-pkg/<hash>`) and the copy ran in the build's work directory, so every hosted job's `Hold the package's git` failed at its first copy (run 43743567048).
+- The release tier's ReleaseSmall compiles and its link jobs take `cross_job_timeout`, as the cross compiles do: they kept a fixed 20 minutes no option raised, so strand's release run (43741335353) was red only on its two ReleaseSmall compiles, at 20m44s and 20m19s.
 - The fuzz job reports no earlier run's crash as this run's: it clears `cache/f/crash` with the earlier findings before its first session. The job restores `cache/f` from the Actions cache, so a crash input kept by an older run could be named as the input a failed session crashed on.
 - The held git's sources are pinned at the hashes their releases fetch to: zlib 1.4 (its tarball matches zlib.net's published SHA-256), LibreSSL 4.4.1 (its release's `SHA256` file) and curl 8.23.0 (its signature, Daniel Stenberg's key). The pins written with the held git were hashes of a local cache entry that `zig fetch` of a downloaded tarball had stored, which unpacks to other hashes, so a build that fetched the releases themselves refused them (relic's `bay generate`).
 - The test machines take no `PREFLIGHT_GIT` from the host's job, whose path names a host program: the riscv64 machine's is the held git overlaid at `/usr/local/bin/git`, when the package names one; the FreeBSD machine has none.

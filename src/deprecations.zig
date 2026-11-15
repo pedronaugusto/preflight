@@ -8,10 +8,12 @@ const library = @import("deprecations/library.zig");
 const table = @import("deprecations/table.zig");
 const rewrite = @import("deprecations/rewrite.zig");
 const configure = @import("configure.zig");
+const seam = @import("checks/input.zig");
 
 pub const Options = struct {
-    /// The `std` directory of the Zig that builds the package, the caller's.
-    std_dir: std.Io.Dir,
+    /// The `std` directory of the Zig that builds the package, the caller's: it opens it and
+    /// closes it.
+    std_dir: aegis.own.Unowned(std.Io.Dir),
     /// The release whose table applies: the Zig that built preflight.
     version: std.SemanticVersion = builtin.zig_version,
     write: bool = false,
@@ -37,7 +39,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, options: Options,
     const entries = try prepare(&lib, release, out);
     var summary: Summary = .{};
     for (try files(a, io, root, options.paths)) |path| {
-        const source = try aegis.own.readFile(io, root, path, a, .fromRaw(64 * 1024 * 1024));
+        const source = try seam.document(io, root, path, a, .whole);
         const outcome = rewrite.file(a, &lib, entries, source) catch |err| switch (err) {
             error.Unparsable => {
                 try out.print("{s}: does not parse; skipped\n", .{path});

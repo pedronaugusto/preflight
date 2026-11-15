@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const root = @import("test_options").root;
 const command = @import("command.zig");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 const paths = @import("paths.zig");
 
 fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
@@ -12,7 +13,7 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     for ([_][]const u8{ "build.zig", "src/sample.zig", "src/testing/cases.zig", "src/testing/hardened.zig", "ci/layers.zig", "ci/preflight.json", "ci/consumer.zig", "LICENSE", "README.md", "CHANGELOG.md" }) |path| {
         const input = try std.Io.Dir.path.join(a, &.{ root, "sample", path });
         defer a.free(input);
-        const text = try aegis.own.readFile(io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024));
+        const text = try seam.packageFile(io, std.Io.Dir.cwd(), input, a);
         defer a.free(text);
         const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", "") else text;
         try dir.writeFile(io, .{ .sub_path = path, .data = copied });
@@ -43,7 +44,7 @@ const Pin = struct { url: []const u8, hash: []const u8 };
 /// The shakedown preflight's own manifest pins as a dev dependency.
 fn shakedownPin(a: std.mem.Allocator) !Pin {
     const path = try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" });
-    const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), path, a, .fromRaw(1024 * 1024));
+    const text = try seam.packageFile(std.testing.io, std.Io.Dir.cwd(), path, a);
     const Manifest = struct { dev_dependencies: struct { shakedown: Pin } };
     var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     const manifest = try std.zon.parse.fromSlice(Manifest, .{ .gpa = a, .arena = a, .source = try a.dupeSentinel(u8, text, 0), .diagnostics = &diagnostics, .ignore_unknown_fields = true });
@@ -51,7 +52,7 @@ fn shakedownPin(a: std.mem.Allocator) !Pin {
 }
 
 fn run(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
-    return std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-imports" }, .cwd = .{ .dir = dir } });
+    return seam.build(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-imports" }, .cwd = .{ .dir = dir } });
 }
 
 test "structure runner rejects undeclared imports, production reaching tests and duplicate layer owners" {
@@ -128,7 +129,7 @@ test "structure runner walks every configured source root" {
 
 fn fixtureLayers(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const input = try std.Io.Dir.path.join(a, &.{ root, "sample/ci/layers.zig" });
-    const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024));
+    const text = try seam.packageFile(std.testing.io, std.Io.Dir.cwd(), input, a);
     const changed = try std.mem.replaceOwned(u8, a, text, ".{ .name = \"sample\", .patterns = &.{\"src/sample.zig\"} }", ".{ .name = \"sample\", .patterns = &.{\"src/sample.zig\"} }, .{ .name = \"again\", .patterns = &.{\"src/*.zig\"} }");
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = changed });
 }
@@ -647,13 +648,13 @@ fn lintFixture(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
 
 /// The fixture's lint with build options `options` after the step.
 fn lintFixtureWith(a: std.mem.Allocator, dir: std.Io.Dir, options: []const []const u8) !std.process.RunResult {
-    const format = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = dir } });
+    const format = try seam.build(a, std.testing.io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = dir } });
     if (!command.succeeded(format)) return error.FixtureFormatFailed;
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
     const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, options });
-    return std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
+    return seam.build(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
 
 fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
@@ -662,7 +663,7 @@ fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
     var iterator = timings.iterate();
     var names: std.ArrayList(u8) = .empty;
     while (try iterator.next(std.testing.io)) |entry| {
-        const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
+        const text = try seam.file(std.testing.io, timings, entry.name, a, .record);
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
@@ -734,7 +735,7 @@ fn fixtureGit(a: std.mem.Allocator, dir: std.Io.Dir, args: []const []const u8) !
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try withoutUserGit(&env);
-    const result = try std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
+    const result = try seam.build(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
     if (result.term != .exited or result.term.exited != 0) return error.FixtureGitFailed;
 }
 
@@ -757,9 +758,14 @@ fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []
     }
     if (config) |settings| try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = settings });
     const result = try lintFixtureWith(a, tmp.dir, options);
-    if (rule) |id| if (std.mem.find(u8, result.stderr, id) == null) std.debug.print("{s}\n", .{result.stderr}); // glint-ignore: P005 -- a failing test shows the lint output it did not find the rule in
+    // A failing test shows the lint output it did not find the rule in.
+    if (rule) |id| {
+        if (std.mem.find(u8, result.stderr, id) == null) {
+            std.log.err("the lint reported no {s}; it printed:\n{s}", .{ id, result.stderr });
+            return error.RuleNotReported;
+        }
+    }
     try std.testing.expect(result.term == .exited and (result.term.exited != 0) == fails);
-    if (rule) |id| try std.testing.expect(std.mem.find(u8, result.stderr, id) != null);
 }
 
 test "a red lint and a failing unit test are each reported: the suite runs whatever the lint gives" {
@@ -1155,7 +1161,7 @@ fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]c
     var names: std.ArrayList([]const u8) = .empty;
     while (try iterator.next(std.testing.io)) |entry| {
         if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
-        const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
+        const text = try seam.file(std.testing.io, timings, entry.name, a, .record);
         var lines = std.mem.tokenizeScalar(u8, text, '\n');
         while (lines.next()) |line| {
             const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
@@ -1177,7 +1183,7 @@ fn recordedKey(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]con
     var iterator = timings.iterate();
     while (try iterator.next(std.testing.io)) |entry| {
         if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
-        const text = try aegis.own.readFile(std.testing.io, timings, entry.name, a, .fromRaw(1024 * 1024));
+        const text = try seam.file(std.testing.io, timings, entry.name, a, .record);
         const line = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
         const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
         return a.dupe(u8, try src.string(src.get(row, "key"), ""));
@@ -1451,14 +1457,19 @@ test "a test the watchdog ends leaves no process it started running" {
 /// for a process whose parent ended first.
 fn expectEnded(pid: std.posix.pid_t) !void {
     const io = std.testing.io;
-    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromSeconds(10), .clock = .awake });
+    const patience = aegis.units.Duration(.second, i64).fromRaw(10);
+    const pause = aegis.units.Duration(.millisecond, i64).fromRaw(20);
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = patience.toIoDuration(), .clock = .awake });
     while (std.posix.kill(pid, @fromBackingInt(@intCast(0)))) |_| {
         if (std.Io.Clock.Timestamp.compare(.now(io, .awake), .gte, deadline)) {
-            // glint-ignore: Z026 -- the process may end on its own first; the test fails either way
-            std.posix.kill(pid, .KILL) catch {};
+            // The process may end on its own first; the test fails either way.
+            std.posix.kill(pid, .KILL) catch |err| switch (err) {
+                error.ProcessNotFound => {},
+                else => return err,
+            };
             return error.ProcessOutlivedTheRun;
         }
-        try std.Io.sleep(io, .fromMilliseconds(20), .awake);
+        try std.Io.sleep(io, pause.toIoDuration(), .awake);
     } else |err| try std.testing.expectEqual(error.ProcessNotFound, err);
 }
 
@@ -1549,7 +1560,7 @@ test "a package wired without bay, as sample/zero is, asks its consumers to fetc
 
 fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u8, to: []const u8) !void {
     const io = std.testing.io;
-    const text = try aegis.own.readFile(io, dir, path, a, .fromRaw(1024 * 1024));
+    const text = try seam.packageFile(io, dir, path, a);
     const changed = try std.mem.replaceOwned(u8, a, text, from, to);
     try std.testing.expect(!std.mem.eql(u8, text, changed));
     try dir.writeFile(io, .{ .sub_path = path, .data = changed });
@@ -1559,7 +1570,7 @@ fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.p
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" });
     try argv.appendSlice(a, extra);
-    return std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
+    return seam.build(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
 }
 
 /// A fixture whose tests run on std's own runner.
@@ -1797,7 +1808,7 @@ test "the fuzz job fails on an input the fuzzer finds failing, and keeps it" {
 fn featureFixture(a: std.mem.Allocator, dir: std.Io.Dir, workflow: []const u8) !void {
     try fixture(a, dir);
     try edit(a, dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n", "    const feature = b.option(bool, \"feature\", \"The optional feature\") orelse true;\n    const config = b.addOptions();\n    config.addOption(bool, \"feature\", feature);\n    module.addOptions(\"config\", config);\n    const tests = b.addTest(.{ .root_module = module });\n");
-    const text = try aegis.own.readFile(std.testing.io, dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
+    const text = try seam.packageFile(std.testing.io, dir, "src/sample.zig", a);
     try dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ text, "\ntest \"rots without the feature\" {\n    comptime if (!@import(\"config\").feature) @compileError(\"this test rotted without the feature\");\n}\n" }) });
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = workflow });
 }
@@ -2658,7 +2669,7 @@ fn rootsFixture(a: std.mem.Allocator, dir: std.Io.Dir, build: []const u8, files:
     try dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = build });
     for (files) |file| try dir.writeFile(std.testing.io, .{ .sub_path = file[0], .data = file[1] });
     const input = try std.Io.Dir.path.join(a, &.{ root, "sample/ci/layers.zig" });
-    const text = try aegis.own.readFile(std.testing.io, std.Io.Dir.cwd(), input, a, .fromRaw(1024 * 1024));
+    const text = try seam.packageFile(std.testing.io, std.Io.Dir.cwd(), input, a);
     const layered = try std.mem.replaceOwned(u8, a, text, ".patterns = &.{\"src/sample.zig\"}", ".patterns = &.{\"src/*.zig\"}");
     try std.testing.expect(!std.mem.eql(u8, text, layered));
     try dir.writeFile(std.testing.io, .{ .sub_path = "ci/layers.zig", .data = layered });

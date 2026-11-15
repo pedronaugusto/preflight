@@ -1,6 +1,7 @@
 //! Documentation changes do not need the test gate.
 const std = @import("std");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 
 pub fn documentation(path: []const u8) bool {
     if (std.mem.startsWith(u8, path, "src/") or std.mem.find(u8, path, "/src/") != null) return false;
@@ -32,7 +33,7 @@ pub const default_base = "origin/main";
 /// unknown base keeps it too.
 pub fn run(c: src.Context, base: ?[]const u8) !bool {
     const range = try c.a.print("{s}...HEAD", .{base orelse default_base});
-    const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "git", "diff", "--name-only", "--no-renames", "-z", range, "--" }, .cwd = c.childCwd(), .environ_map = c.environ_map });
+    const result = try seam.runReport(c.a, c.io, .{ .argv = &.{ "git", "diff", "--name-only", "--no-renames", "-z", range, "--" }, .cwd = c.childCwd(), .environ_map = c.environ_map }, .text);
     if (result.term != .exited or result.term.exited != 0) return false;
     return onlyDocs(result.stdout);
 }

@@ -4,8 +4,8 @@
 //! hosted runs check the package with the preflight it pins and the jobs `ci/workflow.json`
 //! declares; `generate` makes it again after a pin moves.
 const std = @import("std");
-const aegis = @import("aegis");
 const src = @import("source.zig");
+const seam = @import("input.zig");
 const actions = @import("actions.zig");
 const workflow = @import("workflow.zig");
 const matrix = @import("matrix.zig");
@@ -18,7 +18,7 @@ const Ran = struct { ok: bool, out: []const u8, err: []const u8 };
 
 fn git(c: *src.Context, args: []const []const u8) !Ran {
     const argv = try std.mem.concat(c.a, []const u8, &.{ &.{"git"}, args });
-    const result = try std.process.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
+    const result = try seam.run(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map }, .line);
     return .{ .ok = result.term == .exited and result.term.exited == 0, .out = std.mem.trim(u8, result.stdout, " \t\r\n"), .err = std.mem.trim(u8, result.stderr, " \t\r\n") };
 }
 
@@ -54,7 +54,7 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
         var entries = dir.iterate();
         while (try entries.next(c.io)) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml"))) continue;
-            const text = try aegis.own.readFile(c.io, dir, entry.name, c.a, .fromRaw(16 * 1024 * 1024));
+            const text = try seam.document(c.io, dir, entry.name, c.a, .source);
             const planned = workflow.planned(text) orelse continue;
             try generated.append(c.a, .{ .name = try c.a.dupe(u8, entry.name), .planned = planned, .gate = gateOf(text) orelse continue });
         }
@@ -97,7 +97,7 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
     const before = c.errors;
     while (try walker.next(c.io)) |entry| {
         if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
-        const text = try aegis.own.readFile(c.io, dir, entry.path, c.a, .fromRaw(16 * 1024 * 1024));
+        const text = try seam.document(c.io, dir, entry.path, c.a, .source);
         var problem: actions.Problem = .{ .line = 0, .what = "" };
         const used = actions.uses(c.a, text, &problem) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,

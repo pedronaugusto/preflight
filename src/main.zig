@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const aegis = @import("aegis");
 const ensign = @import("ensign");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
@@ -81,8 +80,8 @@ pub fn main(init: std.process.Init) !void {
             const outcome = lintCommand(&c, init, args);
             c.held = null;
             if (c.summary_path) |path| if (held.written().len != 0) {
-                // glint-ignore: Z026 -- the summary is a copy for the hosted job; the outcome below is the check's
-                append(c, path, try a.print("<details><summary>lint</summary>\n\n```\n{s}```\n</details>\n", .{held.written()})) catch {};
+                // The summary is a copy for the hosted job; the outcome below is the check's.
+                append(c, path, try a.print("<details><summary>lint</summary>\n\n```\n{s}```\n</details>\n", .{held.written()})) catch |err| c.report("preflight: lint: the job's summary {s} was not written ({t})\n", .{ path, err });
             };
             // A finding reported without failing is shown: it is there to be seen.
             if (std.meta.isError(outcome) or c.errors != 0 or c.notes != 0) c.report("{s}", .{held.written()});
@@ -108,7 +107,7 @@ fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Comman
     defer std_dir.deinit(io);
     var buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(io, &buffer);
-    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = std_dir.borrow().*, .write = args.write, .paths = args.paths }, &out.interface);
+    _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = .of(std_dir.borrow().*), .write = args.write, .paths = args.paths }, &out.interface);
     try out.interface.flush();
 }
 
@@ -250,7 +249,10 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const zig_lib = if (args.zig_std) |dir| std.Io.Dir.path.dirname(dir) else null;
     try per_target.append(a, try facts.buildModules(a, snapshot, zig_lib));
     for (try src.items(src.get(try c.options("ci/workflow.json"), "targets"))) |target| {
-        const name = checks.matrix.targetName(target) catch continue;
+        const name = checks.matrix.targetName(target) catch |err| {
+            c.fail("lint: a target in ci/workflow.json names no target ({t}), so its build's modules are not mapped", .{err});
+            continue;
+        };
         const options = try std.mem.concat(a, []const u8, &.{ args.build_option, &.{try a.print("-Dtarget={s}", .{name})} });
         const built = facts.read(c.*, c.zig, options) catch |err| {
             c.fail("lint: the build for {s} could not be configured ({t}), so its modules are not mapped", .{ name, err });
@@ -259,7 +261,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
         try per_target.append(a, try facts.buildModules(a, built, zig_lib));
     }
     const configured = try facts.unionModules(a, per_target.items);
-    const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try aegis.own.readFile(c.io, std.Io.Dir.cwd(), path, a, .fromRaw(16 * 1024 * 1024))) else configured;
+    const build_modules = if (args.build_scripts) |path| try facts.withBuildScripts(a, configured, try checks.input.document(c.io, std.Io.Dir.cwd(), path, a, .list)) else configured;
     const exported = try modules(a, args.module);
     const exported_roots = try a.alloc([]const u8, exported.len);
     for (exported_roots, exported) |*root, module| root.* = module.root;
@@ -424,13 +426,13 @@ fn append(c: src.Context, path: []const u8, text: []const u8) !void {
 
 fn setup(c: src.Context, env: *std.process.Environ.Map) !void {
     if (builtin.target.os.tag == .macos) {
-        const sdk = try std.process.run(c.a, c.io, .{ .argv = &.{ "xcrun", "--no-cache", "--sdk", "macosx", "--show-sdk-path" } });
+        const sdk = try checks.input.run(c.a, c.io, .{ .argv = &.{ "xcrun", "--no-cache", "--sdk", "macosx", "--show-sdk-path" } }, .line);
         if (sdk.term != .exited or sdk.term.exited != 0) return error.NativeSdkUnavailable;
         const path = std.mem.trim(u8, sdk.stdout, " \t\r\n");
         if (!std.Io.Dir.path.isAbsolute(path) or std.mem.findScalar(u8, path, '\n') != null) return error.InvalidSdkPath;
         if (env.get("GITHUB_ENV")) |output| try append(c, output, try c.a.print("SDKROOT={s}\n", .{path}));
     }
-    const result = try std.process.run(c.a, c.io, .{ .argv = &.{ "zig", "env" } });
+    const result = try checks.input.runReport(c.a, c.io, .{ .argv = &.{ "zig", "env" } }, .text);
     if (result.term != .exited or result.term.exited != 0) return error.ZigEnvironmentFailed;
     const Env = struct { global_cache_dir: []const u8 };
     var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };

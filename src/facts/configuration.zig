@@ -8,6 +8,9 @@ const types = .{ C.Module, C.ImportTable, C.Deps, C.Package, C.LazyPath, C.Resol
 const Ref = struct { kind: RefKind, index: u32 };
 const Guard = struct {
     a: std.mem.Allocator,
+    /// What a decoded list is copied into, freed when the load ends: the guard reads each
+    /// value out of the serialized words and keeps none of them.
+    scratch: std.mem.Allocator,
     c: *const C,
     pending: std.ArrayList(Ref) = .empty,
     seen: std.AutoHashMapUnmanaged(u64, void) = .empty,
@@ -139,11 +142,11 @@ const Guard = struct {
                 },
                 .@"extern" => b: {
                     const words = try g.span(i, @sizeOf(T) / 4);
-                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // glint-ignore: P007 -- no-danger: bounded native u32 storage; Zig configuration's extern structs have u32 alignment.
+                    break :b std.mem.bytesToValue(T, std.mem.sliceAsBytes(words));
                 },
                 .auto => if (T == std.Target.Cpu.Feature.Set) b: {
                     const words = try g.span(i, @sizeOf(T) / 4);
-                    break :b @as(*align(4) const T, @ptrCast(words.ptr)).*; // glint-ignore: P007 -- no-danger: feature set copied by value from a bounds-checked u32 slice, retaining its native layout.
+                    break :b std.mem.bytesToValue(T, std.mem.sliceAsBytes(words));
                 } else try g.storage(T, i, parent),
             },
             else => @compileError("unsupported configuration field " ++ @typeName(T)),
@@ -165,8 +168,12 @@ const Guard = struct {
                 if (T.storage == .flag_length_prefixed_list and !@field(@field(parent, @tagName(T.flags)), @tagName(T.flag))) return .{ .slice = &.{} };
                 const count: usize = if (T.storage == .flag_list) @field(@field(parent, @tagName(T.flags)), @tagName(T.flag)) else (try g.span(i, 1))[0];
                 const words = try g.span(i, std.math.mul(usize, count, @sizeOf(T.Elem) / 4) catch return error.MalformedConfiguration);
-                const slice: []const T.Elem = @ptrCast(words); // glint-ignore: P007 -- no-danger: serialized elements have u32 native layout and the entire list was checked above.
-                for (slice) |elem| try g.value(T.Elem, elem);
+                const per = @sizeOf(T.Elem) / 4;
+                const slice = try g.scratch.alloc(T.Elem, count);
+                for (slice, 0..) |*elem, n| {
+                    elem.* = std.mem.bytesToValue(T.Elem, std.mem.sliceAsBytes(words[n * per ..][0..per]));
+                    try g.value(T.Elem, elem.*);
+                }
                 return .{ .slice = slice };
             },
             .multi_list => {
@@ -174,7 +181,14 @@ const Guard = struct {
                 const names = @typeInfo(T.Elem).@"struct";
                 const words = try g.span(i, std.math.mul(usize, count, names.field_names.len) catch return error.MalformedConfiguration);
                 inline for (names.field_types, 0..) |F, n| for (words[n * count ..][0..count]) |raw| try g.value(F, @fromBackingInt(raw));
-                return .{ .mal = .{ .bytes = @ptrCast(@constCast(words.ptr)), .len = count, .capacity = count } }; // glint-ignore: P007 -- no-danger: Zig's multi-list decoder borrows native u32 columns validated above.
+                var mal: std.MultiArrayList(T.Elem) = .empty;
+                try mal.ensureTotalCapacity(g.scratch, count);
+                for (0..count) |row| {
+                    var elem: T.Elem = undefined;
+                    inline for (names.field_names, names.field_types, 0..) |name, F, n| @field(elem, name) = @as(F, @fromBackingInt(words[n * count + row]));
+                    mal.appendAssumeCapacity(elem);
+                }
+                return .{ .mal = mal };
             },
             .union_list => {
                 if (!@field(@field(parent, @tagName(T.flags)), @tagName(T.flag))) return .{ .data = null, .len = 0 };
@@ -192,15 +206,20 @@ const Guard = struct {
                     if (raw >> @bitSizeOf(T.Tag) != 0) break;
                 }
                 _ = try g.span(i, (count * @bitSizeOf(T.Meta) + 31) / 32);
-                const payload_start = i.*;
                 const words = try g.span(i, count);
-                for (words, 0..) |raw, n| {
+                // The elements as a serialized list holds them: a pointer to the unions.
+                const unions = try g.scratch.alloc(T.Union, count);
+                for (words, unions, 0..) |raw, *each, n| {
                     const meta = C.loadBits(u32, g.c.extra[start..], n * @bitSizeOf(T.Meta), T.Meta);
                     switch (meta.tag) {
-                        inline else => |tag| try g.value(@FieldType(T.Union, @tagName(tag)), @fromBackingInt(raw)),
+                        inline else => |tag| {
+                            const payload: @FieldType(T.Union, @tagName(tag)) = @fromBackingInt(raw);
+                            try g.value(@TypeOf(payload), payload);
+                            each.* = @unionInit(T.Union, @tagName(tag), payload);
+                        },
                     }
                 }
-                return .{ .data = @ptrFromInt(payload_start), .len = count }; // glint-ignore: P007 -- no-danger: Zig represents deserialized union-list storage by an extra-array index, never dereferenced as a pointer.
+                return .{ .data = unions.ptr, .len = count };
             },
             else => @compileError("unsupported configuration storage"),
         }
@@ -217,7 +236,9 @@ pub fn load(a: std.mem.Allocator, bytes: []const u8) LoadError!C {
     if (expected != bytes.len or header.steps_len == 0 or @backingInt(header.default_step) >= header.steps_len or header.generated_files_len > 1000000 or @as(u32, @bitCast(header.flags)) > 1) return error.MalformedConfiguration;
     var reader = std.Io.Reader.fixed(bytes);
     const c = C.load(a, &reader) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.MalformedConfiguration;
-    var g: Guard = .{ .a = a, .c = &c };
+    var copies = std.heap.ArenaAllocator.init(a);
+    defer copies.deinit();
+    var g: Guard = .{ .a = a, .scratch = copies.allocator(), .c = &c };
     defer g.pending.deinit(a);
     defer g.seen.deinit(a);
     for (c.steps) |step| {

@@ -6,8 +6,9 @@
 //!
 //! The machine's root is the ISO 9660 image, which cannot be written, so the
 //! program's root is the machine's memory (tmpfs at /preflight/root): FreeBSD's
-//! system directories in it read-only (nullfs), its own devices and /tmp, and the
-//! host's directories at their host paths, bound from the host's 9p share. That share
+//! system directories in it read-only (nullfs), its own devices (devfs, with every
+//! open descriptor at /dev/fd: fdescfs) and /tmp, and the host's directories at their
+//! host paths, bound from the host's 9p share. That share
 //! and the run's are mounted outside the program's root (/preflight/host and
 //! /preflight/run), which the first process takes as its root once it is made, so
 //! the program reaches only the directories bound into it.
@@ -22,6 +23,7 @@
 //! number) or `failed <error>`.
 const std = @import("std");
 const aegis = @import("aegis");
+const seam = @import("input.zig");
 const c = std.c;
 const Io = std.Io;
 
@@ -42,10 +44,12 @@ const read_only = 0x1;
 /// signal.h's SIG_BLOCK and SIG_SETMASK.
 const sig_block = 1;
 const sig_setmask = 3;
+/// How often a wait for a port looks again: a thousand looks are ten seconds.
+const wait_step: aegis.units.Duration(.millisecond, u32) = .literal("10ms");
 
 /// The modules the machine's devices and file systems need; GENERIC builds in the rest,
 /// tmpfs among them.
-const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "nullfs" };
+const modules = [_][*:0]const u8{ "virtio_console", "virtio_p9fs", "nullfs", "fdescfs" };
 /// The directories of FreeBSD's system the program sees, read-only: every other path
 /// in its root is the machine's memory, so that the host's directories can be made
 /// at their paths.
@@ -90,8 +94,8 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     const environ = try readList(io, gpa, run_mount ++ "/environ");
     const binds = try readList(io, gpa, run_mount ++ "/binds");
     const scratch = try readList(io, gpa, run_mount ++ "/scratch");
-    const cwd = try readFile(io, run_mount ++ "/cwd", gpa, 4096);
-    const user = try parseUser(try readFile(io, run_mount ++ "/user", gpa, 64));
+    const cwd = try readFile(io, run_mount ++ "/cwd", gpa, .text);
+    const user = try parseUser(try readFile(io, run_mount ++ "/user", gpa, .text));
     if (argv.len == 0) return error.NoProgram;
 
     // Made before the host's directories are bound, so that it is the machine's own
@@ -183,7 +187,9 @@ fn interfaceName(comptime text: []const u8) [16]u8 {
 
 /// The program's root in the machine's memory, at `new_root` (a directory of the
 /// ISO image): the system's directories read-only, its own devices, a /tmp and a
-/// /var/tmp anyone writes.
+/// /var/tmp anyone writes. Its /dev/fd is fdescfs, as a FreeBSD system's fstab
+/// mounts it: devfs alone lists descriptors 0, 1 and 2 there, so a test that reads
+/// a process's open descriptors from it (conduit's close_all) saw no others.
 fn makeRoot(io: Io, gpa: std.mem.Allocator) !void {
     try mount("tmpfs", new_root, "tmpfs", &.{.{ "mode", "755" }}, 0);
     const dir = Io.Dir.cwd();
@@ -194,6 +200,7 @@ fn makeRoot(io: Io, gpa: std.mem.Allocator) !void {
     }
     for ([_][:0]const u8{ new_root ++ "/dev", new_root ++ "/tmp", new_root ++ "/var/tmp" }) |path| try dir.createDirPath(io, path);
     try mount("devfs", new_root ++ "/dev", "devfs", &.{}, 0);
+    try mount("fdescfs", new_root ++ "/dev/fd", "fdescfs", &.{}, 0);
     try mount("tmpfs", new_root ++ "/tmp", "tmpfs", &.{.{ "mode", "1777" }}, 0);
     try mount("tmpfs", new_root ++ "/var/tmp", "tmpfs", &.{.{ "mode", "1777" }}, 0);
 }
@@ -280,7 +287,7 @@ fn openPort(io: Io, path: [*:0]const u8) !c.fd_t {
                 return error.Open;
             },
         }
-        try io.sleep(.fromMilliseconds(10), .awake);
+        try io.sleep(wait_step.toIoDuration(), .awake);
     };
     var mode: c.termios = std.mem.zeroes(c.termios);
     try check(c.tcgetattr(fd, &mode), error.PortMode);
@@ -564,8 +571,8 @@ fn report(ending: Ending) void {
         .exited => |code| std.mem.print(&buffer, "exited {d}\n", .{code}),
         .signal => |sig| std.mem.print(&buffer, "signal {d}\n", .{sig}),
         .failed => |err| std.mem.print(&buffer, "failed {t}\n", .{err}),
-    } catch return;
-    writeAll(status_port, text) catch return;
+    } catch |err| return say("the status port: {t}", .{err});
+    writeAll(status_port, text) catch |err| say("the status port: {t}", .{err});
 }
 
 fn powerOff() noreturn {
@@ -578,7 +585,7 @@ fn powerOff() noreturn {
 }
 
 fn readList(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]const [:0]const u8 {
-    const bytes = try readFile(io, path, gpa, 16 * 1024 * 1024);
+    const bytes = try readFile(io, path, gpa, .description);
     var list: std.ArrayList([:0]const u8) = .empty;
     var start: usize = 0;
     for (bytes, 0..) |byte, index| {
@@ -591,18 +598,47 @@ fn readList(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]const [:0]const
 }
 
 /// A line on the machine's console, which the host shows when the machine ends
-/// without the program's ending.
+/// without the program's ending. A line longer than the buffer is cut, and marked so.
 fn say(comptime format: []const u8, args: anytype) void {
     var buffer: [1024]u8 = undefined;
-    const text = std.mem.print(&buffer, "preflight machine: " ++ format ++ "\n", args) catch return;
+    var line: std.Io.Writer = .fixed(&buffer);
+    const text = if (line.print("preflight machine: " ++ format ++ "\n", args)) line.buffered() else |err| switch (err) {
+        error.WriteFailed => cut(&buffer),
+    };
     const fd = c.open("/dev/console", .{ .ACCMODE = .WRONLY, .NOCTTY = true });
     if (fd < 0) return;
     defer closeFd(fd);
-    writeAll(fd, text) catch return;
+    toConsole(fd, text);
 }
 
-fn readFile(io: Io, path: []const u8, gpa: std.mem.Allocator, limit: u64) ![]u8 {
-    return aegis.own.readFile(io, Io.Dir.cwd(), path, gpa, .fromRaw(limit)) catch |err| {
+/// A line that filled `buffer`: what fits, its end marked as cut.
+fn cut(buffer: []u8) []u8 {
+    const mark = "...\n";
+    @memcpy(buffer[buffer.len - mark.len ..], mark);
+    return buffer;
+}
+
+/// Writes `bytes` to the console `fd`, again where a write is interrupted. A console that
+/// refuses a write takes no more of the line: the console is where the machine's failures
+/// are told, so its own has nowhere to be told (`writeAll` tells its failures here, and so
+/// cannot be how this writes).
+fn toConsole(fd: c.fd_t, bytes: []const u8) void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+        const rc = c.write(fd, bytes[written..].ptr, bytes.len - written);
+        if (rc >= 0) {
+            written += @intCast(rc); // safe: a nonnegative write count
+            continue;
+        }
+        switch (@as(c.E, @fromBackingInt(@intCast(c._errno().*)))) {
+            .INTR => continue,
+            else => return,
+        }
+    }
+}
+
+fn readFile(io: Io, path: []const u8, gpa: std.mem.Allocator, limit: seam.Limit) ![]u8 {
+    return seam.file(io, Io.Dir.cwd(), path, gpa, limit) catch |err| {
         say("reading {s}: {t}", .{ path, err });
         return err;
     };

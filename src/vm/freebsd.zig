@@ -18,6 +18,7 @@ const aegis = @import("aegis");
 const Io = std.Io;
 const iso9660 = @import("iso9660.zig");
 const ustar = @import("ustar.zig");
+const seam = @import("input.zig");
 
 /// The machine's QEMU, found on PATH.
 const qemu = "qemu-system-x86_64";
@@ -49,7 +50,7 @@ pub fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     const cwd = Io.Dir.cwd();
     var kernel_set = try cwd.openDir(io, paths.kernel_set, .{});
     defer kernel_set.close(io);
-    const kernel = try aegis.own.readFile(io, kernel_set, "boot/kernel/kernel", gpa, .fromRaw(limit));
+    const kernel = try seam.file(io, kernel_set, "boot/kernel/kernel", gpa, .part);
     try cwd.writeFile(io, .{ .sub_path = paths.kernel, .data = kernel });
 
     var root: iso9660.Writer = try .init(gpa);
@@ -63,10 +64,10 @@ pub fn image(io: Io, gpa: std.mem.Allocator, paths: ImagePaths) !void {
     var files = modules.iterate();
     while (try files.next(io)) |file| {
         if (file.kind != .file) continue;
-        const data = try aegis.own.readFile(io, modules, file.name, gpa, .fromRaw(limit));
+        const data = try seam.file(io, modules, file.name, gpa, .part);
         try root.add(.{ .name = try gpa.print("boot/kernel/{s}", .{file.name}), .kind = .file, .mode = 0o555, .data = data });
     }
-    try root.add(.{ .name = "preflight/init", .kind = .file, .mode = 0o555, .data = try aegis.own.readFile(io, cwd, paths.init, gpa, .fromRaw(limit)) });
+    try root.add(.{ .name = "preflight/init", .kind = .file, .mode = 0o555, .data = try seam.file(io, cwd, paths.init, gpa, .part) });
     // Where the first process makes the program's root, in the machine's memory, and
     // mounts the run's description and the host's file system, outside that root.
     for ([_][]const u8{ "preflight/root", "preflight/run", "preflight/host" }) |name| try root.add(.{ .name = name, .kind = .directory, .mode = 0o755 });
@@ -86,7 +87,7 @@ const Manifest = struct { layers: []const Descriptor };
 /// The image's layers, uncompressed, in order: the index's one manifest's.
 fn layers(io: Io, gpa: std.mem.Allocator, image_dir: Io.Dir) ![]const []const u8 {
     const options: std.json.ParseOptions = .{ .ignore_unknown_fields = true };
-    const index = try std.json.parseFromSliceLeaky(Index, gpa, try aegis.own.readFile(io, image_dir, "index.json", gpa, .fromRaw(1024 * 1024)), options);
+    const index = try std.json.parseFromSliceLeaky(Index, gpa, try seam.file(io, image_dir, "index.json", gpa, .record), options);
     if (index.manifests.len != 1) return error.OciManifests;
     const manifest = try std.json.parseFromSliceLeaky(Manifest, gpa, try blob(io, gpa, image_dir, index.manifests[0].digest), options);
     const out = try gpa.alloc([]const u8, manifest.layers.len);
@@ -104,7 +105,7 @@ fn blob(io: Io, gpa: std.mem.Allocator, image_dir: Io.Dir, digest: []const u8) !
     const hex = digest[prefix.len..];
     if (hex.len != 64) return error.OciDigest;
     for (hex) |c| if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) return error.OciDigest;
-    const data = try aegis.own.readFile(io, image_dir, try gpa.print("blobs/sha256/{s}", .{hex}), gpa, .fromRaw(limit));
+    const data = try seam.file(io, image_dir, try gpa.print("blobs/sha256/{s}", .{hex}), gpa, .image);
     var sum: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &sum, .{});
     if (!std.mem.eql(u8, &std.fmt.bytesToHex(sum, .lower), hex)) return error.OciDigestMismatch;
@@ -202,8 +203,8 @@ pub fn run(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8,
     const fired = deadline.finish();
     watch.join();
 
-    const status = aegis.own.readFile(io, cwd, status_path, gpa, .fromRaw(4096)) catch "";
-    const console = aegis.own.readFile(io, cwd, console_path, gpa, .fromRaw(64 * 1024 * 1024)) catch "";
+    const status = seam.file(io, cwd, status_path, gpa, .text) catch "";
+    const console = seam.file(io, cwd, console_path, gpa, .console) catch "";
     const stderr = Io.File.stderr();
     switch (classify(status, console, fired)) {
         .ending => |ending| return ending,
@@ -222,10 +223,11 @@ pub fn run(io: Io, gpa: std.mem.Allocator, kernel: []const u8, root: []const u8,
 pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) Outcome {
     var lines = std.mem.tokenizeAny(u8, whole(status), "\r\n");
     while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "exited ")) if (std.fmt.parseInt(u8, line["exited ".len..], 10)) |code| return .{ .ending = .{ .exited = code } } else |_| {};
-        if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10)) |sig| {
+        // A number that does not parse, or is past its range, is no ending.
+        if (std.mem.startsWith(u8, line, "exited ")) if (std.fmt.parseInt(u8, line["exited ".len..], 10) catch null) |code| return .{ .ending = .{ .exited = code } };
+        if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10) catch null) |sig| {
             if (sig >= 1 and sig <= max_signal) return .{ .ending = .{ .signal = sig } };
-        } else |_| {};
+        };
         if (std.mem.startsWith(u8, line, "failed ")) return .{ .failed = line["failed ".len..] };
     }
     if (std.mem.find(u8, console, "panic: ")) |at| {
@@ -277,30 +279,42 @@ const Deadline = struct {
 
     const State = enum(u8) { booting, started, done, fired };
 
-    fn watch(d: *Deadline, io: Io) void {
+    /// How often the watch reads the status: each a tenth of a second.
+    const watch_step: aegis.units.Duration(.millisecond, u32) = .literal("100ms");
+    /// How often the input looks whether the program has started.
+    const feed_step: aegis.units.Duration(.millisecond, u32) = .literal("20ms");
+
+    /// A canceled wait ends the watch, as the machine's end does, and passes to the thread,
+    /// which names it.
+    fn watch(d: *Deadline, io: Io) Io.Cancelable!void {
         var tenths: u32 = 0;
         while (tenths < boot_deadline_seconds * 10) : (tenths += 1) {
             if (d.state.load(.acquire) == .done) return;
             var buffer: [256]u8 = undefined;
             // A status not yet written reads as none.
-            const status = Io.Dir.cwd().readFile(io, d.status_path, &buffer) catch "";
+            const status = seam.head(io, Io.Dir.cwd(), d.status_path, &buffer) catch "";
             if (started(status)) {
                 _ = d.state.cmpxchgStrong(.booting, .started, .acq_rel, .acquire); // safe: a run already done keeps its state
                 return;
             }
-            // A canceled wait counts as the boot over: it is being given up anyway.
-            io.sleep(.fromMilliseconds(100), .awake) catch return;
+            try io.sleep(watch_step.toIoDuration(), .awake);
         }
         if (d.state.cmpxchgStrong(.booting, .fired, .acq_rel, .acquire) != null) return;
-        // glint-ignore: Z026 -- QEMU may have ended between the check and the signal; its wait reports either way
-        std.posix.kill(d.pid, .KILL) catch {};
+        std.posix.kill(d.pid, .KILL) catch |err| switch (err) {
+            // QEMU ended between the check and the signal: its wait reports how.
+            error.ProcessNotFound => {},
+            // A machine past its deadline that cannot be stopped leaves the run waiting on it
+            // without end: this program ends instead, naming why.
+            error.PermissionDenied, error.Unexpected => |e| std.process.fatal("the FreeBSD machine did not start its program within {d} s and could not be stopped: {t}", .{ boot_deadline_seconds, e }),
+        };
     }
 
     /// The host's input to the machine once its program has started; none to a
-    /// machine that ends or is stopped first.
-    fn feed(d: *Deadline, io: Io, to: Io.File, forward: *const fn (Io, Io.File) void) void {
+    /// machine that ends or is stopped first. A canceled wait ends it, and passes to the
+    /// thread, which names it.
+    fn feed(d: *Deadline, io: Io, to: Io.File, forward: *const fn (Io, Io.File) void) Io.Cancelable!void {
         while (true) switch (d.state.load(.acquire)) {
-            .booting => io.sleep(.fromMilliseconds(20), .awake) catch return,
+            .booting => try io.sleep(feed_step.toIoDuration(), .awake),
             .started => return forward(io, to),
             .done, .fired => return,
         };

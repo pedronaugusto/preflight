@@ -16,6 +16,7 @@
 //! stderr the `err` port, and `status` takes `exited N` or `signal N`.
 const std = @import("std");
 const aegis = @import("aegis");
+const seam = @import("input.zig");
 const linux = std.os.linux;
 const Io = std.Io;
 
@@ -35,6 +36,8 @@ const guest_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin
 /// The package's held git, which the build overlays under /usr/local (vm.zig): the
 /// machine's `PREFLIGHT_GIT` when it is there, as the host's job names its own.
 const held_git = "/usr/local/bin/git";
+/// How often a wait for a device looks again: a thousand looks are ten seconds.
+const wait_step: aegis.units.Duration(.millisecond, u32) = .literal("10ms");
 
 pub fn main(init: std.process.Init) void {
     const io = init.io;
@@ -75,8 +78,8 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     const environ = try readList(io, gpa, run_mount ++ "/environ");
     const binds = try readList(io, gpa, run_mount ++ "/binds");
     const scratch = try readList(io, gpa, run_mount ++ "/scratch");
-    const cwd = try readFile(io, run_mount ++ "/cwd", gpa, 4096);
-    const user = try parseUser(try readFile(io, run_mount ++ "/user", gpa, 64));
+    const cwd = try readFile(io, run_mount ++ "/cwd", gpa, .text);
+    const user = try parseUser(try readFile(io, run_mount ++ "/user", gpa, .text));
     if (argv.len == 0) return error.NoProgram;
 
     // Made before the host's directories are bound, so that it is the machine's own
@@ -168,7 +171,7 @@ fn networkUp(io: Io) !void {
                 return error.NetworkAddress;
             },
         }
-        try io.sleep(.fromMilliseconds(10), .awake);
+        try io.sleep(wait_step.toIoDuration(), .awake);
     }
     request.ifru.netmask = inet(.{ 255, 255, 255, 0 });
     try check(linux.ioctl(fd, linux.SIOCSIFNETMASK, @intFromPtr(&request)), error.NetworkMask);
@@ -215,7 +218,7 @@ fn exists(io: Io, path: []const u8) bool {
 /// a module built in or loaded already is passed over.
 fn loadModules(io: Io, gpa: std.mem.Allocator, tree: []const u8, names: []const []const u8) !void {
     const dep_path = try std.Io.Dir.path.join(gpa, &.{ tree, "modules.dep" });
-    const deps = try readFile(io, dep_path, gpa, 16 * 1024 * 1024);
+    const deps = try readFile(io, dep_path, gpa, .part);
     for (names) |name| {
         const line = findModule(deps, name) orelse {
             say("no module {s} in {s}", .{ name, tree });
@@ -257,7 +260,7 @@ fn findModule(deps: []const u8, name: []const u8) ?[]const u8 {
 
 fn insertModule(io: Io, gpa: std.mem.Allocator, tree: []const u8, relative: []const u8) !void {
     const path = try std.Io.Dir.path.join(gpa, &.{ tree, relative });
-    const file = try readFile(io, path, gpa, 64 * 1024 * 1024);
+    const file = try readFile(io, path, gpa, .part);
     const image = if (std.mem.endsWith(u8, relative, ".gz")) try gunzip(gpa, file) else file;
     const rc = linux.syscall3(.init_module, @intFromPtr(image.ptr), image.len, @intFromPtr(""));
     switch (linux.errno(rc)) {
@@ -301,7 +304,11 @@ const loop_set_fd = 0x4C00;
 fn findModuleTree(io: Io, gpa: std.mem.Allocator, release: []const u8) ![]const u8 {
     for ([_][]const u8{ "modules", "lib/modules", "" }) |prefix| {
         const tree = try std.Io.Dir.path.join(gpa, &.{ module_mount, prefix, release });
-        Io.Dir.cwd().access(io, tree, .{}) catch continue;
+        Io.Dir.cwd().access(io, tree, .{}) catch |err| switch (err) {
+            // Not under this prefix: the next is looked at.
+            error.FileNotFound => continue,
+            else => |e| return e,
+        };
         return tree;
     }
     return error.ModuleTreeMissing;
@@ -343,7 +350,7 @@ fn openPorts(io: Io, gpa: std.mem.Allocator) !Ports {
             return ports;
         }
         if (tries == 1000) return error.PortsMissing;
-        try io.sleep(.fromMilliseconds(10), .awake);
+        try io.sleep(wait_step.toIoDuration(), .awake);
     }
 }
 
@@ -357,7 +364,7 @@ fn findPorts(io: Io, gpa: std.mem.Allocator) !?Ports {
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
         const name_path = try gpa.print("{s}/name", .{entry.name});
-        const raw = try aegis.own.readFile(io, dir, name_path, gpa, .fromRaw(256));
+        const raw = try seam.file(io, dir, name_path, gpa, .text);
         const name = std.mem.trimEnd(u8, raw, "\n");
         const device = try gpa.printSentinel("/dev/{s}", .{entry.name}, 0);
         const slot: *linux.fd_t = if (std.mem.eql(u8, name, "io")) &ports.io else if (std.mem.eql(u8, name, "err")) &ports.err else if (std.mem.eql(u8, name, "status")) &ports.status else continue;
@@ -628,8 +635,8 @@ fn report(ending: Ending) void {
         .exited => |code| std.mem.print(&buffer, "exited {d}\n", .{code}),
         .signal => |sig| std.mem.print(&buffer, "signal {d}\n", .{@backingInt(sig)}),
         .failed => |err| std.mem.print(&buffer, "failed {t}\n", .{err}),
-    } catch return;
-    writeAll(status_port, text) catch return;
+    } catch |err| return say("the status port: {t}", .{err});
+    writeAll(status_port, text) catch |err| say("the status port: {t}", .{err});
 }
 
 fn powerOff() noreturn {
@@ -642,7 +649,7 @@ fn powerOff() noreturn {
 }
 
 fn readList(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]const [:0]const u8 {
-    const bytes = try readFile(io, path, gpa, 16 * 1024 * 1024);
+    const bytes = try readFile(io, path, gpa, .description);
     var list: std.ArrayList([:0]const u8) = .empty;
     var start: usize = 0;
     for (bytes, 0..) |byte, index| {
@@ -655,15 +662,41 @@ fn readList(io: Io, gpa: std.mem.Allocator, path: []const u8) ![]const [:0]const
 }
 
 /// A line on the machine's console, which the host shows when the machine ends
-/// without the program's status.
+/// without the program's status. A line longer than the buffer is cut, and marked so.
 fn say(comptime format: []const u8, args: anytype) void {
     var buffer: [1024]u8 = undefined;
-    const text = std.mem.print(&buffer, "preflight machine: " ++ format ++ "\n", args) catch return;
-    writeAll(2, text) catch return;
+    var line: std.Io.Writer = .fixed(&buffer);
+    const text = if (line.print("preflight machine: " ++ format ++ "\n", args)) line.buffered() else |err| switch (err) {
+        error.WriteFailed => cut(&buffer),
+    };
+    toConsole(text);
 }
 
-fn readFile(io: Io, path: []const u8, gpa: std.mem.Allocator, limit: u64) ![]u8 {
-    return aegis.own.readFile(io, Io.Dir.cwd(), path, gpa, .fromRaw(limit)) catch |err| {
+/// A line that filled `buffer`: what fits, its end marked as cut.
+fn cut(buffer: []u8) []u8 {
+    const mark = "...\n";
+    @memcpy(buffer[buffer.len - mark.len ..], mark);
+    return buffer;
+}
+
+/// Writes `bytes` to the console (descriptor 2), again where a write is interrupted. A
+/// console that refuses a write takes no more of the line: the console is where the
+/// machine's failures are told, so its own has nowhere to be told (`writeAll` tells its
+/// failures here, and so cannot be how this writes).
+fn toConsole(bytes: []const u8) void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+        const rc = linux.write(2, bytes[written..].ptr, bytes.len - written);
+        switch (linux.errno(rc)) {
+            .SUCCESS => written += rc,
+            .INTR => continue,
+            else => return,
+        }
+    }
+}
+
+fn readFile(io: Io, path: []const u8, gpa: std.mem.Allocator, limit: seam.Limit) ![]u8 {
+    return seam.file(io, Io.Dir.cwd(), path, gpa, limit) catch |err| {
         say("reading {s}: {t}", .{ path, err });
         return err;
     };
@@ -691,7 +724,7 @@ fn waitOpen(io: Io, path: [*:0]const u8, flags: linux.O) !linux.fd_t {
                 return error.Open;
             },
         }
-        try io.sleep(.fromMilliseconds(10), .awake);
+        try io.sleep(wait_step.toIoDuration(), .awake);
     }
 }
 

@@ -3,7 +3,11 @@
 //! summary. The job keeps its phases in a record too, which the profile job
 //! folds into `ci/costs.json`, and the next plan balances its jobs by.
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
+
+/// A phase's length, in nanoseconds as std's clock keeps them: every std duration fits exactly.
+const Elapsed = aegis.units.Duration(.nanosecond, i96);
 
 /// Where a phase is reported once it ends.
 pub const Log = struct {
@@ -35,28 +39,29 @@ pub const Timer = struct {
 
     /// Seconds since `begin`.
     pub fn seconds(timer: Timer, c: src.Context) f64 {
-        // glint-ignore: A011 -- no-danger: a duration shown to a person, in seconds
-        const nanoseconds: f64 = @floatFromInt(timer.start.untilNow(c.io).raw.nanoseconds);
-        // glint-ignore: A011 -- no-danger: a duration shown to a person, in seconds
-        return nanoseconds / std.time.ns_per_s;
+        return Elapsed.fromIoDuration(timer.start.untilNow(c.io).raw, .exact).toSeconds(f64);
     }
 
     /// Prints the phase and adds it to the log. A log that cannot be written
-    /// loses only its line.
+    /// loses only its line, and says so.
     pub fn end(timer: Timer, c: src.Context, log: Log) void {
         const elapsed = timer.seconds(c);
         c.report("preflight: phase {s}: {d:.1} s\n", .{ timer.label, elapsed });
+        timer.logged(c, log, elapsed) catch |err| c.report("preflight: phase {s}: not logged ({s})\n", .{ timer.label, @errorName(err) });
+    }
+
+    /// Adds the phase, `elapsed` seconds long, to the summary and the record `log` names.
+    fn logged(timer: Timer, c: src.Context, log: Log, elapsed: f64) !void {
         if (log.summary) |path| {
-            const line = c.a.print("- phase `{s}`: {d:.1} s\n", .{ timer.label, elapsed }) catch return;
-            append(c, path, line) catch return;
+            try append(c, path, try c.a.print("- phase `{s}`: {d:.1} s\n", .{ timer.label, elapsed }));
         }
         if (log.record) |path| {
             var line: std.Io.Writer.Allocating = .init(c.a);
-            line.writer.writeAll("{\"phase\":") catch return;
-            std.json.Stringify.value(timer.label, .{}, &line.writer) catch return;
-            line.writer.print(",\"seconds\":{d:.2}}}\n", .{elapsed}) catch return;
-            if (std.Io.Dir.path.dirname(path)) |parent| c.directory().createDirPath(c.io, parent) catch return;
-            append(c, path, line.written()) catch return;
+            try line.writer.writeAll("{\"phase\":");
+            try std.json.Stringify.value(timer.label, .{}, &line.writer);
+            try line.writer.print(",\"seconds\":{d:.2}}}\n", .{elapsed});
+            if (std.Io.Dir.path.dirname(path)) |parent| try c.directory().createDirPath(c.io, parent);
+            try append(c, path, line.written());
         }
     }
 };

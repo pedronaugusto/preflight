@@ -214,6 +214,15 @@ fn freebsdRun(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Enviro
     }
 }
 
+/// The build names its cache to a run of the tests by this argument.
+const cache_flag = "--cache-dir=";
+
+/// Adds `path` to the run's scratch directories once.
+fn addScratch(gpa: std.mem.Allocator, scratch: *std.ArrayList(u8), scratched: *std.array_hash_map.String(void), path: []const u8) !void {
+    if ((try scratched.getOrPut(gpa, path)).found_existing) return;
+    try appendEntry(gpa, scratch, path);
+}
+
 /// Writes the run of `argv` in a directory of its own, as the machine's first
 /// process reads it (vm/guest.zig, vm/freebsd/guest.zig), and returns its path.
 fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, argv: []const []const u8) ![]const u8 {
@@ -231,10 +240,15 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
 
     var guest_environ: std.ArrayList(u8) = .empty;
     for (environ.keys(), environ.values()) |key, value| {
-        // The progress pipe is the host's, and the machine has its own programs.
-        if (std.mem.eql(u8, key, "ZIG_PROGRESS") or std.mem.eql(u8, key, "PATH")) continue;
+        // The progress pipe is the host's, the machine has its own programs, and its
+        // scratch is its own (below).
+        if (std.mem.eql(u8, key, "ZIG_PROGRESS") or std.mem.eql(u8, key, "PATH") or std.mem.eql(u8, key, "TMPDIR")) continue;
         try guest_environ.print(gpa, "{s}={s}\x00", .{ key, value });
     }
+    // A test's scratch is the machine's memory, never the host's share: 9p drops what a
+    // test of files relies on (a shared mapping's write a read does not see, a FIFO that
+    // will not open, a directory's sync). Both machines mount /tmp as tmpfs.
+    try guest_environ.print(gpa, "TMPDIR=/tmp\x00", .{});
     try run_dir.writeFile(io, .{ .sub_path = "environ", .data = guest_environ.items });
 
     // The directories the program can name: where it runs, where it is, and where
@@ -255,9 +269,14 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
         try addBind(io, gpa, &binds, &bound, if (stat.kind == .directory) value else std.Io.Dir.path.dirname(value) orelse "/");
     }
     try run_dir.writeFile(io, .{ .sub_path = "binds", .data = binds.items });
-    // Test files go where `std.testing.tmpDir` makes them: on the machine's own file system.
+    // Test files go where `std.testing.tmpDir` makes them, and in the tmp of the cache the
+    // build names to the tests: on the machine's own file system.
     var scratch: std.ArrayList(u8) = .empty;
-    try appendEntry(gpa, &scratch, try std.Io.Dir.path.join(gpa, &.{ here, ".zig-cache", "tmp" }));
+    var scratched: std.array_hash_map.String(void) = .empty;
+    try addScratch(gpa, &scratch, &scratched, try std.Io.Dir.path.join(gpa, &.{ here, ".zig-cache", "tmp" }));
+    for (argv[1..]) |arg| if (std.mem.startsWith(u8, arg, cache_flag)) {
+        try addScratch(gpa, &scratch, &scratched, try std.Io.Dir.path.resolveAlloc(gpa, &.{ here, arg[cache_flag.len..], "tmp" }));
+    };
     try run_dir.writeFile(io, .{ .sub_path = "scratch", .data = scratch.items });
     try run_dir.writeFile(io, .{ .sub_path = "cwd", .data = here });
     // The machine runs the program as this user, as the build does here.

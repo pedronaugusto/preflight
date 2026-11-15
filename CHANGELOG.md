@@ -63,6 +63,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The fuzz job reports no earlier run's crash as this run's: it clears `cache/f/crash` with the earlier findings before its first session. The job restores `cache/f` from the Actions cache, so a crash input kept by an older run could be named as the input a failed session crashed on.
 - The held git's sources are pinned at the hashes their releases fetch to: zlib 1.4 (its tarball matches zlib.net's published SHA-256), LibreSSL 4.4.1 (its release's `SHA256` file) and curl 8.23.0 (its signature, Daniel Stenberg's key). The pins written with the held git were hashes of a local cache entry that `zig fetch` of a downloaded tarball had stored, which unpacks to other hashes, so a build that fetched the releases themselves refused them (relic's `bay generate`).
 - The test machines take no `PREFLIGHT_GIT` from the host's job, whose path names a host program: the riscv64 machine's is the held git overlaid at `/usr/local/bin/git`, when the package names one; the FreeBSD machine has none.
 - The README said the held git's sources were fetched only by a build that makes one: every build of a package that names a held git fetches them as it configures, whatever step it runs.

@@ -159,8 +159,10 @@ pub fn run(c: *src.Context, budget: Span, store: []const u8, fuzzer: []const []c
     }
     try std.Io.Dir.cwd().createDirPath(c.io, store);
     const root = try std.Io.Dir.cwd().realPathFileAlloc(c.io, store, c.a);
-    // Findings an earlier run left here are not this run's.
-    try clearFindings(c, root);
+    // Findings and a crash input an earlier run left here are not this run's: the fuzz job
+    // restores `cache/f` from the Actions cache, and a crash kept there would be reported
+    // as this run's input.
+    try clearEarlier(c, root);
     const whole = budget;
     const start: std.Io.Clock.Timestamp = .now(c.io, .awake);
     var limit = first_limit;
@@ -211,13 +213,17 @@ fn missingOption(fuzzer: []const []const u8, usage: []const u8) ?[]const u8 {
 }
 
 /// Deletes `<package>/findings` under the store `root`, for each package the store holds.
-fn clearFindings(c: *src.Context, root: []const u8) !void {
+fn clearEarlier(c: *src.Context, root: []const u8) !void {
     var dir = try std.Io.Dir.cwd().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var entries = dir.iterate();
     while (try entries.next(c.io)) |entry| {
         if (entry.kind != .directory) continue;
         try dir.deleteTree(c.io, try std.Io.Dir.path.join(c.a, &.{ entry.name, "findings" }));
+        dir.deleteFile(c.io, try std.Io.Dir.path.join(c.a, &.{ entry.name, "cache", "f", "crash" })) catch |err| switch (err) {
+            error.FileNotFound => {}, // no crash kept: nothing of an earlier run's to clear
+            else => return err,
+        };
     }
 }
 
@@ -401,7 +407,7 @@ test "the budget is the flag, else the dispatched minutes, else the configuratio
     try std.testing.expectError(error.CheckFailed, minutes(&c, null, wrong));
 }
 
-test "a failed session prints every finding the store holds; a new run clears the old ones" {
+test "a failed session prints every finding the store holds; a new run clears the old ones and an old crash" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -413,6 +419,7 @@ test "a failed session prints every finding the store holds; a new run clears th
     try tmp.dir.createDirPath(c.io, "store/uplink/cache/f");
     try tmp.dir.writeFile(c.io, .{ .sub_path = "store/uplink/findings/wire-frame.txt", .data = "test: wire frame\nerror: Overflow\nfound: 0a0b\nminimal: 0a\n" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "store/uplink/cache/f/corpus", .data = "kept" });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "store/uplink/cache/f/crash", .data = "an earlier run's" });
     const root = try tmp.dir.realPathFileAlloc(c.io, "store", a);
     try std.testing.expectEqual(@as(usize, 1), try printFindings(&c, root));
     try std.testing.expect(std.mem.find(u8, held.written(), "minimal: 0a\nkeep it: add \"0a\"") != null);
@@ -421,8 +428,11 @@ test "a failed session prints every finding the store holds; a new run clears th
     try std.testing.expectEqual(@as(usize, 2), try printFindings(&c, root));
     try std.testing.expect(std.mem.find(u8, held.written(), "odd.txt: not a finding shakedown-fuzz writes") != null);
     try std.testing.expect(std.mem.find(u8, held.written(), "\x1b") == null);
-    try clearFindings(&c, root);
+    try std.testing.expect((try crashed(&c, root)) != null);
+    try clearEarlier(&c, root);
     try std.testing.expectEqual(@as(usize, 0), try printFindings(&c, root));
+    // An earlier run's crash input is not reported as this run's.
+    try std.testing.expect((try crashed(&c, root)) == null);
     // The corpora stay.
     try std.testing.expectEqualStrings("kept", try tmp.dir.readFileAlloc(c.io, "store/uplink/cache/f/corpus", a, .limited(16)));
 }

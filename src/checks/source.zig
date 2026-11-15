@@ -1,5 +1,5 @@
 const std = @import("std");
-const aegis = @import("aegis");
+const seam = @import("input.zig");
 const Io = std.Io;
 const gantry = @import("gantry");
 const configure = @import("../configure.zig");
@@ -81,16 +81,22 @@ pub const Context = struct {
         return if (c.dir) |dir| .{ .dir = dir } else .inherit;
     }
 
-    /// Writes to stderr, as a command-line tool reports; a failed write loses only the message.
+    /// Writes to stderr, as a command-line tool reports. A reader of stderr that has gone
+    /// (a closed pipe) loses only the message; stderr failing otherwise ends the run, which
+    /// can no longer say what it finds.
     pub fn report(c: Context, comptime fmt: []const u8, args: anytype) void {
         if (c.held) |held| {
-            held.writer.print(fmt, args) catch return;
+            // An allocating writer fails only when its allocator does.
+            held.writer.print(fmt, args) catch @panic("OOM");
             return;
         }
-        var buffer: [1024]u8 = undefined;
-        var writer = std.Io.File.stderr().writerStreaming(c.io, &buffer);
-        writer.interface.print(fmt, args) catch return;
-        writer.interface.flush() catch return;
+        toStderr(c.io, fmt, args) catch |err| switch (err) {
+            // No one is left to read the message.
+            error.BrokenPipe => {},
+            // The run is being canceled: the next cancelation point sees it again.
+            error.Canceled => c.io.recancel(),
+            else => std.debug.panic("preflight: stderr refused a report ({s})", .{@errorName(err)}),
+        };
     }
 
     pub fn fail(c: *Context, comptime fmt: []const u8, args: anytype) void {
@@ -99,7 +105,7 @@ pub const Context = struct {
     }
 
     pub fn read(c: Context, path: []const u8) ![]const u8 {
-        return aegis.own.readFile(c.io, c.directory(), path, c.a, .fromRaw(64 * 1024 * 1024));
+        return seam.packageFile(c.io, c.directory(), path, c.a);
     }
 
     /// The configuration at `path`, or an empty one when the file does not exist:
@@ -204,8 +210,19 @@ pub const default_support = [_][]const u8{"src/testing/**"};
 /// Test file names are fixed package data; malformed caller patterns are
 /// compiled separately by `testCode`.
 pub fn testFile(path: []const u8) bool {
-    for (test_files) |pattern| if (gantry.rules.matches(pattern, path) catch unreachable) return true; // unreachable: the fixed test file patterns are valid
+    for (test_files) |pattern| {
+        const matched = gantry.rules.matches(pattern, path) catch |err| std.debug.panic("the fixed test file pattern {s} is malformed ({s})", .{ pattern, @errorName(err) });
+        if (matched) return true;
+    }
     return false;
+}
+
+/// Writes to stderr, flushed; a failed write is the error stderr gave.
+fn toStderr(io: std.Io, comptime fmt: []const u8, args: anytype) std.Io.File.Writer.Error!void {
+    var buffer: [1024]u8 = undefined;
+    var writer = std.Io.File.stderr().writerStreaming(io, &buffer);
+    writer.interface.print(fmt, args) catch return writer.err.?;
+    writer.interface.flush() catch return writer.err.?;
 }
 
 /// The shared compiled definition of test code. Every pattern compiles before

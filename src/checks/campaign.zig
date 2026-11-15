@@ -4,7 +4,12 @@
 //! input saved to `f/crash` during the run, and the runs its coverage files
 //! (`v/<id>`, each headed by `std.Build.abi.fuzz.SeenPcsHeader`) count.
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
+const seam = @import("input.zig");
+
+/// When a file was last written: an instant of the real clock, in nanoseconds as std keeps it.
+const Saved = aegis.units.Instant(std.Io.Clock.real, .nanosecond, i96);
 
 /// What the fuzzer has left in a cache.
 pub const State = struct {
@@ -32,12 +37,8 @@ pub fn state(io: std.Io, cache: std.Io.Dir) !State {
     var entries = coverage.iterate();
     while (try entries.next(io)) |entry| {
         if (entry.kind != .file) continue;
-        var file = try coverage.openFile(io, entry.name, .{});
-        defer file.close(io);
-        var buffer: [@sizeOf(std.Build.abi.fuzz.SeenPcsHeader)]u8 = undefined;
-        var reader = file.reader(io, &buffer);
         // A file the fuzzer is still creating holds no header yet, and counts no runs.
-        const header = (reader.interface.takeStructPointer(std.Build.abi.fuzz.SeenPcsHeader) catch continue).*;
+        const header = try seam.header(std.Build.abi.fuzz.SeenPcsHeader, io, coverage, entry.name) orelse continue;
         found.runs += header.n_runs;
     }
     return found;
@@ -48,7 +49,7 @@ pub fn state(io: std.Io, cache: std.Io.Dir) !State {
 pub fn judge(before: State, after: State) Verdict {
     if (after.crash) |saved| {
         const earlier = before.crash orelse return .crashed;
-        if (saved.nanoseconds != earlier.nanoseconds) return .crashed;
+        if (!Saved.fromTimestamp(saved, .exact).eql(.fromTimestamp(earlier, .exact))) return .crashed;
     }
     return if (after.runs > before.runs) .ran else .idle;
 }
@@ -68,8 +69,9 @@ pub fn run(c: *src.Context, cache_path: []const u8, cwd: []const u8, argv: []con
     var names_buffer: [64]u8 = undefined;
     const names = try std.mem.print(&names_buffer, "tmp/preflight-fuzz-names-{x}", .{&id});
     try cache.createDirPath(c.io, names);
-    // glint-ignore: Z026 -- a directory left in the cache's tmp holds only names, and the campaign's verdict stands
-    defer cache.deleteTree(c.io, names) catch {};
+    // A directory left in the cache's tmp holds only names: the campaign's verdict stands, and the
+    // run says what it left.
+    defer cache.deleteTree(c.io, names) catch |err| c.report("fuzz campaign: {s}/{s} is left in the cache ({s})\n", .{ absolute, names, @errorName(err) });
     var env = try (c.environ_map orelse return error.EnvironmentUnknown).clone(c.a);
     try env.put("PREFLIGHT_FUZZ_NAMES", try std.Io.Dir.path.join(c.a, &.{ absolute, names }));
     var child = try std.process.spawn(c.io, .{

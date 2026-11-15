@@ -4,6 +4,7 @@
     {"file": "src/vm/freebsd/guest.zig", "rules": ["P007"], "reason": "the FreeBSD guest's init: it is the system calls that bring the VM up"},
     {"file": "src/runner.zig", "rules": ["P007"], "reason": "the test runner's per-OS layer: the process, pipe and console calls std's checked layer does not give it"},
     {"file": "src/checks/input.zig", "rules": ["A009"], "reason": "the checks' input seam (and the commands', above them): the files they read (fuzz findings, the held git's programs and installers) and the programs whose output they read, each held to a limit named there; everything else in the checks parses the bytes it hands back"},
-    {"file": "src/vm/input.zig", "rules": ["A009"], "reason": "the test machine's input seam, on its host side and in the riscv64 machine's first process: the boot images, statuses and consoles the host reads and the run's description the first process reads, each held to a limit named there"}
+    {"file": "src/vm/input.zig", "rules": ["A009"], "reason": "the test machine's input seam, on its host side and in the riscv64 machine's first process: the boot images, statuses and consoles the host reads and the run's description the first process reads, each held to a limit named there"},
+    {"file": "src/vm/identity.zig", "rules": ["P007"], "reason": "the test machine's host side's one system call: the user ids it runs the machine's program as, which std's checked layer has no call for"}
   ]
 }

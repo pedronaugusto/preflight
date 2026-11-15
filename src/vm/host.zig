@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const cpio = @import("cpio.zig");
 const seam = @import("input.zig");
+const identity = @import("identity.zig");
 const freebsd = @import("freebsd.zig");
 
 const usage =
@@ -183,11 +184,10 @@ fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
 
 /// Runs `argv` on the machine and ends as it ended: its exit code, or its signal.
 fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, kernel: []const u8, initrd: []const u8, argv: []const []const u8) !u8 {
-    const cwd = Io.Dir.cwd();
     const run_path = try describe(io, gpa, environ, argv);
-    // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the run's ending is the result
-    defer cwd.deleteTree(io, run_path) catch {};
-    switch (try boot(io, gpa, kernel, initrd, run_path, .offline)) {
+    const ending = boot(io, gpa, kernel, initrd, run_path, .offline);
+    try removeRun(io, gpa, run_path);
+    switch (try ending) {
         .exited => |code| return code,
         .signal => |sig| raiseOwn(sig),
     }
@@ -202,14 +202,12 @@ fn freebsdRun(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Enviro
         try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: ci-vm=freebsd: {s}\n", .{reason}));
         return 2;
     }
-    const cwd = Io.Dir.cwd();
     const run_path = try describe(io, gpa, environ, argv);
     const ending = freebsd.run(io, gpa, kernel, root, run_path, forwardInput) catch |err| {
         try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine's run is kept in {s}\n", .{run_path}));
         return err;
     };
-    // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the run's ending is the result
-    cwd.deleteTree(io, run_path) catch {};
+    try removeRun(io, gpa, run_path);
     switch (ending) {
         .exited => |code| return code,
         .signal => |sig| if (freebsd.linuxSignal(sig)) |linux_sig| raiseOwn(linux_sig) else std.process.exit(@intCast(128 + sig)), // safe: classify takes no signal above freebsd.max_signal, 126, so 128 + it is a byte, as a shell's exit code for it
@@ -249,7 +247,11 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
     for (argv[1..]) |arg| {
         const value = if (std.mem.startsWith(u8, arg, "--")) if (std.mem.findScalar(u8, arg, '=')) |eq| arg[eq + 1 ..] else continue else arg;
         if (!std.Io.Dir.path.isAbsolute(value)) continue;
-        const stat = cwd.statFile(io, value, .{}) catch continue;
+        const stat = cwd.statFile(io, value, .{}) catch |err| switch (err) {
+            // An argument naming nothing this user reaches on the host has no directory to bind.
+            error.FileNotFound, error.NotDir, error.AccessDenied, error.SymLinkLoop, error.NameTooLong, error.BadPathName => continue,
+            else => |e| return e,
+        };
         try addBind(io, gpa, &binds, &bound, if (stat.kind == .directory) value else std.Io.Dir.path.dirname(value) orelse "/");
     }
     try run_dir.writeFile(io, .{ .sub_path = "binds", .data = binds.items });
@@ -259,8 +261,21 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
     try run_dir.writeFile(io, .{ .sub_path = "scratch", .data = scratch.items });
     try run_dir.writeFile(io, .{ .sub_path = "cwd", .data = here });
     // The machine runs the program as this user, as the build does here.
-    try run_dir.writeFile(io, .{ .sub_path = "user", .data = try gpa.print("{d} {d}\n", .{ std.posix.system.getuid(), std.posix.system.getgid() }) });
+    try run_dir.writeFile(io, .{ .sub_path = "user", .data = try userLine(gpa) });
     return run_path;
+}
+
+/// The machine's `user` file: the ids of the user this program runs as.
+fn userLine(gpa: std.mem.Allocator) ![]u8 {
+    const user = identity.current();
+    return gpa.print("{d} {d}\n", .{ user.uid, user.gid });
+}
+
+/// Removes a run's directory once its machine has ended. One that cannot be removed is
+/// named and left for the cache's prune: the run's ending, not its scratch directory, is
+/// the result.
+fn removeRun(io: Io, gpa: std.mem.Allocator, run_path: []const u8) !void {
+    Io.Dir.cwd().deleteTree(io, run_path) catch |err| try Io.File.stderr().writeStreamingAll(io, try gpa.print("preflight-vm: the run directory {s} is left behind ({t}); the cache's prune takes it\n", .{ run_path, err }));
 }
 
 const InstallPaths = struct { kernel: []const u8, initrd: []const u8, rootfs: []const u8, out: []const u8 };
@@ -276,11 +291,16 @@ const install_root = "/run/preflight/root";
 /// release's repositories, so the packages are the release's current ones when
 /// the image is made, as a hosted runner's tools are its image's.
 fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []const []const u8) !u8 {
-    const cwd = Io.Dir.cwd();
-    const here = try cwd.realPathFileAlloc(io, ".", gpa);
+    const here = try Io.Dir.cwd().realPathFileAlloc(io, ".", gpa);
     const run_path = try runDirectory(io, gpa, here);
-    // glint-ignore: Z026 -- a scratch directory left behind is the cache's to prune; the image is the result
-    defer cwd.deleteTree(io, run_path) catch {};
+    const installed = installIn(io, gpa, paths, packages, run_path);
+    try removeRun(io, gpa, run_path);
+    return installed;
+}
+
+/// `install`'s work, in the run directory `run_path`.
+fn installIn(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []const []const u8, run_path: []const u8) !u8 {
+    const cwd = Io.Dir.cwd();
     var run_dir = try cwd.openDir(io, run_path, .{});
     defer run_dir.close(io);
 
@@ -308,7 +328,7 @@ fn install(io: Io, gpa: std.mem.Allocator, paths: InstallPaths, packages: []cons
     try run_dir.writeFile(io, .{ .sub_path = "cwd", .data = "/" });
     // As the build's user, who owns the share: apk's user mode leaves owners alone,
     // which the share could not keep.
-    try run_dir.writeFile(io, .{ .sub_path = "user", .data = try gpa.print("{d} {d}\n", .{ std.posix.system.getuid(), std.posix.system.getgid() }) });
+    try run_dir.writeFile(io, .{ .sub_path = "user", .data = try userLine(gpa) });
 
     switch (try boot(io, gpa, paths.kernel, paths.initrd, run_path, .online)) {
         .exited => |code| if (code != 0) {
@@ -430,11 +450,22 @@ fn forwardInput(io: Io, to: Io.File) void {
             error.Canceled => return,
             else => 0,
         };
-        output.interface.writeInt(u32, @intCast(n), .little) catch return; // safe: at most the chunk's length
-        output.interface.writeAll(chunk[0..n]) catch return;
-        output.interface.flush() catch return;
+        // The file's writer keeps the cause of a failed write; one it lacks is unexpected.
+        frame(&output.interface, chunk[0..n]) catch switch (output.err orelse error.Unexpected) {
+            // QEMU has ended, and its machine with it: no program is left to take the input. A
+            // cancel ends the forwarding itself, at once.
+            error.BrokenPipe, error.Canceled => return,
+            else => |e| return std.log.err("preflight-vm: the host's input to the machine stopped: {t}", .{e}),
+        };
         if (n == 0) return;
     }
+}
+
+/// One frame of the host's input: its length, little-endian, then its bytes.
+fn frame(out: *Io.Writer, bytes: []const u8) Io.Writer.Error!void {
+    try out.writeInt(u32, @intCast(bytes.len), .little); // safe: at most the chunk's length
+    try out.writeAll(bytes);
+    try out.flush();
 }
 
 pub const Ending = union(enum) { exited: u8, signal: u32 };
@@ -451,14 +482,15 @@ pub fn parseStatus(text: []const u8) ?Ending {
 /// the crash as its own. Linux numbers signals alike on every architecture it runs
 /// tests on; a host that numbers them otherwise ends with 128 + the number.
 fn raiseOwn(sig: u32) noreturn {
+    const code: u8 = @truncate(128 +% sig); // safe: an exit code is a byte, as a shell takes 128 + a signal
     if (builtin.target.os.tag == .linux and sig > 0 and sig < 32) {
         const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: checked to lie between 1 and 31 above
         var default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
         std.posix.sigaction(signal, &default, null);
-        // glint-ignore: Z026 -- the exit below ends the process either way, with 128 + the signal
-        std.posix.raise(signal) catch {};
+        // A raise that fails ends the process as one whose signal is ignored does below.
+        std.posix.raise(signal) catch std.process.exit(code);
     }
-    std.process.exit(@truncate(128 +% sig)); // safe: an exit code is a byte, as a shell takes 128 + a signal
+    std.process.exit(code);
 }
 
 test "a path is left out when it is one of those named or lies under one" {

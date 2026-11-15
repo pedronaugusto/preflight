@@ -454,8 +454,11 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
     const archive = try std.fs.path.join(c.a, &.{ work, "git.tar.xz" });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = archive, .data = tarball });
     try run(c, environ, work, &.{ "tar", "-xf", archive, "-C", "git", "--strip-components=1" });
-    // The pinned sources are read-only: each is copied to be built.
-    for ([_][]const u8{ in.zlib, in.libressl, in.curl }, [_][]const u8{ "zlib", "libressl", "curl" }) |from, to| {
+    // The pinned sources are read-only: each is copied to be built. A build names them as they
+    // sit in the package (`./zig-pkg/<hash>`), and the copy runs in the work directory, so each
+    // is made absolute first (every hosted job's held git failed at the first copy).
+    for ([_][]const u8{ in.zlib, in.libressl, in.curl }, [_][]const u8{ "zlib", "libressl", "curl" }) |given, to| {
+        const from = try std.Io.Dir.cwd().realPathFileAlloc(io, given, c.a);
         try run(c, environ, work, &.{ "cp", "-R", try c.a.print("{s}/.", .{from}), to });
         try run(c, environ, work, &.{ "chmod", "-R", "u+w", to });
     }

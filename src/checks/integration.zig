@@ -765,7 +765,9 @@ fn lintSampleWith(text: ?[]const u8, rule: ?[]const u8, fails: bool, options: []
             return error.RuleNotReported;
         }
     }
-    try std.testing.expect(result.term == .exited and (result.term.exited != 0) == fails);
+    const ended = result.term == .exited and (result.term.exited != 0) == fails;
+    if (!ended) std.log.err("the lint {s}; it printed:\n{s}", .{ if (fails) "passed" else "failed", result.stderr });
+    try std.testing.expect(ended);
 }
 
 test "a red lint and a failing unit test are each reported: the suite runs whatever the lint gives" {

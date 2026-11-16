@@ -461,6 +461,11 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
         const from = try std.Io.Dir.cwd().realPathFileAlloc(io, given, c.a);
         try run(c, environ, work, &.{ "cp", "-R", try c.a.print("{s}/.", .{from}), to });
         try run(c, environ, work, &.{ "chmod", "-R", "u+w", to });
+        // One time for every file: a package's files carry the time they were unpacked, in no
+        // order, so make took a release's generated Makefile.in and configure for older than
+        // what they are generated from and ran automake and autoconf, which a runner has not
+        // (LibreSSL's make, exit 127, on every Linux and macOS job of run 43773076157).
+        try run(c, environ, work, &.{ "find", to, "-exec", "touch", "-h", "-t", "200001010000", "{}", "+" });
     }
     const prefix = try std.fs.path.join(c.a, &.{ work, "prefix" });
     var env = try environment(c.a, environ, p, in, prefix);
@@ -520,14 +525,23 @@ fn check(c: *src.Context, held: Held, p: Platform, out: []const u8) !void {
     }
 }
 
-/// Git for Windows' release `held` names, installed where the runner's own is (`C:\Program
-/// Files\Git`), from its installer checked against the configuration's hash and kept in the
-/// store. The path that runs it: `cmd\git.exe` there.
-pub fn installWindows(c: *src.Context, environ: *const std.process.Environ.Map, held: Held, arch: std.Target.Cpu.Arch, store: []const u8) !void {
+/// Git for Windows' release `held` names, installed in the store (`Git-<version>-<arch>`
+/// there) from its installer checked against the configuration's hash and kept beside it, and
+/// returns that directory, whose `cmd\git.exe` runs it. Not over the runner's own Git: the
+/// job's shell is that Git's bash, whose programs an install over it cannot replace (every
+/// Windows job's install failed so, run 43773076157). One the store kept is used as it is.
+pub fn installWindows(c: *src.Context, environ: *const std.process.Environ.Map, held: Held, arch: std.Target.Cpu.Arch, store: []const u8) ![]const u8 {
     const io = c.io;
     const installer = try windowsInstaller(c.a, held.version, arch);
     const sha256 = if (arch == .aarch64) held.windows_aarch64 else held.windows_x86_64;
     const kept = try std.fs.path.join(c.a, &.{ store, installer.name });
+    const dir = try std.fs.path.join(c.a, &.{ store, try c.a.print("Git-{s}-{t}", .{ held.version, arch }) });
+    const git = try std.fs.path.join(c.a, &.{ dir, "cmd", "git.exe" });
+    const want = try c.a.print("git version {s}.windows.1", .{held.version});
+    if (exists(io, git)) if (try saysOther(c, git, want) == null) {
+        c.report("held git: {s}, kept in {s}\n", .{ want, dir });
+        return dir;
+    };
     try std.Io.Dir.cwd().createDirPath(io, store);
     // An installer this store kept, checked against its hash before it runs.
     const bytes = seam.file(io, std.Io.Dir.cwd(), kept, c.a, .program) catch try fetchChecked(c, installer.url, sha256);
@@ -536,16 +550,29 @@ pub fn installWindows(c: *src.Context, environ: *const std.process.Environ.Map, 
         return error.CheckFailed;
     }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = kept, .data = bytes });
-    try run(c, environ, store, &.{ kept, "/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS" });
-    const programs = environ.get("ProgramFiles") orelse "C:\\Program Files";
-    const git = try std.fs.path.join(c.a, &.{ programs, "Git", "cmd", "git.exe" });
-    const said = try seam.run(c.a, io, .{ .argv = &.{ git, "--version" } }, .line);
-    const want = try c.a.print("git version {s}.windows.1", .{held.version});
-    if (!command.succeeded(said) or !std.mem.eql(u8, std.mem.trimEnd(u8, said.stdout, "\r\n"), want)) {
-        c.fail("held git: {s} says {s}, not {s}", .{ git, std.mem.trimEnd(u8, said.stdout, "\r\n"), want });
+    const log = try std.fs.path.join(c.a, &.{ store, try c.a.print("{s}.log", .{installer.name}) });
+    run(c, environ, store, &.{ kept, "/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES", "/NOICONS", try c.a.print("/DIR={s}", .{dir}), try c.a.print("/LOG={s}", .{log}) }) catch |err| {
+        // The installer says why only in its log.
+        const said = seam.document(io, std.Io.Dir.cwd(), log, c.a, .list) catch |read| switch (read) {
+            error.FileNotFound => "(it wrote no log)",
+            else => |e| return e,
+        };
+        c.report("held git: the installer's log, {s}:\n{s}\n", .{ log, said[said.len -| 8192..] });
+        return err;
+    };
+    if (try saysOther(c, git, want)) |said| {
+        c.fail("held git: {s} says {s}, not {s}", .{ git, said, want });
         return error.CheckFailed;
     }
-    c.report("held git: {s}\n", .{want});
+    c.report("held git: {s} installed in {s}\n", .{ want, dir });
+    return dir;
+}
+
+/// What `git --version` says when it is not `want`; null when it is.
+fn saysOther(c: *src.Context, git: []const u8, want: []const u8) !?[]const u8 {
+    const said = try seam.run(c.a, c.io, .{ .argv = &.{ git, "--version" } }, .line);
+    const line = std.mem.trimEnd(u8, said.stdout, "\r\n");
+    return if (command.succeeded(said) and std.mem.eql(u8, line, want)) null else line;
 }
 
 /// The `git` of `ci/workflow.json` for `version`: its tarball's and installers' hashes, each

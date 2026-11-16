@@ -641,7 +641,8 @@ fn heldGitCommand(c: *src.Context, environ: *const std.process.Environ.Map, args
             c.fail("held-git: Git for Windows is installed on the Windows machine that runs it, not built", .{});
             return error.CheckFailed;
         }
-        return heldgit.installWindows(c, environ, held, builtin.target.cpu.arch, store);
+        const dir = try heldgit.installWindows(c, environ, held, builtin.target.cpu.arch, store);
+        return firstOnPath(c, environ, try std.fs.path.join(c.a, &.{ dir, "cmd" }), "git.exe");
     }
     const p = heldgit.platform(target) orelse {
         c.fail("held-git: no held git is built for {s}-{s}-{s}", .{ @tagName(target.cpu.arch), @tagName(target.os.tag), @tagName(target.abi) });
@@ -668,8 +669,13 @@ fn heldGitCommand(c: *src.Context, environ: *const std.process.Environ.Map, args
         try checks.command.execute(c.*, &.{ "cp", "-R", try c.a.print("{s}/.", .{out}), to });
     }
     if (args.target != null) return;
-    const bin = try std.fs.path.join(c.a, &.{ out, "bin" });
+    return firstOnPath(c, environ, try std.fs.path.join(c.a, &.{ out, "bin" }), "git");
+}
+
+/// On a hosted job, puts `bin` first on the path of the steps after this one, its `program`
+/// named by PREFLIGHT_GIT.
+fn firstOnPath(c: *src.Context, environ: *const std.process.Environ.Map, bin: []const u8, program: []const u8) !void {
     if (environ.get("GITHUB_PATH")) |path_file| try append(c.*, path_file, try c.a.print("{s}\n", .{bin}));
-    if (environ.get("GITHUB_ENV")) |env_file| try append(c.*, env_file, try c.a.print("PREFLIGHT_GIT={s}\n", .{try std.fs.path.join(c.a, &.{ bin, "git" })}));
+    if (environ.get("GITHUB_ENV")) |env_file| try append(c.*, env_file, try c.a.print("PREFLIGHT_GIT={s}\n", .{try std.fs.path.join(c.a, &.{ bin, program })}));
     c.report("held-git: {s} first on the path\n", .{bin});
 }

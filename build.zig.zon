@@ -21,7 +21,9 @@
         // built with by zig cc, from their releases, fetched by every build of a package that
         // names a held git (as it configures) and by no other.
         .held_git_zlib = .{
-            .url = "https://zlib.net/fossils/zlib-1.4.tar.gz",
+            // zlib's own release asset, immutable: zlib.net serves only its current release and
+            // answers a moved one with an HTML page (riscv64's fetch in run 43773076157).
+            .url = "https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz",
             .hash = "N-V-__8AAH8jNwDPTrkJ1_Rx__jQMDeVEmuPIIHps-wt3xza",
             .lazy = true,
         },

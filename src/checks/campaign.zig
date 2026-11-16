@@ -13,6 +13,9 @@ const budget = @import("budget.zig");
 /// When a file was last written: an instant of the real clock, in nanoseconds as std keeps it.
 const Saved = aegis.units.Instant(std.Io.Clock.real, .nanosecond, i96);
 
+/// A hosted job's deadline, `PREFLIGHT_DEADLINE`: whole seconds of the real clock.
+const Deadline = aegis.units.Instant(std.Io.Clock.real, .second, i64);
+
 /// What the fuzzer has left in a cache.
 pub const State = struct {
     /// The runs every coverage file counts, accumulated across campaigns.
@@ -115,9 +118,11 @@ fn untilDeadline(c: *src.Context, deadline: ?[]const u8) !?budget.Span {
         c.fail("fuzz campaign: PREFLIGHT_DEADLINE is {s}, not whole seconds since the epoch", .{text});
         return error.CheckFailed;
     };
-    const now = std.Io.Clock.Timestamp.now(c.io, .real).raw.nanoseconds;
-    const left = @as(i96, seconds) * std.time.ns_per_s - now;
-    return budget.Span.fromIoDuration(.fromNanoseconds(@max(left, 0)), .down) catch .fromRaw(std.math.maxInt(u64));
+    const end = Deadline.fromRaw(seconds).convert(.nanosecond, i96, .exact);
+    const now = try Saved.fromIoTimestamp(.now(c.io, .real), .exact);
+    const left = now.saturatingDurationTo(end);
+    if (left.compare(.fromRaw(0)) != .gt) return .fromRaw(0);
+    return budget.Span.fromIoDuration(left.toIoDuration(), .down) catch .fromRaw(std.math.maxInt(u64));
 }
 
 test "a crash saved during the campaign fails it, one from before does not" {

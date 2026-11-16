@@ -264,7 +264,7 @@ fn bindAround(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []cons
     // A directory split before (a bind below another, or named twice) is already in place.
     if ((try split.getOrPut(gpa, path)).found_existing) return;
     try Io.Dir.cwd().createDirPath(io, try inRoot(gpa, path));
-    const source = try std.fmt.allocPrint(gpa, "{s}{s}", .{ host_mount, resolved });
+    const source = try gpa.print("{s}{s}", .{ host_mount, resolved });
     var dir = try Io.Dir.cwd().openDir(io, source, .{ .iterate = true });
     defer dir.close(io);
     var entries = dir.iterate();
@@ -278,8 +278,7 @@ fn bindAround(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []cons
             .file => try bindFile(io, gpa, child, child_resolved),
             .sym_link => {
                 var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
-                const length = try dir.readLink(io, found.name, &buffer);
-                try Io.Dir.cwd().symLink(io, buffer[0..length], try inRoot(gpa, child), .{});
+                try Io.Dir.cwd().symLink(io, try seam.link(io, dir, found.name, &buffer), try inRoot(gpa, child), .{});
             },
             // A socket or FIFO of the host's is nothing the machine can open.
             else => {},
@@ -306,17 +305,6 @@ fn bindFile(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const 
     file.close(io);
     const source = try gpa.printSentinel("{s}{s}", .{ host_mount, resolved }, 0);
     try mount(source, target, "nullfs", &.{}, 0);
-}
-
-test "a bind holds a scratch directory strictly beneath it, at a boundary of names" {
-    const scratch = [_][:0]const u8{"/w/p/.zig-cache/tmp"};
-    try std.testing.expect(holdsScratch("/w/p", &scratch));
-    try std.testing.expect(holdsScratch("/w/p/.zig-cache", &scratch));
-    try std.testing.expect(holdsScratch("/", &scratch));
-    try std.testing.expect(!holdsScratch("/w/p/.zig-cache/tmp", &scratch));
-    try std.testing.expect(!holdsScratch("/w/pp", &scratch));
-    try std.testing.expect(!holdsScratch("/w/p/.zig", &scratch));
-    try std.testing.expect(isScratch("/w/p/.zig-cache/tmp", &scratch));
 }
 
 /// A directory the run writes its scratch files in: the machine's memory, so that

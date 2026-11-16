@@ -526,14 +526,19 @@ fn raiseOwn(io: Io, sig: u32) noreturn {
     std.process.exit(code);
 }
 
-/// The name of `sig`, a Linux signal number, when no process can set its action or catch
-/// it. Linux's numbers, read on any host: the tests of this file run on Windows too, whose
+/// Linux's SIGKILL and SIGSTOP, alike on every architecture it runs tests on (x86_64,
+/// aarch64, riscv64): named here, as the tests of this file run on Windows too, whose
 /// `std.posix.SIG` has neither.
+const linux_kill = 9;
+const linux_stop = 19;
+
+/// The name of `sig`, a Linux signal number, when no process can set its action or catch it.
 fn uncatchable(sig: u32) ?[]const u8 {
-    const linux = std.os.linux.SIG;
-    if (sig == @backingInt(linux.KILL)) return "KILL";
-    if (sig == @backingInt(linux.STOP)) return "STOP";
-    return null;
+    return switch (sig) {
+        linux_kill => "KILL",
+        linux_stop => "STOP",
+        else => null,
+    };
 }
 
 test "a program the kernel killed or stopped ends the run by its exit code, its signal named, and sets no action for it" {

@@ -23,6 +23,12 @@ pub const Limit = enum {
     }
 };
 
+/// The target of the host's link `name` in `dir`, as the machine recreates it: a path in
+/// `buffer`, at most the system's longest.
+pub fn link(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: *[std.Io.Dir.max_path_bytes]u8) std.Io.Dir.ReadLinkError![]const u8 {
+    return buffer[0..try dir.readLink(io, name, buffer)];
+}
+
 /// The file at `path` under `dir`, at most `limit`'s bytes, owned by the caller.
 pub fn file(io: std.Io, dir: std.Io.Dir, path: []const u8, gpa: std.mem.Allocator, limit: Limit) aegis.own.ReadFileError![]u8 {
     return aegis.own.readFile(io, dir, path, gpa, limit.bytes());

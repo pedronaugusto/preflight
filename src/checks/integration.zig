@@ -1796,11 +1796,13 @@ test "the fuzz job fails on an input the fuzzer finds failing, and keeps it" {
     try env.put("PREFLIGHT_FUZZ_MINUTES", "1");
     const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-fuzz" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(bad));
-    if (std.mem.find(u8, bad.stderr, "ci-fuzz: session 1 failed on an input the fuzzer kept at ") == null) std.debug.print("{s}", .{bad.stderr});
-    try std.testing.expect(std.mem.find(u8, bad.stderr, "ci-fuzz: session 1 failed on an input the fuzzer kept at ") != null);
+    // shakedown-fuzz writes the failing input of a std.testing.fuzz test as a finding, as it
+    // does a property's (since b168f3a), and the job prints it.
+    if (std.mem.find(u8, bad.stderr, "ci-fuzz: 1 finding(s) in session 1; ") == null) std.debug.print("{s}", .{bad.stderr});
+    try std.testing.expect(std.mem.find(u8, bad.stderr, "ci-fuzz: 1 finding(s) in session 1; ") != null);
     // In the store the hosted job keeps as an artifact, under the package's name.
     const name = std.Io.Dir.path.basename(try tmp.dir.realPathFileAlloc(std.testing.io, ".", a));
-    try tmp.dir.access(std.testing.io, try std.Io.Dir.path.join(a, &.{ ".zig-cache/preflight-fuzz", name, "cache/f/crash" }), .{});
+    try tmp.dir.access(std.testing.io, try std.Io.Dir.path.join(a, &.{ ".zig-cache/preflight-fuzz", name, "findings/fails-on-most-inputs.txt" }), .{});
 }
 
 /// The fixture with a `feature` option (on by default) that its tests read, and a test that does

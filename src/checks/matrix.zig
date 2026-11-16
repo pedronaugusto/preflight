@@ -707,8 +707,9 @@ pub fn targetName(target: src.Value) src.TypeError![]const u8 {
     return if (target == .string) target.string else try src.string(src.get(target, "target"), "");
 }
 
-/// What compiling one target costs a job when no run has measured it, in seconds.
-const unmeasured_target_seconds = 90;
+/// The minutes a target no run has measured is given, in a cross job of its own: GitHub's
+/// longest, so that its first job finishes and measures it.
+const unmeasured_job_minutes = 360;
 /// The seconds of compiling one cross job is given, when `cross_seconds` does not say.
 const default_cross_seconds = 200;
 /// What a cross job spends before it compiles (checkout, Zig, caches, the toolchain), which
@@ -737,31 +738,33 @@ fn number(value: src.Value) ?f64 {
 
 /// The object compile of `targets`, in as many jobs as `cross_jobs` asks for,
 /// or as few as hold `cross_seconds` (200) of compiling each, by what the last
-/// run measured of every target and 90 s for one it has not. The longest
-/// target goes first onto the job with the least, so the jobs end together.
-/// With `bench`, each job also compiles the ReleaseFast benchmarks.
+/// run measured of every target; a target it has not measured has a job of its
+/// own, of `unmeasured_job_minutes`. The longest target goes first onto the job
+/// with the least, so the jobs end together. With `bench`, each job also
+/// compiles the ReleaseFast benchmarks.
 fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), targets: []const src.Value, bench: bool) !void {
     if (targets.len == 0) return;
     const wanted = src.get(config, "cross_jobs");
     if (wanted != .null and (wanted != .integer or wanted.integer < 1)) return error.InvalidCrossJobs;
     const budget = src.get(config, "cross_seconds");
     if (budget != .null and !((number(budget) orelse 0) > 0)) return error.InvalidCrossSeconds;
+    // A target no run has measured is packed with nothing and given GitHub's longest job: no
+    // guess of its cost can be trusted to fit a bound (strand's x86_64-windows-gnu, costed at a
+    // guess of 90 s with no ci/costs.json, outran its 20 minutes, run 43777274923). Its job
+    // finishes and measures it, and from then on the bound below holds it, or refuses it by name.
+    var unmeasured: std.ArrayList(usize) = .empty;
+    var kept: std.ArrayList(usize) = .empty;
     const cost = try a.alloc(f64, targets.len);
-    var known: f64 = 0;
-    var measured: usize = 0;
-    for (targets, cost) |target, *seconds| {
-        seconds.* = try targetSeconds(a, config, try targetName(target), bench) orelse -1;
-        if (seconds.* >= 0) {
-            known += seconds.*;
-            measured += 1;
+    for (targets, cost, 0..) |target, *seconds, index| {
+        if (try targetSeconds(a, config, try targetName(target), bench)) |measured| {
+            seconds.* = measured;
+            try kept.append(a, index);
+        } else {
+            seconds.* = 0;
+            try unmeasured.append(a, index);
         }
     }
-    // A target nobody measured costs what the others do on average.
-    for (cost) |*seconds| if (seconds.* < 0) {
-        seconds.* = if (measured > 0) known / @as(f64, @floatFromInt(measured)) else unmeasured_target_seconds;
-    };
-    const order = try a.alloc(usize, targets.len);
-    for (order, 0..) |*index, i| index.* = i;
+    const order = kept.items;
     std.mem.sort(usize, order, cost, struct {
         fn longer(costs: []const f64, x: usize, y: usize) bool {
             return costs[x] > costs[y];
@@ -771,48 +774,59 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     // more compiling than `cross_job_timeout` lets it finish (relic's 975 s target in 20
     // minutes ended two jobs at their bound, run 43737703239); a target past that is refused.
     const room = @as(f64, @floatFromInt(try minutes(config, "cross_job_timeout") * 60)) - cross_setup_seconds;
-    const heaviest = std.mem.max(f64, cost);
-    if (heaviest > room) {
-        problem = try a.print("{s} takes {d:.0} s to compile, more than the {d:.0} s a cross job's cross_job_timeout leaves after its setup: raise cross_job_timeout", .{ try targetName(targets[std.mem.indexOfMax(f64, cost)]), heaviest, room });
+    var heaviest: f64 = 0;
+    for (order) |index| if (cost[index] > room) {
+        problem = try a.print("{s} takes {d:.0} s to compile, more than the {d:.0} s a cross job's cross_job_timeout leaves after its setup: raise cross_job_timeout", .{ try targetName(targets[index]), cost[index], room });
         return error.CrossTargetPastTimeout;
-    }
+    } else {
+        heaviest = @max(heaviest, cost[index]);
+    };
     // A job cannot be shorter than the longest target, so more jobs stop helping there.
     const limit = @min(@max(number(budget) orelse default_cross_seconds, heaviest), room);
     const assignment = try a.alloc(usize, targets.len);
-    const load = try a.alloc(f64, targets.len);
-    var count: usize = if (wanted == .null) 1 else @min(std.math.cast(usize, wanted.integer) orelse return error.InvalidCrossJobs, targets.len);
-    var longest: f64 = 0;
-    while (true) : (count += 1) {
-        @memset(load[0..count], 0);
-        longest = 0;
-        for (order) |index| {
-            var least: usize = 0;
-            for (load[0..count], 0..) |seconds, group| if (seconds < load[least]) {
-                least = group;
-            };
-            assignment[index] = least;
-            load[least] += cost[index];
-            longest = @max(longest, load[least]);
+    const load = try a.alloc(f64, @max(order.len, 1));
+    var count: usize = 0;
+    if (order.len > 0) {
+        // `cross_jobs` counts every job, an unmeasured target's among them.
+        count = if (wanted == .null) 1 else std.math.clamp((std.math.cast(usize, wanted.integer) orelse return error.InvalidCrossJobs) -| unmeasured.items.len, 1, order.len);
+        var longest: f64 = 0;
+        while (true) : (count += 1) {
+            @memset(load[0..count], 0);
+            longest = 0;
+            for (order) |index| {
+                var least: usize = 0;
+                for (load[0..count], 0..) |seconds, group| if (seconds < load[least]) {
+                    least = group;
+                };
+                assignment[index] = least;
+                load[least] += cost[index];
+                longest = @max(longest, load[least]);
+            }
+            if (wanted != .null or count == order.len or longest <= limit) break;
         }
-        if (wanted != .null or count == targets.len or longest <= limit) break;
+        if (longest > room) {
+            problem = try a.print("cross_jobs {d} puts {d:.0} s of compiling in one job, more than the {d:.0} s its cross_job_timeout leaves after its setup: raise cross_job_timeout or cross_jobs", .{ count + unmeasured.items.len, longest, room });
+            return error.CrossJobPastTimeout;
+        }
     }
-    if (longest > room) {
-        problem = try a.print("cross_jobs {d} puts {d:.0} s of compiling in one job, more than the {d:.0} s its cross_job_timeout leaves after its setup: raise cross_job_timeout or cross_jobs", .{ count, longest, room });
-        return error.CrossJobPastTimeout;
-    }
-    for (0..count) |group| {
+    for (unmeasured.items, 0..) |index, nth| assignment[index] = count + nth;
+    const total = count + unmeasured.items.len;
+    for (0..total) |group| {
         var names: std.ArrayList(u8) = .empty;
         for (targets, assignment) |target, owner| if (owner == group) {
             if (names.items.len > 0) try names.append(a, ' ');
             try names.appendSlice(a, try targetName(target));
         };
-        if (names.items.len == 0) continue;
+        const alone = group >= count;
         try jobs.append(a, .{
             .os = hosts[0],
-            .name = try a.print("Cross compile{s}{s}", .{ if (count > 1) " " else "", try shardName(a, group, count) }),
+            .name = if (alone)
+                try a.print("Cross compile {s}, unmeasured", .{names.items})
+            else
+                try a.print("Cross compile{s}{s}", .{ if (total > 1) " " else "", try shardName(a, group, total) }),
             .step = if (bench) "preflight-cross-bench" else "preflight-cross",
             .operation = .objects,
-            .job_timeout = try minutes(config, "cross_job_timeout"),
+            .job_timeout = if (alone) unmeasured_job_minutes else try minutes(config, "cross_job_timeout"),
             .cache_key = try a.print("cross-{s}-{d}", .{ if (bench) "bench" else "objects", group }),
             .targets = names.items,
         });
@@ -1042,26 +1056,33 @@ fn allTargets(jobs: []const Job, a: std.mem.Allocator) ![]const u8 {
     return std.mem.join(a, " ", names.items);
 }
 
-test "cross targets no run has measured cost 90 s each, and get as many jobs as hold 200 s of them" {
+test "a cross target no run has measured has a job of its own, of GitHub's longest, named for it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    // strand's 8155bf9: no ci/costs.json, and x86_64-windows-gnu outran the 20 minutes a guess
+    // of 90 s had packed it into (run 43777274923).
     const many = (try std.json.parseFromSlice(src.Value, a,
-        \\{"targets":["a-linux-gnu","b","c","d","e","f","g"]}
+        \\{"targets":["a-linux-gnu","b","c","x86_64-windows-gnu"]}
     , .{})).value;
     var jobs: std.ArrayList(Job) = .empty;
     try crossJobs(a, many, &jobs, try src.items(src.get(many, "targets")), false);
     try std.testing.expectEqual(@as(usize, 4), jobs.items.len);
-    try std.testing.expectEqualStrings("a-linux-gnu b c d e f g", try allTargets(jobs.items, a));
-    try std.testing.expectEqualStrings("Cross compile 4/4", jobs.items[3].name);
+    try std.testing.expectEqualStrings("a-linux-gnu b c x86_64-windows-gnu", try allTargets(jobs.items, a));
+    try std.testing.expectEqualStrings("Cross compile x86_64-windows-gnu, unmeasured", jobs.items[3].name);
+    for (jobs.items) |job| try std.testing.expectEqual(@as(usize, 360), job.job_timeout);
+    // cross_jobs counts them among its jobs, and the measured share what is left.
     const asked = (try std.json.parseFromSlice(src.Value, a,
-        \\{"cross_jobs":3,"targets":["a","b"]}
+        \\{"cross_jobs":2,"targets":["a","b","c"],"measured":{"phases":{"compile a":10,"compile b":10,"benchmarks a":1,"benchmarks b":1}}}
     , .{})).value;
     jobs.clearRetainingCapacity();
     try crossJobs(a, asked, &jobs, try src.items(src.get(asked, "targets")), true);
     try std.testing.expectEqual(@as(usize, 2), jobs.items.len);
     try std.testing.expectEqualStrings("preflight-cross-bench", jobs.items[0].step);
     try std.testing.expectEqualStrings("Cross compile 1/2", jobs.items[0].name);
+    try std.testing.expectEqualStrings("a b", jobs.items[0].targets);
+    try std.testing.expectEqual(@as(usize, 20), jobs.items[0].job_timeout);
+    try std.testing.expectEqualStrings("Cross compile c, unmeasured", jobs.items[1].name);
     for ([_][]const u8{ "{\"cross_jobs\":0,\"targets\":[\"a\"]}", "{\"cross_seconds\":0,\"targets\":[\"a\"]}" }) |text| {
         const bad = (try std.json.parseFromSlice(src.Value, a, text, .{})).value;
         try std.testing.expect(std.meta.isError(crossJobs(a, bad, &jobs, try src.items(src.get(bad, "targets")), false)));
@@ -1078,16 +1099,18 @@ test "cross targets a run measured are balanced by their seconds, the benchmarks
     const targets = try src.items(src.get(config, "targets"));
     var fast: std.ArrayList(Job) = .empty;
     try crossJobs(a, config, &fast, targets, false);
-    // e is unmeasured and costs the mean of the four others, 65 s: 325 s in all.
-    try std.testing.expectEqual(@as(usize, 2), fast.items.len);
+    // 260.5 s of the measured four in jobs of 200 s, and e, unmeasured, alone.
+    try std.testing.expectEqual(@as(usize, 3), fast.items.len);
     try std.testing.expectEqualStrings("a", fast.items[0].targets);
-    try std.testing.expectEqualStrings("b c d e", fast.items[1].targets);
+    try std.testing.expectEqualStrings("b c d", fast.items[1].targets);
+    try std.testing.expectEqualStrings("e", fast.items[2].targets);
     var merge: std.ArrayList(Job) = .empty;
     try crossJobs(a, config, &merge, targets, true);
     // The benchmarks lengthen a to 250 s, which no job of 200 s holds alone: it has one to itself.
-    try std.testing.expectEqual(@as(usize, 2), merge.items.len);
+    try std.testing.expectEqual(@as(usize, 3), merge.items.len);
     try std.testing.expectEqualStrings("a", merge.items[0].targets);
-    try std.testing.expectEqualStrings("b c d e", merge.items[1].targets);
+    try std.testing.expectEqualStrings("b c d", merge.items[1].targets);
+    try std.testing.expectEqualStrings("e", merge.items[2].targets);
 }
 
 test "portable matrix links macOS and Windows binaries on their SDK runners without losing native coverage" {

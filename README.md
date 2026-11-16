@@ -855,8 +855,11 @@ Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) 
 compiling each, longest target first onto the job with the least, each target keeping
 its optional CPU and flags. A target costs what the last release run measured
 of it (`ci/costs.json`, which the run's proof artifact carries beside
-`ci/durations.json`), and 90 s, or the mean of the others, where none did. `cross_jobs`
-fixes the count instead. The checks run on their host's baseline CPU target, so a
+`ci/durations.json`). No job holds more compiling than its `cross_job_timeout` leaves after
+300 s of setup, and a target past that is refused by name. A target no run has measured
+has a job of its own, named for it (`Cross compile <target>, unmeasured`), of GitHub's
+360 minutes: no guess of its cost could be held to a bound, and its job finishes and
+measures it. `cross_jobs` fixes the count instead, those jobs among it. The checks run on their host's baseline CPU target, so a
 binary built once serves every runner model.
 
 Every job takes the checks as a binary, and none compiles them. The first job of a

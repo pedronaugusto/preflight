@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     const step = b.step("test", "Run the sample tests");
     step.dependOn(&b.addRunArtifact(tests).step);
     b.step("check", "Compile the sample").dependOn(&tests.step);
+    machineSide(b, step, target, optimize);
     const profile = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/testing/hardened.zig"),
         .target = target,
@@ -28,6 +29,39 @@ pub fn build(b: *std.Build) void {
         .vm_packages = &.{"tree"},
     });
     preflight.addConsumerCheck(b, b, .{ .package = "preflight_sample", .program = b.path("ci/consumer.zig") });
+}
+
+/// The tests of the FreeBSD machine's directories (src/testing/machine.zig), a root of their
+/// own, which skip off the machine, and their host's side (ci/machine.zig), which the tests
+/// step compiles on any target and, on FreeBSD, runs: the channel made before the tests, the
+/// share changed while they run, and what they made beside their scratch read after them.
+fn machineSide(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    const tests = b.addTest(.{ .name = "machine-tests", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/testing/machine.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    const run_tests = b.addRunArtifact(tests);
+    step.dependOn(&run_tests.step);
+    const names = b.createModule(.{ .root_source_file = b.path("src/testing/machine.zig") });
+    const tool = b.addExecutable(.{ .name = "sample-machine", .root_module = b.createModule(.{
+        .root_source_file = b.path("ci/machine.zig"),
+        .target = b.graph.host,
+        .imports = &.{.{ .name = "machine", .module = names }},
+    }) });
+    step.dependOn(&tool.step);
+    if (target.result.os.tag != .freebsd) return;
+    const prepare = b.addRunArtifact(tool);
+    prepare.addArg("prepare");
+    run_tests.step.dependOn(&prepare.step);
+    const change = b.addRunArtifact(tool);
+    change.addArg("change");
+    change.step.dependOn(&prepare.step);
+    step.dependOn(&change.step);
+    const reads = b.addRunArtifact(tool);
+    reads.addArg("check");
+    reads.step.dependOn(&run_tests.step);
+    step.dependOn(&reads.step);
 }
 
 fn sampleBench(target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) preflight.Bench {

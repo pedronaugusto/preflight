@@ -211,7 +211,9 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) Named {
             @panic("portable tests must not be given a path by addOptionPath: it is the building runner's own, which the runner replaying them has not; name a program the tests run with preflight.addTestProgram, Zig's library with preflight.addTestZigLib");
         for (options.step.dependencies.items) |installing| {
             if (installing.cast(std.Build.Step.InstallFile)) |file| {
-                if (std.mem.eql(u8, file.dest_rel_path, zig_lib_file)) zig_lib_named = zig_lib_file;
+                // The build keeps an install path in the host's form (`dupePath`: `\` on Windows),
+                // and the manifest names it in its own, which every replaying runner reads.
+                if (std.mem.eql(u8, file.dest_rel_path, b.graph.dupePath(zig_lib_file))) zig_lib_named = zig_lib_file;
                 continue;
             }
             const install = installing.cast(std.Build.Step.InstallArtifact) orelse continue;

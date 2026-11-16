@@ -269,11 +269,6 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
         try addBind(io, gpa, &binds, &bound, if (stat.kind == .directory) value else std.Io.Dir.path.dirname(value) orelse "/");
     }
     try run_dir.writeFile(io, .{ .sub_path = "binds", .data = binds.items });
-    // The FreeBSD machine makes a directory holding a scratch its own, binding the host's
-    // entries in it as they are when it boots: one the program then makes there stays in the
-    // machine's memory. The test runner's timing records go to `.zig-cache/preflight-timings`
-    // (record.zig), which `preflight run` clears before the tests, so it is made here first.
-    try cwd.createDirPath(io, ".zig-cache/preflight-timings");
     // Test files go where `std.testing.tmpDir` makes them, and in the tmp of the cache the
     // build names to the tests: on the machine's own file system.
     var scratch: std.ArrayList(u8) = .empty;

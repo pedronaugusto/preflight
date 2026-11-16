@@ -15,7 +15,9 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
         defer a.free(input);
         const text = try seam.packageFile(io, std.Io.Dir.cwd(), input, a);
         defer a.free(text);
-        const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", "") else text;
+        // Without the benchmarks, and without the tests of the FreeBSD machine's directories
+        // (a test root of their own, and a host program), which only the sample's FreeBSD run reads.
+        const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", ""), "    machineSide(b, step, target, optimize);\n", "") else text;
         try dir.writeFile(io, .{ .sub_path = path, .data = copied });
     }
     const fixture_root = try dir.realPathFileAlloc(io, ".", a);
@@ -574,9 +576,11 @@ test "a test given a path in its package, one in Zig's library and Zig itself re
     const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
     try std.testing.expect(command.succeeded(compiled));
-    // The manifest names the package's file from the package root and std from Zig's library.
+    // The manifest names the package's file from the package root, in the host's form, as the
+    // run that replays it on that host reads it, and std from Zig's library.
     const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
-    try std.testing.expect(std.mem.find(u8, manifest, "\"src/data.txt\"") != null);
+    const data_path = if (builtin.os.tag == .windows) "\"src\\\\data.txt\"" else "\"src/data.txt\"";
+    try std.testing.expect(std.mem.find(u8, manifest, data_path) != null);
     try std.testing.expect(std.mem.find(u8, manifest, "\"zig_lib\":[{\"index\":2,\"directory\":true}]") != null);
     try std.testing.expect(std.mem.find(u8, manifest, "\"zig_exe\":[3]") != null);
     const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });

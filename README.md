@@ -498,9 +498,16 @@ runtime image under KVM (`ci-vm=freebsd`): `qemu-system-x86_64` on the PATH and
 refused by name. The program sees FreeBSD's system read-only, its own devices with every
 open descriptor at `/dev/fd` (fdescfs), its own `/tmp` and scratch as on the riscv64
 machine, an empty home, and the host's directories it names at their paths. A directory
-of the host's with a scratch beneath it is the machine's own, holding a bind of each of
-the host's entries (nullfs mounts a file on a file), so the scratch is mounted on the
-machine's own directory, never on one of the share; the machine checks, before the program
+of the host's with a scratch beneath it is the machine's own, the build user's, holding a
+bind of each of the host's entries (nullfs mounts a file on a file), so the scratch is
+mounted on the machine's own directory, never on one of the share. A mount on a directory
+of the share does not hold: FreeBSD's p9fs knows a vnode by its 9p qid's path and version,
+and QEMU makes a directory's version of its mtime and size, so once the host makes or
+removes an entry in `.zig-cache/tmp` (its build does, throughout) the machine's next lookup
+of it is a new vnode, past any mount on the old one. What the program makes in a split
+directory (a file, a directory, a link that stays inside it) is carried to the host's
+directory when the program ends, and the run fails naming what could not be (a FIFO, a link
+out of it, a name or a size the share refuses). The machine checks, before the program
 starts, that each scratch is a mount of its own that names itself, and stops otherwise,
 saying which. The machine stops a boot
 that has not started the program in 180 seconds; a run that ends without the

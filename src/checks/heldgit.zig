@@ -677,7 +677,8 @@ test "git is made with zig cc for the platform, the host asked nothing, and the 
     const riscv: Platform = platform(try std.zig.system.resolveTargetQuery(std.testing.io, try std.Target.Query.parse(.{ .arch_os_abi = "riscv64-linux-musl" }))).?;
     const made = try steps(a, riscv, .{ .zig = "/z/zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .nghttp2 = "/s/nghttp2", .curl = "/s/curl" }, "/w", "/w/prefix", "/out");
     const git = made[made.len - 2].argv;
-    try std.testing.expectEqualStrings("/w/git", made[made.len - 2].cwd);
+    // Joined as the host joins paths: the steps' test runs on Windows too, where git is never made.
+    try std.testing.expectEqualStrings(try std.Io.Dir.path.join(a, &.{ "/w", "git" }), made[made.len - 2].cwd);
     for ([_][]const u8{ "CC=/z/zig cc -target riscv64-linux-musl", "uname_S=Linux", "uname_M=riscv64", "LD_MAJOR_VERSION=", "NO_PERL=YesPlease", "NO_EXPAT=YesPlease", "NO_GETTEXT=YesPlease", "RUNTIME_PREFIX=YesPlease", "prefix=/out" }) |variable| {
         try std.testing.expect(isOneOf(variable, git));
     }

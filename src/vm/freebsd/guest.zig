@@ -104,16 +104,21 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try mount("host", host_mount, "p9fs", &.{}, 0);
     if (binds.len % 2 != 0) return error.UnpairedBind;
     var pair: usize = 0;
-    var split: std.array_hash_map.String(void) = .empty;
-    while (pair < binds.len) : (pair += 2) try bindAround(io, gpa, binds[pair], binds[pair + 1], scratch, &split);
+    var split: Splits = .empty;
+    while (pair < binds.len) : (pair += 2) try bindAround(io, gpa, .{ .path = binds[pair], .resolved = binds[pair + 1] }, scratch, user, &split);
     for (scratch) |path| try mountScratch(io, gpa, path);
+    // The host's file system stays open past the program's root, for what the program makes
+    // in a split directory: it is carried to the host once the program ends.
+    const host = try Io.Dir.cwd().openDir(io, host_mount, .{});
     try check(chroot(new_root), error.Root);
     try check(c.chdir("/"), error.Root);
     try checkScratch(io, gpa, scratch);
 
     const ports = try openPorts(io);
     try writeAll(ports.status, "started\n");
-    return try launch(gpa, .{ .argv = argv, .environ = environ, .cwd = cwd, .user = user, .home = home }, ports);
+    const ending = try launch(gpa, .{ .argv = argv, .environ = environ, .cwd = cwd, .user = user, .home = home }, ports);
+    try copyBack(io, host, &split);
+    return ending;
 }
 
 /// The kernel starts the first process with no descriptors: /dev/null takes 0, 1 and 2,
@@ -252,43 +257,147 @@ fn bind(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) 
     };
 }
 
-/// Binds the host's `resolved` at `path` as `bind` does, unless a scratch directory lies
-/// beneath it. Then `path` is the machine's own directory holding a bind of each entry of the
-/// host's, and each entry on the way to the scratch is split the same way, so the scratch is
-/// mounted on a directory of the machine's own, never on one of the share. A tmpfs mounted on
-/// a nullfs directory over 9p did not hold: the program's writes under it reached 9p (reactor's
-/// FIFO and shakedown's shared mapping in `.zig-cache/tmp`, run 43867718536), where /tmp, on
-/// the machine's own directory, holds.
-fn bindAround(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8, scratch: []const [:0]const u8, split: *std.array_hash_map.String(void)) !void {
-    if (!holdsScratch(path, scratch)) return bind(io, gpa, path, resolved);
+/// A host directory at a path in the program's root: the path the program has for it, and
+/// the host's resolved path.
+const Place = struct { path: []const u8, resolved: []const u8 };
+
+/// A directory of the machine's own in place of a host directory with a scratch beneath it:
+/// the host's resolved path, and the names its entries had when the machine bound them.
+const Split = struct { resolved: []const u8, names: std.array_hash_map.String(void) };
+const Splits = std.array_hash_map.String(Split);
+
+/// Binds the host's `place` as `bind` does, unless a scratch directory lies beneath it. Then
+/// its path is the machine's own directory, the run user's, holding a bind of each entry of
+/// the host's, and each entry on the way to the scratch is split the same way, so the scratch
+/// is mounted on a directory of the machine's own, never on one of the share.
+///
+/// A mount on a directory of the share does not hold. p9fs knows a vnode by its qid's path
+/// and version (p9fs_node_cmp, FreeBSD 15.1's sys/fs/p9fs/p9fs_vfsops.c), and QEMU makes a
+/// directory's version of its mtime and size (hw/9pfs/9p.c, stat_to_qid). Once the host
+/// makes or removes an entry in `.zig-cache/tmp`, which its build does throughout, the
+/// machine's next lookup of it is a new vnode, and nullfs's above it is new too: a tmpfs
+/// mounted on the old one is no longer crossed, and the program's writes reached 9p
+/// (reactor's FIFO and shakedown's shared mapping, run 43867718536). What the program makes
+/// in a split directory is carried to the host when it ends (`copyBack`).
+fn bindAround(io: Io, gpa: std.mem.Allocator, place: Place, scratch: []const [:0]const u8, owner: User, split: *Splits) !void {
+    if (!holdsScratch(place.path, scratch)) return bind(io, gpa, place.path, place.resolved);
     // A directory split before (a bind below another, or named twice) is already in place.
-    if ((try split.getOrPut(gpa, path)).found_existing) return;
-    try Io.Dir.cwd().createDirPath(io, try inRoot(gpa, path));
-    const source = try gpa.print("{s}{s}", .{ host_mount, resolved });
+    if ((try split.getOrPut(gpa, place.path)).found_existing) return;
+    const target = try inRoot(gpa, place.path);
+    try Io.Dir.cwd().createDirPath(io, target);
+    // The program makes its own entries here, as in the host's directory it stands for.
+    try check(c.fchownat(c.AT.FDCWD, target, owner.uid, owner.gid, 0), error.SplitOwner);
+    const source = try gpa.print("{s}{s}", .{ host_mount, place.resolved });
     var dir = try Io.Dir.cwd().openDir(io, source, .{ .iterate = true });
     defer dir.close(io);
+    var names: std.array_hash_map.String(void) = .empty;
     var entries = dir.iterate();
     while (try entries.next(io)) |found| {
-        const child = try std.fs.path.join(gpa, &.{ path, found.name });
-        const child_resolved = try std.fs.path.join(gpa, &.{ resolved, found.name });
+        try names.put(gpa, try gpa.dupe(u8, found.name), {});
+        const child: Place = .{ .path = try std.fs.path.join(gpa, &.{ place.path, found.name }), .resolved = try std.fs.path.join(gpa, &.{ place.resolved, found.name }) };
         // The scratch itself is the machine's memory, which `mountScratch` makes.
-        if (isScratch(child, scratch)) continue;
+        if (isScratch(child.path, scratch)) continue;
         switch (found.kind) {
-            .directory => try bindAround(io, gpa, child, child_resolved, scratch, split),
-            .file => try bindFile(io, gpa, child, child_resolved),
+            .directory => try bindAround(io, gpa, child, scratch, owner, split),
+            .file => try bindFile(io, gpa, child.path, child.resolved),
             .sym_link => {
                 var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
-                try Io.Dir.cwd().symLink(io, try seam.link(io, dir, found.name, &buffer), try inRoot(gpa, child), .{});
+                try Io.Dir.cwd().symLink(io, try seam.link(io, dir, found.name, &buffer), try inRoot(gpa, child.path), .{});
             },
             // A socket or FIFO of the host's is nothing the machine can open.
             else => {},
         }
     }
+    // A scratch the host has not made yet, or the directories on the way to it, are the
+    // machine's (`mountScratch` makes them), not the program's.
+    for (scratch) |each| if (beneath(each, place.path)) |rest| {
+        try names.put(gpa, rest[0 .. std.mem.findScalar(u8, rest, '/') orelse rest.len], {});
+    };
+    split.getPtr(place.path).?.* = .{ .resolved = place.resolved, .names = names };
+}
+
+/// What follows `path` in `each` when `each` lies beneath it, or null.
+fn beneath(each: []const u8, path: []const u8) ?[]const u8 {
+    if (each.len <= path.len or !std.mem.startsWith(u8, each, path)) return null;
+    if (path.len == 1) return each[1..];
+    return if (each[path.len] == '/') each[path.len + 1 ..] else null;
+}
+
+/// Carries to the host each entry the program made in a split directory, one the host's
+/// directory had no entry of that name for when the machine bound it: a file, a directory
+/// with all beneath it, or a link that stays inside the split directory. The rest of a split
+/// directory is the host's already, through its binds. What cannot be carried (a FIFO, a
+/// socket, a link out of the directory, a name the share refuses, a full disk) fails the
+/// run, naming it: never a part of it carried and the run passed.
+fn copyBack(io: Io, host: Io.Dir, split: *const Splits) !void {
+    for (split.keys(), split.values()) |path, each| {
+        var made = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+        defer made.close(io);
+        var to = try host.openDir(io, if (each.resolved.len > 1) each.resolved[1..] else ".", .{});
+        defer to.close(io);
+        var entries = made.iterate();
+        while (try entries.next(io)) |found| {
+            if (each.names.contains(found.name)) continue;
+            carry(io, made, to, found.name, found.kind, 0) catch |err| {
+                say("carrying {s}/{s} to the host's {s}: {t}", .{ path, found.name, each.resolved, err });
+                return error.CopyBack;
+            };
+        }
+    }
+}
+
+/// Copies the entry `name` of `from` to `to`, `depth` directories below the split directory.
+fn carry(io: Io, from: Io.Dir, to: Io.Dir, name: []const u8, kind: Io.File.Kind, depth: usize) !void {
+    switch (kind) {
+        .file => try from.copyFile(name, to, name, io, .{}),
+        .directory => {
+            to.createDir(io, name, .default_dir) catch |err| switch (err) {
+                error.PathAlreadyExists => {},
+                else => |e| return e,
+            };
+            var inner = try from.openDir(io, name, .{ .iterate = true });
+            defer inner.close(io);
+            var inner_to = try to.openDir(io, name, .{});
+            defer inner_to.close(io);
+            var entries = inner.iterate();
+            while (try entries.next(io)) |found| try carry(io, inner, inner_to, found.name, found.kind, depth + 1);
+        },
+        .sym_link => {
+            var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+            const target = try seam.link(io, from, name, &buffer);
+            if (!staysWithin(target, depth)) return error.LinkLeavesItsDirectory;
+            to.symLink(io, target, name, .{}) catch |err| switch (err) {
+                // The host made one of that name meanwhile: the program's is the one carried.
+                error.PathAlreadyExists => {
+                    try to.deleteFile(io, name);
+                    try to.symLink(io, target, name, .{});
+                },
+                else => |e| return e,
+            };
+        },
+        else => return error.NotCarried,
+    }
+}
+
+/// Whether a link's `target`, from a directory `depth` below the split directory, names a
+/// path inside it: a relative path that never climbs above it.
+fn staysWithin(target: []const u8, depth: usize) bool {
+    if (std.fs.path.isAbsolute(target)) return false;
+    var level: usize = depth;
+    var parts = std.mem.tokenizeScalar(u8, target, '/');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) {
+            if (level == 0) return false;
+            level -= 1;
+        } else level += 1;
+    }
+    return true;
 }
 
 /// Whether a scratch directory lies beneath `path`.
 fn holdsScratch(path: []const u8, scratch: []const [:0]const u8) bool {
-    for (scratch) |each| if (each.len > path.len and std.mem.startsWith(u8, each, path) and (path.len == 1 or each[path.len] == '/')) return true;
+    for (scratch) |each| if (beneath(each, path) != null) return true;
     return false;
 }
 

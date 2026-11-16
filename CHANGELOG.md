@@ -54,7 +54,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - preflight adopts glint 0.8 and pins glint-0.8 50926ee: its 160 findings are fixed, and it holds no suppression. The reads come through one input seam per layer (`src/build/input.zig`, `src/runner/input.zig`, `src/structure/input.zig`, `src/vm/freebsd/input.zig` beside the checks' and the test machine's), and the dropped errors are handled. The test runner, its modules, the build module and the build script are seams for the aegis-type rules (A007, A011, A015): they are std alone by design, since every package compiles them. The checks' `Context.dir` names its directory as one its caller keeps (`?aegis.own.Unowned(std.Io.Dir)`). A malformed target in `ci/workflow.json` now fails the lint instead of being skipped.
-- One aegis (the family move, Part B): aegis f52eabe, glint-0.8 50926ee, gantry 9089870, ensign 9689f8e, shakedown b168f3a, in the package and its samples.
+- One aegis (the family move, Part B): aegis f52eabe, glint-0.8 50926ee, gantry 9089870, ensign 9689f8e, bay b007073, shakedown b168f3a, in the package and its samples.
 - The consumer check builds the package as a fetch gives it: only what `build.zig.zon`'s `.paths` lists, copied under the consumer's project, with the manifest's path dependencies made relative to there. It read the package by path, where `.paths` does not apply, so a build file the manifest left out passed the check and failed for every consumer. A manifest that ships its whole directory (`""`) is read where it is.
 - Pins glint 0.8.0 and gantry 0.4.0.
 - The sample names the held git (git 2.56.0, with Git for Windows' two installers by digest), which the hosted run builds or installs on every runner.

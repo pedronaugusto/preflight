@@ -104,7 +104,8 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try mount("host", host_mount, "p9fs", &.{}, 0);
     if (binds.len % 2 != 0) return error.UnpairedBind;
     var pair: usize = 0;
-    while (pair < binds.len) : (pair += 2) try bind(io, gpa, binds[pair], binds[pair + 1]);
+    var split: std.array_hash_map.String(void) = .empty;
+    while (pair < binds.len) : (pair += 2) try bindAround(io, gpa, binds[pair], binds[pair + 1], scratch, &split);
     for (scratch) |path| try mountScratch(io, gpa, path);
     try check(chroot(new_root), error.Root);
     try check(c.chdir("/"), error.Root);
@@ -251,6 +252,73 @@ fn bind(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) 
     };
 }
 
+/// Binds the host's `resolved` at `path` as `bind` does, unless a scratch directory lies
+/// beneath it. Then `path` is the machine's own directory holding a bind of each entry of the
+/// host's, and each entry on the way to the scratch is split the same way, so the scratch is
+/// mounted on a directory of the machine's own, never on one of the share. A tmpfs mounted on
+/// a nullfs directory over 9p did not hold: the program's writes under it reached 9p (reactor's
+/// FIFO and shakedown's shared mapping in `.zig-cache/tmp`, run 43867718536), where /tmp, on
+/// the machine's own directory, holds.
+fn bindAround(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8, scratch: []const [:0]const u8, split: *std.array_hash_map.String(void)) !void {
+    if (!holdsScratch(path, scratch)) return bind(io, gpa, path, resolved);
+    // A directory split before (a bind below another, or named twice) is already in place.
+    if ((try split.getOrPut(gpa, path)).found_existing) return;
+    try Io.Dir.cwd().createDirPath(io, try inRoot(gpa, path));
+    const source = try std.fmt.allocPrint(gpa, "{s}{s}", .{ host_mount, resolved });
+    var dir = try Io.Dir.cwd().openDir(io, source, .{ .iterate = true });
+    defer dir.close(io);
+    var entries = dir.iterate();
+    while (try entries.next(io)) |found| {
+        const child = try std.fs.path.join(gpa, &.{ path, found.name });
+        const child_resolved = try std.fs.path.join(gpa, &.{ resolved, found.name });
+        // The scratch itself is the machine's memory, which `mountScratch` makes.
+        if (isScratch(child, scratch)) continue;
+        switch (found.kind) {
+            .directory => try bindAround(io, gpa, child, child_resolved, scratch, split),
+            .file => try bindFile(io, gpa, child, child_resolved),
+            .sym_link => {
+                var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+                const length = try dir.readLink(io, found.name, &buffer);
+                try Io.Dir.cwd().symLink(io, buffer[0..length], try inRoot(gpa, child), .{});
+            },
+            // A socket or FIFO of the host's is nothing the machine can open.
+            else => {},
+        }
+    }
+}
+
+/// Whether a scratch directory lies beneath `path`.
+fn holdsScratch(path: []const u8, scratch: []const [:0]const u8) bool {
+    for (scratch) |each| if (each.len > path.len and std.mem.startsWith(u8, each, path) and (path.len == 1 or each[path.len] == '/')) return true;
+    return false;
+}
+
+fn isScratch(path: []const u8, scratch: []const [:0]const u8) bool {
+    for (scratch) |each| if (std.mem.eql(u8, each, path)) return true;
+    return false;
+}
+
+/// The host's file `resolved` at `path` in the program's root, through nullfs, which mounts
+/// a file on a file (FreeBSD 14 and later): it is the host's file, written through to it.
+fn bindFile(io: Io, gpa: std.mem.Allocator, path: []const u8, resolved: []const u8) !void {
+    const target = try inRoot(gpa, path);
+    const file = try Io.Dir.cwd().createFile(io, target, .{});
+    file.close(io);
+    const source = try gpa.printSentinel("{s}{s}", .{ host_mount, resolved }, 0);
+    try mount(source, target, "nullfs", &.{}, 0);
+}
+
+test "a bind holds a scratch directory strictly beneath it, at a boundary of names" {
+    const scratch = [_][:0]const u8{"/w/p/.zig-cache/tmp"};
+    try std.testing.expect(holdsScratch("/w/p", &scratch));
+    try std.testing.expect(holdsScratch("/w/p/.zig-cache", &scratch));
+    try std.testing.expect(holdsScratch("/", &scratch));
+    try std.testing.expect(!holdsScratch("/w/p/.zig-cache/tmp", &scratch));
+    try std.testing.expect(!holdsScratch("/w/pp", &scratch));
+    try std.testing.expect(!holdsScratch("/w/p/.zig", &scratch));
+    try std.testing.expect(isScratch("/w/p/.zig-cache/tmp", &scratch));
+}
+
 /// A directory the run writes its scratch files in: the machine's memory, so that
 /// they behave as files on a local file system, not a share.
 fn mountScratch(io: Io, gpa: std.mem.Allocator, path: []const u8) !void {
@@ -264,13 +332,13 @@ fn mountScratch(io: Io, gpa: std.mem.Allocator, path: []const u8) !void {
 /// named by its own path, not the share's beneath it. A scratch that is not lands on 9p,
 /// whose gaps a test of files falls into (reactor's FIFO, shakedown's shared mapping), so the
 /// run stops saying which, rather than run the tests on the share.
-fn checkScratch(io: Io, gpa: std.mem.Allocator, scratch: []const []const u8) !void {
+fn checkScratch(io: Io, gpa: std.mem.Allocator, scratch: []const [:0]const u8) !void {
     for (scratch) |path| {
         const above = std.fs.path.dirname(path) orelse "/";
         var own: c.Stat = undefined;
         var parent: c.Stat = undefined;
-        try check(c.fstatat(c.AT.FDCWD, try gpa.dupeZ(u8, path), &own, 0), error.ScratchUnread);
-        try check(c.fstatat(c.AT.FDCWD, try gpa.dupeZ(u8, above), &parent, 0), error.ScratchUnread);
+        try check(c.fstatat(c.AT.FDCWD, path, &own, 0), error.ScratchUnread);
+        try check(c.fstatat(c.AT.FDCWD, try gpa.printSentinel("{s}", .{above}, 0), &parent, 0), error.ScratchUnread);
         if (own.dev == parent.dev) {
             say("scratch {s} is on the device of {s}: the machine's memory is not mounted there", .{ path, above });
             return error.ScratchNotMounted;

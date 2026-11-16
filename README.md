@@ -497,7 +497,12 @@ runtime image under KVM (`ci-vm=freebsd`): `qemu-system-x86_64` on the PATH and
 `/dev/kvm` open to the build's user, on an x86_64 Linux host only; a build on any other host is
 refused by name. The program sees FreeBSD's system read-only, its own devices with every
 open descriptor at `/dev/fd` (fdescfs), its own `/tmp` and scratch as on the riscv64
-machine, an empty home, and the host's directories it names at their paths. The machine stops a boot
+machine, an empty home, and the host's directories it names at their paths. A directory
+of the host's with a scratch beneath it is the machine's own, holding a bind of each of
+the host's entries (nullfs mounts a file on a file), so the scratch is mounted on the
+machine's own directory, never on one of the share; the machine checks, before the program
+starts, that each scratch is a mount of its own that names itself, and stops otherwise,
+saying which. The machine stops a boot
 that has not started the program in 180 seconds; a run that ends without the
 program's ending (a panic, the deadline, QEMU ending) keeps its directory, console
 among it, under `.zig-cache/tmp`, and writes the console's last lines to the build's

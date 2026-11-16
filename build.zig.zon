@@ -34,6 +34,14 @@
             .lazy = true,
         },
 
+        // nghttp2, which the held git's curl speaks HTTP/2 through: GitHub's release asset,
+        // immutable (sha256 0cdd35ecec77919b4b7b245f87fe8d2216e3d62da854eb0838c594ff058042fc).
+        .held_git_nghttp2 = .{
+            .url = "https://github.com/nghttp2/nghttp2/releases/download/v1.71.0/nghttp2-1.71.0.tar.gz",
+            .hash = "N-V-__8AAIgi2gCNAFzaSP_Qwb8MVv4GhCI5tn9HjmJdBW5y",
+            .lazy = true,
+        },
+
         .held_git_curl = .{
             .url = "https://curl.se/download/curl-8.23.0.tar.xz",
             .hash = "N-V-__8AAMjlVwH79yAHsK65VUcPuhOO6BWgpLDvvnlWPLly",

@@ -656,14 +656,14 @@ fn heldGitCommand(c: *src.Context, environ: *const std.process.Environ.Map, args
         }
         break :sdk std.mem.trimEnd(u8, said.stdout, "\r\n");
     }) else null;
-    const missing = for ([_]?[]const u8{ args.zlib, args.libressl, args.curl }) |dir| {
+    const missing = for ([_]?[]const u8{ args.zlib, args.libressl, args.nghttp2, args.curl }) |dir| {
         if (dir == null) break true;
     } else false;
     if (missing) {
-        c.fail("held-git: the pinned sources are the build's to pass (--zlib, --libressl, --curl): run `zig build ci-held-git`", .{});
+        c.fail("held-git: the pinned sources are the build's to pass (--zlib, --libressl, --nghttp2, --curl): run `zig build ci-held-git`", .{});
         return error.CheckFailed;
     }
-    const out = try heldgit.build(c, environ, held, p, .{ .zig = c.zig, .zlib = args.zlib.?, .libressl = args.libressl.?, .curl = args.curl.?, .sdk = sdk, .jobs = std.Thread.getCpuCount() catch 4 }, store);
+    const out = try heldgit.build(c, environ, held, p, .{ .zig = c.zig, .zlib = args.zlib.?, .libressl = args.libressl.?, .nghttp2 = args.nghttp2.?, .curl = args.curl.?, .sdk = sdk, .jobs = std.Thread.getCpuCount() catch 4 }, store);
     if (args.copy_to) |to| {
         try std.Io.Dir.cwd().createDirPath(c.io, to);
         try checks.command.execute(c.*, &.{ "cp", "-R", try c.a.print("{s}/.", .{out}), to });

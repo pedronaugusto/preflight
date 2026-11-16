@@ -1,20 +1,21 @@
 //! `ci-held-git`: the held git `ci/workflow.json` names (`git`), which a hosted job's
-//! `preflight prepare` asks for before its tests: Git for Windows' release installed on
+//! `preflight prepare` asks for before its tests: Git for Windows' release unpacked on
 //! Windows, else git built from its release tarball into the store with zig cc and the
-//! sources preflight pins (zlib, LibreSSL, curl), fetched by every build of a package that
+//! sources preflight pins (zlib, LibreSSL, nghttp2, curl), fetched by every build of a package that
 //! names a held git, as it configures, and by no other. The command (`checks/heldgit.zig`) builds and checks; this passes it the sources.
 const std = @import("std");
 const configure = @import("configure.zig");
 const Tool = @import("tool.zig").Tool;
 
 /// The sources a held git is built from, from `pkg`'s pins; null while they are being fetched.
-pub const Sources = struct { zlib: std.Build.LazyPath, libressl: std.Build.LazyPath, curl: std.Build.LazyPath };
+pub const Sources = struct { zlib: std.Build.LazyPath, libressl: std.Build.LazyPath, nghttp2: std.Build.LazyPath, curl: std.Build.LazyPath };
 
 pub fn sources(pkg: *std.Build) ?Sources {
     const zlib = pkg.dependencyLazy("held_git_zlib", .{}) catch return null;
     const libressl = pkg.dependencyLazy("held_git_libressl", .{}) catch return null;
+    const nghttp2 = pkg.dependencyLazy("held_git_nghttp2", .{}) catch return null;
     const curl = pkg.dependencyLazy("held_git_curl", .{}) catch return null;
-    return .{ .zlib = zlib.path("."), .libressl = libressl.path("."), .curl = curl.path(".") };
+    return .{ .zlib = zlib.path("."), .libressl = libressl.path("."), .nghttp2 = nghttp2.path("."), .curl = curl.path(".") };
 }
 
 /// Whether the package's `ci/workflow.json` names a held git; the command reads what it names.
@@ -31,13 +32,15 @@ pub fn run(b: *std.Build, package: *std.Build, pkg: *std.Build, tool: Tool, targ
     command.addArgs(&.{ "held-git", "--zig-exe", b.graph.zig_exe, "--config" });
     command.addFileArg(package.path("ci/workflow.json"));
     if (target) |triple| command.addArgs(&.{ "--target", triple });
-    // Git for Windows is installed from its release: nothing is built, nothing fetched for it.
+    // Git for Windows is unpacked from its release: nothing is built, nothing fetched for it.
     if (target != null or b.graph.host.result.os.tag != .windows) {
         const given = sources(pkg) orelse return null;
         command.addArg("--zlib");
         command.addDirectoryArg2(given.zlib, .{});
         command.addArg("--libressl");
         command.addDirectoryArg2(given.libressl, .{});
+        command.addArg("--nghttp2");
+        command.addDirectoryArg2(given.nghttp2, .{});
         command.addArg("--curl");
         command.addDirectoryArg2(given.curl, .{});
     }
@@ -49,7 +52,7 @@ pub fn run(b: *std.Build, package: *std.Build, pkg: *std.Build, tool: Tool, targ
 
 /// `ci-held-git`, when the package names a held git.
 pub fn add(b: *std.Build, package: *std.Build, pkg: *std.Build, tool: Tool) void {
-    const step = configure.claim(b, "ci-held-git", "The held git ci/workflow.json names: Git for Windows' release installed, else git built from its release tarball with zig cc and the pinned sources, put first on a hosted job's path");
+    const step = configure.claim(b, "ci-held-git", "The held git ci/workflow.json names: Git for Windows' release unpacked from its portable build, else git built from its release tarball with zig cc and the pinned sources, put first on a hosted job's path");
     if (!named(package)) {
         step.dependOn(&b.addFail("ci-held-git: ci/workflow.json names no held git; `preflight held-git-pin <version>` names one").step);
         return;

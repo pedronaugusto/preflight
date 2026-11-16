@@ -523,18 +523,20 @@ where it ran whatever the runner's image had:
 
 ```json
 {"git": {"version": "2.56.0", "sha256": "<the release tarball's>",
-         "windows": {"x86_64": "<Git-2.56.0-64-bit.exe's>", "aarch64": "<Git-2.56.0-arm64.exe's>"}}}
+         "windows": {"x86_64": "<PortableGit-2.56.0-64-bit.7z.exe's>", "aarch64": "<PortableGit-2.56.0-arm64.7z.exe's>"}}}
 ```
 
 `preflight held-git-pin 2.56.0` writes it: it fetches git's release tarball from
-kernel.org and Git for Windows' two installers of that release, and writes their sha256s,
+kernel.org and Git for Windows' two portable builds of that release, and writes their sha256s,
 so a move to another git is a diff that shows them. A run reads no checksum from the
 network: a download that does not match the configuration fails by name. A package that
 names no git keeps the runner's.
 
-On Windows the job installs Git for Windows' release in the store, apart from the runner's
-own Git (whose bash runs the job's steps), its installer checked against the hash, and puts
-it first on the path. Everywhere else `zig build ci-held-git` builds git from the
+On Windows the job unpacks Git for Windows' release into the store from its portable build
+(`PortableGit`, the installer's files in a self-extracting archive), checked against the
+hash, and puts it first on the path. No installer runs: one refuses to put an older release
+beside the runner's newer Git, and over it could not replace the programs of the bash that
+runs the job's steps; the runner's own Git never matters. Everywhere else `zig build ci-held-git` builds git from the
 tarball with `zig cc` for a target named outright (`aarch64-macos.13.0`,
 `x86_64-linux-gnu.2.31`, `aarch64-linux-gnu.2.31`, `riscv64-linux-musl`), against zlib,
 LibreSSL and curl built from the releases `build.zig.zon` pins by hash, fetched by any build

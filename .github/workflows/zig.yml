@@ -161,7 +161,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
         if: matrix.setup && inputs.held-git != ''
@@ -225,7 +225,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:
@@ -325,7 +325,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-none
+          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-none
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
         if: inputs.held-git != ''
@@ -362,7 +362,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-none
+          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-none
       - name: Report
         timeout-minutes: 1
         if: always()
@@ -466,7 +466,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
         if: matrix.setup && inputs.held-git != ''
@@ -511,7 +511,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:

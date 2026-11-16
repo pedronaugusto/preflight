@@ -9,8 +9,8 @@ const aegis = @import("aegis");
 pub const Limit = enum {
     /// A record a tool of the family wrote (a fuzz finding, a lint list): small text.
     record,
-    /// A program the held git's build made, read for what it links, or an installer the
-    /// held git's store keeps: git's largest program is tens of MB, an installer under 100.
+    /// A program the held git's build made, read for what it links, or a portable build the
+    /// held git's store keeps: git's largest program is tens of MB, a portable build under 100.
     program,
 
     fn bytes(limit: Limit) aegis.units.Bytes(u64) {

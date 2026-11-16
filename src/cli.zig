@@ -265,11 +265,12 @@ pub const HeldGit = struct {
     target: ?[]const u8 = null,
     zlib: ?[]const u8 = null,
     libressl: ?[]const u8 = null,
+    nghttp2: ?[]const u8 = null,
     curl: ?[]const u8 = null,
     sdk: ?[]const u8 = null,
     copy_to: ?[]const u8 = null,
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "The held git ci/workflow.json names, in the store: Git for Windows' release installed, else git built from its release tarball with zig cc and the pinned sources; put first on a hosted job's path",
+        .about = "The held git ci/workflow.json names, in the store: Git for Windows' release unpacked from its portable build, else git built from its release tarball with zig cc and the pinned sources; put first on a hosted job's path",
         .options = .{
             .zig_exe = zig_exe,
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration naming the held git" },
@@ -277,6 +278,7 @@ pub const HeldGit = struct {
             .target = .{ .value_name = "TRIPLE", .help = "The target to build for, as riscv64-linux-musl; this machine's by default" },
             .zlib = .{ .value_name = "DIR", .hint = .directory, .help = "zlib's pinned source" },
             .libressl = .{ .value_name = "DIR", .hint = .directory, .help = "LibreSSL's pinned source" },
+            .nghttp2 = .{ .value_name = "DIR", .hint = .directory, .help = "nghttp2's pinned source, which curl speaks HTTP/2 through" },
             .curl = .{ .value_name = "DIR", .hint = .directory, .help = "curl's pinned source" },
             .sdk = .{ .value_name = "DIR", .hint = .directory, .help = "The macOS SDK a macOS build links the base libraries and frameworks of" },
             .copy_to = .{ .value_name = "DIR", .hint = .directory, .help = "Copy the build here as well (the riscv64 machine's image takes it)" },
@@ -288,7 +290,7 @@ pub const HeldGitPin = struct {
     version: []const u8,
     config: []const u8 = "ci/workflow.json",
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "Name a git release as the package's held git: its tarball's and Git for Windows installers' hashes, fetched and written to ci/workflow.json for the diff to show",
+        .about = "Name a git release as the package's held git: its tarball's and Git for Windows portable builds' hashes, fetched and written to ci/workflow.json for the diff to show",
         .options = .{
             .version = .{ .positional = true, .value_name = "VERSION", .help = "The release, as 2.56.0" },
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration to write it to" },

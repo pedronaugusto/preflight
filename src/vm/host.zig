@@ -506,13 +506,13 @@ pub fn parseStatus(text: []const u8) ?Ending {
 fn raiseOwn(io: Io, sig: u32) noreturn {
     const code: u8 = @truncate(128 +% sig); // safe: an exit code is a byte, as a shell takes 128 + a signal
     if (builtin.target.os.tag == .linux and sig > 0 and sig < 32) {
-        const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: checked to lie between 1 and 31 above
-        if (uncatchable(signal)) |name| {
+        if (uncatchable(sig)) |name| {
             var line: [128]u8 = undefined;
             const text = std.mem.print(&line, "preflight-vm: the program ended by SIG{s} ({d}), which no process can catch: exit {d}\n", .{ name, sig, code }) catch std.process.exit(code);
             Io.File.stderr().writeStreamingAll(io, text) catch std.process.exit(code);
             std.process.exit(code);
         }
+        const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: checked to lie between 1 and 31 above
         var default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
         std.posix.sigaction(signal, &default, null);
         // A raise that fails ends the process as one whose signal is ignored does below.
@@ -521,20 +521,21 @@ fn raiseOwn(io: Io, sig: u32) noreturn {
     std.process.exit(code);
 }
 
-/// The name of `signal` when no process can set its action or catch it.
-fn uncatchable(signal: std.posix.SIG) ?[]const u8 {
-    return switch (signal) {
-        .KILL => "KILL",
-        .STOP => "STOP",
-        else => null,
-    };
+/// The name of `sig`, a Linux signal number, when no process can set its action or catch
+/// it. Linux's numbers, read on any host: the tests of this file run on Windows too, whose
+/// `std.posix.SIG` has neither.
+fn uncatchable(sig: u32) ?[]const u8 {
+    const linux = std.os.linux.SIG;
+    if (sig == @backingInt(linux.KILL)) return "KILL";
+    if (sig == @backingInt(linux.STOP)) return "STOP";
+    return null;
 }
 
 test "a program the kernel killed or stopped ends the run by its exit code, its signal named, and sets no action for it" {
-    try std.testing.expectEqualStrings("KILL", uncatchable(.KILL).?);
-    try std.testing.expectEqualStrings("STOP", uncatchable(.STOP).?);
-    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(.ABRT));
-    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(.SEGV));
+    try std.testing.expectEqualStrings("KILL", uncatchable(9).?);
+    try std.testing.expectEqualStrings("STOP", uncatchable(19).?);
+    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(6));
+    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(11));
 }
 
 test "a path is left out when it is one of those named or lies under one" {

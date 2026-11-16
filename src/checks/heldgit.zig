@@ -3,11 +3,13 @@
 //! the package's tests, so a result that compares against git never depends on the runner's.
 //! A package that names none keeps the runner's git.
 //!
-//! On Windows it is that Git for Windows release, its installer checked against the hash the
-//! configuration holds. Everywhere else, and on the riscv64 machine, preflight builds it from
+//! On Windows it is that Git for Windows release, its portable build (`PortableGit`, the
+//! installer's files in a self-extracting archive) checked against the hash the configuration
+//! holds and unpacked into the store: no installer runs, so the runner's own Git never matters.
+//! Everywhere else, and on the riscv64 machine, preflight builds it from
 //! git's release tarball, checked against the configuration's hash, with zig cc for a target
 //! named outright and the libraries it links built from the sources preflight pins (zlib,
-//! LibreSSL, curl): no compiler, header or library of the host's enters, which the build checks
+//! LibreSSL, nghttp2, curl): no compiler, header or library of the host's enters, which the build checks
 //! by reading what every program it made links. A build is kept in a store, one per release,
 //! recipe and target, which a hosted job caches by that name.
 //!
@@ -25,18 +27,18 @@ const command = @import("command.zig");
 
 /// The recipe below, numbered: a change to how git or its libraries are built takes a new
 /// number, and so a new name in the store and in the hosted job's cache.
-pub const recipe = 1;
+pub const recipe = 2;
 
 /// The sources preflight pins (`build.zig.zon`), by the versions the store names.
-pub const sources = .{ .zlib = "1.4", .libressl = "4.4.1", .curl = "8.23.0" };
+pub const sources = .{ .zlib = "1.4", .libressl = "4.4.1", .nghttp2 = "1.71.0", .curl = "8.23.0" };
 
 /// What the configuration says of the held git.
 pub const Held = struct {
     version: []const u8,
     /// Of `git-<version>.tar.xz`, git's release tarball.
     sha256: []const u8,
-    /// Of Git for Windows' installers of the release, `Git-<version>-64-bit.exe` and
-    /// `Git-<version>-arm64.exe`.
+    /// Of Git for Windows' portable builds of the release, `PortableGit-<version>-64-bit.7z.exe`
+    /// and `PortableGit-<version>-arm64.7z.exe`.
     windows_x86_64: []const u8,
     windows_aarch64: []const u8,
 };
@@ -55,10 +57,10 @@ pub fn parse(config: src.Value) error{InvalidHeldGit}!?Held {
     const sha256 = string(value, "sha256") orelse return refuse("git.sha256 is the sha256 of git-<version>.tar.xz, 64 lowercase hex digits");
     if (!isDigest(sha256)) return refuse("git.sha256 is the sha256 of git-<version>.tar.xz, 64 lowercase hex digits");
     const windows = src.get(value, "windows");
-    if (windows != .object) return refuse("git.windows holds the sha256 of each Git for Windows installer: {\"x86_64\": ..., \"aarch64\": ...}");
+    if (windows != .object) return refuse("git.windows holds the sha256 of each Git for Windows portable build: {\"x86_64\": ..., \"aarch64\": ...}");
     for (windows.object.keys()) |key| if (!isOneOf(key, &.{ "x86_64", "aarch64" })) return refuse("git.windows takes x86_64 and aarch64, nothing else");
-    const x86 = string(windows, "x86_64") orelse return refuse("git.windows.x86_64 is the sha256 of Git-<version>-64-bit.exe");
-    const arm = string(windows, "aarch64") orelse return refuse("git.windows.aarch64 is the sha256 of Git-<version>-arm64.exe");
+    const x86 = string(windows, "x86_64") orelse return refuse("git.windows.x86_64 is the sha256 of PortableGit-<version>-64-bit.7z.exe");
+    const arm = string(windows, "aarch64") orelse return refuse("git.windows.aarch64 is the sha256 of PortableGit-<version>-arm64.7z.exe");
     if (!isDigest(x86) or !isDigest(arm)) return refuse("git.windows's hashes are sha256s, 64 lowercase hex digits");
     return .{ .version = version, .sha256 = sha256, .windows_x86_64 = x86, .windows_aarch64 = arm };
 }
@@ -101,9 +103,9 @@ pub fn tarballUrl(a: std.mem.Allocator, version: []const u8) ![]const u8 {
     return a.print("https://www.kernel.org/pub/software/scm/git/git-{s}.tar.xz", .{version});
 }
 
-/// Git for Windows' installer of `version` for `arch`: the first Windows build of the release.
-pub fn windowsInstaller(a: std.mem.Allocator, version: []const u8, arch: std.Target.Cpu.Arch) !struct { url: []const u8, name: []const u8 } {
-    const name = try a.print("Git-{s}-{s}.exe", .{ version, if (arch == .aarch64) "arm64" else "64-bit" });
+/// Git for Windows' portable build of `version` for `arch`: the first Windows build of the release.
+pub fn windowsPortable(a: std.mem.Allocator, version: []const u8, arch: std.Target.Cpu.Arch) !struct { url: []const u8, name: []const u8 } {
+    const name = try a.print("PortableGit-{s}-{s}.7z.exe", .{ version, if (arch == .aarch64) "arm64" else "64-bit" });
     return .{ .url = try a.print("https://github.com/git-for-windows/git/releases/download/v{s}.windows.1/{s}", .{ version, name }), .name = name };
 }
 
@@ -165,6 +167,7 @@ pub const Inputs = struct {
     zig: []const u8,
     zlib: []const u8,
     libressl: []const u8,
+    nghttp2: []const u8,
     curl: []const u8,
     /// The macOS SDK, whose base libraries and frameworks a macOS build links.
     sdk: ?[]const u8 = null,
@@ -176,6 +179,8 @@ pub const Inputs = struct {
 pub fn environment(a: std.mem.Allocator, parent: *const std.process.Environ.Map, p: Platform, in: Inputs, prefix: []const u8) !std.process.Environ.Map {
     var env = try parent.clone(a);
     try env.put("CC", try a.print("{s} cc -target {s}", .{ in.zig, p.zig }));
+    // nghttp2's configure looks for a C++ compiler too: zig's, never the host's.
+    try env.put("CXX", try a.print("{s} c++ -target {s}", .{ in.zig, p.zig }));
     try env.put("AR", try a.print("{s} ar", .{in.zig}));
     try env.put("RANLIB", try a.print("{s} ranlib", .{in.zig}));
     try env.put("CPPFLAGS", try a.print("-I{s}/include{s}", .{ prefix, try frameworks(a, p, in) }));
@@ -202,12 +207,14 @@ fn linkPaths(a: std.mem.Allocator, p: Platform, in: Inputs, prefix: []const u8) 
 /// One step of a build: a command in a source directory.
 pub const Step = struct { cwd: []const u8, argv: []const []const u8 };
 
-/// The build's steps, in order: zlib, LibreSSL and curl into `prefix`, then git into `out`,
+/// The build's steps, in order: zlib, LibreSSL, nghttp2 and curl into `prefix`, then git into
+/// `out`,
 /// each source copied to `work` first (a pinned source is never written to).
 pub fn steps(a: std.mem.Allocator, p: Platform, in: Inputs, work: []const u8, prefix: []const u8, out: []const u8) ![]const Step {
     const jobs = try a.print("-j{d}", .{in.jobs});
     const zlib = try std.fs.path.join(a, &.{ work, "zlib" });
     const libressl = try std.fs.path.join(a, &.{ work, "libressl" });
+    const nghttp2 = try std.fs.path.join(a, &.{ work, "nghttp2" });
     const curl = try std.fs.path.join(a, &.{ work, "curl" });
     const git = try std.fs.path.join(a, &.{ work, "git" });
     var list: std.ArrayList(Step) = .empty;
@@ -220,6 +227,10 @@ pub fn steps(a: std.mem.Allocator, p: Platform, in: Inputs, work: []const u8, pr
         .{ .cwd = libressl, .argv = try a.dupe([]const u8, &.{ "./configure", try a.print("--host={s}", .{p.host}), try a.print("--prefix={s}", .{prefix}), "--disable-shared", "--enable-static", "--disable-asm", "--disable-tests" }) },
         .{ .cwd = libressl, .argv = try a.dupe([]const u8, &.{ "make", jobs }) },
         .{ .cwd = libressl, .argv = try a.dupe([]const u8, &.{ "make", "install" }) },
+        // The library alone (`--enable-lib-only`): its programs need what no runner is given.
+        .{ .cwd = nghttp2, .argv = try a.dupe([]const u8, &.{ "./configure", try a.print("--host={s}", .{p.host}), try a.print("--prefix={s}", .{prefix}), "--disable-shared", "--enable-static", "--enable-lib-only" }) },
+        .{ .cwd = nghttp2, .argv = try a.dupe([]const u8, &.{ "make", jobs }) },
+        .{ .cwd = nghttp2, .argv = try a.dupe([]const u8, &.{ "make", "install" }) },
         .{ .cwd = curl, .argv = try curlConfigure(a, p, prefix) },
         .{ .cwd = curl, .argv = try a.dupe([]const u8, &.{ "make", jobs }) },
         .{ .cwd = curl, .argv = try a.dupe([]const u8, &.{ "make", "install" }) },
@@ -238,7 +249,7 @@ fn curlConfigure(a: std.mem.Allocator, p: Platform, prefix: []const u8) ![]const
         try a.print("--with-zlib={s}", .{prefix}), try a.print("--with-ca-bundle={s}", .{p.ca_bundle}),
         "--without-ca-path",                       "--without-libpsl",
         "--without-libidn2",                       "--without-brotli",
-        "--without-zstd",                          "--without-nghttp2",
+        "--without-zstd",                          try a.print("--with-nghttp2={s}", .{prefix}),
         "--without-nghttp3",                       "--without-ngtcp2",
         "--without-libssh2",                       "--without-libssh",
         "--without-librtmp",                       "--without-libgsasl",
@@ -262,7 +273,7 @@ fn gitMake(a: std.mem.Allocator, p: Platform, in: Inputs, prefix: []const u8, ou
         try a.print("CFLAGS=-O2 -g0 -I{s}/include{s}", .{ prefix, if (macos) try a.print(" -idirafter {s}/usr/include -F{s}/System/Library/Frameworks", .{ in.sdk.?, in.sdk.? }) else "" }),
         try a.print("LDFLAGS={s}", .{try linkPaths(a, p, in, prefix)}),
         try a.print("CURL_CONFIG={s}/bin/curl-config", .{prefix}),
-        try a.print("CURL_LDFLAGS={s}/lib/libcurl.a -lssl -lcrypto -lz{s}", .{ prefix, if (macos) " -framework CoreFoundation -framework SystemConfiguration" else " -lpthread" }),
+        try a.print("CURL_LDFLAGS={s}/lib/libcurl.a -lnghttp2 -lssl -lcrypto -lz{s}", .{ prefix, if (macos) " -framework CoreFoundation -framework SystemConfiguration" else " -lpthread" }),
         try a.print("ZLIB_PATH={s}", .{prefix}),
         try a.print("OPENSSLDIR={s}", .{prefix}),
         try a.print("uname_S={s}", .{p.uname_s}),
@@ -449,7 +460,7 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
     try std.Io.Dir.cwd().deleteTree(io, work);
     try std.Io.Dir.cwd().deleteTree(io, partial);
     try std.Io.Dir.cwd().createDirPath(io, try std.fs.path.join(c.a, &.{ work, "git" }));
-    c.report("held git: building {s} (zlib {s}, LibreSSL {s}, curl {s}, zig cc -target {s})\n", .{ name, sources.zlib, sources.libressl, sources.curl, p.zig });
+    c.report("held git: building {s} (zlib {s}, LibreSSL {s}, nghttp2 {s}, curl {s}, zig cc -target {s})\n", .{ name, sources.zlib, sources.libressl, sources.nghttp2, sources.curl, p.zig });
     const tarball = try fetchChecked(c, try tarballUrl(c.a, held.version), held.sha256);
     const archive = try std.fs.path.join(c.a, &.{ work, "git.tar.xz" });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = archive, .data = tarball });
@@ -457,7 +468,7 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
     // The pinned sources are read-only: each is copied to be built. A build names them as they
     // sit in the package (`./zig-pkg/<hash>`), and the copy runs in the work directory, so each
     // is made absolute first (every hosted job's held git failed at the first copy).
-    for ([_][]const u8{ in.zlib, in.libressl, in.curl }, [_][]const u8{ "zlib", "libressl", "curl" }) |given, to| {
+    for ([_][]const u8{ in.zlib, in.libressl, in.nghttp2, in.curl }, [_][]const u8{ "zlib", "libressl", "nghttp2", "curl" }) |given, to| {
         const from = try std.Io.Dir.cwd().realPathFileAlloc(io, given, c.a);
         try run(c, environ, work, &.{ "cp", "-R", try c.a.print("{s}/.", .{from}), to });
         try run(c, environ, work, &.{ "chmod", "-R", "u+w", to });
@@ -470,6 +481,7 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
     const prefix = try std.fs.path.join(c.a, &.{ work, "prefix" });
     var env = try environment(c.a, environ, p, in, prefix);
     for (try steps(c.a, p, in, work, prefix, partial)) |step| try run(c, &env, step.cwd, step.argv);
+    try speaksHttp2(c, prefix);
     try check(c, held, p, partial);
     try std.Io.Dir.rename(std.Io.Dir.cwd(), partial, std.Io.Dir.cwd(), out, io);
     try std.Io.Dir.cwd().deleteTree(io, work);
@@ -492,6 +504,18 @@ fn run(c: *src.Context, environ: *const std.process.Environ.Map, cwd: []const u8
 
 /// A build stands when its git is the release and every program it made links the
 /// platform's base alone, each library once.
+/// Fails unless the curl the build made speaks HTTP/2, as its `curl-config --features` says:
+/// curl configured without nghttp2 builds and links all the same, and git's
+/// `http.version=HTTP/2` then falls back to HTTP/1.1 (relic's HTTP/2 fetch, run 43807094616).
+fn speaksHttp2(c: *src.Context, prefix: []const u8) !void {
+    const config = try std.fs.path.join(c.a, &.{ prefix, "bin", "curl-config" });
+    const said = try seam.run(c.a, c.io, .{ .argv = &.{ "sh", config, "--features" } }, .line);
+    var features = std.mem.tokenizeAny(u8, said.stdout, " \r\n");
+    while (features.next()) |feature| if (std.mem.eql(u8, feature, "HTTP2")) return;
+    c.fail("held git: its curl does not speak HTTP/2 ({s} --features says {s})", .{ config, std.mem.trim(u8, said.stdout, " \r\n") });
+    return error.CheckFailed;
+}
+
 fn check(c: *src.Context, held: Held, p: Platform, out: []const u8) !void {
     const io = c.io;
     // A build for another machine (the riscv64 one) is run there, not here.
@@ -525,16 +549,17 @@ fn check(c: *src.Context, held: Held, p: Platform, out: []const u8) !void {
     }
 }
 
-/// Git for Windows' release `held` names, installed in the store (`Git-<version>-<arch>`
-/// there) from its installer checked against the configuration's hash and kept beside it, and
-/// returns that directory, whose `cmd\git.exe` runs it. Not over the runner's own Git: the
-/// job's shell is that Git's bash, whose programs an install over it cannot replace (every
-/// Windows job's install failed so, run 43773076157). One the store kept is used as it is.
+/// Git for Windows' release `held` names, unpacked into the store (`Git-<version>-<arch>`
+/// there) from its portable build checked against the configuration's hash and kept beside it,
+/// and returns that directory, whose `cmd\git.exe` runs it. No installer runs: an installer
+/// refuses to put an older release beside the runner's newer Git ("InitializeSetup returned
+/// False", every Windows job of run 43794141206), and one over it cannot replace the programs
+/// of the bash running the job's steps (run 43773076157). One the store kept is used as it is.
 pub fn installWindows(c: *src.Context, environ: *const std.process.Environ.Map, held: Held, arch: std.Target.Cpu.Arch, store: []const u8) ![]const u8 {
     const io = c.io;
-    const installer = try windowsInstaller(c.a, held.version, arch);
+    const portable = try windowsPortable(c.a, held.version, arch);
     const sha256 = if (arch == .aarch64) held.windows_aarch64 else held.windows_x86_64;
-    const kept = try std.fs.path.join(c.a, &.{ store, installer.name });
+    const kept = try std.fs.path.join(c.a, &.{ store, portable.name });
     const dir = try std.fs.path.join(c.a, &.{ store, try c.a.print("Git-{s}-{t}", .{ held.version, arch }) });
     const git = try std.fs.path.join(c.a, &.{ dir, "cmd", "git.exe" });
     const want = try c.a.print("git version {s}.windows.1", .{held.version});
@@ -543,28 +568,21 @@ pub fn installWindows(c: *src.Context, environ: *const std.process.Environ.Map, 
         return dir;
     };
     try std.Io.Dir.cwd().createDirPath(io, store);
-    // An installer this store kept, checked against its hash before it runs.
-    const bytes = seam.file(io, std.Io.Dir.cwd(), kept, c.a, .program) catch try fetchChecked(c, installer.url, sha256);
+    // A build this store kept, checked against its hash before it runs.
+    const bytes = seam.file(io, std.Io.Dir.cwd(), kept, c.a, .program) catch try fetchChecked(c, portable.url, sha256);
     if (!std.mem.eql(u8, &digest(bytes), sha256)) {
         c.fail("held git: {s} has sha256 {s}, and ci/workflow.json holds {s}", .{ kept, &digest(bytes), sha256 });
         return error.CheckFailed;
     }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = kept, .data = bytes });
-    const log = try std.fs.path.join(c.a, &.{ store, try c.a.print("{s}.log", .{installer.name}) });
-    run(c, environ, store, &.{ kept, "/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/SUPPRESSMSGBOXES", "/NOICONS", try c.a.print("/DIR={s}", .{dir}), try c.a.print("/LOG={s}", .{log}) }) catch |err| {
-        // The installer says why only in its log.
-        const said = seam.document(io, std.Io.Dir.cwd(), log, c.a, .list) catch |read| switch (read) {
-            error.FileNotFound => "(it wrote no log)",
-            else => |e| return e,
-        };
-        c.report("held git: the installer's log, {s}:\n{s}\n", .{ log, said[said.len -| 8192..] });
-        return err;
-    };
+    // 7-Zip's self-extractor: `-o` names where it unpacks, `-y` asks nothing. It then runs the
+    // build's own post-install script there, and returns when that has ended.
+    try run(c, environ, store, &.{ kept, try c.a.print("-o{s}", .{dir}), "-y" });
     if (try saysOther(c, git, want)) |said| {
         c.fail("held git: {s} says {s}, not {s}", .{ git, said, want });
         return error.CheckFailed;
     }
-    c.report("held git: {s} installed in {s}\n", .{ want, dir });
+    c.report("held git: {s} unpacked in {s}\n", .{ want, dir });
     return dir;
 }
 
@@ -575,7 +593,7 @@ fn saysOther(c: *src.Context, git: []const u8, want: []const u8) !?[]const u8 {
     return if (command.succeeded(said) and std.mem.eql(u8, line, want)) null else line;
 }
 
-/// The `git` of `ci/workflow.json` for `version`: its tarball's and installers' hashes, each
+/// The `git` of `ci/workflow.json` for `version`: its tarball's and portable builds' hashes, each
 /// fetched and hashed here, written for the diff to show.
 pub fn pin(c: *src.Context, path: []const u8, version: []const u8) !void {
     if (!isRelease(version)) {
@@ -583,7 +601,7 @@ pub fn pin(c: *src.Context, path: []const u8, version: []const u8) !void {
         return error.CheckFailed;
     }
     var hashes: [3][64]u8 = undefined;
-    const urls = [_][]const u8{ try tarballUrl(c.a, version), (try windowsInstaller(c.a, version, .x86_64)).url, (try windowsInstaller(c.a, version, .aarch64)).url };
+    const urls = [_][]const u8{ try tarballUrl(c.a, version), (try windowsPortable(c.a, version, .x86_64)).url, (try windowsPortable(c.a, version, .aarch64)).url };
     for (urls, &hashes) |url, *hash| {
         c.report("held-git-pin: {s}\n", .{url});
         hash.* = digest(fetch(c, url) catch |err| {
@@ -657,7 +675,7 @@ test "git is made with zig cc for the platform, the host asked nothing, and the 
     defer arena.deinit();
     const a = arena.allocator();
     const riscv: Platform = platform(try std.zig.system.resolveTargetQuery(std.testing.io, try std.Target.Query.parse(.{ .arch_os_abi = "riscv64-linux-musl" }))).?;
-    const made = try steps(a, riscv, .{ .zig = "/z/zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .curl = "/s/curl" }, "/w", "/w/prefix", "/out");
+    const made = try steps(a, riscv, .{ .zig = "/z/zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .nghttp2 = "/s/nghttp2", .curl = "/s/curl" }, "/w", "/w/prefix", "/out");
     const git = made[made.len - 2].argv;
     try std.testing.expectEqualStrings("/w/git", made[made.len - 2].cwd);
     for ([_][]const u8{ "CC=/z/zig cc -target riscv64-linux-musl", "uname_S=Linux", "uname_M=riscv64", "LD_MAJOR_VERSION=", "NO_PERL=YesPlease", "NO_EXPAT=YesPlease", "NO_GETTEXT=YesPlease", "RUNTIME_PREFIX=YesPlease", "prefix=/out" }) |variable| {
@@ -666,15 +684,21 @@ test "git is made with zig cc for the platform, the host asked nothing, and the 
     // Neither curl nor iconv is left out: HTTP and HTTPS, and every encoding the platform has.
     for (git) |arg| try std.testing.expect(!std.mem.startsWith(u8, arg, "NO_CURL") and !std.mem.startsWith(u8, arg, "NO_ICONV") and !std.mem.startsWith(u8, arg, "NO_OPENSSL"));
     for (made) |step| try std.testing.expect(std.mem.startsWith(u8, step.cwd, "/w/"));
-    const curl = made[5].argv;
-    try std.testing.expect(isOneOf("--host=riscv64-linux-musl", curl) and isOneOf("--with-openssl=/w/prefix", curl) and isOneOf("--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt", curl));
+    // nghttp2's library, then curl over it: git speaks HTTP/2 (relic's HTTP/2 fetch, run 43807094616).
+    const nghttp2 = made[5];
+    try std.testing.expectEqualStrings("/w/nghttp2", nghttp2.cwd);
+    try std.testing.expect(isOneOf("--host=riscv64-linux-musl", nghttp2.argv) and isOneOf("--enable-lib-only", nghttp2.argv) and isOneOf("--disable-shared", nghttp2.argv));
+    const curl = made[8].argv;
+    try std.testing.expectEqualStrings("/w/curl", made[8].cwd);
+    try std.testing.expect(isOneOf("--host=riscv64-linux-musl", curl) and isOneOf("--with-openssl=/w/prefix", curl) and isOneOf("--with-nghttp2=/w/prefix", curl) and isOneOf("--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt", curl));
+    for (git) |arg| if (std.mem.startsWith(u8, arg, "CURL_LDFLAGS=")) try std.testing.expect(std.mem.find(u8, arg, "libcurl.a -lnghttp2 ") != null);
     // No host tool by the host's name: zlib keeps zig's archiver, git links no fuzz program
     // through a flag zig's linker refuses, and musl's regex is git's own.
     try std.testing.expect(isOneOf("--uname=zig", made[0].argv));
     try std.testing.expect(isOneOf("LINK_FUZZ_PROGRAMS=", git) and isOneOf("NO_REGEX=NeedsStartEnd", git));
     var parent = std.process.Environ.Map.init(a);
     try parent.put("CFLAGS", "-g -O0");
-    const env = try environment(a, &parent, riscv, .{ .zig = "/z/zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .curl = "/s/curl" }, "/w/prefix");
+    const env = try environment(a, &parent, riscv, .{ .zig = "/z/zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .nghttp2 = "/s/nghttp2", .curl = "/s/curl" }, "/w/prefix");
     try std.testing.expectEqualStrings("/z/zig ar", env.get("AR").?);
     try std.testing.expectEqualStrings("-O2 -g0", env.get("CFLAGS").?);
 }

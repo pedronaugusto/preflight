@@ -1400,15 +1400,18 @@ test "a process a test leaves holding the tests' output is named at once, and a 
         \\    try std.Io.File.stdout().writeStreamingAll(std.testing.io, "a line on the test's stdout\n");
         \\}
         \\test "leaves a process" {
-        \\    _ = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "6" } });
+        \\    _ = try std.process.spawn(std.testing.io, .{ .argv = &.{ "sleep", "12" } });
         \\}
         \\
     });
     const left = try gate(a, tmp.dir, &.{});
+    // What the runner listed, when it is not what is asked below (a hosted macOS run named no
+    // `sleep`, 43794141206).
+    if (std.mem.find(u8, left.stderr, ": sleep 12") == null) std.debug.print("{s}", .{left.stderr});
     try std.testing.expect(!command.succeeded(left));
     try std.testing.expect(std.mem.find(u8, left.stderr, "a line on the test's stdout") != null);
     try std.testing.expect(std.mem.find(u8, left.stderr, "processes it started still hold its output") != null);
-    try std.testing.expect(std.mem.find(u8, left.stderr, ": sleep 6") != null);
+    try std.testing.expect(std.mem.find(u8, left.stderr, ": sleep 12") != null);
     try std.testing.expect(std.mem.find(u8, left.stderr, "failed to respond") == null);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
         \\const std = @import("std");

@@ -79,8 +79,8 @@ fn elapsed(c: *src.Context, since: std.Io.Clock.Timestamp) Span {
     return Span.fromIoDuration(since.untilNow(c.io).raw, .down) catch .fromRaw(std.math.maxInt(u64));
 }
 
-/// How a session ended: of itself, passing or failing, or at the deadline.
-const Ended = enum { passed, failed, expired };
+/// How a bounded run ended: of itself, passing or failing, or at the deadline.
+pub const Ended = enum { passed, failed, expired };
 
 /// The watch on a session: at `until` it asks the session's process group to end, and ends it
 /// outright `ending_grace` later, unless the session ended first (`done`).
@@ -132,7 +132,22 @@ fn session(c: *src.Context, argv: []const []const u8, left: Span) !Ended {
         c.fail("ci-fuzz: the fuzzer runs on Linux and macOS, not Windows", .{});
         return .failed;
     }
-    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map, .pgid = 0 });
+    return bounded(c, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map }, left);
+}
+
+/// What `bounded` runs: a command, where and with what environment.
+pub const Bounded = struct {
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd,
+    environ_map: ?*const std.process.Environ.Map,
+};
+
+/// Runs `command` in a process group of its own, asked to end when `left` is spent and ended
+/// outright `ending_grace` later, its build and the build's fuzzers with it. Linux and macOS:
+/// a process group is theirs.
+pub fn bounded(c: *src.Context, command: Bounded, left: Span) !Ended {
+    if (builtin.target.os.tag == .windows) return error.Unsupported;
+    var child = try std.process.spawn(c.io, .{ .argv = command.argv, .cwd = command.cwd, .environ_map = command.environ_map, .pgid = 0 });
     var watch: Watch = .{ .io = c.io, .group = child.id.?, .until = .fromNow(c.io, .{ .raw = left.toIoDuration(), .clock = .awake }) };
     const watcher = try std.Thread.spawn(.{}, Watch.run, .{&watch});
     const term = child.wait(c.io);

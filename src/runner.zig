@@ -821,11 +821,24 @@ const Supervisor = struct {
             var pids: [8192]c_int = @splat(0);
             const count = proc_listallpids(&pids, @sizeOf(@TypeOf(pids)));
             if (count <= 0) return error.ProcessesUnlisted;
+            const arguments = try argumentBuffer();
+            defer std.heap.page_allocator.free(arguments);
             for (pids[0..@min(@as(usize, @intCast(count)), pids.len)]) |pid| {
                 if (pid == std.c.getpid() or !holds(pid, own.handle)) continue;
-                var arguments: [1024]u8 = @splat(0);
-                try w.print("  pid {d}: {s}\n", .{ pid, commandLine(pid, &arguments) });
+                try w.print("  pid {d}: {s}\n", .{ pid, commandLine(pid, arguments) });
             }
+        }
+
+        /// A buffer as long as the system's longest arguments and environment
+        /// (`kern.argmax`), as `ps` reads them: `kern.procargs2` copies a
+        /// process's arguments with its environment, which on a hosted runner
+        /// outgrows any fixed buffer, and a shorter one names nothing.
+        fn argumentBuffer() ![]u8 {
+            var mib = [_]c_int{ std.c.CTL.KERN, std.c.KERN.ARGMAX };
+            var argmax: c_int = 0;
+            var size: usize = @sizeOf(c_int);
+            if (std.c.sysctl(&mib, mib.len, &argmax, &size, null, 0) != 0 or argmax <= 0) return error.ArgumentsUnsized;
+            return std.heap.page_allocator.alloc(u8, @intCast(argmax));
         }
 
         fn holds(pid: c_int, handle: u64) bool {
@@ -851,7 +864,7 @@ const Supervisor = struct {
         fn commandLine(pid: c_int, buffer: []u8) []const u8 {
             var mib = [_]c_int{ std.c.CTL.KERN, std.c.KERN.PROCARGS2, pid };
             var size: usize = buffer.len;
-            if (std.c.sysctl(&mib, mib.len, buffer.ptr, &size, null, 0) != 0 or size < @sizeOf(c_int)) return "";
+            if (std.c.sysctl(&mib, mib.len, buffer.ptr, &size, null, 0) != 0 or size < @sizeOf(c_int)) return "(its arguments unread)";
             const argc: usize = @intCast(@max(std.mem.readInt(c_int, buffer[0..@sizeOf(c_int)], .little), 0));
             var rest = buffer[@sizeOf(c_int)..size];
             // The executable's path, then the zeros that align the arguments.

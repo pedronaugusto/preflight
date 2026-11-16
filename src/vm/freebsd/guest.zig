@@ -108,6 +108,7 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     for (scratch) |path| try mountScratch(io, gpa, path);
     try check(chroot(new_root), error.Root);
     try check(c.chdir("/"), error.Root);
+    try checkScratch(io, gpa, scratch);
 
     const ports = try openPorts(io);
     try writeAll(ports.status, "started\n");
@@ -256,6 +257,30 @@ fn mountScratch(io: Io, gpa: std.mem.Allocator, path: []const u8) !void {
     const target = try inRoot(gpa, path);
     try Io.Dir.cwd().createDirPath(io, target);
     try mount("tmpfs", target, "tmpfs", &.{.{ "mode", "1777" }}, 0);
+}
+
+/// Fails unless each scratch directory, as the program reaches it from its root, is the
+/// machine's memory: a mount of its own, on another device than the directory above it, and
+/// named by its own path, not the share's beneath it. A scratch that is not lands on 9p,
+/// whose gaps a test of files falls into (reactor's FIFO, shakedown's shared mapping), so the
+/// run stops saying which, rather than run the tests on the share.
+fn checkScratch(io: Io, gpa: std.mem.Allocator, scratch: []const []const u8) !void {
+    for (scratch) |path| {
+        const above = std.fs.path.dirname(path) orelse "/";
+        var own: c.Stat = undefined;
+        var parent: c.Stat = undefined;
+        try check(c.fstatat(c.AT.FDCWD, try gpa.dupeZ(u8, path), &own, 0), error.ScratchUnread);
+        try check(c.fstatat(c.AT.FDCWD, try gpa.dupeZ(u8, above), &parent, 0), error.ScratchUnread);
+        if (own.dev == parent.dev) {
+            say("scratch {s} is on the device of {s}: the machine's memory is not mounted there", .{ path, above });
+            return error.ScratchNotMounted;
+        }
+        const named = try Io.Dir.cwd().realPathFileAlloc(io, path, gpa);
+        if (!std.mem.eql(u8, named, path)) {
+            say("scratch {s} names itself {s}", .{ path, named });
+            return error.ScratchMisnamed;
+        }
+    }
 }
 
 const Ports = struct { io: c.fd_t, err: c.fd_t, status: c.fd_t };

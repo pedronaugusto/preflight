@@ -4,9 +4,11 @@
 //! input saved to `f/crash` during the run, and the runs its coverage files
 //! (`v/<id>`, each headed by `std.Build.abi.fuzz.SeenPcsHeader`) count.
 const std = @import("std");
+const builtin = @import("builtin");
 const aegis = @import("aegis");
 const src = @import("source.zig");
 const seam = @import("input.zig");
+const budget = @import("budget.zig");
 
 /// When a file was last written: an instant of the real clock, in nanoseconds as std keeps it.
 const Saved = aegis.units.Instant(std.Io.Clock.real, .nanosecond, i96);
@@ -74,18 +76,48 @@ pub fn run(c: *src.Context, cache_path: []const u8, cwd: []const u8, argv: []con
     defer cache.deleteTree(c.io, names) catch |err| c.report("fuzz campaign: {s}/{s} is left in the cache ({s})\n", .{ absolute, names, @errorName(err) });
     var env = try (c.environ_map orelse return error.EnvironmentUnknown).clone(c.a);
     try env.put("PREFLIGHT_FUZZ_NAMES", try std.Io.Dir.path.join(c.a, &.{ absolute, names }));
-    var child = try std.process.spawn(c.io, .{
-        .argv = try std.mem.concat(c.a, []const u8, &.{ argv, &.{ "--cache-dir", absolute } }),
-        .cwd = .{ .path = cwd },
-        .environ_map = &env,
-    });
-    const term = try child.wait(c.io);
-    if (term != .exited or term.exited != 0) return c.fail("fuzz campaign: the build failed", .{});
-    switch (judge(before, try state(c.io, cache))) {
-        .ran => {},
-        .crashed => c.fail("fuzz campaign: the fuzzer found a failing input, saved to {s}/f/crash", .{absolute}),
-        .idle => c.fail("fuzz campaign: the fuzzer ran no input; a fuzz test that never starts fails as one that crashes", .{}),
+    const build = try std.mem.concat(c.a, []const u8, &.{ argv, &.{ "--cache-dir", absolute } });
+    // `--fuzz` counts runs, never time: a hosted job's campaign ends at the job's deadline
+    // (`PREFLIGHT_DEADLINE`, the job's limit less its report), whatever its runs cost, and is
+    // judged on what the fuzzer ran by then (warp's, chronicle's and strand's campaigns were
+    // cancelled at their 20 minutes, 43783174223, 43783866546).
+    const left = try untilDeadline(c, env.get("PREFLIGHT_DEADLINE"));
+    var expired = false;
+    if (left != null and builtin.target.os.tag != .windows) {
+        if (left.?.compare(.literal("0s")) != .gt) return c.fail("fuzz campaign: the job's deadline (PREFLIGHT_DEADLINE) passed before the campaign began", .{});
+        switch (try budget.bounded(c, .{ .argv = build, .cwd = .{ .path = cwd }, .environ_map = &env }, left.?)) {
+            .passed => {},
+            .failed => return c.fail("fuzz campaign: the build failed", .{}),
+            .expired => expired = true,
+        }
+    } else {
+        var child = try std.process.spawn(c.io, .{ .argv = build, .cwd = .{ .path = cwd }, .environ_map = &env });
+        const term = try child.wait(c.io);
+        if (term != .exited or term.exited != 0) return c.fail("fuzz campaign: the build failed", .{});
     }
+    const after = try state(c.io, cache);
+    switch (judge(before, after)) {
+        .ran => if (expired) c.report("fuzz campaign: ended at the job's deadline after {d} runs with no crash saved: it passes on what it fuzzed\n", .{after.runs - before.runs}),
+        .crashed => c.fail("fuzz campaign: the fuzzer found a failing input, saved to {s}/f/crash", .{absolute}),
+        .idle => if (expired)
+            c.fail("fuzz campaign: the job's deadline came before the fuzzer ran an input, its build having taken the job's time: raise test_job_timeout", .{})
+        else
+            c.fail("fuzz campaign: the fuzzer ran no input; a fuzz test that never starts fails as one that crashes", .{}),
+    }
+}
+
+/// What is left until `deadline`, whole seconds since the epoch as `PREFLIGHT_DEADLINE` holds
+/// them; null where it is unset (a campaign outside a hosted job runs to its count of runs), and
+/// none left once it has passed.
+fn untilDeadline(c: *src.Context, deadline: ?[]const u8) !?budget.Span {
+    const text = deadline orelse return null;
+    const seconds = std.fmt.parseInt(i64, text, 10) catch {
+        c.fail("fuzz campaign: PREFLIGHT_DEADLINE is {s}, not whole seconds since the epoch", .{text});
+        return error.CheckFailed;
+    };
+    const now = std.Io.Clock.Timestamp.now(c.io, .real).raw.nanoseconds;
+    const left = @as(i96, seconds) * std.time.ns_per_s - now;
+    return budget.Span.fromIoDuration(.fromNanoseconds(@max(left, 0)), .down) catch .fromRaw(std.math.maxInt(u64));
 }
 
 test "a crash saved during the campaign fails it, one from before does not" {

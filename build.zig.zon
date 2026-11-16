@@ -77,8 +77,8 @@
         },
 
         .ensign = .{
-            .url = "git+https://github.com/pedronaugusto/ensign#9689f8e51650136e34e1f07144c4934e3bcae43b",
-            .hash = "ensign-0.3.1-6eMTD32qBQC4p7hZgrl6CE-kF3oFS5Rsv2ASg6_c9iZI",
+            .url = "git+https://github.com/pedronaugusto/ensign#1e6ff3cbf3fa7fa6024ecc5e6e485a884af3b953",
+            .hash = "ensign-0.3.1-6eMTD4C3BQBEku2xvEmP1XX4xd4egoiEI4ztNGqx3foe",
             .lazy = true,
         },
 

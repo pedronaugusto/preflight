@@ -484,16 +484,20 @@ file system, pinned by hash in preflight's manifest and fetched only by a build 
 asks for it, with a first process of preflight's own. Each test or program run boots
 it (about a second), runs the program as the build's user with the host's directories
 it names (where it runs, where it is, what its arguments point to) at their paths and
-its scratch directory in the machine's memory, and ends as the program ended: its exit
-code, or its signal. Its standard streams are pipes, as on any host. The watchdog's
+its scratch in the machine's memory (`TMPDIR` is `/tmp`, and `.zig-cache/tmp` and the tmp
+of the cache the build names to the tests are tmpfs: the host's directories reach the
+machine over 9p, which drops a shared mapping's write a read should see, FIFOs and a
+directory's sync), and ends as the program ended: its exit code, or its signal, or 128 +
+a signal no process can catch (SIGKILL, SIGSTOP), named. Its standard streams are pipes, as on any host. The watchdog's
 bound is ten times as long there. The release tier's riscv64 job runs its Debug suite
 this way.
 
 What a build makes for x86_64 FreeBSD runs the same way on FreeBSD's own kernel and
 runtime image under KVM (`ci-vm=freebsd`): `qemu-system-x86_64` on the PATH and
 `/dev/kvm` open to the build's user, on an x86_64 Linux host only; a build on any other host is
-refused by name. The program sees FreeBSD's system read-only, its own `/tmp`, an empty
-home, and the host's directories it names at their paths. The machine stops a boot
+refused by name. The program sees FreeBSD's system read-only, its own devices with every
+open descriptor at `/dev/fd` (fdescfs), its own `/tmp` and scratch as on the riscv64
+machine, an empty home, and the host's directories it names at their paths. The machine stops a boot
 that has not started the program in 180 seconds; a run that ends without the
 program's ending (a panic, the deadline, QEMU ending) keeps its directory, console
 among it, under `.zig-cache/tmp`, and writes the console's last lines to the build's
@@ -528,8 +532,9 @@ so a move to another git is a diff that shows them. A run reads no checksum from
 network: a download that does not match the configuration fails by name. A package that
 names no git keeps the runner's.
 
-On Windows the job installs Git for Windows' release over the runner's, its installer
-checked against the hash. Everywhere else `zig build ci-held-git` builds git from the
+On Windows the job installs Git for Windows' release in the store, apart from the runner's
+own Git (whose bash runs the job's steps), its installer checked against the hash, and puts
+it first on the path. Everywhere else `zig build ci-held-git` builds git from the
 tarball with `zig cc` for a target named outright (`aarch64-macos.13.0`,
 `x86_64-linux-gnu.2.31`, `aarch64-linux-gnu.2.31`, `riscv64-linux-musl`), against zlib,
 LibreSSL and curl built from the releases `build.zig.zon` pins by hash, fetched by any build

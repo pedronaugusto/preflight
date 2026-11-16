@@ -1005,7 +1005,7 @@ test "the cross bundle retains every target, CPU and caller compile step" {
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_step":"install","targets":["x86_64-windows-gnu",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
+        \\{"compile_step":"install","targets":["x86_64-windows-gnu",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}],"measured":{"phases":{"compile x86_64-windows-gnu":20,"benchmarks x86_64-windows-gnu":5,"compile aarch64-linux-gnu":20,"benchmarks aarch64-linux-gnu":5}}}
     , .{})).value;
     const jobs = try plan(a, config, .release);
     var bundles: usize = 0;
@@ -1413,7 +1413,7 @@ test "every compile and link job of the release tier takes cross_job_timeout, no
     defer arena.deinit();
     const a = arena.allocator();
     // strand's ReleaseSmall compiles took 20m44s and 20m19s against a fixed 20 (run 43741335353).
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\",\"x86_64-windows-msvc\",\"aarch64-macos\"],\"sdk_targets\":[\"x86_64-windows-msvc\"],\"cross_job_timeout\":45,\"policy\":\"family\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\",\"x86_64-windows-msvc\",\"aarch64-macos\"],\"sdk_targets\":[\"x86_64-windows-msvc\"],\"cross_job_timeout\":45,\"policy\":\"family\",\"measured\":{\"phases\":{\"compile aarch64-linux-gnu\":30,\"benchmarks aarch64-linux-gnu\":5,\"compile x86_64-windows-msvc\":30,\"benchmarks x86_64-windows-msvc\":5,\"compile aarch64-macos\":30,\"benchmarks aarch64-macos\":5}}}", .{})).value;
     var compiles: usize = 0;
     var links: usize = 0;
     for (try plan(a, config, .release)) |job| {
@@ -1432,7 +1432,7 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"],\"policy\":\"family\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"aarch64-linux-gnu\"],\"policy\":\"family\",\"measured\":{\"phases\":{\"compile aarch64-linux-gnu\":30,\"benchmarks aarch64-linux-gnu\":5}}}", .{})).value;
     const jobs = try plan(a, config, .release);
     const expected = [_][]const u8{
         "test (ubuntu-latest, Debug)",                          "test (ubuntu-latest, ReleaseSafe)",                    "test (ubuntu-latest, ReleaseFast)",

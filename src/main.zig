@@ -106,7 +106,7 @@ fn deprecationsCommand(io: std.Io, a: std.mem.Allocator, args: @FieldType(Comman
     var std_dir: src.OwnedDir = .init(try std.Io.Dir.cwd().openDir(io, args.std, .{}));
     defer std_dir.deinit(io);
     var buffer: [4096]u8 = undefined;
-    var out = std.Io.File.stdout().writer(io, &buffer);
+    var out = std.Io.File.stdout().writerStreaming(io, &buffer);
     _ = try deprecations.run(a, io, .cwd(), .{ .std_dir = .of(std_dir.borrow().*), .write = args.write, .paths = args.paths }, &out.interface);
     try out.interface.flush();
 }

@@ -75,13 +75,13 @@ pub fn main(init: std.process.Init) !void {
     defer graph.deinit();
     var buffer: [4096]u8 = undefined;
     if (audit) {
-        var out = std.Io.File.stdout().writer(init.io, &buffer);
+        var out = std.Io.File.stdout().writerStreaming(init.io, &buffer);
         try std.json.Stringify.value(.{ .paths = graph.paths(), .edges = graph.edges(), .references = graph.references() }, .{}, &out.interface);
         try out.interface.writeByte('\n');
         try out.interface.flush();
         return;
     }
-    var out = std.Io.File.stderr().writer(init.io, &buffer);
+    var out = std.Io.File.stderr().writerStreaming(init.io, &buffer);
     const problems = try structure.report(a, &graph, d, &out.interface);
     try out.interface.flush();
     if (problems != 0) return error.ImportBoundary;

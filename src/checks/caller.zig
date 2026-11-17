@@ -169,7 +169,8 @@ fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, e
     };
 }
 
-/// Takes the keys of triggers that are gone (`matrix.obsolete_triggers`) out of the package's
+/// Takes the keys of triggers and switches that are gone (`matrix.obsolete_triggers`,
+/// `matrix.obsolete_switches`) out of the package's
 /// configuration at `path`, writing it again without them and naming each: moving a package
 /// to this preflight is `generate` alone, where `plan` and `gate` refuse them by name.
 fn dropRetired(c: *src.Context, path: []const u8, config: *src.Value) !void {
@@ -181,6 +182,11 @@ fn dropRetired(c: *src.Context, path: []const u8, config: *src.Value) !void {
     for (matrix.obsolete_triggers) |name| if (written.object.orderedRemove(name)) {
         _ = config.object.orderedRemove(name);
         c.report("generate: {s}: dropped `{s}`: every push to main runs the ci tier, and the release tier runs weekly at the package's own time\n", .{ path, name });
+        dropped = true;
+    };
+    for (matrix.obsolete_switches) |name| if (written.object.orderedRemove(name)) {
+        _ = config.object.orderedRemove(name);
+        c.report("generate: {s}: dropped `{s}`: the tests compile once exactly when the build's are portable (addCi's .portable_tests, its ci-build step)\n", .{ path, name });
         dropped = true;
     };
     if (!dropped) return;

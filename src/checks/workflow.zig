@@ -278,8 +278,8 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
         }
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
-    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@WEEKLY@", "@MATRICES@", "@HELD_GIT@", "@COMPILE_ONCE@" };
-    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), try weekly(a, seed), matrices.written(), try heldGit(a, config), try boolean(config, "compile_once") };
+    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@WEEKLY@", "@MATRICES@", "@HELD_GIT@" };
+    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), try weekly(a, seed), matrices.written(), try heldGit(a, config) };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -306,15 +306,6 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
 fn heldGit(a: std.mem.Allocator, config: src.Value) ![]const u8 {
     const held = (try heldgit.parse(config)) orelse return "''";
     return a.print("'{s}-{s}'", .{ held.version, held.sha256[0..12] });
-}
-
-fn boolean(config: src.Value, name: []const u8) ![]const u8 {
-    const value = src.get(config, name);
-    return switch (value) {
-        .null => "false",
-        .bool => if (value.bool) "true" else "false",
-        else => error.InvalidWorkflowBoolean,
-    };
 }
 
 fn relative(path: []const u8, directory: bool) !void {
@@ -378,7 +369,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":3}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":3}}", .{})).value;
     const first_pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const next_pin = "76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9";
     const first = try render(a, config, first_pin, ".", false, "ci.yml", 0);
@@ -423,7 +414,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     try std.testing.expectError(error.StaleCaller, checkPin(&checked, "build.zig.zon", next_pin));
     try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{ .preflight = .{ .path = \"..\" } } }" });
     try checkPin(&checked, "build.zig.zon", next_pin);
-    const malformed = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":\"true\"}", .{})).value;
+    const malformed = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":\"true\"}", .{})).value;
     try std.testing.expectError(error.InvalidWorkflowBoolean, render(a, malformed, first_pin, ".", false, "ci.yml", 0));
 }
 
@@ -453,7 +444,7 @@ test "caller output refuses symlink files and directories and propagates write f
 }
 
 fn allocationRender(a: std.mem.Allocator) !void {
-    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":2}}", .{});
+    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":2}}", .{});
     defer parsed.deinit();
     // Rendering uses an arena by contract. Exercise each allocation in the
     // arena's growth, and verify its error cleanup against the leak checker.

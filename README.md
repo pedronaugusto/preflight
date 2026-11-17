@@ -388,8 +388,14 @@ runs shakedown's `shakedown-fuzz` over the package's `check` properties, as many
 of `zig build test --fuzz=<limit>` as it is given, with the fuzzer's corpora in a store
 outside the repository and every failure shrunk to the tape to add to the property's
 `.regressions`: `zig build fuzz -- --limit 50M --sessions 4 --store ~/fuzz`. It fuzzes
-`Config.fuzz_step`, else the step the hardened run fuzzes, else `test`: a step whose every
-test binary has a property (the fuzzer refuses a binary with none). The fuzzer and the
+`Config.fuzz_step`, else the step the hardened run fuzzes, and where that is the tests,
+the package's own property tests alone: `ci-properties`, the runs of the test binaries the
+tests run that the package builds and whose modules import shakedown, and no other run of
+the tests' graph. A session of Zig's fuzzer runs every Run step its step reaches again, a
+generator's or a fixture's as much as a test's, so fuzzing the whole tests step had each
+session run all of them (hull's two table generators wrote one output path). A package with
+no such binary is refused by name; one fuzzing `std.testing.fuzz` tests outside shakedown
+names its step. The fuzzer refuses a step with no property or fuzz test. The fuzzer and the
 properties are the package's own shakedown, which the build that calls `addCi` declares (a
 dev dependency with bay); a package that declares none has no `fuzz` step and fetches
 nothing for one, and one that names a `fuzz_step` without it is refused. The fuzzing,
@@ -437,8 +443,11 @@ Compiling and invoked Zig must be the same build, and one `src/zig_version.zig` 
 
 ### Test runs
 
-Packages with relocatable test binaries can set `.portable_tests = true` in the
-build helper and `compile_once: true` in `ci/workflow.json`. Each destination runner links its tests with the native SDK; shards download
+Packages with relocatable test binaries set `.portable_tests = true` in the
+build helper, and that one switch plans the release tier's native link jobs: `plan`,
+`gate` and `generate` read from the build whether it has `ci-build`, so a link job is
+never planned on a step the build lacks (`compile_once` in `ci/workflow.json` was a
+second switch; `generate` drops it). Each destination runner links its tests with the native SDK; shards download
 and execute those binaries through
 Zig's test protocol, retaining per-test timeouts and custom watchdogs. A program
 the tests run (a fixture server, a helper child) is named to them with
@@ -463,6 +472,14 @@ the record that sizes its shards in the next plan.
 copy. From a package root, `zig build --build-file <preflight>/build.zig
 -Drepo-root=. profile -- --input <dir>` folds local or downloaded records into
 `ci/durations.json` in place.
+
+The run's last job, `runners`, names each job GitHub never gave a runner. A job queued
+until GitHub cancelled it ("not acquired by Runner") ends cancelled with no runner and no
+step, and a cancelled result is no job's red: the profile skips, and the run could end with
+a platform's tests never run and nothing failing by name. `runners` reads the run attempt's
+jobs with the token's `actions: read` (`preflight runners --jobs`) and fails on each, with
+the minutes it was queued; a non-blocking job (Zig master's) is reported and fails nothing.
+Nothing is retried: the run is dispatched again by whoever reads why.
 The shared runner shuffles test order using the test seed in every tier and in local
 runs. A direct run prints the seed; under `zig build` a passing run prints
 nothing, each failure line names the seed, and a crash shows it as the failed
@@ -556,7 +573,10 @@ of a package that names a held git (its `zig build` reads them while it configur
 step it runs) and by no other. No compiler, header or library of the host's enters: the build reads
 what each of its programs links (Mach-O load commands, ELF `DT_NEEDED`) and fails on a
 library that is neither a pinned source nor the platform's base (the SDK's on macOS,
-glibc's on Linux; the riscv64 build is static and links none), and on one named twice. A build is kept in a store
+glibc's on Linux; the riscv64 build is static and links none), and on one named twice. git keeps its own
+assert()s (`-UNDEBUG`: zig cc's -O2 defines NDEBUG), as distributions build it; its libraries keep their flags.
+A download is read to the length its response states: a body cut short is a failed transfer, retried, and only a
+whole one whose hash differs refuses the pin. A build is kept in a store
 (`PREFLIGHT_GIT_STORE`, else `preflight-git` in Zig's global cache) by release, recipe and
 target, which a hosted job caches under that name, and is first on the path of the steps
 after it, its program in `PREFLIGHT_GIT`. On the machine at hand `zig build ci-held-git`
@@ -647,7 +667,7 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   it. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
 - `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
-  `riscv64_seconds`, `compile_once`, `portable_hosts`, `hardened`: what the tiers build and
+  `riscv64_seconds`, `portable_hosts`, `hardened`: what the tiers build and
   run, described below.
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
@@ -807,7 +827,7 @@ host and target; target/CPU configuration belongs in its explicit fields.
 For example:
 
 ```json
-{"compile_once":true,"build_args":["-Dfeature=true"],"targets":[{"target":"x86_64-macos","cpu":"baseline","args":["-Dtrust-store=true"]},"aarch64-macos","x86_64-windows-gnu"]}
+{"build_args":["-Dfeature=true"],"targets":[{"target":"x86_64-macos","cpu":"baseline","args":["-Dtrust-store=true"]},"aarch64-macos","x86_64-windows-gnu"]}
 ```
 
 These flags must be individual whitespace-free `-D` arguments. Malformed
@@ -817,8 +837,9 @@ workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test
 `fast_shards` splits the Linux Debug tests; the source checks and the cross
 compile are jobs of their own. `cross_jobs` sets how many jobs share the cross
 targets, and `cross_seconds` how many seconds of compiling each may hold. Static jobs explicitly distinguish `execute`, `objects`,
-`link` and `replay` operations. `compile_once` enables the separate native link
-and shard replay matrices; it never moves SDK linking to Linux.
+`link` and `replay` operations. A build with portable tests (`.portable_tests`, its
+`ci-build` step) has the separate native link and shard replay matrices; they never move
+SDK linking to Linux.
 
 `ci-check` emits objects for the configured test graph, installed artifacts,
 the `check` graph and public modules, the benchmarks in Debug,
@@ -854,8 +875,8 @@ the riscv64 column has none of weighed by its Linux Debug record times the ratio
 columns over the tests both recorded. With no record of either, it is one job, whose record
 sizes the next plan; `shards.riscv64` fixes the count instead. The hardened runs take `test_job_timeout`; `hardened` splits
 as the Linux jobs do, `hardened-tsan` by `tsan` (else as they do), and the fuzz campaign is one
-job. Every job compiles the whole suite once, or downloads it with
-`compile_once`, and the test runner picks its share of the test cases: longest
+job. Every job compiles the whole suite once, or downloads it where the tests are
+portable, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`, a column per system, architecture and mode, and one more for a
 ThreadSanitizer build (`linux-debug-tsan`), which a declared job records with

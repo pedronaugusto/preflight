@@ -42,12 +42,14 @@ pub const Config = struct {
     /// (`ci/preflight.json`) any other one fails the lint, since what the family ships is
     /// ReleaseSafe.
     release_fast: []const ReleaseFast = &.{},
-    /// Continuous fuzzing: the step `zig build fuzz` fuzzes, one whose every
-    /// test binary has a `check` property or a fuzz test, since the fuzzer
-    /// refuses a binary with none. It runs the package's own shakedown, whose
-    /// properties the tests are written with. Null fuzzes the step the hardened
-    /// run fuzzes, else `test`, in a package that declares shakedown; one that
-    /// declares none has no `fuzz` step. Naming a step requires shakedown.
+    /// Continuous fuzzing: the step `zig build fuzz` and the fuzz job (`ci-fuzz`)
+    /// fuzz, one with a `check` property or a fuzz test, since the fuzzer refuses
+    /// a step with none. It runs the package's own shakedown, whose properties the
+    /// tests are written with. Null fuzzes the step the hardened run fuzzes, and
+    /// where that is the tests, the package's own property tests alone
+    /// (`ci-properties`: the runs of its test binaries that import shakedown, no
+    /// other run of the tests' graph), in a package that declares shakedown; one
+    /// that declares none has no `fuzz` step. Naming a step requires shakedown.
     fuzz_step: ?[]const u8 = null,
     /// Alpine Linux packages the tests need on the riscv64 machine (`-Dci-vm`)
     /// beside its minimal system, by Alpine's names (`openssl`, `bash`). Alpine's
@@ -291,7 +293,7 @@ const Steps = struct {
         // tests, and the fuzzer and the hardened profile run the steps they name.
         var test_steps: std.ArrayList([]const u8) = .empty;
         test_steps.append(b.allocator, "ci") catch @panic("OOM");
-        const named: []const []const u8 = if (config.hardened) |given| &.{ fuzzed, given.fuzz_step orelse fuzzed, given.tsan_step } else &.{fuzzed};
+        const named: []const []const u8 = if (config.hardened) |given| &.{ fuzzed, fuzz.properties_step, given.fuzz_step orelse fuzzed, given.tsan_step } else &.{ fuzzed, fuzz.properties_step };
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
@@ -388,16 +390,20 @@ const Steps = struct {
 /// The steps that run one of the checks program's commands over `package`: the caller's plan
 /// and its regeneration, the build's facts and public surface, the release gate, the cache's
 /// pruning, the documentation regions and the deprecation codemod.
+/// The planner reads the build's own facts: `plan`, `generate` and `gate` are told whether
+/// the tests are portable (`.portable_tests`), as the native link jobs need its `ci-build`.
 fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config: Config) void {
     const plan = executable.run(b);
     plan.addArg("plan");
     plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
+    if (config.portable_tests) plan.addArg("--portable-tests");
     plan.addPassthruArgs();
     plan.setCwd(package.path("."));
     configure.claim(b, "plan", "Plan a tier's matrices for the hosted caller").dependOn(&plan.step);
     // The caller made again for the pins: bay runs it after a train moves them.
     const generate = executable.run(b);
     generate.addArgs(&.{ "generate", "--zig-exe", b.graph.zig_exe });
+    if (config.portable_tests) generate.addArg("--portable-tests");
     generate.addPassthruArgs();
     generate.setCwd(package.path("."));
     generate.has_side_effects = true;
@@ -421,6 +427,7 @@ fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config:
     // release run, in seconds. Releasing is bay's; preflight verifies.
     const gate = executable.run(b);
     gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
+    if (config.portable_tests) gate.addArg("--portable-tests");
     exported(b, package, gate);
     gate.addPassthruArgs();
     gate.setCwd(package.path("."));

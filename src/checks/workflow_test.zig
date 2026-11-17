@@ -131,6 +131,8 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     // does), and whether it has the fuzz job's step: it has, as it declares shakedown.
     try config.object.put(a, "sdk_targets", .{ .array = .init(a) });
     try config.object.put(a, "fuzzed", .{ .bool = true });
+    // And whether its tests are portable: they are, as it has ci-build.
+    try config.object.put(a, "portable_tests", .{ .bool = true });
     // The cross jobs are packed by what the sample's last release run measured, as the
     // caller was made (`configuration` reads `costs.json` beside it as `measured`).
     try config.object.put(a, "measured", (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/costs.json"), .{})).value);

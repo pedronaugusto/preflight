@@ -22,6 +22,7 @@ pub const Cli = struct {
         skip: Skip,
         attest,
         profile: Profile,
+        runners: Runners,
         fuzz_campaign: Campaign,
         fuzz_budget: Budget,
         held_git: HeldGit,
@@ -55,6 +56,8 @@ const zig_exe: ensign.Option = .{ .value_name = "PATH", .hint = .command, .help 
 const module: ensign.Option = .{ .value_name = "NAME=ROOT", .help = "A module the package exports and its root file, repeated: the public surface a release must not break unannounced" };
 const working_directory: ensign.Option = .{ .value_name = "DIR", .hint = .directory, .help = "Where the planned jobs run, when not the repository's root (preflight's own gate runs its sample there)" };
 const workflow_config: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json of the working directory by default" };
+/// The build's own fact, which its steps pass: whether its tests are portable.
+const portable_tests: ensign.Option = .{ .negatable = false, .help = "The build's tests are portable (addCi's .portable_tests, its ci-build step), as the build's own steps say: the native link jobs are planned exactly then. A working directory of another build is asked itself" };
 const build_option: ensign.Option = .{ .value_name = "-DNAME=VALUE", .help = "An option the build was configured with, repeated, so the configured graph is the build's" };
 
 pub const Prepare = struct {
@@ -72,10 +75,12 @@ pub const Plan = struct {
     config: ?[]const u8 = null,
     tier: matrix.Tier = .ci,
     output: ?[]const u8 = null,
+    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The jobs of a tier as the hosted caller's matrices",
         .options = .{
             .zig_exe = zig_exe,
+            .portable_tests = portable_tests,
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json by default" },
             .tier = .{ .help = "The tier whose jobs are planned" },
             .output = .{ .value_name = "FILE", .hint = .file, .help = "Append the matrices to this file; GITHUB_OUTPUT, else standard output, by default" },
@@ -90,6 +95,7 @@ pub const Generate = struct {
     working_directory: ?[]const u8 = null,
     self: bool = false,
     drop: []const []const u8 = &.{},
+    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The caller workflow made again for the package's pins and configuration, where it is; .github/workflows/ci.yml when there is none",
         .options = .{
@@ -98,6 +104,7 @@ pub const Generate = struct {
             .manifest = .{ .value_name = "FILE", .hint = .file, .help = "The manifest whose preflight pin the caller names" },
             .working_directory = working_directory,
             .self = .{ .negatable = false, .help = "preflight's own caller: pinned to the commit under test" },
+            .portable_tests = portable_tests,
             .drop = .{ .value_name = "JOB", .help = "A job of the old caller to let go, repeated" },
         },
     };
@@ -166,9 +173,10 @@ pub const Gate = struct {
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
     module: []const []const u8 = &.{},
+    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "What a release needs beside its hosted release run: the caller plan generates, the version the CHANGELOG's newest release, and the public API's changes named there",
-        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module },
+        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module, .portable_tests = portable_tests },
     };
 };
 
@@ -226,6 +234,16 @@ pub const Profile = struct {
             .output = .{ .value_name = "FILE", .hint = .file, .help = "Where the durations go; over --durations by default" },
             .costs = .{ .value_name = "FILE", .hint = .file, .help = "The phases' costs so far" },
             .costs_output = .{ .value_name = "FILE", .hint = .file, .help = "Where the costs go; over --costs by default" },
+        },
+    };
+};
+
+pub const Runners = struct {
+    jobs: []const u8,
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "The run's jobs GitHub never gave a runner, each named with its minutes queued: the run's last job fails on any",
+        .options = .{
+            .jobs = .{ .value_name = "FILE", .hint = .file, .help = "The run attempt's jobs as the Actions API lists them, its pages in one array (gh api --paginate --slurp)" },
         },
     };
 };
@@ -383,7 +401,11 @@ test "plan and generate as the build's steps call them" {
     try std.testing.expect(generate.self);
     try std.testing.expectEqualStrings("sample", generate.working_directory.?);
     try std.testing.expectEqual(2, generate.drop.len);
-    try std.testing.expectEqual(.release, (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "release" })).command.plan.tier);
+    try std.testing.expect(!generate.portable_tests);
+    const plan = (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "release", "--portable-tests" })).command.plan;
+    try std.testing.expectEqual(.release, plan.tier);
+    try std.testing.expect(plan.portable_tests);
+    try std.testing.expect((try parsed(arena.allocator(), &.{ "gate", "--zig-exe", "/z/zig", "--portable-tests" })).command.gate.portable_tests);
     // The caller is generate's alone.
     try std.testing.expectError(error.UnknownOption, parsed(arena.allocator(), &.{ "plan", "--workflow", ".github/workflows/ci.yml" }));
 }
@@ -428,6 +450,7 @@ test "the hosted workflows' commands" {
     const profile = (try parsed(a, &.{ "profile", "--durations", "pkg/ci/durations.json", "--output", ".preflight-timings/durations.json", "--costs", "pkg/ci/costs.json", "--costs-output", ".preflight-timings/costs.json" })).command.profile;
     try std.testing.expectEqualStrings(".preflight-timings", profile.input);
     try std.testing.expectEqualStrings(".preflight-timings/costs.json", profile.costs_output.?);
+    try std.testing.expectEqualStrings("jobs.json", (try parsed(a, &.{ "runners", "--jobs", "jobs.json" })).command.runners.jobs);
 }
 
 test "the build's helper commands" {

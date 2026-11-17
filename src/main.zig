@@ -43,6 +43,7 @@ pub fn main(init: std.process.Init) !void {
             if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
         },
         .profile => |args| try profileCommand(c, args),
+        .runners => |args| try checks.runners.check(&c, args.jobs),
         .fetch => for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv),
         .fuzz_campaign => |args| {
             c.environ_map = init.environ_map;
@@ -127,7 +128,11 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(
 /// Mac, with Apple's SDK; Zig links any other macOS target on Linux), each read from the build
 /// configured for that target, so a framework linked for macOS alone counts; and whether the
 /// build has the fuzz job's step, as `fuzzed`: it has when its manifest declares shakedown,
-/// read there without configuring the build.
+/// read there without configuring the build; and whether its tests are portable, as
+/// `portable_tests` (`addCi`'s `.portable_tests`, its `ci-build` step, which the native link
+/// jobs run, so they are planned exactly when it has it): the build's steps pass their own
+/// (`--portable-tests`), and a working directory of another build (preflight's sample) is
+/// configured and asked whether it has the step.
 fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerror!void {
     if (config.* != .object) return;
     var gate = c.*;
@@ -147,6 +152,10 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     }
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
     try config.object.put(c.a, "fuzzed", .{ .bool = try checks.manifest.declares(&gate, "shakedown") });
+    // The build that runs the gate is the package's own, else another one, which is asked.
+    const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
+    const elsewhere = !std.mem.eql(u8, here, try c.directory().realPathFileAlloc(c.io, directory, c.a));
+    try config.object.put(c.a, "portable_tests", .{ .bool = if (elsewhere) facts.hasStep(try facts.read(gate, c.zig, &.{}), "ci-build") else c.portable_tests });
 }
 
 /// `gate`: what a release needs beside its hosted release run, before `bay release` asks
@@ -160,6 +169,7 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
 /// `dir` (preflight's own runs its sample there); `--config` defaults to `dir`'s.
 fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
     if (args.zig_exe) |zig| c.zig = zig;
+    c.portable_tests = args.portable_tests;
     // A caller other than plan generates would have the hosted runs check another release
     // than the one gated here.
     _ = checks.caller.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
@@ -181,6 +191,7 @@ fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
 fn generateCommand(c: *src.Context, args: @FieldType(Command, "generate")) !void {
     errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
     if (args.zig_exe) |zig| c.zig = zig;
+    c.portable_tests = args.portable_tests;
     const path = checks.caller.generate(c, .{ .working_directory = args.working_directory, .config = args.config, .own = args.self, .manifest = args.manifest, .drops = args.drop }, sdkTargets) catch |err| switch (err) {
         error.CallerRefused => return error.CheckFailed,
         else => return err,
@@ -193,6 +204,7 @@ fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const a = c.a;
     errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
     if (args.zig_exe) |zig| c.zig = zig;
+    c.portable_tests = args.portable_tests;
     var config = try checks.workflow.configuration(c.*, args.config orelse "ci/workflow.json");
     try sdkTargets(c, &config, ".");
     const jobs = try checks.matrix.plan(a, config, args.tier);

@@ -32,6 +32,9 @@ pub const Context = struct {
     held: ?*std.Io.Writer.Allocating = null,
     /// Findings a check reports without failing: a run with any shows what it held.
     notes: usize = 0,
+    /// The build's tests are portable (addCi's `.portable_tests`, its `ci-build` step), as the
+    /// build's own steps pass it (`--portable-tests`): the planner reads the build's fact.
+    portable_tests: bool = false,
 
     /// The command that runs the package's steps: under bay, `bay dev`, the
     /// development build that holds the package and the gate. Never bare `bay

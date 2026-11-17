@@ -37,4 +37,3 @@ jobs:
       preflight-ref: @PIN@
 @MATRICES@      fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}
       held-git: @HELD_GIT@
-      compile-once: @COMPILE_ONCE@

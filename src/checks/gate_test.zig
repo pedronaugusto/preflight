@@ -134,19 +134,19 @@ test "a package carrying what a release needs passes the gate, which runs no job
     try std.testing.expect(std.mem.find(u8, result.stdout, "a tag needs a green release run on its commit") != null);
 }
 
-test "generate takes the retired triggers out of ci/workflow.json, naming each, and the gate passes after" {
+test "generate takes the retired triggers and switches out of ci/workflow.json, naming each, and the gate passes after" {
     const p = try Package.init();
     defer p.deinit();
-    try p.write("ci/workflow.json", "{\"attest\": true, \"compile_once\": true, \"nightly\": false}\n");
+    try p.write("ci/workflow.json", "{\"attest\": true, \"compile_once\": true, \"cross_jobs\": 1, \"nightly\": false}\n");
     try p.git(&.{ "commit", "-q", "-am", "The old triggers" });
     const generated = try p.preflight(&.{"generate"});
     if (generated.term != .exited or generated.term.exited != 0) {
         std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ generated.stdout, generated.stderr });
         return error.TestUnexpectedResult;
     }
-    for ([_][]const u8{ "dropped `attest`", "dropped `nightly`" }) |said| try std.testing.expect(std.mem.find(u8, generated.stderr, said) != null);
+    for ([_][]const u8{ "dropped `attest`", "dropped `nightly`", "dropped `compile_once`" }) |said| try std.testing.expect(std.mem.find(u8, generated.stderr, said) != null);
     const config = try p.tmp.dir.readFileAlloc(std.testing.io, "ci/workflow.json", p.arena.allocator(), .limited(4096));
-    try std.testing.expectEqualStrings("{\n  \"compile_once\": true\n}\n", config);
+    try std.testing.expectEqualStrings("{\n  \"cross_jobs\": 1\n}\n", config);
     try p.git(&.{ "commit", "-q", "-am", "Generated" });
     const gated = try p.gate();
     if (gated.term != .exited or gated.term.exited != 0) {

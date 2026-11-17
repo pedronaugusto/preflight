@@ -26,8 +26,9 @@ const seam = @import("input.zig");
 const command = @import("command.zig");
 
 /// The recipe below, numbered: a change to how git or its libraries are built takes a new
-/// number, and so a new name in the store and in the hosted job's cache.
-pub const recipe = 2;
+/// number, and so a new name in the store and in the hosted job's cache. 3: git keeps its
+/// assert()s (`gitCflags`).
+pub const recipe = 3;
 
 /// The sources preflight pins (`build.zig.zon`), by the versions the store names.
 pub const sources = .{ .zlib = "1.4", .libressl = "4.4.1", .nghttp2 = "1.71.0", .curl = "8.23.0" };
@@ -187,9 +188,7 @@ pub fn environment(a: std.mem.Allocator, parent: *const std.process.Environ.Map,
     try env.put("LDFLAGS", try linkPaths(a, p, in, prefix));
     try env.put("PKG_CONFIG_LIBDIR", try a.print("{s}/lib/pkgconfig", .{prefix}));
     _ = env.swapRemove("PKG_CONFIG_PATH");
-    // Optimized without debug information, which zig cc writes into an ELF object unless
-    // told (`-g0`): with it, a Linux build was 150 MB to cache, against 23 on a Mac.
-    try env.put("CFLAGS", "-O2 -g0");
+    try env.put("CFLAGS", library_cflags);
     _ = env.swapRemove("LIBS");
     return env;
 }
@@ -270,7 +269,7 @@ fn gitMake(a: std.mem.Allocator, p: Platform, in: Inputs, prefix: []const u8, ou
     try vars.appendSlice(a, &.{
         try a.print("CC={s} cc -target {s}", .{ in.zig, p.zig }),
         try a.print("AR={s} ar", .{in.zig}),
-        try a.print("CFLAGS=-O2 -g0 -I{s}/include{s}", .{ prefix, if (macos) try a.print(" -idirafter {s}/usr/include -F{s}/System/Library/Frameworks", .{ in.sdk.?, in.sdk.? }) else "" }),
+        try a.print("CFLAGS={s}", .{try gitCflags(a, p, in, prefix)}),
         try a.print("LDFLAGS={s}", .{try linkPaths(a, p, in, prefix)}),
         try a.print("CURL_CONFIG={s}/bin/curl-config", .{prefix}),
         try a.print("CURL_LDFLAGS={s}/lib/libcurl.a -lnghttp2 -lssl -lcrypto -lz{s}", .{ prefix, if (macos) " -framework CoreFoundation -framework SystemConfiguration" else " -lpthread" }),
@@ -301,6 +300,21 @@ fn gitMake(a: std.mem.Allocator, p: Platform, in: Inputs, prefix: []const u8, ou
     if (p.kind == .musl) try vars.append(a, "NO_REGEX=NeedsStartEnd");
     return vars.items;
 }
+
+/// git's CFLAGS: optimized without debug information, as its libraries are, with its own
+/// assert()s kept, as distributions and Homebrew build it. zig cc defines NDEBUG at -O2,
+/// which compiled git's asserts out, and relic's merge-ort tests pin where git's assert
+/// stops a merge (relic's run 44118395187, ubuntu Debug 1/2): `-UNDEBUG`. The libraries
+/// (`environment`) keep theirs.
+pub fn gitCflags(a: std.mem.Allocator, p: Platform, in: Inputs, prefix: []const u8) ![]const u8 {
+    const sdk = if (p.kind == .macos) try a.print(" -idirafter {s}/usr/include -F{s}/System/Library/Frameworks", .{ in.sdk.?, in.sdk.? }) else "";
+    return a.print("{s} -UNDEBUG -I{s}/include{s}", .{ library_cflags, prefix, sdk });
+}
+
+/// The libraries' CFLAGS: optimized without debug information, which zig cc writes into an
+/// ELF object unless told (`-g0`): with it, a Linux build was 150 MB to cache, against 23 on
+/// a Mac.
+const library_cflags = "-O2 -g0";
 
 /// The libraries a program of the held git may link on `p`: the platform's base and nothing
 /// else; on musl none, the build being static.
@@ -398,12 +412,14 @@ pub fn linkProblem(a: std.mem.Allocator, p: Platform, libraries: []const []const
     return null;
 }
 
-/// `url`'s bytes, checked against `sha256`, fetched up to three times.
+/// `url`'s bytes, checked against `sha256`, fetched up to three times. A transfer that fails,
+/// a body cut short among them (`fetch`), is retried; only a whole body whose hash differs is
+/// the pin's refusal, naming how many bytes came.
 fn fetchChecked(c: *src.Context, url: []const u8, sha256: []const u8) ![]const u8 {
     for (0..command.backoff.len + 1) |attempt| {
         const bytes = fetch(c, url) catch |err| {
             if (attempt == command.backoff.len) {
-                c.fail("held git: {s} could not be fetched: {t}", .{ url, err });
+                c.fail("held git: {s} could not be fetched: {t}, {d} times", .{ url, err, attempt + 1 });
                 return error.CheckFailed;
             }
             c.report("held git: {s} failed ({t}); retry {d}/{d}\n", .{ url, err, attempt + 2, command.backoff.len + 1 });
@@ -412,7 +428,7 @@ fn fetchChecked(c: *src.Context, url: []const u8, sha256: []const u8) ![]const u
         };
         const found = digest(bytes);
         if (!std.mem.eql(u8, &found, sha256)) {
-            c.fail("held git: {s} has sha256 {s}, and ci/workflow.json holds {s}: not the release the package names", .{ url, &found, sha256 });
+            c.fail("held git: {s}: the whole body, {d} bytes, has sha256 {s}, and ci/workflow.json holds {s}: not the release the package names", .{ url, bytes.len, &found, sha256 });
             return error.CheckFailed;
         }
         return bytes;
@@ -420,13 +436,37 @@ fn fetchChecked(c: *src.Context, url: []const u8, sha256: []const u8) ![]const u
     unreachable;
 }
 
+/// `url`'s body, whole. Zig 0.17's content-length reader takes the connection's end for the
+/// body's (std/http.zig `contentLengthStream` passes the connection's EndOfStream up, which
+/// `streamRemaining` reads as the end), so a connection cut mid-body came back as a shorter
+/// body, whole to `std.http.Client.fetch`, which its hash then refused as a pin it is not:
+/// relic's release run 44118395187, 3 of 14 Windows shards on one URL and one pin. A body
+/// shorter than its response states is the transfer's failure (`error.ShortBody`), its bytes
+/// named. A chunked body states no length; GitHub's release downloads state theirs.
 fn fetch(c: *src.Context, url: []const u8) ![]const u8 {
     var client: std.http.Client = .{ .allocator = c.a, .io = c.io };
     defer client.deinit();
+    // The bytes as the server keeps them, no encoding between: the length it states is theirs.
+    var request = try client.request(.GET, try std.Uri.parse(url), .{ .headers = .{ .accept_encoding = .{ .override = "identity" } } });
+    defer request.deinit();
+    try request.sendBodiless();
+    var redirects: [8 * 1024]u8 = undefined;
+    var response = try request.receiveHead(&redirects);
+    if (response.head.status != .ok) return error.DownloadFailed;
+    if (response.head.content_encoding != .identity) return error.UnsupportedCompressionMethod;
+    const stated = response.head.content_length;
     var output: std.Io.Writer.Allocating = .init(c.a);
-    const response = try client.fetch(.{ .location = .{ .url = url }, .response_writer = &output.writer });
-    if (response.status != .ok) return error.DownloadFailed;
-    return output.written();
+    var transfer: [64]u8 = undefined;
+    _ = response.reader(&transfer).streamRemaining(&output.writer) catch |err| switch (err) {
+        error.ReadFailed => return response.bodyErr().?,
+        else => |e| return e,
+    };
+    const received = output.written();
+    if (stated) |length| if (received.len != length) {
+        c.report("held git: {s}: {d} of the {d} bytes its response states, where the connection ended\n", .{ url, received.len, length });
+        return error.ShortBody;
+    };
+    return received;
 }
 
 fn digest(bytes: []const u8) [64]u8 {
@@ -742,4 +782,73 @@ test "what a Mach-O program links is read from its load commands" {
     try std.testing.expectEqual(2, names.len);
     try std.testing.expectEqualStrings("/usr/lib/libiconv.2.dylib", names[1]);
     try std.testing.expectEqual(0, (try linked(a, "#!/bin/sh\n")).len);
+}
+
+test "a body shorter than its response states is a failed transfer, and a whole one is the body" {
+    const io = std.testing.io;
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var c: src.Context = .{ .a = arena.allocator(), .io = io };
+    // Ten bytes stated each time: three sent before the connection ends, then all ten.
+    for ([_]struct { []const u8, ?[]const u8 }{ .{ "abc", null }, .{ "abcdefghij", "abcdefghij" } }) |case| {
+        const address: std.Io.net.IpAddress = try .parse("127.0.0.1", 0);
+        var server = try address.listen(io, .{});
+        defer server.deinit(io);
+        var accepted: ?std.Io.net.Stream = null;
+        const serving = try std.Thread.spawn(.{}, serve, .{ &server, case[0], &accepted });
+        const url = try c.a.print("http://127.0.0.1:{d}/PortableGit.7z.exe", .{server.socket.address.getPort()});
+        const fetched = fetch(&c, url);
+        serving.join();
+        // Closed once the client is done: the request it sent is never read, and a close
+        // with it unread would reset the connection under the response.
+        if (accepted) |stream| stream.close(io);
+        if (case[1]) |whole| {
+            try std.testing.expectEqualStrings(whole, try fetched);
+        } else try std.testing.expectError(error.ShortBody, fetched);
+    }
+}
+
+/// One response that states ten bytes and sends `body`, then ends its side of the connection:
+/// the client reads the body to that end. The connection is `accepted`, for the test to close.
+fn serve(server: *std.Io.net.Server, body: []const u8, accepted: *?std.Io.net.Stream) !void {
+    const io = std.testing.io;
+    const stream = try server.accept(io);
+    accepted.* = stream;
+    var out: [256]u8 = undefined;
+    var writer = stream.writer(io, &out);
+    try writer.interface.print("HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\n{s}", .{body});
+    try writer.interface.flush();
+    try stream.shutdown(io, .send);
+}
+
+test "git keeps its assert()s, which zig cc's -O2 alone compiles out" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // A probe that compiles only where assert() is kept.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "probe.c", .data =
+        \\#include <assert.h>
+        \\#ifdef NDEBUG
+        \\#error "assert() is compiled out: NDEBUG is defined"
+        \\#endif
+        \\int probe(int x) { assert(x > 0); return x; }
+        \\
+    });
+    const in: Inputs = .{ .zig = "zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .nghttp2 = "/s/nghttp2", .curl = "/s/curl" };
+    // The Linux platforms, whose libc headers zig ships: the probe compiles on any host.
+    for ([_][]const u8{ "x86_64-linux-gnu", "aarch64-linux-gnu", "riscv64-linux-musl" }) |name| {
+        const p = platform(try std.zig.system.resolveTargetQuery(std.testing.io, try std.Target.Query.parse(.{ .arch_os_abi = name }))).?;
+        for ([_]struct { []const u8, bool }{ .{ try gitCflags(a, p, in, "/w/prefix"), true }, .{ library_cflags, false } }) |case| {
+            var argv: std.ArrayList([]const u8) = .empty;
+            try argv.appendSlice(a, &.{ "zig", "cc", "-target", p.zig, "-c", "probe.c", "-o", "probe.o" });
+            var flags = std.mem.tokenizeScalar(u8, case[0], ' ');
+            while (flags.next()) |flag| try argv.append(a, flag);
+            const compiled = try std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = tmp.dir } });
+            const kept = compiled.term == .exited and compiled.term.exited == 0;
+            if (kept != case[1]) std.debug.print("{s} with {s}: {s}\n", .{ name, case[0], compiled.stderr });
+            try std.testing.expectEqual(case[1], kept);
+        }
+    }
 }

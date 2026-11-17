@@ -47,4 +47,3 @@ jobs:
         {"include":[{"os":"ubuntu-latest","name":"fuzz","step":"ci-fuzz","args":"-Dci-lint=false -Dci-bench-smoke=false","shard":"","setup":true,"job_timeout":23,"cache_key":"e68ae264da835a89","artifact":"","operation":"execute","targets":"","directory":"","prepare":"","declared":false,"machine":"none","any_host":false}]}
       fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}
       held-git: '2.56.0-26c56c296b38'
-      compile-once: true

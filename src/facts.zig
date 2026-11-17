@@ -618,6 +618,17 @@ test "a module of the checked package reached through a second package is named 
 /// runner: ones a build gave its tests after `addCi` read them, which then run with no
 /// watchdog, shard, timing record or riscv64 machine. Empty for a build that gives no test
 /// preflight's runner (one without `addCi`, as a declared job's nested build).
+/// Whether the configured build has a top-level step `name` of its own (a dependency's steps
+/// are not the build's).
+pub fn hasStep(snapshot: Snapshot, name: []const u8) bool {
+    const c = &snapshot.config;
+    for (c.steps) |step| {
+        if (step.owner != .root or step.extended.cast(c, C.Step.TopLevel) == null) continue;
+        if (std.mem.eql(u8, step.name.slice(c), name)) return true;
+    }
+    return false;
+}
+
 pub fn testsOutsideRunner(a: std.mem.Allocator, snapshot: Snapshot, step_name: []const u8) ![]const []const u8 {
     const c = &snapshot.config;
     var instrumented_any = false;

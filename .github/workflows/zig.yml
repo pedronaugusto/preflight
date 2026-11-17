@@ -34,9 +34,6 @@ on:
         description: A dispatched fuzz run's minutes, when not ci/workflow.json's fuzz_minutes
         type: string
         default: ''
-      compile-once:
-        type: boolean
-        default: false
       held-git:
         description: The package's held git (`git` in ci/workflow.json), by its release and its tarball's hash, which names its build's cache; empty for none
         type: string
@@ -161,7 +158,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
         if: matrix.setup && inputs.held-git != ''
@@ -225,7 +222,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:
@@ -325,7 +322,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-none
+          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-none
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
         if: inputs.held-git != ''
@@ -362,7 +359,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-none
+          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-none
       - name: Report
         timeout-minutes: 1
         if: always()
@@ -375,7 +372,8 @@ jobs:
           if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass; a note for the next port"; fi
   compile:
     needs: toolchain
-    if: inputs.tier == 'release' && inputs.compile-once
+    # The native link jobs, planned exactly when the build's tests are portable (its ci-build).
+    if: inputs.tier == 'release' && inputs.release-compile-matrix != '{"include":[]}'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.job_timeout }}
@@ -466,7 +464,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
         if: matrix.setup && inputs.held-git != ''
@@ -511,7 +509,7 @@ jobs:
         timeout-minutes: 2
         with:
           path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
+          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
         with:
@@ -564,3 +562,26 @@ jobs:
             .preflight-timings/durations.json
             .preflight-timings/costs.json
           retention-days: 90
+  # Last: the jobs GitHub never gave a runner. A job queued until GitHub cancelled it ("not
+  # acquired by Runner") ends cancelled with no runner and no step, and a cancelled result is
+  # no job's red: the profile skips, and the run could end with a platform's tests never run
+  # and nothing failing by name (hull 43891655054, cairn 43896073872, strand 43877949215).
+  # This job names each, with its minutes queued, and fails; nothing is retried. It reads the
+  # jobs with the token's actions: read.
+  runners:
+    needs: [toolchain, gate, compile, execute, profile]
+    if: always() && needs.toolchain.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: toolchain-${{ inputs.preflight-ref }}
+          path: .preflight-bin
+      - name: Every job had a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/jobs.json"
+          chmod +x .preflight-bin/linux/preflight
+          .preflight-bin/linux/preflight runners --jobs "$RUNNER_TEMP/jobs.json"

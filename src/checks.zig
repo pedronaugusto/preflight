@@ -13,6 +13,7 @@ pub const budget = @import("checks/budget.zig");
 pub const heldgit = @import("checks/heldgit.zig");
 pub const integration = @import("checks/integration.zig");
 pub const profile = @import("checks/profile.zig");
+pub const runners = @import("checks/runners.zig");
 pub const paths = @import("checks/paths.zig");
 pub const attest = @import("checks/attest.zig");
 pub const manifest = @import("checks/manifest.zig");
@@ -67,6 +68,7 @@ test {
     _ = fuzz;
     _ = integration;
     _ = profile;
+    _ = runners;
     _ = attest;
     _ = manifest;
     _ = release;

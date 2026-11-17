@@ -27,6 +27,11 @@ const obsolete = [_][]const u8{ "windows_shards", "fast_windows_shards", "shard_
 /// a push that only confirmed another run (`attest`) and the nightly (`nightly`) are gone; a caller that still sets
 /// them is refused by name.
 pub const obsolete_triggers = [_][]const u8{ "attest", "nightly" };
+/// Whether the tests compile once and link on each host was a switch beside the build's own
+/// (`addCi`'s `.portable_tests`, its `ci-build` step), and the two disagreed: native link jobs
+/// planned on a `ci-build` the build never defined (riverrun, cairn, tide: "no such step:
+/// ci-build"). The build's fact is the one switch now; `generate` drops the old one.
+pub const obsolete_switches = [_][]const u8{"compile_once"};
 /// A ThreadSanitizer run of a package's own step is a declared job (`jobs`), and preflight's own is `hardened`.
 const obsolete_sanitizer = [_][]const u8{ "sanitizer", "sanitizer_job_timeout" };
 
@@ -104,28 +109,29 @@ pub const Machine = enum {
 /// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
 /// cannot quietly change nothing.
 const workflow_options = [_][]const u8{
-    "jobs",               "targets",
-    "build_args",         "shards",
-    "fast_shards",        "cross_jobs",
-    "cross_seconds",      "compile_once",
-    "portable_hosts",     "hardened",
-    "compile_step",       "setup_step",
-    "before_tests_step",  "git",
-    "test_job_timeout",   "windows_job_timeout",
-    "source_job_timeout", "cross_job_timeout",
+    "jobs",                "targets",
+    "build_args",          "shards",
+    "fast_shards",         "cross_jobs",
+    "cross_seconds",       "portable_hosts",
+    "hardened",            "compile_step",
+    "setup_step",          "before_tests_step",
+    "git",                 "test_job_timeout",
+    "windows_job_timeout", "source_job_timeout",
+    "cross_job_timeout",
     // The seconds of tests a riscv64 job holds; then `ci/costs.json` and `ci/durations.json`,
     // which the planner reads beside the configuration, the macOS targets whose build links a
     // framework, which `plan` and `gate` read from the build, and the policy, read from
     // `ci/preflight.json` beside it.
-    "riscv64_seconds",    "measured",
-    "durations",          "sdk_targets",
-    "policy",
+      "riscv64_seconds",
+    "measured",            "durations",
+    "sdk_targets",         "policy",
     // The fuzz job's minutes, and whether the build has its step (`ci-fuzz`), which `plan`
-    // and `gate` read from the build as they read `sdk_targets`.
-                "fuzz_minutes",
-    "fuzzed",
+    // and `gate` read from the build as they read `sdk_targets`; and whether its tests are
+    // portable (it has `ci-build`), read so too, which plans the native link jobs.
+    "fuzz_minutes",        "fuzzed",
+    "portable_tests",
     // The configurations the package promises, which the build reads too (`consumer.declared`).
-                "configurations",
+         "configurations",
 };
 
 /// The minutes the fuzz job fuzzes for, `fuzz_minutes` in the configuration: 15 unless it
@@ -610,7 +616,7 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
     var native: std.ArrayList(Job) = .empty;
     var compile: std.ArrayList(Job) = .empty;
     var run: std.ArrayList(Job) = .empty;
-    const enabled = src.get(config, "compile_once");
+    const enabled = src.get(config, "portable_tests");
     for (jobs) |job| {
         const portable_hosts = src.get(config, "portable_hosts");
         var allowed = portable_hosts == .null;
@@ -862,6 +868,10 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         problem = name;
         return error.ObsoleteTrigger;
     };
+    for (obsolete_switches) |name| if (config.object.contains(name)) {
+        problem = "compile_once is gone: the build's tests compile once exactly when they are portable (addCi's .portable_tests, its ci-build step); `generate` drops it";
+        return error.ObsoleteSwitch;
+    };
     if (config.object.contains("windows_git_latest")) {
         problem = "windows_git_latest is gone: a package holds one git on every job, Windows' as that Git for Windows release; name it with `preflight held-git-pin <version>`";
         return error.ObsoleteWindowsGit;
@@ -891,7 +901,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
     for (host_names ++ arm_host_names ++ .{ emulated_host_name, freebsd_host_name, tsan_name }) |host| _ = try shardCount(src.get(shards, host));
-    for ([_][]const u8{"compile_once"}) |name| {
+    for ([_][]const u8{"portable_tests"}) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
     }
@@ -1030,7 +1040,7 @@ test "a cross-compile job names the configured targets and the macOS and Windows
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_step":"install","compile_once":true,"cross_jobs":1,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
+        \\{"compile_step":"install","portable_tests":true,"cross_jobs":1,"targets":[{"target":"aarch64-linux-gnu","cpu":"cortex_a72"}]}
     , .{})).value;
     const targets = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 3), targets.len);
@@ -1117,7 +1127,7 @@ test "portable matrix links macOS and Windows binaries on their SDK runners with
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
     // macOS, Windows and ARM Windows, each at Debug, ReleaseSafe and ReleaseFast.
@@ -1186,7 +1196,7 @@ test "a configured target a runner executes, on an ABI not its own, runs its Deb
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_once":true,"shards":{"windows":2},"build_args":["-Dfeature=true"],"targets":[
+        \\{"portable_tests":true,"shards":{"windows":2},"build_args":["-Dfeature=true"],"targets":[
         \\"x86_64-windows-msvc",{"target":"aarch64-windows-msvc","args":["-Dsdk=true"]},"x86_64-linux-musl",
         \\"x86_64-windows-gnu","x86_64-windows",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"},"aarch64-macos","x86_64-macos","riscv64-linux-musl"]}
     , .{})).value;
@@ -1309,7 +1319,7 @@ test "portable shards share one compilation per host and mode" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":3}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":3}}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
     try std.testing.expectEqual(@as(usize, 9), tiers.compile.len);
@@ -1358,11 +1368,11 @@ test "the ci tier is the source checks, the Debug suite on Linux, macOS and Wind
     try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", (try plan(a, shards, .ci))[4].name);
 }
 
-test "the ci tier runs macOS and Windows Debug natively, every shard building its own, even with compile_once" {
+test "the ci tier runs macOS and Windows Debug natively, every shard building its own, even with portable tests" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"windows\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":2}}", .{})).value;
     const jobs = try plan(a, config, .ci);
     const tiers = try split(a, config, jobs, .ci);
     try std.testing.expectEqual(jobs.len, tiers.native.len);
@@ -1477,7 +1487,7 @@ test "the ci tier executes macOS and Windows, and only the release tier ARM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"shards\":{\"macos\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"macos\":2}}", .{})).value;
     for ([_]Tier{ .ci, .release }) |tier| {
         const tiers = try split(a, config, try plan(a, config, tier), tier);
         var executed: usize = 0;
@@ -1500,7 +1510,7 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"compile_once":true,"build_args":["-Dfeature=true"],"targets":[{"target":"x86_64-macos","cpu":"baseline","args":["-Dtrust-store=true"]},"aarch64-macos","aarch64-windows-gnu","aarch64-linux-gnu"]}
+        \\{"portable_tests":true,"build_args":["-Dfeature=true"],"targets":[{"target":"x86_64-macos","cpu":"baseline","args":["-Dtrust-store=true"]},"aarch64-macos","aarch64-windows-gnu","aarch64-linux-gnu"]}
     , .{})).value;
     const cross = try fastTargets(a, config);
     try std.testing.expectEqual(@as(usize, 5), cross.len);
@@ -1591,7 +1601,7 @@ test "hardened planner schedules native execution with no portable sanitizer rep
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true,\"hardened\":true}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"hardened\":true}", .{})).value;
     const tiers = try split(a, config, try plan(a, config, .release), .release);
     var executed: usize = 0;
     for (tiers.native) |job| if (std.mem.startsWith(u8, job.step, "hardened")) {
@@ -1681,7 +1691,7 @@ test "a package's own jobs join the tiers they name, on the hosts they name, wit
     for (shards.items, [_][]const u8{ "1/3", "2/3", "3/3" }) |got, want| try std.testing.expectEqualStrings(want, got);
     // Declared jobs run where the gate does: natively, never replayed from a link.
     var linked = config;
-    try linked.object.put(a, "compile_once", .{ .bool = true });
+    try linked.object.put(a, "portable_tests", .{ .bool = true });
     const tiers = try split(a, linked, try plan(a, linked, .ci), .ci);
     for (tiers.run) |job| try std.testing.expect(!job.declared);
     for (tiers.compile) |job| try std.testing.expect(!job.declared);
@@ -1702,12 +1712,28 @@ test "a package's own jobs join the tiers they name, on the hosts they name, wit
     }) |bad| try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .ci)));
 }
 
+test "the native link jobs are planned on the build's ci-build exactly when its tests are portable, never on a step it lacks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_]struct { []const u8, bool }{ .{ "{}", false }, .{ "{\"portable_tests\":false}", false }, .{ "{\"portable_tests\":true}", true } }) |case| {
+        const text, const portable = case;
+        const tiers = try split(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, try plan(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, .release), .release);
+        var linked = false;
+        for (tiers.compile) |job| linked = linked or std.mem.eql(u8, job.step, "ci-build");
+        for (tiers.native) |job| try std.testing.expect(!std.mem.eql(u8, job.step, "ci-build"));
+        try std.testing.expectEqual(portable, linked);
+        try std.testing.expectEqual(portable, tiers.run.len != 0);
+    }
+}
+
 test "an option the planner does not know, or a malformed timeout or step, is refused rather than ignored" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     for ([_][]const u8{ "{\"attest\":true}", "{\"nightly\":false}" }) |old|
         try std.testing.expectError(error.ObsoleteTrigger, plan(a, (try std.json.parseFromSlice(src.Value, a, old, .{})).value, .ci));
+    try std.testing.expectError(error.ObsoleteSwitch, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true}", .{})).value, .release));
     for ([_][]const u8{ "{\"lnad\":true}", "{\"package\":\"x\"}", "{\"test_job_timeout\":\"30\"}", "{\"test_job_timeout\":400}", "{\"compile_step\":3}", "{\"setup_step\":\"a b\"}" }) |bad|
         try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .ci)));
     try std.testing.expectError(error.ObsoleteSanitizer, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release));

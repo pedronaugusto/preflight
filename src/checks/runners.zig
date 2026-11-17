@@ -21,7 +21,7 @@ pub const Unserved = struct {
 
 /// The jobs of `pages` (the Actions API's job listings of one run attempt, as
 /// `gh api --paginate --slurp` writes them: an array of pages, each with its `jobs`)
-/// that ended cancelled with no runner and no step.
+/// that ended cancelled with no runner and no step after a minute or more queued.
 pub fn unserved(a: std.mem.Allocator, pages: src.Value) ![]const Unserved {
     var found: std.ArrayList(Unserved) = .empty;
     for (try src.items(pages)) |page| for (try src.items(src.get(page, "jobs"))) |job| {
@@ -31,6 +31,9 @@ pub fn unserved(a: std.mem.Allocator, pages: src.Value) ![]const Unserved {
         if ((try src.items(src.get(job, "steps"))).len != 0) continue;
         const created = try seconds(try src.string(src.get(job, "created_at"), ""));
         const completed = try seconds(try src.string(src.get(job, "completed_at"), ""));
+        // One a cancelled run made and cancelled at once (a job waiting on others, as the
+        // profile) waited for no runner: a job GitHub never gave one was queued a minute or more.
+        if (completed - created < 60) continue;
         const name = try src.string(src.get(job, "name"), "(unnamed)");
         try found.append(a, .{ .name = name, .minutes = @divFloor(completed - created, 60), .blocking = std.mem.find(u8, name, "non-blocking") == null });
     };
@@ -89,13 +92,14 @@ test "the jobs GitHub never gave a runner are named with their minutes queued, a
     // hull's run 43891655054, attempt 1, as the API listed it, in two pages; a job a runner
     // took and then cancelled, a skipped job and a green one beside them.
     const listing =
-        \\[{"total_count":6,"jobs":[
+        \\[{"total_count":7,"jobs":[
         \\ {"name":"gate / test (macos-latest, Debug)","conclusion":"cancelled","runner_id":0,"runner_name":"","steps":[],"created_at":"2026-11-16T15:25:14Z","completed_at":"2026-11-16T16:43:56Z"},
         \\ {"name":"gate / test (ubuntu-latest, Debug)","conclusion":"success","runner_id":1000123,"runner_name":"GitHub Actions 1000123","steps":[{"name":"Set up job"}],"created_at":"2026-11-16T15:25:14Z","completed_at":"2026-11-16T15:40:02Z"},
         \\ {"name":"gate / test (windows-latest, Debug)","conclusion":"cancelled","runner_id":1000456,"runner_name":"GitHub Actions 1000456","steps":[{"name":"Set up job"}],"created_at":"2026-11-16T15:25:14Z","completed_at":"2026-11-16T15:50:00Z"}
-        \\]},{"total_count":6,"jobs":[
+        \\]},{"total_count":7,"jobs":[
         \\ {"name":"gate / compile (macos-latest, ReleaseSmall)","conclusion":"cancelled","runner_id":null,"runner_name":null,"steps":[],"created_at":"2026-11-16T15:25:15Z","completed_at":"2026-11-16T16:45:37Z"},
         \\ {"name":"gate / Zig master (Linux Debug, non-blocking)","conclusion":"cancelled","runner_id":0,"runner_name":"","steps":[],"created_at":"2026-11-16T15:25:15Z","completed_at":"2026-11-16T15:31:15Z"},
+        \\ {"name":"gate / profile","conclusion":"cancelled","runner_id":null,"runner_name":null,"steps":[],"created_at":"2026-11-17T19:43:09Z","completed_at":"2026-11-17T19:43:09Z"},
         \\ {"name":"gate / execute","conclusion":"skipped","runner_id":0,"runner_name":"","steps":[],"created_at":"2026-11-16T16:45:38Z","completed_at":"2026-11-16T16:45:38Z"}
         \\]}]
     ;

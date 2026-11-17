@@ -106,6 +106,23 @@ test "-Dci-lint=false leaves out glint's lint alone: an import of the tests from
     try std.testing.expect(std.mem.find(u8, result.stderr, "production reaches tests: src/sample.zig -> src/testing/cases.zig") != null);
 }
 
+test "arguments after `--` to the tests are refused by name, never a whole run in their place" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    for ([_][]const u8{ "test", "ci-test" }) |step| {
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), step, "-Dci-lint=false", "--", "--test-filter", "one" }, .cwd = .{ .dir = tmp.dir } });
+        try std.testing.expect(result.term == .exited and result.term.exited != 0);
+        const refusal = "the tests take no arguments after `--` (given: --test-filter one): Zig filters tests as it compiles them; name them with -Dtest-filter=NAME";
+        if (std.mem.find(u8, result.stderr, refusal) == null) std.debug.print("{s}\n", .{result.stderr});
+        try std.testing.expect(std.mem.find(u8, result.stderr, refusal) != null);
+    }
+}
+
 test "structure runner walks every configured source root" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

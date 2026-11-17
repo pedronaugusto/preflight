@@ -309,6 +309,15 @@ const Steps = struct {
         // `-Dci-lint=false` leaves out glint's lint alone; the rest of the checks run either way.
         for (config.tests.dependencies.items) |dependency| steps.tests_only.dependOn(dependency);
         for ([_]*std.Build.Step{ config.tests, steps.ci }) |step| for (source) |source_check| step.dependOn(source_check);
+        // `zig build test -- --test-filter X` named tests the runs never saw: Zig filters tests
+        // when it compiles them, so the tests take no arguments after `--`, and a run of the
+        // whole suite in their place is refused by name. Only the build's runs see what follows
+        // `--`, so a run of preflight's reads it. `test`, `ci-test` and `ci` refuse; the steps
+        // that pass `--` on (`fix`, `gate`, `plan` and the rest) keep their arguments.
+        const arguments = executable.run(b);
+        arguments.addArgs(&.{ "test-arguments", "--" });
+        arguments.addPassthruArgs();
+        for ([_]*std.Build.Step{ config.tests, steps.tests_only, steps.ci }) |step| step.dependOn(&arguments.step);
         // Once the source checks sit beside the tests, the steps an extra check runs are as the
         // build will run them.
         refuseReentry(b, package, config.config, &lint.runs);

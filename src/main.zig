@@ -30,6 +30,9 @@ pub fn main(init: std.process.Init) !void {
         .unsharded => |args| if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
             c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{args.name});
         },
+        .test_arguments => |args| if (args.given.len != 0) {
+            c.fail("the tests take no arguments after `--` (given: {s}): Zig filters tests as it compiles them; name them with -Dtest-filter=NAME", .{try std.mem.join(a, " ", args.given)});
+        },
         .setup => try setup(c, init.environ_map),
         // The hosted workflow owns the attempt deadlines and retries.
         .prepare => |args| {

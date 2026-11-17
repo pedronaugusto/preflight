@@ -29,6 +29,7 @@ pub const Cli = struct {
         held_git_pin: HeldGitPin,
         pin: Pin,
         unsharded: Unsharded,
+        test_arguments: TestArguments,
         counts: Counts,
         executable: Executable,
         cache: Cache,
@@ -324,6 +325,14 @@ pub const Unsharded = struct {
     };
 };
 
+pub const TestArguments = struct {
+    given: []const []const u8 = &.{},
+    pub const spec: ensign.Spec(@This()) = .{
+        .about = "Fail when a test step is given arguments after --: Zig filters tests as it compiles them, so the runs would never see them",
+        .options = .{ .given = .{ .positional = true, .raw = true, .value_name = "ARG", .help = "What followed -- on the zig build command line" } },
+    };
+};
+
 pub const Counts = struct {
     records: []const u8 = ".zig-cache/preflight-counts",
     expect: []const []const u8 = &.{},
@@ -466,6 +475,10 @@ test "the build's helper commands" {
     try std.testing.expectEqual(5, campaign.build.len);
     try std.testing.expectEqualStrings("--fuzz=1000", campaign.build[4]);
     try std.testing.expectEqualStrings("tests", (try parsed(a, &.{ "unsharded", "tests" })).command.unsharded.name);
+    try std.testing.expectEqual(0, (try parsed(a, &.{ "test-arguments", "--" })).command.test_arguments.given.len);
+    const given = (try parsed(a, &.{ "test-arguments", "--", "--test-filter", "one" })).command.test_arguments.given;
+    try std.testing.expectEqual(2, given.len);
+    try std.testing.expectEqualStrings("--test-filter", given[0]);
     const counts = (try parsed(a, &.{ "counts", "--records=.zig-cache/preflight-counts", "--expect", "test-macos-Debug", "--expect", "test-macos-Debug-2" })).command.counts;
     try std.testing.expectEqualStrings(".zig-cache/preflight-counts", counts.records);
     try std.testing.expectEqualStrings("test-macos-Debug-2", counts.expect[1]);

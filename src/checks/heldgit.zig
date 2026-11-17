@@ -677,20 +677,26 @@ test "git is made with zig cc for the platform, the host asked nothing, and the 
     const riscv: Platform = platform(try std.zig.system.resolveTargetQuery(std.testing.io, try std.Target.Query.parse(.{ .arch_os_abi = "riscv64-linux-musl" }))).?;
     const made = try steps(a, riscv, .{ .zig = "/z/zig", .zlib = "/s/zlib", .libressl = "/s/libressl", .nghttp2 = "/s/nghttp2", .curl = "/s/curl" }, "/w", "/w/prefix", "/out");
     const git = made[made.len - 2].argv;
-    // Joined as the host joins paths: the steps' test runs on Windows too, where git is never made.
-    try std.testing.expectEqualStrings(try std.Io.Dir.path.join(a, &.{ "/w", "git" }), made[made.len - 2].cwd);
+    // Every directory is joined as the host joins paths: the steps' test runs on Windows too,
+    // where git is never made, so no expected directory is written with `/`.
+    const work = struct {
+        fn in(gpa: std.mem.Allocator, name: []const u8) ![]const u8 {
+            return std.Io.Dir.path.join(gpa, &.{ "/w", name });
+        }
+    }.in;
+    try std.testing.expectEqualStrings(try work(a, "git"), made[made.len - 2].cwd);
     for ([_][]const u8{ "CC=/z/zig cc -target riscv64-linux-musl", "uname_S=Linux", "uname_M=riscv64", "LD_MAJOR_VERSION=", "NO_PERL=YesPlease", "NO_EXPAT=YesPlease", "NO_GETTEXT=YesPlease", "RUNTIME_PREFIX=YesPlease", "prefix=/out" }) |variable| {
         try std.testing.expect(isOneOf(variable, git));
     }
     // Neither curl nor iconv is left out: HTTP and HTTPS, and every encoding the platform has.
     for (git) |arg| try std.testing.expect(!std.mem.startsWith(u8, arg, "NO_CURL") and !std.mem.startsWith(u8, arg, "NO_ICONV") and !std.mem.startsWith(u8, arg, "NO_OPENSSL"));
-    for (made) |step| try std.testing.expect(std.mem.startsWith(u8, step.cwd, "/w/"));
+    for (made) |step| try std.testing.expect(std.mem.startsWith(u8, step.cwd, "/w" ++ std.Io.Dir.path.sep_str));
     // nghttp2's library, then curl over it: git speaks HTTP/2 (relic's HTTP/2 fetch, run 43807094616).
     const nghttp2 = made[5];
-    try std.testing.expectEqualStrings("/w/nghttp2", nghttp2.cwd);
+    try std.testing.expectEqualStrings(try work(a, "nghttp2"), nghttp2.cwd);
     try std.testing.expect(isOneOf("--host=riscv64-linux-musl", nghttp2.argv) and isOneOf("--enable-lib-only", nghttp2.argv) and isOneOf("--disable-shared", nghttp2.argv));
     const curl = made[8].argv;
-    try std.testing.expectEqualStrings("/w/curl", made[8].cwd);
+    try std.testing.expectEqualStrings(try work(a, "curl"), made[8].cwd);
     try std.testing.expect(isOneOf("--host=riscv64-linux-musl", curl) and isOneOf("--with-openssl=/w/prefix", curl) and isOneOf("--with-nghttp2=/w/prefix", curl) and isOneOf("--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt", curl));
     for (git) |arg| if (std.mem.startsWith(u8, arg, "CURL_LDFLAGS=")) try std.testing.expect(std.mem.find(u8, arg, "libcurl.a -lnghttp2 ") != null);
     // No host tool by the host's name: zlib keeps zig's archiver, git links no fuzz program

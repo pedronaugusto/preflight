@@ -95,6 +95,9 @@ pub const Job = struct {
     /// The configured target a test job builds and runs on its runner, when it is not the
     /// runner's own (`ownTargetJobs`); null for the runner's own.
     target: ?[]const u8 = null,
+    /// The jobs this one runs in sequence on its one runner, as JSON (`macosLegs`); null for a
+    /// job that is one job.
+    legs: ?[]const u8 = null,
 };
 
 /// A target no hosted runner is, whose tests run on its own kernel under QEMU.
@@ -623,7 +626,9 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         for (try src.items(portable_hosts)) |host| if (std.mem.eql(u8, try src.string(host, ""), job.os)) {
             allowed = true;
         };
-        if (tier == .ci or job.declared or job.machine != .none or job.target != null or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci-test") or linuxHost(job.os)) {
+        // macOS links where it runs: its legs share one runner (`macosLegs`), and a link job
+        // and its replays on that runner are one build and its run.
+        if (tier == .ci or job.declared or job.machine != .none or job.target != null or enabled != .bool or !enabled.bool or !allowed or !std.mem.eql(u8, job.step, "ci-test") or linuxHost(job.os) or std.mem.eql(u8, job.os, hosts[1])) {
             try native.append(a, job);
             continue;
         }
@@ -655,7 +660,66 @@ pub fn split(a: std.mem.Allocator, config: src.Value, jobs: []const Job, tier: T
         executor.artifact = artifact;
         try run.append(a, executor);
     }
-    return .{ .native = native.items, .compile = compile.items, .run = run.items };
+    return .{ .native = if (tier == .release) try macosLegs(a, native.items) else native.items, .compile = compile.items, .run = run.items };
+}
+
+/// GitHub ends a job it cannot give a runner ("not acquired by Runner of type hosted"), and
+/// the account's macOS runners are few: a release run that asked for each macOS mode, shard
+/// and declared job at once lost them, cancelled with no step (almanac 44324896023, strand
+/// 44137916154). The release tier asks for one macOS runner: its macOS jobs run there in
+/// sequence, each a leg with its own build, limit and records, in the order planned. A leg
+/// that would take the job past GitHub's 360 minutes starts the next job.
+fn macosLegs(a: std.mem.Allocator, jobs: []Job) ![]Job {
+    var kept: std.ArrayList(Job) = .empty;
+    var legs: std.ArrayList(Job) = .empty;
+    var first: ?usize = null;
+    for (jobs) |job| {
+        if (!std.mem.eql(u8, job.os, hosts[1])) {
+            try kept.append(a, job);
+            continue;
+        }
+        if (first == null) first = kept.items.len;
+        try legs.append(a, job);
+    }
+    if (legs.items.len < 2) return jobs;
+    var runs: std.ArrayList(Job) = .empty;
+    var start: usize = 0;
+    var total: usize = 0;
+    for (legs.items, 0..) |leg, index| {
+        if (index > start and total + leg.job_timeout > 360) {
+            try runs.append(a, try legJob(a, legs.items[start..index]));
+            start = index;
+            total = 0;
+        }
+        total += leg.job_timeout;
+    }
+    try runs.append(a, try legJob(a, legs.items[start..]));
+    if (runs.items.len > 1) for (runs.items, 1..) |*run, part| {
+        run.name = try a.print("{s} ({d}/{d})", .{ run.name, part, runs.items.len });
+    };
+    try kept.insertSlice(a, first.?, runs.items);
+    return kept.items;
+}
+
+/// One macOS job that runs `legs` in sequence (`preflight run` with `PREFLIGHT_LEGS`).
+fn legJob(a: std.mem.Allocator, legs: []const Job) !Job {
+    if (legs.len == 1) return legs[0];
+    var minutes_total: usize = 0;
+    var setup = false;
+    for (legs) |leg| {
+        minutes_total += leg.job_timeout;
+        setup = setup or leg.setup;
+    }
+    var job: Job = .{
+        .os = hosts[1],
+        .name = try a.print("macOS, {d} legs in sequence", .{legs.len}),
+        .step = "legs",
+        .setup = setup,
+        .job_timeout = @min(360, minutes_total),
+        .legs = try std.json.Stringify.valueAlloc(a, legs, job_json),
+    };
+    job.cache_key = try key(a, job);
+    return job;
 }
 
 /// The source checks and Linux Debug in `fast_shards` jobs, each recording
@@ -1123,23 +1187,73 @@ test "cross targets a run measured are balanced by their seconds, the benchmarks
     try std.testing.expectEqualStrings("e", merge.items[2].targets);
 }
 
-test "portable matrix links macOS and Windows binaries on their SDK runners without losing native coverage" {
+test "portable matrix links Windows binaries on their SDK runners without losing native coverage; macOS builds where it runs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"aarch64-linux-gnu\"]}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
-    // macOS, Windows and ARM Windows, each at Debug, ReleaseSafe and ReleaseFast.
-    try std.testing.expectEqual(@as(usize, 9), tiers.compile.len);
-    try std.testing.expectEqual(@as(usize, 9), tiers.run.len);
-    try std.testing.expectEqual(jobs.len, tiers.native.len + tiers.run.len);
+    // Windows and ARM Windows, each at Debug, ReleaseSafe and ReleaseFast.
+    try std.testing.expectEqual(@as(usize, 6), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 6), tiers.run.len);
     for (tiers.compile, tiers.run) |builder, executor| {
         try std.testing.expectEqualStrings(executor.os, builder.os);
         try std.testing.expectEqualStrings(builder.artifact, executor.artifact);
         try std.testing.expect(!std.mem.eql(u8, executor.os, hosts[0]));
+        try std.testing.expect(!std.mem.eql(u8, executor.os, hosts[1]));
     }
-    try std.testing.expect(std.mem.find(u8, tiers.compile[0].args, "aarch64-macos") != null);
+    try std.testing.expect(std.mem.find(u8, tiers.compile[0].args, "x86_64-windows-gnu") != null);
+    // Every macOS job is a leg of the one macOS job, and no job is lost.
+    var legs: usize = 0;
+    var macos: usize = 0;
+    for (tiers.native) |job| if (std.mem.eql(u8, job.os, hosts[1])) {
+        macos += 1;
+        legs += (try std.json.parseFromSliceLeaky([]const Job, a, job.legs.?, .{})).len;
+    };
+    try std.testing.expectEqual(@as(usize, 1), macos);
+    try std.testing.expectEqual(jobs.len, tiers.native.len - macos + legs + tiers.run.len);
+}
+
+test "the release tier asks for one macOS runner: its macOS jobs are legs in sequence, the next job only past 360 minutes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"macos\":2}}", .{})).value;
+    const jobs = try plan(a, config, .release);
+    var planned: std.ArrayList(Job) = .empty;
+    for (jobs) |job| if (std.mem.eql(u8, job.os, hosts[1])) try planned.append(a, job);
+    const tiers = try split(a, config, jobs, .release);
+    var one: ?Job = null;
+    for (tiers.native) |job| if (std.mem.eql(u8, job.os, hosts[1])) {
+        try std.testing.expect(one == null);
+        one = job;
+    };
+    const job = one.?;
+    try std.testing.expectEqualStrings("legs", job.step);
+    const legs = try std.json.parseFromSliceLeaky([]const Job, a, job.legs.?, .{});
+    // In the order planned, each leg as it was: its name, step, arguments, shard and limit.
+    try std.testing.expectEqual(planned.items.len, legs.len);
+    var minutes_total: usize = 0;
+    for (planned.items, legs) |want, leg| {
+        try std.testing.expectEqualStrings(want.name, leg.name);
+        try std.testing.expectEqualStrings(want.args, leg.args);
+        try std.testing.expectEqualStrings(want.shard, leg.shard);
+        try std.testing.expectEqualStrings(want.cache_key, leg.cache_key);
+        minutes_total += leg.job_timeout;
+    }
+    try std.testing.expectEqual(@min(360, minutes_total), job.job_timeout);
+    // The ci tier keeps its one macOS test job as it was.
+    for ((try split(a, config, try plan(a, config, .ci), .ci)).native) |ci| try std.testing.expect(ci.legs == null);
+    // Legs past GitHub's 360 minutes start a second job, each named as one of two.
+    const long = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"macos\":2},\"test_job_timeout\":100}", .{})).value;
+    var parts: std.ArrayList([]const u8) = .empty;
+    for ((try split(a, long, try plan(a, long, .release), .release)).native) |each| if (std.mem.eql(u8, each.os, hosts[1])) {
+        try std.testing.expect(each.job_timeout <= 360);
+        try parts.append(a, each.name);
+    };
+    try std.testing.expect(parts.items.len > 1);
+    try std.testing.expect(std.mem.endsWith(u8, parts.items[0], try a.print("(1/{d})", .{parts.items.len})));
 }
 
 test "each host's shards run every mode, split by count, with the lint and compile jobs once" {
@@ -1322,8 +1436,9 @@ test "portable shards share one compilation per host and mode" {
     const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":3}}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
-    try std.testing.expectEqual(@as(usize, 9), tiers.compile.len);
-    try std.testing.expectEqual(@as(usize, 3 + 9 + 3), tiers.run.len);
+    // Windows and ARM Windows: macOS builds where it runs.
+    try std.testing.expectEqual(@as(usize, 6), tiers.compile.len);
+    try std.testing.expectEqual(@as(usize, 9 + 3), tiers.run.len);
     for (tiers.compile) |builder| {
         try std.testing.expectEqualStrings("", builder.shard);
         try std.testing.expect(std.mem.find(u8, builder.name, "shard") == null);
@@ -1483,6 +1598,15 @@ test "the release tier is the full matrix: every mode on every host, ReleaseSmal
     }
 }
 
+/// `jobs` with each job of legs (`macosLegs`) in place of its legs, as a test counts what is planned.
+fn expanded(a: std.mem.Allocator, jobs: []const Job) ![]Job {
+    var all: std.ArrayList(Job) = .empty;
+    for (jobs) |job| {
+        if (job.legs) |text| try all.appendSlice(a, try std.json.parseFromSliceLeaky([]const Job, a, text, .{})) else try all.append(a, job);
+    }
+    return all.items;
+}
+
 test "the ci tier executes macOS and Windows, and only the release tier ARM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1491,7 +1615,7 @@ test "the ci tier executes macOS and Windows, and only the release tier ARM" {
     for ([_]Tier{ .ci, .release }) |tier| {
         const tiers = try split(a, config, try plan(a, config, tier), tier);
         var executed: usize = 0;
-        for ([_][]const Job{ tiers.native, tiers.run }) |group| for (group) |job| {
+        for ([_][]const Job{ try expanded(a, tiers.native), tiers.run }) |group| for (group) |job| {
             if (!std.mem.eql(u8, job.os, hosts[0])) executed += 1;
         };
         try std.testing.expectEqual(@as(usize, switch (tier) {
@@ -1522,7 +1646,7 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     for ([_]Tier{.release}) |tier| {
         const tiers = try split(a, config, try plan(a, config, tier), tier);
         var linked: usize = 0;
-        for (tiers.native) |job| if (std.mem.eql(u8, job.step, "ci-link")) {
+        for (try expanded(a, tiers.native)) |job| if (std.mem.eql(u8, job.step, "ci-link")) {
             linked += 1;
             try std.testing.expect(job.operation == .link);
             try std.testing.expect(!std.mem.eql(u8, job.os, hosts[0]));

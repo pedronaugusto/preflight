@@ -488,6 +488,8 @@ test "every caller runs the ci tier on each push to main and pull request, and t
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, pin, ".", false, "ci.yml", 0x1234);
     try std.testing.expect(std.mem.find(u8, plain, "  push:\n    branches: [main]\n") != null);
+    // A push of documentation alone runs nothing; the release tier and a dispatch are unchanged.
+    try std.testing.expect(std.mem.find(u8, plain, "    paths-ignore: ['docs/**', '*.md']\n  pull_request:\n") != null);
     try std.testing.expect(std.mem.find(u8, plain, "  pull_request:\n") != null);
     try std.testing.expect(std.mem.find(u8, plain, try a.print("    - cron: '{s}'\n", .{try weekly(a, 0x1234)})) != null);
     try std.testing.expect(std.mem.find(u8, plain, "github.event_name == 'schedule' && 'release' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci'") != null);

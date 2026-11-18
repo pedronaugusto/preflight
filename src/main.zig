@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ensign = @import("ensign");
+const aegis = @import("aegis");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
 const src = checks.source;
@@ -475,6 +476,7 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
 
 /// Runs the job `env` describes, as the hosted job runs it.
 fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
+    if (env.get("PREFLIGHT_LEGS")) |legs| if (legs.len != 0) return runLegs(context, env, legs);
     var c = context;
     // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
     // (`targets`). A test's environment holds none of preflight's controls, this one either.
@@ -506,6 +508,93 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
         }
     }
     try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
+}
+
+/// When a leg starts, in the real clock's whole seconds, as `PREFLIGHT_STARTED` holds it.
+const LegStart = aegis.units.Instant(std.Io.Clock.real, .second, i64);
+
+/// Runs each of a job's legs (the release tier's macOS jobs on its one runner, `matrix.macosLegs`)
+/// in sequence, as its own job would run: its fetch, then `preflight run` in its directory with its
+/// step, arguments, shard, setup and limit, the limit counted from the leg's start. Every leg runs
+/// whatever another's outcome; each that fails is named, and the job fails after the last. Each
+/// leg's timing records are kept apart, under the package's `.zig-cache/preflight-timings/<leg>`,
+/// where the job's upload takes them and the profile reads every record below.
+/// The legs are the plan preflight made, read as it wrote them.
+fn runLegs(c: src.Context, env: *std.process.Environ.Map, text: []const u8) !void {
+    const legs = std.json.parseFromSliceLeaky([]const checks.matrix.Job, c.a, text, .{}) catch return error.InvalidLegs;
+    const self = try std.process.executablePathAlloc(c.io, c.a);
+    const package = try std.Io.Dir.cwd().realPathFileAlloc(c.io, ".", c.a);
+    const kept = try std.Io.Dir.path.join(c.a, &.{ package, ".zig-cache", "preflight-legs" });
+    try std.Io.Dir.cwd().deleteTree(c.io, kept);
+    try std.Io.Dir.cwd().createDirPath(c.io, kept);
+    var failed: std.ArrayList([]const u8) = .empty;
+    for (legs) |leg| {
+        const directory = if (leg.directory.len == 0) package else try std.Io.Dir.path.join(c.a, &.{ env.get("GITHUB_WORKSPACE") orelse return error.LegOutsideHostedRun, leg.directory });
+        var leg_env = try env.clone(c.a);
+        _ = leg_env.swapRemove("PREFLIGHT_LEGS");
+        try leg_env.put("STEP", leg.step);
+        try leg_env.put("BUILD_ARGS", leg.args);
+        try leg_env.put("PREFLIGHT_SHARD", leg.shard);
+        try leg_env.put("PREFLIGHT_SETUP", if (leg.setup) "true" else "false");
+        try leg_env.put("PREFLIGHT_TARGETS", leg.targets);
+        try leg_env.put("PREFLIGHT_JOB", leg.cache_key);
+        try leg_env.put("PREFLIGHT_JOB_TIMEOUT", try c.a.print("{d}", .{leg.job_timeout}));
+        try leg_env.put("PREFLIGHT_STARTED", try c.a.print("{d}", .{(try LegStart.fromIoTimestamp(.now(c.io, .real), .down)).raw()}));
+        // The job set up the package's own tools; a leg with a step or a directory of its own
+        // sets up its tools.
+        try leg_env.put("PREFLIGHT_SETUP_STEP", leg.prepare);
+        try leg_env.put("PREFLIGHT_PREPARED", if (leg.prepare.len == 0 and leg.directory.len == 0) "true" else "false");
+        c.report("::group::{s}\n", .{leg.name});
+        const passed = try legStep(c, &leg_env, directory, &.{ self, "fetch" }) and try legStep(c, &leg_env, directory, &.{ self, "run" });
+        c.report("::endgroup::\n", .{});
+        if (!passed) {
+            c.report("::error title={s}::{s} failed; the job's other legs ran\n", .{ leg.name, leg.name });
+            try failed.append(c.a, leg.name);
+        }
+        const records = try std.Io.Dir.path.join(c.a, &.{ directory, ".zig-cache", "preflight-timings" });
+        std.Io.Dir.rename(.cwd(), records, .cwd(), try std.Io.Dir.path.join(c.a, &.{ kept, leg.cache_key }), c.io) catch |err| switch (err) {
+            // A leg that runs no tests leaves no records.
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
+    const timings = try std.Io.Dir.path.join(c.a, &.{ package, ".zig-cache", "preflight-timings" });
+    try std.Io.Dir.cwd().deleteTree(c.io, timings);
+    try std.Io.Dir.rename(.cwd(), kept, .cwd(), timings, c.io);
+    if (env.get("GITHUB_STEP_SUMMARY")) |summary| {
+        var table: std.Io.Writer.Allocating = .init(c.a);
+        try table.writer.print("\n| macOS leg | Outcome |\n|---|---|\n", .{});
+        for (legs) |leg| {
+            var lost = false;
+            for (failed.items) |name| lost = lost or std.mem.eql(u8, name, leg.name);
+            try table.writer.print("| {s} | {s} |\n", .{ leg.name, if (lost) "failed" else "passed" });
+        }
+        try append(c, summary, table.written());
+    }
+    if (failed.items.len != 0) {
+        c.report("preflight: {d} of {d} legs failed: {s}\n", .{ failed.items.len, legs.len, try std.mem.join(c.a, "; ", failed.items) });
+        return error.LegsFailed;
+    }
+}
+
+/// Runs one command of a leg in its directory with its environment; whether it exited 0. A
+/// command that cannot start is that leg's failure, named by the caller; a cancel ends the job.
+fn legStep(c: src.Context, env: *const std.process.Environ.Map, directory: []const u8, argv: []const []const u8) std.Io.Cancelable!bool {
+    var child = std.process.spawn(c.io, .{ .argv = argv, .cwd = .{ .path = directory }, .environ_map = env }) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            c.report("preflight: {s} did not start in {s} ({t})\n", .{ argv[1], directory, err });
+            return false;
+        },
+    };
+    const term = child.wait(c.io) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            c.report("preflight: {s} in {s} was not waited for ({t})\n", .{ argv[1], directory, err });
+            return false;
+        },
+    };
+    return term == .exited and term.exited == 0;
 }
 
 /// Runs `zig build <step> <build_args>`, or `bay <step> ...` under bay, as the hosted gate does, timed.

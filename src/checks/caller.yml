@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # A commit that changes documentation alone runs nothing: the next commit's run, a pull
+    # request and the release tier check it.
+    paths-ignore: ['docs/**', '*.md']
   pull_request:
   schedule:
     # The release tier, weekly, at this package's own time: the account's runners

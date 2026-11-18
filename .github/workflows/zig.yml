@@ -215,6 +215,9 @@ jobs:
           PREFLIGHT_JOB_TIMEOUT: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
           PREFLIGHT_FUZZ_MINUTES: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes || '' }}
+          # The release tier's macOS jobs, run in sequence on this one runner: GitHub drops a job
+          # it cannot give a runner, and the account's macOS runners are few.
+          PREFLIGHT_LEGS: ${{ matrix.legs }}
         run: preflight run
       - name: Save the held git
         if: always() && matrix.setup && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'

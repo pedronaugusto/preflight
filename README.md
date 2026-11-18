@@ -62,7 +62,7 @@ finds there preflight's runner, and the gate refuses one added after, by name.
 
 Every push to main and every pull request then runs the ci tier on that commit (the source
 checks, the Debug suite on Linux, macOS and Windows, and a compile of every configured
-target); the release tier, the full matrix, runs weekly and by dispatch, and a tag needs a
+target), save a push that changes documentation alone (`docs/**`, top-level Markdown); the release tier, the full matrix, runs weekly and by dispatch, and a tag needs a
 green release run on its commit. Locally, `bay ci` (`zig build ci`) is the ci tier's checks
 on the machine at hand: the source checks and its tests.
 Every option has a default: `ci/preflight.json` chooses what the source checks read and
@@ -447,7 +447,8 @@ Packages with relocatable test binaries set `.portable_tests = true` in the
 build helper, and that one switch plans the release tier's native link jobs: `plan`,
 `gate` and `generate` read from the build whether it has `ci-build`, so a link job is
 never planned on a step the build lacks (`compile_once` in `ci/workflow.json` was a
-second switch; `generate` drops it). Each destination runner links its tests with the native SDK; shards download
+second switch; `generate` drops it). Each Windows runner links its tests with the native SDK (macOS builds them
+where they run, its legs sharing one runner); shards download
 and execute those binaries through
 Zig's test protocol, retaining per-test timeouts and custom watchdogs. A program
 the tests run (a fixture server, a helper child) is named to them with
@@ -616,8 +617,12 @@ The gate has two tiers, the second holding everything the first checks:
   benchmarks, the links of every macOS and Windows target (a macOS one on a Mac only when its
   build links a framework), TSan, the fuzz campaigns and the hardened checks where
   configured, the fuzz job (`fuzz_minutes` of the package's properties, where it declares
-  shakedown), and the Debug suite on Linux with Zig master. A green release run leaves its
-  proof, the artifact `preflight-release-<sha>`, which `preflight attest` looks for.
+  shakedown), and the Debug suite on Linux with Zig master. Its macOS jobs are legs of one
+  job, run in sequence on one runner, each with its own build, limit and records and each
+  failure named: GitHub drops a job it cannot give a runner, and an account's macOS runners
+  are few (a leg that would take the job past 360 minutes starts another). A green release
+  run leaves its proof, the artifact `preflight-release-<sha>`, which `preflight attest`
+  looks for.
 
 The release tier also runs the Debug suite on Linux with Zig master,
 the next release in development. That job never blocks: the run's summary
@@ -642,7 +647,8 @@ or a branch, which the action's owners can move, fails it by file and line. The 
 repository shows the trigger and concurrency policy:
 
 - Each push to main runs the ci tier on its own commit, so every commit on main has its
-  status; work-branch pushes start no run.
+  status; a push that changes only `docs/**` and top-level Markdown (`paths-ignore`) runs
+  nothing, and work-branch pushes start no run.
 - Pull requests run the ci tier, the status check to require; a newer push to a pull
   request cancels the run of the older.
 - A schedule runs the release tier weekly, at the package's own minute of the week (from
@@ -870,8 +876,9 @@ jobs do not require an Apple SDK.
 The first job of a dispatched ci run filters changes. A dispatched branch whose commits
 since it left `origin/main` touch only Markdown outside `src`, LICENSE or images runs the
 documented-snippet check alone. Mixed changes, source Markdown and an unavailable base
-keep the test gate. A push to main, a pull request and the release tier always run the
-whole gate, documentation or not: what a landing passes does not depend on a path filter.
+keep the test gate. A push to main that changes only `docs/**` and top-level Markdown starts
+no run; a pull request and the release tier always run the whole gate, documentation or
+not, so what a landing passes does not depend on a path filter.
 
 `"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
 jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, `riscv64` for the

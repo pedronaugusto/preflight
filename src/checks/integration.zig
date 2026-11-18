@@ -2349,8 +2349,16 @@ test "the plan links a macOS target on Linux unless its build links a framework"
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;
-    var seen: usize = 0;
+    // The release tier's macOS jobs are legs of one job: each leg counts as the job it is.
+    var planned: std.ArrayList(src.Value) = .empty;
     for (try src.items(src.get(matrix, "include"))) |job| {
+        const legs = src.get(job, "legs");
+        if (legs == .string) {
+            try planned.appendSlice(a, try src.items((try std.json.parseFromSlice(src.Value, a, legs.string, .{})).value));
+        } else try planned.append(a, job);
+    }
+    var seen: usize = 0;
+    for (planned.items) |job| {
         const name = try src.string(src.get(job, "name"), "");
         const os = try src.string(src.get(job, "os"), "");
         if (std.mem.eql(u8, name, "SDK link (x86_64-macos)")) {

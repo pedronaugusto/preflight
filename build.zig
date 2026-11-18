@@ -101,7 +101,18 @@ pub fn dev(b: *std.Build, _: type) void {
     // The gate below gives every test here preflight's runner, as it does a
     // consumer's tests: the order module's and the watchdog's tests import
     // them as the runner does, so they run under it too.
-    const suite = &b.addRunArtifact(tests).step;
+    const suite_run = b.addRunArtifact(tests);
+    // The fixtures' builds share one cache (integration.zig's fixtureCache), and the first lint
+    // in it compiles preflight's checks, runner and tools from cold: here, before any test's
+    // watchdog, by the sample's own lint, where it was the cost of whichever test met it first
+    // (preflight's own suite on Windows, release run 44384954419, past its 300 s).
+    const warm = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--cache-dir" });
+    warm.addDirectoryArg2(package.path(".zig-cache/fixtures"), .{});
+    warm.addArg("lint");
+    warm.setCwd(package.path("sample"));
+    warm.expectExitCode(0);
+    suite_run.step.dependOn(&warm.step);
+    const suite = &suite_run.step;
     const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = package.path("src/order_test.zig"), .target = target, .optimize = .debug }), .filters = test_filters });
     const order_run = b.addRunArtifact(order);
     test_step.dependOn(suite);

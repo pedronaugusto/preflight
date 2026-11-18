@@ -68,8 +68,10 @@ pub fn main(init: std.process.Init) !void {
     // Each revision configures itself. No guessed executable or graph reconstruction.
     // Under bay, `bay bench-build` finds the step in whichever build each revision has it.
     const build: []const []const u8 = if (args.bay) |bay| &.{ bay, "bench-build" } else &.{ zig, "build", "bench-build" };
-    _ = try command(a, init.io, checkout, build);
-    _ = try command(a, init.io, candidate, build);
+    // A build of a fresh checkout compiles from cold, minutes that are its own: no limit
+    // counts them. The programs and git, below, keep theirs.
+    _ = try unbounded(a, init.io, checkout, build);
+    _ = try unbounded(a, init.io, candidate, build);
     const suffix = if (builtin.target.os.tag == .windows) ".exe" else "";
     const executable = try a.print("{s}{s}", .{ program, suffix });
     const base_bin = try Io.Dir.path.join(a, &.{ checkout, "zig-out", "bench", executable });
@@ -116,7 +118,16 @@ fn validate(gpa: std.mem.Allocator, text: []const u8, commit: ?[]const u8) !void
 }
 
 fn command(a: std.mem.Allocator, io: Io, cwd: []const u8, argv: []const []const u8) !std.process.RunResult {
-    const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdout_limit = limit, .stderr_limit = limit, .timeout = .{ .duration = .{ .raw = .fromSeconds(600), .clock = .awake } } });
+    return runWithin(a, io, cwd, argv, .{ .duration = .{ .raw = .fromSeconds(600), .clock = .awake } });
+}
+
+/// A command with no time limit: a build, whose cold compile is its own time.
+fn unbounded(a: std.mem.Allocator, io: Io, cwd: []const u8, argv: []const []const u8) !std.process.RunResult {
+    return runWithin(a, io, cwd, argv, .none);
+}
+
+fn runWithin(a: std.mem.Allocator, io: Io, cwd: []const u8, argv: []const []const u8, timeout: Io.Timeout) !std.process.RunResult {
+    const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdout_limit = limit, .stderr_limit = limit, .timeout = timeout });
     if (successful(result.term)) |_| {} else |err| {
         var buffer: [4096]u8 = undefined;
         var stderr = Io.File.stderr().writerStreaming(io, &buffer);

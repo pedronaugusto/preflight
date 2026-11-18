@@ -120,11 +120,14 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     var protocol: Io.Writer.Allocating = .init(c.a);
     var frame_count: usize = 0;
     while (true) {
-        try available(c, &multi, 8);
+        // The first frame comes once Zig has compiled the build runner and the build script,
+        // a compile whose time is its own (cold, minutes): no wait for it is bounded. Each
+        // frame after it comes from a running build, within `protocol_timeout`.
+        try available(c, &multi, 8, if (frame_count == 0) .none else protocol_timeout);
         const header = try multi.reader(0).takeStruct(std.zig.Server.Message.Header, .little);
         frame_count += 1;
         if (frame_count > 64 or header.bytes_len > 8 * 1024 * 1024) return error.ProtocolFrameTooLong;
-        try available(c, &multi, header.bytes_len);
+        try available(c, &multi, header.bytes_len, protocol_timeout);
         const body = try multi.reader(0).take(header.bytes_len);
         if (protocol.written().len > limit - 8 - body.len) return error.ProtocolOutputTooLong;
         try protocol.writer.writeStruct(header, .little);
@@ -169,9 +172,9 @@ const protocol_timeout: Io.Timeout = .{ .duration = .{ .raw = Seconds.literal("1
 /// Reads until `count` bytes of the protocol are there. A build that ends
 /// before it has said what it configured has failed, and what it wrote to
 /// stderr is why: that is what `c` reports.
-fn available(c: src.Context, multi: *Io.File.MultiReader, count: usize) !void {
+fn available(c: src.Context, multi: *Io.File.MultiReader, count: usize, timeout: Io.Timeout) !void {
     while (multi.reader(0).bufferedLen() < count) {
-        multi.fill(4096, protocol_timeout) catch |err| switch (err) {
+        multi.fill(4096, timeout) catch |err| switch (err) {
             error.EndOfStream => {
                 c.report("preflight: the build ended before it sent its configuration:\n{s}\n", .{multi.reader(1).buffered()});
                 return error.TruncatedProtocolFrame;

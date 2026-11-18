@@ -857,7 +857,7 @@ test "a repository still naming a retired lint setting fails by name" {
     try std.testing.expect(std.mem.find(u8, result.stderr, "`ziglint_exceptions` is retired") != null);
 }
 
-test "an extra check that runs a step the lint sits under is refused by name before it runs; one beside the lint runs" {
+test "an extra check that runs a step the lint sits under is refused by name before it runs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -871,6 +871,15 @@ test "an extra check that runs a step the lint sits under is refused by name bef
     try std.testing.expect(std.mem.find(u8, recursing.stderr, "the extra check `zig build test -Dci-bench-smoke=false` runs the step `test`, which runs the lint") != null);
     // The refusal comes before the lint, which never reaches its extra checks.
     try std.testing.expect(std.mem.find(u8, recursing.stderr, "build test -Dci-bench-smoke=false\n") == null);
+}
+
+test "an extra check beside the lint runs and passes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
     // `check` only compiles the tests: no lint under it, so the check runs and passes.
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = "{\"policy\": \"family\", \"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"extra_checks\": [[\"zig\", \"build\", \"check\"]]}\n" });
     const beside = try lintFixture(a, tmp.dir);

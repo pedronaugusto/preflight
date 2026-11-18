@@ -65,7 +65,7 @@ pub fn dev(b: *std.Build, _: type) void {
     const test_filters = b.option([]const []const u8, "test-filter", "Run only the tests whose names contain this") orelse &.{};
     const package = b.dependency("preflight", .{}).builder;
     const target = ci.ciTarget(b);
-    const gantry_dep = package.dependencyLazy("gantry", .{ .target = target, .optimize = .debug, .zig = true }) catch return pending(b);
+    const gantry_dep = package.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return pending(b);
     const gantry = ci.dependencyModule(gantry_dep, "gantry") orelse return pending(b);
     const gantry_zig = ci.dependencyModule(gantry_dep, "gantry.zig") orelse return pending(b);
     // Code rules are glint's; the checks import it as a library. A module that
@@ -213,7 +213,7 @@ const bench_imports: Bench.Imports = .{ .make = benchImports };
 fn benchImports(_: *const Bench.Imports, b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const package = b.dependency("preflight", .{}).builder;
     // Lazy, and fetched already: dev returns before addCi while gantry, glint or bay is not.
-    const gantry_dep = package.dependency("gantry", .{ .target = target, .optimize = optimize, .zig = true });
+    const gantry_dep = package.dependency("gantry", .{ .target = target, .optimize = optimize });
     const gantry = gantry_dep.module("gantry");
     const glint = package.dependency("glint", .{ .target = target, .optimize = optimize }).module("glint");
     const changelog = package.dependency("bay", .{ .target = target, .optimize = optimize }).module("changelog");

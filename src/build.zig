@@ -81,7 +81,7 @@ pub fn dependencyModule(dep: *std.Build.Dependency, name: []const u8) ?*std.Buil
 /// same way, and ensign for its command line. Null while a lazy dependency is still to
 /// be fetched.
 pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.Module {
-    const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = target, .optimize = .safe, .zig = true }) catch return null;
+    const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = target, .optimize = .safe }) catch return null;
     const gantry = dependencyModule(gantry_dep, "gantry") orelse return null;
     const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return null;
     const glint = pkg.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch return null;
@@ -227,7 +227,7 @@ const Steps = struct {
     /// `package` is the package checked; `pkg` is the preflight whose sources and tools the gate runs.
     fn install(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config) void {
         const host = ciTarget(b);
-        const gantry_dep = configure.lazy(pkg, "gantry", .{ .target = host, .optimize = .debug, .zig = true }) orelse return;
+        const gantry_dep = configure.lazy(pkg, "gantry", .{ .target = host, .optimize = .debug }) orelse return;
         const gantry = dependencyModule(gantry_dep, "gantry") orelse return;
         const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return;
         // The structure program reads its configuration through preflight's own aegis.

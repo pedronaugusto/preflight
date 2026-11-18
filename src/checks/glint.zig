@@ -69,7 +69,8 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     for (assembled.selected, 0..) |file, index| {
         try files.append(c.a, .{ .file = try assembled.project.fileAt(index), .config = try chosen.forFile(c.a, file.path) });
     }
-    var report = glint.runConfigured(inputs.gpa, &assembled.project, chosen.base, .{
+    var report = glint.run(inputs.gpa, &assembled.project, .{
+        .config = chosen.base,
         .files = files.items,
         .io = c.io,
     }) catch |err| switch (err) {

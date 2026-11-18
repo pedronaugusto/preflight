@@ -17,7 +17,7 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
         defer a.free(text);
         // Without the benchmarks, and without the tests of the FreeBSD machine's directories
         // (a test root of their own, and a host program), which only the sample's FreeBSD run reads.
-        const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", ""), "    machineSide(b, step, target, optimize);\n", "") else text;
+        const copied = if (std.mem.eql(u8, path, "build.zig")) try std.mem.replaceOwned(u8, a, try std.mem.replaceOwned(u8, a, text, ".bench = sampleBench(target, optimize),", ""), "    const handshake = machineSide(b, step, target, optimize);\n", "    const handshake: ?Handshake = null;\n") else text;
         try dir.writeFile(io, .{ .sub_path = path, .data = copied });
     }
     const fixture_root = try dir.realPathFileAlloc(io, ".", a);

@@ -533,6 +533,14 @@ among it, under `.zig-cache/tmp`, and writes the console's last lines to the bui
 output. The release tier's FreeBSD job runs every package's Debug suite this way, so a
 package that claims FreeBSD has a kernel's evidence of it, not only a cross-compile's.
 
+On either machine, an argument that is the build's Zig (`.zig_exe`, `b.graph.zig_exe`) or a
+path in its library (`.zig_lib`) is the machine's own Zig: ziglang.org's build of the same
+version for the machine's target, pinned by hash in preflight's manifest and fetched only
+by a run that names it, as a portable replay names the replaying runner's. A program that
+compiles with the Zig it is handed (glint's soundness suite) runs it there; the host's
+would not start. A build whose Zig is another version than the machines' (0.17.0) is
+refused by name.
+
 The machine is Alpine's minimal system. Tests that need more of it, such as `git` or
 `openssl`, name Alpine's packages in `vm_packages`; Alpine's own `apk` installs them
 on the machine, over QEMU's user network, when the build first makes it. They come

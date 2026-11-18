@@ -78,6 +78,21 @@
             .lazy = true,
         },
 
+        // Each test machine's own Zig (src/vm.zig's guest_zig_version): ziglang.org's
+        // release for the machine's target, which a run naming the build's Zig is given on
+        // the machine, fetched only by such a run under `-Dci-vm`.
+        .zig_riscv64_linux = .{
+            .url = "https://ziglang.org/download/0.17.0/zig-riscv64-linux-0.17.0.tar.xz",
+            .hash = "N-V-__8AALRxjBXuerMdVurc3OGo-gkzfgx94L4RFgeMv9LV",
+            .lazy = true,
+        },
+
+        .zig_x86_64_freebsd = .{
+            .url = "https://ziglang.org/download/0.17.0/zig-x86_64-freebsd-0.17.0.tar.xz",
+            .hash = "N-V-__8AAECkUBY-WzykR_SsykSjUM4qxLr1QRitEKkOhUK5",
+            .lazy = true,
+        },
+
         .bay = .{
             .url = "git+https://github.com/pedronaugusto/bay#b0070735645b594a61b8d07388589863594df7b7",
             .hash = "bay-0.2.2-uwJ5Z2s7CwDsVgo2xJcxHlvNimcGQrAoR92ZRX7zc_Ne",

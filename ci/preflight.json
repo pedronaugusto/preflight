@@ -13,7 +13,8 @@
   ],
   "test_support": [
     "src/testing/**",
-    "src/bench_driver.zig"
+    "src/bench_driver.zig",
+    "src/vm/zig_argument.zig"
   ],
   "glint": {
     "rules": [

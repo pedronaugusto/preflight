@@ -114,6 +114,18 @@ pub fn dev(b: *std.Build, _: type) void {
     }), .filters = test_filters });
     const watch_run = &b.addRunArtifact(watch).step;
     test_step.dependOn(watch_run);
+    // A run whose arguments are the build's Zig and its library, which runs that Zig: under
+    // -Dci-vm, the machine's own Zig (vm.zig's guestZig), as a portable replay's is the
+    // replaying runner's.
+    const zig_argument = b.addRunArtifact(b.addExecutable(.{ .name = "preflight-zig-argument", .root_module = b.createModule(.{
+        .root_source_file = package.path("src/vm/zig_argument.zig"),
+        .target = target,
+        .optimize = .debug,
+    }) }));
+    zig_argument.addFileArg2(.zig_exe, .{});
+    zig_argument.addDirectoryArg2(.zig_lib, .{});
+    zig_argument.expectExitCode(0);
+    test_step.dependOn(&zig_argument.step);
     const profile = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/profile_test.zig"),
         .target = target,

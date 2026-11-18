@@ -8,6 +8,7 @@
 //! vm/freebsd.zig (`ci-vm=freebsd`, an x86_64 Linux host's only). Each machine is pinned
 //! by hash in preflight's manifest and fetched only by a build that runs on it.
 const std = @import("std");
+const builtin = @import("builtin");
 const held = @import("held.zig");
 const Tool = @import("tool.zig").Tool;
 
@@ -36,7 +37,9 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, package: *std.Build, pkg: *std
     visit(b, tests, &runs, &seen);
     if (runs.get(.riscv64_linux).items.len > 0) {
         const machine = riscv64Machine(b, package, pkg, tool, host, packages, holds_git) orelse return;
-        for (runs.get(.riscv64_linux).items) |run| machine.wrap(b, run);
+        const zig = guestZig(b, tests, pkg, .riscv64_linux, runs.get(.riscv64_linux).items);
+        if (zig == .unavailable) return;
+        for (runs.get(.riscv64_linux).items) |run| machine.wrap(b, run, zig.given());
     }
     if (runs.get(.x86_64_freebsd).items.len > 0) {
         if (host.result.os.tag != .linux or host.result.cpu.arch != .x86_64) {
@@ -44,8 +47,96 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, package: *std.Build, pkg: *std
             return;
         }
         const machine = freebsdMachine(b, pkg, host) orelse return;
-        for (runs.get(.x86_64_freebsd).items) |run| machine.wrap(b, run);
+        const zig = guestZig(b, tests, pkg, .x86_64_freebsd, runs.get(.x86_64_freebsd).items);
+        if (zig == .unavailable) return;
+        for (runs.get(.x86_64_freebsd).items) |run| machine.wrap(b, run, zig.given());
     }
+}
+
+/// The Zig version the machines' own Zig builds are pinned at (`zig_riscv64_linux`,
+/// `zig_x86_64_freebsd` in preflight's manifest): ziglang.org's release builds for each
+/// machine's target.
+pub const guest_zig_version = "0.17.0";
+
+/// The machine's own Zig, a directory holding `zig` and `lib`, where one of `runs` names the
+/// build's Zig: an argument that is the build's Zig is the machine's Zig, for the machine's
+/// target, as a portable replay names the replaying runner's. glint's soundness suite takes
+/// `.zig_exe` and compiles every case with it, and the host's x86_64 Linux Zig ended
+/// InvalidExe on both machines.
+const GuestZig = union(enum) {
+    /// No run names the build's Zig, so nothing is fetched and every run keeps its arguments.
+    unnamed,
+    /// The machine's Zig's directory.
+    machine: std.Build.LazyPath,
+    /// No machine is made: its Zig is not fetched yet (the build configures again once it
+    /// lands), or the build's Zig is another version than the machines', refused by name.
+    unavailable,
+
+    /// The Zig a machine's runs are given, null where they keep their own arguments.
+    fn given(zig: GuestZig) ?std.Build.LazyPath {
+        return switch (zig) {
+            .unnamed, .unavailable => null,
+            .machine => |path| path,
+        };
+    }
+};
+
+fn guestZig(b: *std.Build, tests: *std.Build.Step, pkg: *std.Build, kind: Kind, runs: []const *std.Build.Step.Run) GuestZig {
+    for (runs) |run| {
+        if (!namesZig(b, run)) continue;
+        if (!std.mem.eql(u8, builtin.zig_version_string, guest_zig_version)) {
+            tests.dependOn(&b.addFail(b.fmt("ci-vm: a run names the build's Zig, {s}, and the machine's own Zig is pinned at {s}: build with Zig {s}, or pin the machines' Zig at this version", .{ builtin.zig_version_string, guest_zig_version, guest_zig_version })).step);
+            return .unavailable;
+        }
+        // Fetched on first use: a build that asks for it configures again once it lands. Zig
+        // roots the package at the release archive's one top directory.
+        const release = pkg.dependencyLazy(switch (kind) {
+            .riscv64_linux => "zig_riscv64_linux",
+            .x86_64_freebsd => "zig_x86_64_freebsd",
+        }, .{}) catch return .unavailable;
+        return .{ .machine = release.path(".") };
+    }
+    return .unnamed;
+}
+
+/// Whether one of `run`'s arguments is the build's Zig.
+fn namesZig(b: *std.Build, run: *const std.Build.Step.Run) bool {
+    for (run.argv.items) |arg| switch (arg) {
+        .lazy_path, .decorated_directory => |path| switch (path.lazy_path) {
+            .relative => |relative| if (relative.base == .zig_exe) return true,
+            else => {},
+        },
+        .bytes => |bytes| if (std.mem.eql(u8, bytes, b.graph.zig_exe)) return true,
+        else => {},
+    };
+    return false;
+}
+
+/// `arg` as the machine has it: the build's Zig and the paths in its library are the
+/// machine's Zig's (`zig`, the directory from `guestZig`), absolute, so the machine binds
+/// them; every other argument as it is.
+fn guestArg(b: *std.Build, arg: std.Build.Step.Run.Arg, zig: std.Build.LazyPath) std.Build.Step.Run.Arg {
+    return switch (arg) {
+        .lazy_path => |path| .{ .lazy_path = guestPath(b, path, zig) },
+        .decorated_directory => |path| .{ .decorated_directory = guestPath(b, path, zig) },
+        .bytes => |bytes| if (std.mem.eql(u8, bytes, b.graph.zig_exe)) std.Build.Step.Run.Arg{ .lazy_path = .{ .prefix = "", .lazy_path = zig.path(b, "zig"), .suffix = "", .make_absolute = true } } else arg,
+        else => arg,
+    };
+}
+
+fn guestPath(b: *std.Build, path: std.Build.Step.Run.DecoratedLazyPath, zig: std.Build.LazyPath) std.Build.Step.Run.DecoratedLazyPath {
+    const relative = switch (path.lazy_path) {
+        .relative => |relative| relative,
+        else => return path,
+    };
+    var guest = path;
+    guest.lazy_path = switch (relative.base) {
+        .zig_exe => zig.path(b, "zig"),
+        .zig_lib => zig.path(b, if (relative.sub_path.len == 0) "lib" else b.pathJoin(&.{ "lib", relative.sub_path })),
+        else => return path,
+    };
+    guest.make_absolute = true;
+    return guest;
 }
 
 /// The machine a run's target needs.
@@ -149,9 +240,14 @@ const Machine = struct {
     image: std.Build.LazyPath,
 
     /// `preflight-vm <command> <kernel> <image>` in front of the run's own command
-    /// line, whose program and arguments the machine receives as they are.
-    fn wrap(machine: Machine, b: *std.Build, run: *std.Build.Step.Run) void {
+    /// line, whose program and arguments the machine receives as they are, but for the
+    /// build's Zig, which is the machine's own (`zig`, from `guestZig`; null where no run
+    /// names it).
+    fn wrap(machine: Machine, b: *std.Build, run: *std.Build.Step.Run, zig: ?std.Build.LazyPath) void {
         const own = b.allocator.dupe(std.Build.Step.Run.Arg, run.argv.items) catch @panic("OOM");
+        if (zig) |guest| for (own) |*arg| {
+            arg.* = guestArg(b, arg.*, guest);
+        };
         run.argv.clearRetainingCapacity();
         run.addArtifactArg2(machine.runner, .{});
         run.addArg(machine.command);

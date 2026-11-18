@@ -7,7 +7,8 @@ const std = @import("std");
 const machine = @import("machine");
 
 /// How long `change` waits for the test, in tenths of a second: the machine boots and runs
-/// the tests before it.
+/// the tests before it. The build starts `change` once the machine and the tests are built
+/// (build.zig's `Handshake`), so a cold build is never counted.
 const ready_wait = 6000;
 
 pub fn main(init: std.process.Init) !void {

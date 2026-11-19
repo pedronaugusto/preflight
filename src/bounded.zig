@@ -78,7 +78,16 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
     var watch: Watch = .{ .limit = wait.limit, .tree = tree };
     const watcher: ?std.Thread = if (bounded) try std.Thread.spawn(.{}, Watch.run, .{ &watch, io }) else null;
     const status = process_tree.waitStatus(&child);
-    const term = try child.wait(io);
+    // A wait that fails, canceled among the reasons, ends the tree and reaps the child before
+    // the error goes on, after the forwarding ends as it does for any run: no command outlives
+    // the gate that ran it.
+    var failed: ?std.process.Child.WaitError = null;
+    const term: std.process.Child.Term = child.wait(io) catch |err| ended: {
+        tree.kill();
+        child.kill(io);
+        failed = err;
+        break :ended .{ .unknown = 0 };
+    };
     watch.done.set(io);
     if (watcher) |thread| thread.join();
     tree.end(io);
@@ -91,6 +100,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
         for (streams) |stream| stream.close(io);
     }
     defer if (!held) gpa.destroy(output);
+    if (failed) |err| return err;
     if (watch.expired.load(.acquire)) {
         try say(command, wait, output.lastLine());
         return .expired;

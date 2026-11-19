@@ -1,5 +1,5 @@
 name: Toolchain
-description: Put preflight's checks, built for the Linux, macOS and Windows runners, in .preflight-bin; compiled once per pinned commit and never by the jobs that use them
+description: Put preflight's checks, bay and glint, built for the Linux, macOS and Windows runners, in .preflight-bin; compiled once per pinned commit and never by the jobs that use them
 inputs:
   preflight-ref:
     description: The preflight commit the caller is pinned to, checked out at .preflight

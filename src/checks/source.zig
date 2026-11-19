@@ -97,7 +97,12 @@ pub const Context = struct {
     pub fn runChild(c: Context, child: Child) !bool {
         if (c.bound) |bound| return bound(c, child);
         var process = try std.process.spawn(c.io, .{ .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map });
-        const term = try process.wait(c.io);
+        // A wait that fails, canceled among the reasons, ends the child and reaps it before the
+        // error goes on.
+        const term = process.wait(c.io) catch |err| {
+            process.kill(c.io);
+            return err;
+        };
         return term == .exited and term.exited == 0;
     }
 

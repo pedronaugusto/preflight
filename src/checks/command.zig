@@ -5,10 +5,14 @@ const aegis = @import("aegis");
 const src = @import("source.zig");
 
 /// Runs `argv` in the context's directory and fails unless it exits 0. Its output is this
-/// process's streams.
+/// process's streams. A wait that fails, canceled among the reasons, ends the child and
+/// reaps it before the error goes on: no command outlives the gate that ran it.
 pub fn execute(c: src.Context, argv: []const []const u8) !void {
     var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
-    const term = try child.wait(c.io);
+    const term = child.wait(c.io) catch |err| {
+        child.kill(c.io);
+        return err;
+    };
     if (term != .exited or term.exited != 0) return error.CommandFailed;
 }
 
@@ -54,6 +58,28 @@ pub fn fetches(a: std.mem.Allocator, whole: []const []const u8, build_args: []co
     while (tokens.next()) |token| try argv.append(a, token);
     if (argv.items.len == bare) return a.dupe([]const []const u8, &.{argv.items});
     return a.dupe([]const []const u8, &.{ argv.items[0..bare], argv.items });
+}
+
+test "a canceled wait ends the command and reaps it, and the cancel goes on" {
+    const Seen = struct {
+        base: std.Io,
+        killed: bool = false,
+        fn childWait(_: ?*anyopaque, _: *std.process.Child) std.process.Child.WaitError!std.process.Child.Term {
+            return error.Canceled;
+        }
+        fn childKill(ctx: ?*anyopaque, child: *std.process.Child) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?)); // safe: Layer pairs this callback with Seen state
+            self.killed = true;
+            self.base.vtable.childKill(self.base.userdata, child);
+        }
+    };
+    const Layer = @import("shakedown").Layer(Seen, .{ .childWait = Seen.childWait, .childKill = Seen.childKill });
+    var layer: Layer = .init(std.testing.io, .{ .base = std.testing.io });
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const c: src.Context = .{ .a = arena.allocator(), .io = layer.io() };
+    try std.testing.expectError(error.Canceled, execute(c, &.{ "zig", "version" }));
+    try std.testing.expect(layer.state.killed);
 }
 
 test "a fetch is retried twice, after 5 s and then 10 s, on the context's clock" {

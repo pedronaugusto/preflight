@@ -199,7 +199,7 @@ const runners = [_]struct { name: []const u8, query: std.Target.Query }{
 /// `<prefix>/toolchain/<runner>/`, so that one job compiles them and the
 /// others take the result. False while a lazy dependency is still to be fetched.
 fn addToolchain(b: *std.Build) bool {
-    const step = b.step("toolchain", "Build the checks and bay for the Linux, macOS and Windows runners, ARM ones included, under <prefix>/toolchain");
+    const step = b.step("toolchain", "Build the checks, bay and glint for the Linux, macOS and Windows runners, ARM ones included, under <prefix>/toolchain");
     for (runners) |runner| {
         const target = b.resolveTargetQuery(runner.query);
         const executable = b.addExecutable(.{ .name = "preflight", .root_module = ci.programModule(b, b, target) orelse {
@@ -213,6 +213,13 @@ fn addToolchain(b: *std.Build) bool {
             return false;
         };
         step.dependOn(&b.addInstallArtifact(bay.artifact("bay"), .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
+        // glint beside them, the glint preflight pins: the lint runs it as a program, by the
+        // contract glint's docs/design.md writes down, so every package lints with one glint.
+        const glint = b.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch {
+            _ = ci.declareCiOptions(b, null);
+            return false;
+        };
+        step.dependOn(&b.addInstallArtifact(glint.artifact("glint"), .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
     }
     return true;
 }

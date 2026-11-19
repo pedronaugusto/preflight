@@ -230,6 +230,10 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const a = c.a;
     var config = try c.options(args.config);
     if (args.zig_exe) |zig| c.zig = zig;
+    c.portable_tests = args.portable_tests;
+    // A caller other than generate makes would have the hosted runs check other jobs than
+    // ci/workflow.json declares: refused here, before a push, not first at a release's gate.
+    try checks.caller.lintCaller(c, sdkTargets);
     const snapshot = try facts.read(c.*, c.zig, args.build_option);
     const steps = try testSteps(c, config, args.test_step);
     const roots = try facts.testRoots(a, snapshot, steps);

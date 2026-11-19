@@ -1,4 +1,4 @@
-//! `preflight gate` end to end: a package in a git repository of its own, the preflight
+//! `preflight gate` end to end (and lint's look at the caller, the same check before a push): a package in a git repository of its own, the preflight
 //! program run as `bay gate` runs it, refusing what a release must not carry (a caller
 //! other than `generate` makes, a manifest and a CHANGELOG at different releases, a public
 //! declaration changed with no breaking entry). The program
@@ -113,6 +113,28 @@ test "the gate refuses a caller that is not what generate makes for the package'
     try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
     try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
     try refused(try p.gate(), ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `bay generate`");
+}
+
+test "lint refuses a stale caller before a push, not first at a release's gate, and passes it once generated" {
+    const p = try Package.init();
+    defer p.deinit();
+    const said = ".github/workflows/ci.yml is not what generate makes for this package's pins and ci/workflow.json: run `bay generate`";
+    // strand's case: ci/workflow.json changed, the caller never generated again.
+    try p.write("ci/workflow.json", "{\"targets\":[\"x86_64-linux-gnu\"]}\n");
+    try p.git(&.{ "commit", "-q", "-am", "A target, the caller left as it was" });
+    const stale = try p.preflight(&.{ "lint", "--skip-glint" });
+    if (stale.term != .exited or stale.term.exited == 0 or std.mem.find(u8, stale.stderr, said) == null) {
+        std.debug.print("expected lint to refuse, saying:\n{s}\nstderr:\n{s}\n", .{ said, stale.stderr });
+        return error.TestUnexpectedResult;
+    }
+    const generated = try p.preflight(&.{"generate"});
+    try std.testing.expect(generated.term == .exited and generated.term.exited == 0);
+    try p.git(&.{ "commit", "-q", "-am", "Generated" });
+    const current = try p.preflight(&.{ "lint", "--skip-glint" });
+    if (std.mem.find(u8, current.stderr, "is not what generate makes") != null) {
+        std.debug.print("lint refused a current caller:\n{s}\n", .{current.stderr});
+        return error.TestUnexpectedResult;
+    }
 }
 
 test "a package without bay is told to run `zig build generate`, the command it has" {

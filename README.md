@@ -746,7 +746,9 @@ run's proof). The gate (`zig build gate`, `bay gate` under bay), a step `addCi` 
 in seconds what a release needs beside that run, each refusal naming its fix:
 
 1. the caller is what `generate` makes for the package's pins and
-   configuration, so the hosted runs check the package with the preflight it pins;
+   configuration, so the hosted runs check the package with the preflight it pins (the
+   lint checks this too, in a git work tree, so a stale caller fails the local gate and
+   the ci tier before a push, not first at a release);
 2. the manifest's `.version` is the CHANGELOG's newest release;
 3. the CHANGELOG says what the public API changed since the last `v*` tag: a change to the
    surface needs an entry in `[Unreleased]` or in a release made since, and a removed or

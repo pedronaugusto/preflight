@@ -137,8 +137,9 @@ pub const Lint = struct {
     skip_glint: bool = false,
     module: []const []const u8 = &.{},
     build_scripts: ?[]const u8 = null,
+    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "The source checks over the repository's files, then the check on the configured build's revisions",
+        .about = "The caller workflow as generate makes it, the source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The source checks' configuration" },
             .zig_exe = zig_exe,
@@ -151,6 +152,7 @@ pub const Lint = struct {
             .escapes_before = .{ .value_name = "FILE", .hint = .file, .help = "With --fix, the escapes a lint before reported (its .zig-cache/preflight-lint/escapes.txt, kept): an escape in the older form is named with only the rules listed for it there that find something now" },
             .release = .{ .negatable = false, .help = "The release tier's bar: every shipped ban's finding fails (P007, P008, P009 and the rules the packages declare), those the default policy reports included" },
             .skip_glint = .{ .negatable = false, .help = "Every source check but glint's lint: what a build with -Dci-lint=false runs beside its tests" },
+            .portable_tests = portable_tests,
         },
     };
 };

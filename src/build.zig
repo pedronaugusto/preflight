@@ -355,6 +355,7 @@ const Steps = struct {
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         if (steps.release) checks.addArg("--release");
         for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
+        if (config.portable_tests) checks.addArg("--portable-tests");
         // What the CHANGELOG must name of the public API since the last tag.
         exported(b, package, checks);
         buildScripts(b, package, checks);
@@ -368,6 +369,7 @@ const Steps = struct {
         source.addArgs(&.{ "lint", "--skip-glint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         source.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| source.addArgs(&.{ "--test-step", name });
+        if (config.portable_tests) source.addArg("--portable-tests");
         exported(b, package, source);
         buildScripts(b, package, source);
         configurationOptions(b, source);
@@ -378,6 +380,7 @@ const Steps = struct {
         fixing.addArgs(&.{ "lint", "--fix", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         fixing.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| fixing.addArgs(&.{ "--test-step", name });
+        if (config.portable_tests) fixing.addArg("--portable-tests");
         buildScripts(b, package, fixing);
         configurationOptions(b, fixing);
         // `zig build fix -- --escapes-before FILE`: the record the escape rename reads.

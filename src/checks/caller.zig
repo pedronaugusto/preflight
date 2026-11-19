@@ -1,6 +1,6 @@
 //! The package's caller: the workflow under `.github/workflows` that `generate` made for
 //! it, found from the package's directory, and checked to be what `generate` makes now for
-//! the package's pins and configuration. The gate checks it before it runs anything, so the
+//! the package's pins and configuration. The gate and the lint check it first, so the
 //! hosted runs check the package with the preflight it pins and the jobs `ci/workflow.json`
 //! declares; `generate` makes it again after a pin moves.
 const std = @import("std");
@@ -216,6 +216,31 @@ fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}))) return;
     c.fail("{s} is not what generate makes for this package's pins and {s}: run `{s}` and commit it", .{ path, found.config, c.stepCommand("generate") });
     return error.CallerRefused;
+}
+
+/// `lint`'s look at the caller, so a stale one fails the local gate and the ci tier, not only
+/// a release's gate: in a git work tree, the package's caller, if it has one, is what
+/// `generate` makes now for its pins and configuration. A caller generated from another
+/// directory for this one (`generate -- --working-directory`, preflight's sample) is that
+/// directory's lint's to check, where the configuration it names is read. Outside a work
+/// tree no caller is committed, and none is checked.
+pub fn lintCaller(c: *src.Context, sdk: ?Sdk) !void {
+    const inside = git(c, &.{ "rev-parse", "--is-inside-work-tree" }) catch |err| switch (err) {
+        // No git to ask: nothing committed to compare.
+        error.FileNotFound => return,
+        else => return err,
+    };
+    if (!inside.ok) return;
+    const found = (findCaller(c, null) catch |err| switch (err) {
+        // Reported where it failed.
+        error.CallerRefused => return,
+        else => return err,
+    }) orelse return;
+    if (found.working_directory != null and std.mem.eql(u8, found.gate, found.directory)) return;
+    requireCurrentCaller(c, found, sdk) catch |err| switch (err) {
+        error.CallerRefused => return,
+        else => return err,
+    };
 }
 
 /// What `generate` is given: where the planned jobs run when not the package's directory,

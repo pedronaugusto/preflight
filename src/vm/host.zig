@@ -238,19 +238,6 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
     for (argv[1..]) |arg| try appendEntry(gpa, &guest_argv, arg);
     try run_dir.writeFile(io, .{ .sub_path = "argv", .data = guest_argv.items });
 
-    var guest_environ: std.ArrayList(u8) = .empty;
-    for (environ.keys(), environ.values()) |key, value| {
-        // The progress pipe is the host's, the machine has its own programs, and its
-        // scratch is its own (below).
-        if (std.mem.eql(u8, key, "ZIG_PROGRESS") or std.mem.eql(u8, key, "PATH") or std.mem.eql(u8, key, "TMPDIR")) continue;
-        try guest_environ.print(gpa, "{s}={s}\x00", .{ key, value });
-    }
-    // A test's scratch is the machine's memory, never the host's share: 9p drops what a
-    // test of files relies on (a shared mapping's write a read does not see, a FIFO that
-    // will not open, a directory's sync). Both machines mount /tmp as tmpfs.
-    try guest_environ.print(gpa, "TMPDIR=/tmp\x00", .{});
-    try run_dir.writeFile(io, .{ .sub_path = "environ", .data = guest_environ.items });
-
     // The directories the program can name: where it runs, where it is, and where
     // any of its arguments points. Each is bound at the path the program has for
     // it, from the host's resolved path.
@@ -278,10 +265,62 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
         try addScratch(gpa, &scratch, &scratched, try std.Io.Dir.path.resolveAlloc(gpa, &.{ here, arg[cache_flag.len..], "tmp" }));
     };
     try run_dir.writeFile(io, .{ .sub_path = "scratch", .data = scratch.items });
+    // The environment last: a host path in it passes only where the machine reaches it.
+    const reach = try std.mem.concat(gpa, []const u8, &.{ bound.keys(), scratched.keys() });
+    try run_dir.writeFile(io, .{ .sub_path = "environ", .data = try guestEnviron(gpa, environ, reach) });
     try run_dir.writeFile(io, .{ .sub_path = "cwd", .data = here });
     // The machine runs the program as this user, as the build does here.
     try run_dir.writeFile(io, .{ .sub_path = "user", .data = try userLine(gpa) });
     return run_path;
+}
+
+/// The machine's own global cache for its Zig, on its tmpfs: the host's is a host path
+/// (setup-zig's under the runner's temp, which the machine cannot open), and a cache
+/// shared over 9p would lose what Zig's cache relies on (its locks, a write a read sees).
+const guest_global_cache = "ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache";
+
+/// The run's environment, as the machine's first process reads it: the host's, less what
+/// is the host's alone. The progress pipe is the host's and the machine has its own
+/// programs; its scratch (`TMPDIR`) and Zig's global cache are its own. A variable naming
+/// host paths (an absolute path, or a list of them separated by `:`) passes only when each
+/// lies in a directory of `reach`, those the machine binds or makes at the same path: any
+/// other names a path the machine cannot open, or opens as its own, different file.
+fn guestEnviron(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, reach: []const []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (environ.keys(), environ.values()) |key, value| {
+        if (std.mem.eql(u8, key, "ZIG_PROGRESS") or std.mem.eql(u8, key, "PATH") or std.mem.eql(u8, key, "TMPDIR") or std.mem.eql(u8, key, "ZIG_GLOBAL_CACHE_DIR")) continue;
+        if (!reachable(value, reach)) continue;
+        try out.print(gpa, "{s}={s}\x00", .{ key, value });
+    }
+    // A test's scratch is the machine's memory, never the host's share: 9p drops what a
+    // test of files relies on (a shared mapping's write a read does not see, a FIFO that
+    // will not open, a directory's sync). Both machines mount /tmp as tmpfs.
+    try out.print(gpa, "TMPDIR=/tmp\x00" ++ guest_global_cache ++ "\x00", .{});
+    return out.toOwnedSlice(gpa);
+}
+
+/// Whether each host path `value` names lies in a directory of `reach`; a value naming
+/// none (a word, a number, a URL, a relative path) passes. A path with a `.` or `..`
+/// component is not taken to lie anywhere.
+fn reachable(value: []const u8, reach: []const []const u8) bool {
+    var parts = std.mem.splitScalar(u8, value, ':');
+    while (parts.next()) |part| {
+        // `//` begins a URL's authority (`https://...` splits there), not a path.
+        if (part.len == 0 or part[0] != '/' or std.mem.startsWith(u8, part, "//")) continue;
+        if (!within(part, reach)) return false;
+    }
+    return true;
+}
+
+/// Whether the absolute `path` is a directory of `reach` or lies under one.
+fn within(path: []const u8, reach: []const []const u8) bool {
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
+    for (reach) |dir| {
+        if (std.mem.eql(u8, dir, "/") or std.mem.eql(u8, path, dir)) return true;
+        if (path.len > dir.len and std.mem.startsWith(u8, path, dir) and path[dir.len] == '/') return true;
+    }
+    return false;
 }
 
 /// The machine's `user` file: the ids of the user this program runs as.
@@ -541,6 +580,50 @@ test "a program the kernel killed or stopped ends the run by its exit code, its 
     try std.testing.expectEqualStrings("STOP", uncatchable(19).?);
     try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(6));
     try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(11));
+}
+
+test "a guest never inherits a host path: its Zig's global cache is its own, and a host path passes only where the machine binds it" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var environ: std.process.Environ.Map = .init(a);
+    // glint 7161abbd's riscv64 and FreeBSD guests: setup-zig's cache under the runner's temp.
+    try environ.put("ZIG_GLOBAL_CACHE_DIR", "/home/runner/work/_temp/zig-global");
+    try environ.put("ZIG_LOCAL_CACHE_DIR", "/home/runner/work/_temp/zig-local");
+    try environ.put("ZIG_LIB_DIR", "/opt/zig/lib");
+    try environ.put("RUNNER_TEMP", "/home/runner/work/_temp");
+    try environ.put("LD_LIBRARY_PATH", "/home/runner/work/pkg/lib:/usr/local/lib");
+    try environ.put("ESCAPE", "/home/runner/work/pkg/../_temp");
+    try environ.put("GITHUB_WORKSPACE", "/home/runner/work/pkg");
+    try environ.put("FIXTURES", "/home/runner/work/pkg/fixtures:/home/runner/work/pkg/.zig-cache/tmp");
+    try environ.put("GITHUB_SERVER_URL", "https://github.com");
+    try environ.put("CI", "true");
+    try environ.put("RELATIVE", "zig-out/bin");
+    try environ.put("PATH", "/usr/bin");
+    try environ.put("TMPDIR", "/home/runner/work/_temp");
+    try environ.put("ZIG_PROGRESS", "3");
+    const reach = [_][]const u8{ "/home/runner/work/pkg", "/home/runner/work/pkg/.zig-cache/tmp" };
+    const written = try guestEnviron(a, &environ, &reach);
+    var got: std.ArrayList([]const u8) = .empty;
+    var entries = std.mem.splitScalar(u8, written[0 .. written.len - 1], 0);
+    while (entries.next()) |entry| try got.append(a, entry);
+    const want = [_][]const u8{
+        "GITHUB_WORKSPACE=/home/runner/work/pkg",
+        "FIXTURES=/home/runner/work/pkg/fixtures:/home/runner/work/pkg/.zig-cache/tmp",
+        "GITHUB_SERVER_URL=https://github.com",
+        "CI=true",
+        "RELATIVE=zig-out/bin",
+        "TMPDIR=/tmp",
+        guest_global_cache,
+    };
+    try std.testing.expectEqual(want.len, got.items.len);
+    for (want, got.items) |w, g| try std.testing.expectEqualStrings(w, g);
+    // A cache the host keeps inside a bound directory is still not the machine's.
+    var bound_cache: std.process.Environ.Map = .init(a);
+    try bound_cache.put("ZIG_GLOBAL_CACHE_DIR", "/home/runner/work/pkg/.cache");
+    try std.testing.expectEqualStrings("TMPDIR=/tmp\x00" ++ guest_global_cache ++ "\x00", try guestEnviron(a, &bound_cache, &reach));
+    // A machine that binds the root reaches every absolute path.
+    try std.testing.expect(reachable("/opt/zig/lib:/etc", &.{"/"}));
 }
 
 test "a path is left out when it is one of those named or lies under one" {

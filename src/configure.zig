@@ -135,6 +135,47 @@ pub fn claim(b: *std.Build, name: []const u8, description: []const u8) *std.Buil
     return &detached.step;
 }
 
+/// Fails each of `steps` naming every option `package`'s build passes a dependency that it
+/// does not declare. Zig 0.17 only logs one
+/// ("invalid option", with a stack trace), and only on a configuration it does not take from
+/// its cache, then builds on: an option a dependency removed is passed unseen (strand's legs
+/// passing `-Dschema`, preflight's `.zig` to gantry after gantry 7c88363). A dependency is
+/// `package`'s own when its prefix is the package's and one name more: what it passes its
+/// own dependencies is that package's to check.
+pub fn refuseUndeclaredOptions(b: *std.Build, package: *std.Build, steps: []const *std.Build.Step) void {
+    for (b.graph.dependency_cache.values()) |dependency| {
+        const child = dependency.builder;
+        if (!directDependency(package.dep_prefix, child.dep_prefix)) continue;
+        refuseUndeclaredOf(b, child, steps);
+    }
+}
+
+/// Whether `prefix` names a dependency of the package whose prefix is `parent`: the
+/// parent's, one name, then a dot (`std.Build.createChild`).
+fn directDependency(parent: []const u8, prefix: []const u8) bool {
+    if (prefix.len <= parent.len + 1 or !std.mem.startsWith(u8, prefix, parent) or prefix[prefix.len - 1] != '.') return false;
+    return std.mem.findScalar(u8, prefix[parent.len .. prefix.len - 1], '.') == null;
+}
+
+fn refuseUndeclaredOf(b: *std.Build, builder: *std.Build, steps: []const *std.Build.Step) void {
+    const name = std.mem.trimEnd(u8, builder.dep_prefix, ".");
+    const short = if (std.mem.findScalarLast(u8, name, '.')) |dot| name[dot + 1 ..] else name;
+    for (builder.user_input_options.keys()) |option| {
+        if (builder.available_options_map.contains(option)) continue;
+        const fail = b.addFail(b.fmt("the build passes the dependency {s} the option `{s}`, which {s} does not declare (Zig only logs it, and builds on): drop it", .{ short, option, short }));
+        for (steps) |step| step.dependOn(&fail.step);
+    }
+}
+
+test "a dependency of the package is one name past its prefix" {
+    try std.testing.expect(directDependency("", "gantry."));
+    try std.testing.expect(directDependency("pkg.", "pkg.gantry."));
+    try std.testing.expect(!directDependency("pkg.", "pkg.gantry.glint."));
+    try std.testing.expect(!directDependency("pkg.", "pkg."));
+    try std.testing.expect(!directDependency("pkg.", "other.gantry."));
+    try std.testing.expect(!directDependency("", "gantry.glint."));
+}
+
 /// Fails `tests` naming each step of preflight's that the build, or the package's
 /// own build, already had: the gate runs preflight's steps by name, so a package
 /// step of the same name would run in their place.

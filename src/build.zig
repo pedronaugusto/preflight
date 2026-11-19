@@ -120,6 +120,7 @@ pub fn addCi(b: *std.Build, package: *std.Build, config: Config) void {
     if (b.pkg_hash.len != 0) return;
     const steps: Steps = .create(b, config);
     defer configure.refuseTaken(b, package, config.tests);
+    configure.refuseUndeclaredOptions(b, package, &.{ config.tests, steps.lint });
     // The gate reruns its tests with its own options, which only `b` declares.
     if (config.tests.owner != b) config.tests.dependOn(&b.addFail("addCi .tests: the tests the gate runs are a step of the build that calls addCi; with bay, define them in dev").step);
     const tools = configure.lazy(b, "preflight", .{}) orelse return;

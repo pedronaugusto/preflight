@@ -88,6 +88,34 @@ test "structure runner rejects undeclared imports, production reaching tests and
     try std.testing.expect(std.mem.find(u8, duplicate.stderr, "multiple layers") != null);
 }
 
+test "an option the build passes a dependency that the dependency does not declare fails the tests' step by name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A dependency that declares `declared`; the build passes it `gone` too, as strand's legs
+    // passed -Dschema after it went, which Zig only logs.
+    try tmp.dir.createDirPath(io, "dep");
+    try tmp.dir.writeFile(io, .{ .sub_path = "dep/build.zig.zon", .data = ".{ .name = .dep, .version = \"0.0.0\", .fingerprint = 0xf810543092f01d53, .paths = .{\"\"} }\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "dep/build.zig", .data = "const std = @import(\"std\");\npub fn build(b: *std.Build) void {\n    _ = b.option(bool, \"declared\", \"an option it declares\") orelse false;\n}\n" });
+    const manifest = try tmp.dir.readFileAlloc(io, "build.zig.zon", a, .limited(1 << 16));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try std.mem.replaceOwned(u8, a, manifest, ".dependencies = .{ ", ".dependencies = .{ .dep = .{ .path = \"dep\" }, ") });
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1 << 20));
+    try std.testing.expect(std.mem.find(u8, build, "    preflight.addCi(b, b, .{") != null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, build, "    preflight.addCi(b, b, .{", "    _ = b.dependency(\"dep\", .{ .declared = true, .gone = true });\n    preflight.addCi(b, b, .{") });
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const said = "the build passes the dependency dep the option `gone`, which dep does not declare (Zig only logs it, and builds on): drop it";
+    if (result.term != .exited or result.term.exited == 0 or std.mem.find(u8, result.stderr, said) == null) {
+        std.debug.print("expected the tests' step to fail, saying:\n{s}\nstderr:\n{s}\n", .{ said, result.stderr });
+        return error.TestUnexpectedResult;
+    }
+    // The option it declares is never named.
+    try std.testing.expect(std.mem.find(u8, result.stderr, "the option `declared`") == null);
+}
+
 test "-Dci-lint=false leaves out glint's lint alone: an import of the tests from production still fails the tests' step" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

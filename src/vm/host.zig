@@ -267,7 +267,10 @@ fn describe(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.
     try run_dir.writeFile(io, .{ .sub_path = "scratch", .data = scratch.items });
     // The environment last: a host path in it passes only where the machine reaches it.
     const reach = try std.mem.concat(gpa, []const u8, &.{ bound.keys(), scratched.keys() });
-    try run_dir.writeFile(io, .{ .sub_path = "environ", .data = try guestEnviron(gpa, environ, reach) });
+    var dropped: std.ArrayList([]const u8) = .empty;
+    try run_dir.writeFile(io, .{ .sub_path = "environ", .data = try guestEnviron(gpa, environ, reach, &dropped) });
+    // A variable left out is never silent: its name, never its value.
+    if (try droppedLine(gpa, dropped.items)) |line| try Io.File.stderr().writeStreamingAll(io, line);
     try run_dir.writeFile(io, .{ .sub_path = "cwd", .data = here });
     // The machine runs the program as this user, as the build does here.
     try run_dir.writeFile(io, .{ .sub_path = "user", .data = try userLine(gpa) });
@@ -284,12 +287,16 @@ const guest_global_cache = "ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache";
 /// programs; its scratch (`TMPDIR`) and Zig's global cache are its own. A variable naming
 /// host paths (an absolute path, or a list of them separated by `:`) passes only when each
 /// lies in a directory of `reach`, those the machine binds or makes at the same path: any
-/// other names a path the machine cannot open, or opens as its own, different file.
-fn guestEnviron(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, reach: []const []const u8) ![]u8 {
+/// other names a path the machine cannot open, or opens as its own, different file, and
+/// its name is added to `dropped`.
+fn guestEnviron(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, reach: []const []const u8, dropped: *std.ArrayList([]const u8)) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     for (environ.keys(), environ.values()) |key, value| {
         if (std.mem.eql(u8, key, "ZIG_PROGRESS") or std.mem.eql(u8, key, "PATH") or std.mem.eql(u8, key, "TMPDIR") or std.mem.eql(u8, key, "ZIG_GLOBAL_CACHE_DIR")) continue;
-        if (!reachable(value, reach)) continue;
+        if (!reachable(value, reach)) {
+            try dropped.append(gpa, key);
+            continue;
+        }
         try out.print(gpa, "{s}={s}\x00", .{ key, value });
     }
     // A test's scratch is the machine's memory, never the host's share: 9p drops what a
@@ -297,6 +304,13 @@ fn guestEnviron(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map,
     // will not open, a directory's sync). Both machines mount /tmp as tmpfs.
     try out.print(gpa, "TMPDIR=/tmp\x00" ++ guest_global_cache ++ "\x00", .{});
     return out.toOwnedSlice(gpa);
+}
+
+/// The one line naming the variables left out of the machine's environment, never their
+/// values; null when none was.
+fn droppedLine(gpa: std.mem.Allocator, names: []const []const u8) !?[]u8 {
+    if (names.len == 0) return null;
+    return try gpa.print("preflight-vm: left out of the machine's environment, naming host paths it does not reach: {s}\n", .{try std.mem.join(gpa, ", ", names)});
 }
 
 /// Whether each host path `value` names lies in a directory of `reach`; a value naming
@@ -582,7 +596,7 @@ test "a program the kernel killed or stopped ends the run by its exit code, its 
     try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(11));
 }
 
-test "a guest never inherits a host path: its Zig's global cache is its own, and a host path passes only where the machine binds it" {
+test "a guest never inherits a host path: its Zig's global cache is its own, a host path passes only where the machine binds it, and what is left out is named" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -603,7 +617,8 @@ test "a guest never inherits a host path: its Zig's global cache is its own, and
     try environ.put("TMPDIR", "/home/runner/work/_temp");
     try environ.put("ZIG_PROGRESS", "3");
     const reach = [_][]const u8{ "/home/runner/work/pkg", "/home/runner/work/pkg/.zig-cache/tmp" };
-    const written = try guestEnviron(a, &environ, &reach);
+    var dropped: std.ArrayList([]const u8) = .empty;
+    const written = try guestEnviron(a, &environ, &reach, &dropped);
     var got: std.ArrayList([]const u8) = .empty;
     var entries = std.mem.splitScalar(u8, written[0 .. written.len - 1], 0);
     while (entries.next()) |entry| try got.append(a, entry);
@@ -618,10 +633,15 @@ test "a guest never inherits a host path: its Zig's global cache is its own, and
     };
     try std.testing.expectEqual(want.len, got.items.len);
     for (want, got.items) |w, g| try std.testing.expectEqualStrings(w, g);
+    // What was left out is named, one line, never a value.
+    try std.testing.expectEqualStrings("preflight-vm: left out of the machine's environment, naming host paths it does not reach: ZIG_LOCAL_CACHE_DIR, ZIG_LIB_DIR, RUNNER_TEMP, LD_LIBRARY_PATH, ESCAPE\n", (try droppedLine(a, dropped.items)).?);
+    try std.testing.expectEqual(@as(?[]u8, null), try droppedLine(a, &.{}));
     // A cache the host keeps inside a bound directory is still not the machine's.
     var bound_cache: std.process.Environ.Map = .init(a);
     try bound_cache.put("ZIG_GLOBAL_CACHE_DIR", "/home/runner/work/pkg/.cache");
-    try std.testing.expectEqualStrings("TMPDIR=/tmp\x00" ++ guest_global_cache ++ "\x00", try guestEnviron(a, &bound_cache, &reach));
+    var none: std.ArrayList([]const u8) = .empty;
+    try std.testing.expectEqualStrings("TMPDIR=/tmp\x00" ++ guest_global_cache ++ "\x00", try guestEnviron(a, &bound_cache, &reach, &none));
+    try std.testing.expectEqual(@as(usize, 0), none.items.len);
     // A machine that binds the root reaches every absolute path.
     try std.testing.expect(reachable("/opt/zig/lib:/etc", &.{"/"}));
 }

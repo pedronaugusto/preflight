@@ -16,6 +16,10 @@ inputs:
   toolchain:
     description: The artifact holding the checks built for this runner; empty builds them here, as the Zig master leg must with its own Zig
     default: ''
+outputs:
+  tools-hit:
+    description: "'true' when the external tools came from the cache; on a miss the setup step builds them, which a tools attempt's limit must leave room for"
+    value: ${{ steps.tools.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -95,6 +99,7 @@ runs:
         restore-keys: |
           zig-products-${{ runner.os }}-${{ runner.arch }}-${{ inputs.zig-version }}-${{ steps.global.outputs.cpu }}-
     - name: Cache external tools
+      id: tools
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/preflight-tools

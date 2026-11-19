@@ -628,13 +628,16 @@ The release tier also runs the Debug suite on Linux with Zig master,
 the next release in development. That job never blocks: the run's summary
 reports its result, and a break is a note for the next port's rewrite table.
 The setup action takes `zig-version` (0.17.0, or master), and its cache keys
-carry it. The shared workflow runs external-tool setup separately, with up to
-three attempts of five minutes each. A hung `apt-get update` therefore expires
-at a step deadline and can be retried. Exhausted attempts fail blocking jobs.
-Every Zig master step has a deadline, with their total below its job timeout,
-so a hang remains an advisory failure and the blocking jobs decide the run's
-conclusion. The master suite uses `test-job-timeout` as its step deadline, capped at twenty
-minutes to preserve that budget.
+carry it, and its output `tools-hit` says whether the external tools came from
+their cache. The shared workflow runs external-tool setup separately, with up to
+three attempts of five minutes each; on a tools-cache miss the first attempt has
+thirty, since the setup step then builds the tools cold. A hung `apt-get update`
+therefore expires at a step deadline and can be retried. Exhausted attempts fail
+blocking jobs. A guest leg's QEMU install gives apt deadlines and retries of its
+own, under a fifteen-minute step. Every Zig master step has a deadline, with their
+total below its job timeout, so a hang remains an advisory failure and the blocking
+jobs decide the run's conclusion. Its setup has thirty minutes, since it compiles
+preflight's checks with Zig master, and its suite twenty.
 
 Call `.github/workflows/zig.yml` pinned by the same commit as the package. Pass
 that commit as `preflight-ref` and the tier as `tier`. A run checks it before it builds
@@ -685,7 +688,7 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   run, described below.
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
-  with three attempts of five minutes; `before_tests_step`: a step run before the tests.
+  with three attempts of five minutes (the first thirty on a tools-cache miss); `before_tests_step`: a step run before the tests.
 - `git`: the held git every test job runs (above), written by `preflight held-git-pin`.
   `windows_git_latest` is refused: it took whatever release was newest that day.
 - `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`:

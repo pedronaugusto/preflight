@@ -22,6 +22,9 @@ fn job(text: []const u8, name: []const u8) ![]const u8 {
     return text[start orelse return error.MissingJob ..];
 }
 
+/// The first tools attempt's deadline: a build's on a tools-cache miss, a setup's on a hit.
+const first_attempt = "${{ steps.setup.outputs.tools-hit == 'true' && 5 || 30 }}";
+
 fn contains(text: []const u8, expected: []const u8) !void {
     try std.testing.expect(std.mem.find(u8, text, expected) != null);
 }
@@ -37,7 +40,9 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             const start = std.mem.find(u8, body, marker) orelse return error.MissingSetupAttempt;
             const end = std.mem.findPos(u8, body, start, "      - ") orelse body.len;
             const step = body[start..end];
-            try contains(step, "        timeout-minutes: 5\n");
+            // On a tools-cache miss the setup step builds the tools: the first attempt has a
+            // build's deadline then, never a setup's.
+            try contains(step, if (attempt == 1) "        timeout-minutes: " ++ first_attempt ++ "\n" else "        timeout-minutes: 5\n");
             try contains(step, " prepare\n");
             try std.testing.expectEqual(attempt < 3, std.mem.find(u8, step, "continue-on-error: true") != null);
             if (attempt > 1) {
@@ -47,6 +52,7 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             }
         }
         try std.testing.expect(std.mem.find(u8, body, "id: tools4") == null);
+        try contains(body, "      - uses: ./.preflight/.github/actions/setup\n        id: setup\n");
         try contains(body, "PREFLIGHT_PREPARED: 'true'");
         // A cold build of the held git takes longer than tools alone: it has a step and a
         // deadline of its own, once, before the attempts; a compile job holds none.
@@ -58,6 +64,20 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             try contains(step, " --held-git\n");
             try std.testing.expect(start < std.mem.find(u8, body, "id: tools1").?);
         }
+    }
+}
+
+test "a guest leg's QEMU install ends a stalled download by apt's deadlines, with room for a slow mirror" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "gate");
+    for ([_][]const u8{ "riscv64 system emulation", "x86_64 system emulation and open KVM" }) |name| {
+        const start = std.mem.find(u8, body, try arena.allocator().print("      - name: Install QEMU's {s}\n", .{name})) orelse return error.MissingInstall;
+        const step = body[start .. std.mem.findPos(u8, body, start + 1, "      - ") orelse body.len];
+        try contains(step, "        timeout-minutes: 15\n");
+        try contains(step, "-o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60");
+        try contains(step, "sudo apt-get $apt update\n");
+        try contains(step, "sudo apt-get $apt install -y --no-install-recommends ");
     }
 }
 
@@ -89,7 +109,7 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     try contains(body, "    continue-on-error: true\n");
     // A held git's build (30 minutes) raises the bound by as much, and only for a package
     // that names one.
-    try contains(body, "    timeout-minutes: ${{ inputs.held-git != '' && 90 || 60 }}\n");
+    try contains(body, "    timeout-minutes: ${{ inputs.held-git != '' && 135 || 105 }}\n");
     var total: usize = 0;
     var steps: usize = 0;
     var deadlines: usize = 0;
@@ -100,14 +120,15 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
             deadlines += 1;
             const value = line[25..];
             if (std.mem.startsWith(u8, value, "${{")) {
-                try std.testing.expectEqualStrings("${{ inputs.test-job-timeout < 20 && inputs.test-job-timeout || 20 }}", value);
-                total += 20;
+                try std.testing.expectEqualStrings(first_attempt, value);
+                total += 30;
             } else total += try std.fmt.parseInt(usize, value, 10);
         }
     }
     try std.testing.expectEqual(steps, deadlines);
     // The held git's 30 minutes apart, the steps fit the bound of a package without one.
-    try std.testing.expect(total - 30 < 60);
+    try std.testing.expect(total - 30 < 105);
+    try std.testing.expect(total < 135);
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");

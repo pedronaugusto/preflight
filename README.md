@@ -97,7 +97,13 @@ package that needs another bound says why: `.test_timeout = .{ .bound = .{ .limi
 .fromSeconds(30), .reason = "..." } }`, or `.{ .off = "..." }` for a test runner of its
 own or a single-threaded build, which otherwise fail the build by name. preflight
 passes the build runner no `--test-timeout`; one given by hand bounds each test there
-too. `.test_log_level = .info` prints a library's `std.log.info` lines in its tests,
+too. Every other run of the tests step (an example, a generator, a benchmark's smoke run)
+runs under the same watchdog: past 300 s, or the hosted job's deadline when it comes sooner,
+its processes are ended and it fails naming its step and its command. A run that needs longer
+names its bound by its step's name, with its reason: `.run_bounds = &.{.{ .step = "run exe
+example", .limit = .fromSeconds(900), .reason = "..." }}`; one naming no such run is refused.
+A program the host runs only through an emulator (`-fqemu`, `-fwine`) keeps the job's bound
+alone, since Zig starts the emulator only for a run's first argument. `.test_log_level = .info` prints a library's `std.log.info` lines in its tests,
 where Zig's runner prints `.warn` and above. `zig build check-imports -- --audit` exposes gantry's graph for inspection.
 Serving the build, the runner runs the tests in a process of its own and keeps the
 build's streams to itself: the tests get an empty stdin, and their stdout and stderr

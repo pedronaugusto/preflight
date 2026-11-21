@@ -4,6 +4,7 @@ const configure = @import("configure.zig");
 const portable = @import("portable.zig");
 const objects = @import("objects.zig");
 const record = @import("record.zig");
+const run_bound = @import("runs.zig");
 pub const consumer = @import("consumer.zig");
 pub const nested = @import("nested.zig");
 const bench = @import("bench.zig");
@@ -25,6 +26,11 @@ pub const Config = struct {
     /// The watchdog: one test, its Io teardown included, fails by name,
     /// phase and seed once it runs this long, in local runs too.
     test_timeout: TestTimeout = .default,
+    /// The watchdog on each run of `tests` that is no test (an example, a generator, a
+    /// benchmark's smoke run): past 300 seconds (`runs.default_limit`), or its
+    /// own bound named here with its reason, the run is ended and fails naming its step and
+    /// its command, in local runs too. A run is named by its step's name (`run exe example`).
+    run_bounds: []const RunBound = &.{},
     /// The `std.log` level a test prints at. Zig's runner prints `.warn`
     /// and above; a library that logs what it does can ask for `.info`.
     test_log_level: std.log.Level = .warn,
@@ -67,6 +73,7 @@ pub const Hardened = hardened.Profile;
 pub const ReleaseFast = struct { artifact: []const u8, reason: []const u8 };
 
 pub const TestTimeout = record.TestTimeout;
+pub const RunBound = run_bound.RunBound;
 
 /// A module of a dependency, or null while the dependency is still waiting for
 /// one of its own lazy dependencies: its script ends before it adds modules, and
@@ -302,6 +309,9 @@ const Steps = struct {
         const source = lint.checks;
         if (policy == .family) releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
+        // Every run of the tests that is no test, the package's and the benchmarks' smoke runs,
+        // under its bound: after the walks above read the runs as the build wrote them.
+        run_bound.add(b, pkg, config.tests, config.run_bounds, slowdown, executable);
         // Last, so that every run the gate added is in front of the machine too.
         if (steps.vm) vm.add(b, config.tests, package, pkg, executable, host, config.vm_packages);
         // `ci-test`, the hosted test jobs' step, is the tests as every walk above left them;

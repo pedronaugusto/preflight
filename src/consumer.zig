@@ -175,6 +175,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         build.addFileArg(options.program);
         build.addArg(options.package);
         build.addDirectoryArg2(b.graph.path(.global_cache, "."), .{});
+        build.addDirectoryArg2(b.graph.path(.local_cache, consumers_cache), .{});
         for (merged) |option| build.addArg(switch (option.value) {
             .flag => |flag| b.fmt("-D{s}=bool:{}", .{ option.name, flag }),
             .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
@@ -243,19 +244,23 @@ fn byHash(key: []const u8) bool {
     return std.mem.countScalar(u8, key[0 .. key.len - 44], '-') >= 2;
 }
 
+/// The global Zig cache every consumer's build shares, under the build's own cache: one of
+/// their own, so a consumer has none of the package's cached packages (Zig 0.17's `--system`
+/// asserts on a lazy package it finds only in the global cache), and one for them all, since
+/// none fetches into it: what it holds is compiled (compiler_rt and the like, most of a cold
+/// consumer build), once for every configuration, not again in each.
+const consumers_cache = "preflight-consumer/.zig-global-cache";
+
 /// Checks the graph plain `zig build` fetches for the package, then writes the
 /// project and builds it: `<zig> <project> <packages> <package root> <program>
-/// <package> <global cache> <module>...`.
-/// The build has a Zig cache of its own: a consumer has none of the
-/// package's cached packages, and Zig 0.17's `--system` asserts on a lazy
-/// package it finds only in the global cache.
+/// <package> <global cache> <consumers' global cache> <module>...`.
 pub fn main(init: std.process.Init) !void {
     var arena: std.heap.ArenaAllocator = .init(init.gpa);
     defer arena.deinit();
     const a = arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(a);
-    if (args.len < 9) return error.MissingConsumerArguments;
+    if (args.len < 10) return error.MissingConsumerArguments;
     const cwd = std.Io.Dir.cwd();
     var dir = try cwd.createDirPathOpen(io, args[2], .{});
     defer dir.close(io);
@@ -267,7 +272,7 @@ pub fn main(init: std.process.Init) !void {
     const text = try input.file(io, cwd, args[5], a, .program);
     var modules: std.ArrayList([]const u8) = .empty;
     var dependency_options: std.ArrayList(Option) = .empty;
-    for (args[8..]) |arg| {
+    for (args[9..]) |arg| {
         if (std.mem.startsWith(u8, arg, "-D")) try dependency_options.append(a, try parseOption(arg[2..])) else try modules.append(a, arg);
     }
     const shape: Shape = .{ .package = args[6], .modules = modules.items, .options = dependency_options.items };
@@ -289,7 +294,8 @@ pub fn main(init: std.process.Init) !void {
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try manifest(a, shape.package, relative) });
     try dir.writeFile(io, .{ .sub_path = "build.zig", .data = try script(a, shape) });
     var env = try init.environ_map.clone(a);
-    try env.put("ZIG_GLOBAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ directory, ".zig-global-cache" }));
+    try cwd.createDirPath(io, args[8]);
+    try env.put("ZIG_GLOBAL_CACHE_DIR", try cwd.realPathFileAlloc(io, args[8], a));
     const packages = try cwd.realPathFileAlloc(io, args[3], a);
     var child = try std.process.spawn(io, .{ .argv = &.{ args[1], "build", "--system", packages }, .cwd = .{ .path = directory }, .environ_map = &env });
     const term = try child.wait(io);

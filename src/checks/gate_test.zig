@@ -31,6 +31,10 @@ const Package = struct {
         const kept: []const []const u8 = if (@import("builtin").target.os.tag == .windows) &.{ "PATH", "PATHEXT", "SystemRoot" } else &.{"PATH"};
         for (kept) |name| if (inherited.get(name)) |value| try p.env.put(name, value);
         try p.env.put("HOME", try p.tmp.dir.realPathFileAlloc(std.testing.io, ".", a));
+        // The run's global cache, not one under that `HOME`: there each build the package's
+        // lint configures compiled what Zig keeps there (its build runner's) from nothing, inside
+        // the test's bound.
+        try p.env.put("ZIG_GLOBAL_CACHE_DIR", try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.zig_global_cache, a));
         try p.env.put("GIT_CONFIG_NOSYSTEM", "1");
         try p.env.put("GIT_CONFIG_GLOBAL", "/dev/null");
         try p.git(&.{ "init", "-q", "-b", "main" });

@@ -229,6 +229,8 @@ fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
 fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command, "lint")) !void {
     const a = c.a;
     var config = try c.options(args.config);
+    // The file as written, before the lint adds what it reads beside it.
+    try checks.keys.refuseUnknown(c, args.config, config, .preflight);
     if (args.zig_exe) |zig| c.zig = zig;
     c.portable_tests = args.portable_tests;
     // A caller other than generate makes would have the hosted runs check other jobs than

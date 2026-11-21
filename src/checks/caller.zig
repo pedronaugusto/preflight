@@ -80,46 +80,90 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
     return error.CallerRefused;
 }
 
-/// Every `uses:` in the repository's `.github` (its workflows and its own actions) names
-/// what it runs by commit: a path in this repository (`./`), or `owner/repo[/path]@<commit>`.
-/// A tag or a branch is the other repository's to move, and a run would take what it moved
-/// to unseen; the caller pins preflight's workflow by commit, which pins nothing that
-/// workflow takes in turn unless it pins it so too.
+/// Every `uses:` in the repository's `.github` (its workflows and its own actions), and in
+/// each local action a `./` use reaches wherever it lives, names what it runs by commit: a
+/// path in this repository (`./`), or `owner/repo[/path]@<commit>`. A tag or a branch is the
+/// other repository's to move, and a run would take what it moved to unseen; the caller pins
+/// preflight's workflow by commit, which pins nothing that workflow takes in turn unless it
+/// pins it so too.
 fn pinnedActions(c: *src.Context, top: []const u8) !void {
-    const folder = try std.Io.Dir.path.join(c.a, &.{ top, ".github" });
-    var dir = std.Io.Dir.cwd().openDir(c.io, folder, .{ .iterate = true }) catch |err| switch (err) {
+    var root = std.Io.Dir.cwd().openDir(c.io, top, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
-    defer dir.close(c.io);
-    var walker = try dir.walk(c.a);
-    defer walker.deinit();
+    defer root.close(c.io);
     const before = c.errors;
-    while (try walker.next(c.io)) |entry| {
-        if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
-        const text = try seam.document(c.io, dir, entry.path, c.a, .source);
-        var problem: actions.Problem = .{ .line = 0, .what = "" };
-        const used = actions.uses(c.a, text, &problem) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.Unreadable => {
-                c.fail("gate: .github/{s}:{d}: {s}; the gate reads each `uses` from the workflow's YAML, and cannot read this one for certain", .{ entry.path, problem.line, problem.what });
-                continue;
-            },
+    // The local actions the files checked use, by their path from the top, to follow.
+    var local: std.array_hash_map.String(void) = .empty;
+    if (root.openDir(c.io, ".github", .{ .iterate = true })) |opened| {
+        var dir = opened;
+        defer dir.close(c.io);
+        var walker = try dir.walk(c.a);
+        defer walker.deinit();
+        while (try walker.next(c.io)) |entry| {
+            if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
+            try checkUses(c, root, try c.a.print(".github/{s}", .{entry.path}), &local);
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    // Each local action outside .github, its own `./` uses followed in turn.
+    var next: usize = 0;
+    while (next < local.count()) : (next += 1) {
+        const action = local.keys()[next];
+        if (action.len == 0 or std.mem.eql(u8, action, ".github") or std.mem.startsWith(u8, action, ".github/")) continue;
+        const file = for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
+            const candidate = try std.Io.Dir.path.join(c.a, &.{ action, name });
+            if (root.access(c.io, candidate, .{})) |_| break candidate else |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            }
+        } else {
+            c.fail("gate: `uses: ./{s}` names no action: {s} holds no action.yml", .{ action, action });
+            continue;
         };
-        for (used) |use| if (!pinned(use.value)) c.fail("gate: .github/{s}:{d}: `uses: {s}` names no commit; pin it as `owner/repo@<commit>`, the tag in a comment beside it", .{ entry.path, use.line, use.value });
+        try checkUses(c, root, file, &local);
     }
     if (c.errors != before) return error.CallerRefused;
+}
+
+/// Checks each `uses:` of the YAML at `path` (from the repository's top), adding the local
+/// actions it names to `local`.
+fn checkUses(c: *src.Context, root: std.Io.Dir, path: []const u8, local: *std.array_hash_map.String(void)) !void {
+    const text = try seam.document(c.io, root, path, c.a, .source);
+    var problem: actions.Problem = .{ .line = 0, .what = "" };
+    const used = actions.uses(c.a, text, &problem) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Unreadable => {
+            c.fail("gate: {s}:{d}: {s}; the gate reads each `uses` from the workflow's YAML, and cannot read this one for certain", .{ path, problem.line, problem.what });
+            return;
+        },
+    };
+    for (used) |use| {
+        if (!pinned(use.value)) c.fail("gate: {s}:{d}: `uses: {s}` names no commit; pin it as `owner/repo@<commit>`, the tag in a comment beside it", .{ path, use.line, use.value });
+        if (std.mem.startsWith(u8, use.value, "./")) try local.put(c.a, std.mem.trimEnd(u8, use.value[2..], "/"), {});
+    }
 }
 
 /// Whether `used` names a fixed revision: a path in this repository, a container image by
 /// its digest, or a repository at a full commit id.
 fn pinned(used: []const u8) bool {
     if (std.mem.startsWith(u8, used, "./")) return true;
-    if (std.mem.startsWith(u8, used, "docker://")) return std.mem.find(u8, used, "@sha256:") != null;
+    if (std.mem.startsWith(u8, used, "docker://")) {
+        // A digest ends the value: `@sha256:` and exactly 64 lowercase hex digits.
+        const at = std.mem.findLast(u8, used, "@sha256:") orelse return false;
+        return lowerHex(used[at + "@sha256:".len ..], 64);
+    }
     const at = std.mem.findScalarLast(u8, used, '@') orelse return false;
     const commit = used[at + 1 ..];
-    if (commit.len != 40 and commit.len != 64) return false;
-    for (commit) |ch| if (!std.ascii.isDigit(ch) and !(ch >= 'a' and ch <= 'f')) return false;
+    return lowerHex(commit, 40) or lowerHex(commit, 64);
+}
+
+/// Whether `text` is exactly `len` lowercase hex digits.
+fn lowerHex(text: []const u8, len: usize) bool {
+    if (text.len != len) return false;
+    for (text) |ch| if (!std.ascii.isDigit(ch) and !(ch >= 'a' and ch <= 'f')) return false;
     return true;
 }
 
@@ -138,6 +182,12 @@ test "a workflow's uses names a commit, a path here or an image's digest; a tag 
         "actions/checkout@11D5960A326750D5838078E36CF38B85AF677262",
         "docker://alpine:3.20",
         "actions/checkout",
+        // A digest that is not the whole rest of the value, or not 64 lowercase hex digits.
+        "docker://alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1:latest",
+        "docker://alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d",
+        "docker://alpine@sha256:4BCFF63911FCB4448BD4FDACEC207030997CAF25E9BEA4045FA6C8C44DE311D1",
+        "docker://alpine@sha256:",
+        "docker://alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1x",
     }) |used| try std.testing.expect(!pinned(used));
 }
 
@@ -155,15 +205,19 @@ const own_ref = "preflight-ref: ${{ github.sha }}\n";
 
 /// The caller at `path` (from the repository's top), `existing` if there is one, as
 /// `generate` makes it now for the package's pins and configuration.
-fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: ?[]const u8, own: bool, manifest: []const u8, drops: []const []const u8) ![]const u8 {
+/// Only `generate` `writes`: it takes retired keys out of the configuration. The gate and the
+/// lint change nothing in the package, and refuse a retired key by name.
+fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: ?[]const u8, own: bool, manifest: []const u8, drops: []const []const u8, writes: bool) ![]const u8 {
     const given = if (std.mem.eql(u8, found.config, "ci/workflow.json")) null else found.config;
     const label = try workflow.heading(c.a, given, path, found.working_directory, own, c.stepCommand("generate"));
     var config = try workflow.configuration(c.*, found.config);
-    try dropRetired(c, found.config, &config);
+    if (writes) try dropRetired(c, found.config, &config) else try refuseRetired(c, found.config, config);
     if (sdk) |add| try add(c, &config, found.gate);
     return workflow.generate(c.*, config, manifest, found.gate, own, label, existing, drops) catch |err| {
         if (err == error.UndeclaredCallerJob) {
             c.fail("generate: {s} holds the job {s}, which {s} does not declare; declare it in jobs, or let it go with `generate -- --drop {s}`", .{ path, workflow.undeclared, found.config, workflow.undeclared });
+        } else if (matrix.problem.len != 0) {
+            c.fail("{s}: refused: {s}", .{ found.config, matrix.problem });
         } else c.fail("generate: {s} cannot be generated again: {t}", .{ path, err });
         return error.CallerRefused;
     };
@@ -196,6 +250,16 @@ fn dropRetired(c: *src.Context, path: []const u8, config: *src.Value) !void {
     try c.directory().writeFile(c.io, .{ .sub_path = path, .data = text.written() });
 }
 
+/// Refuses, by name, each key of triggers and switches that are gone in the configuration at
+/// `path`: `generate` takes them out, and nothing but `generate` writes the package.
+fn refuseRetired(c: *src.Context, path: []const u8, config: src.Value) !void {
+    if (config != .object) return;
+    const before = c.errors;
+    for (matrix.obsolete_triggers ++ matrix.obsolete_switches) |name| if (config.object.contains(name))
+        c.fail("{s}: `{s}` is retired: run `{s}`, which takes it out, and commit it", .{ path, name, c.stepCommand("generate") });
+    if (c.errors != before) return error.CallerRefused;
+}
+
 /// `c` reading and writing from `top`, the repository's top opened.
 fn atTop(c: *src.Context, top: std.Io.Dir) src.Context {
     var at_top = c.*;
@@ -213,7 +277,7 @@ fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     const existing = try at_top.read(path);
     const own = std.mem.find(u8, existing, own_ref) != null;
-    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}))) return;
+    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}, false))) return;
     c.fail("{s} is not what generate makes for this package's pins and {s}: run `{s}` and commit it", .{ path, found.config, c.stepCommand("generate") });
     return error.CallerRefused;
 }
@@ -265,7 +329,7 @@ pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     const existing = if (try at_top.exists(path)) try at_top.read(path) else null;
     const own = request.own or (if (existing) |text| std.mem.find(u8, text, own_ref) != null else false);
-    const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops);
+    const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops, true);
     if (existing) |old| if (std.mem.eql(u8, old, text)) return path;
     try top.createDirPath(c.io, ".github/workflows");
     try workflow.write(at_top, path, text);

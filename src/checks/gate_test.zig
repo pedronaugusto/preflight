@@ -137,6 +137,43 @@ test "lint refuses a stale caller before a push, not first at a release's gate, 
     }
 }
 
+test "the gate changes nothing in the package: a retired key in ci/workflow.json is refused by name, and left for generate" {
+    const p = try Package.init();
+    defer p.deinit();
+    const config = "{\"nightly\":true}\n";
+    try p.write("ci/workflow.json", config);
+    try p.git(&.{ "commit", "-q", "-am", "A retired trigger" });
+    try refused(try p.gate(), "ci/workflow.json: `nightly` is retired: run `bay generate`, which takes it out, and commit it");
+    const kept = try p.tmp.dir.readFileAlloc(std.testing.io, "ci/workflow.json", p.arena.allocator(), .limited(4096));
+    try std.testing.expectEqualStrings(config, kept);
+}
+
+test "a key neither file holds is refused by name, with the file it belongs in" {
+    const p = try Package.init();
+    defer p.deinit();
+    try p.write("ci/workflow.json", "{\"test_roots\":[\"src/a.zig\"]}\n");
+    try p.git(&.{ "commit", "-q", "-am", "A source checks key in the workflow's file" });
+    try refused(try p.gate(), "ci/workflow.json: refused: `test_roots` is not a key of this file: `test_roots` belongs in ci/preflight.json");
+}
+
+test "a local action the workflows use is checked wherever it lives, its own uses followed" {
+    const p = try Package.init();
+    defer p.deinit();
+    try p.write(".github/workflows/other.yml", "name: Other\non: push\njobs:\n  one:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./ci/actions/setup\n      - uses: ./ci/actions/missing\n");
+    try p.write("ci/actions/setup/action.yml", "name: Setup\nruns:\n  using: composite\n  steps:\n    - uses: ./ci/actions/inner\n");
+    try p.write("ci/actions/inner/action.yml", "name: Inner\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n");
+    try p.git(&.{ "add", "-A" });
+    try p.git(&.{ "commit", "-q", "-m", "Local actions outside .github" });
+    const result = try p.gate();
+    for ([_][]const u8{ "gate: ci/actions/inner/action.yml:5: `uses: actions/checkout@v4` names no commit", "gate: `uses: ./ci/actions/missing` names no action" }) |said| {
+        if (std.mem.find(u8, result.stderr, said) == null) {
+            std.debug.print("expected:\n{s}\nstderr:\n{s}\n", .{ said, result.stderr });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try std.testing.expect(result.term == .exited and result.term.exited == 1);
+}
+
 test "a package without bay is told to run `zig build generate`, the command it has" {
     const p = try Package.start(.zig);
     defer p.deinit();

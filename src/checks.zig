@@ -21,6 +21,7 @@ pub const lazy_import = @import("checks/lazy_import.zig");
 pub const release = @import("checks/release.zig");
 pub const surface = @import("checks/surface.zig");
 pub const caller = @import("checks/caller.zig");
+pub const keys = @import("checks/keys.zig");
 pub const command = @import("checks/command.zig");
 pub const input = @import("checks/input.zig");
 pub const phases = @import("checks/phases.zig");
@@ -73,6 +74,7 @@ test {
     _ = manifest;
     _ = release;
     _ = caller;
+    _ = keys;
     _ = @import("checks/actions.zig");
     _ = @import("checks/gate_test.zig");
     _ = lazy_import;

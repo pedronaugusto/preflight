@@ -1,5 +1,6 @@
 const std = @import("std");
 const src = @import("source.zig");
+const keys = @import("keys.zig");
 const heldgit = @import("heldgit.zig");
 const family = @import("../family.zig");
 const preflight_order = @import("preflight_order");
@@ -109,33 +110,9 @@ pub const Machine = enum {
     freebsd,
 };
 
-/// The options of `ci/workflow.json`. Any other key is refused, so a misspelt one
+/// The options of `ci/workflow.json` (keys.zig). Any other key is refused, so a misspelt one
 /// cannot quietly change nothing.
-const workflow_options = [_][]const u8{
-    "jobs",                "targets",
-    "build_args",          "shards",
-    "fast_shards",         "cross_jobs",
-    "cross_seconds",       "portable_hosts",
-    "hardened",            "compile_step",
-    "setup_step",          "before_tests_step",
-    "git",                 "test_job_timeout",
-    "windows_job_timeout", "source_job_timeout",
-    "cross_job_timeout",
-    // The seconds of tests a riscv64 job holds; then `ci/costs.json` and `ci/durations.json`,
-    // which the planner reads beside the configuration, the macOS targets whose build links a
-    // framework, which `plan` and `gate` read from the build, and the policy, read from
-    // `ci/preflight.json` beside it.
-      "riscv64_seconds",
-    "measured",            "durations",
-    "sdk_targets",         "policy",
-    // The fuzz job's minutes, and whether the build has its step (`ci-fuzz`), which `plan`
-    // and `gate` read from the build as they read `sdk_targets`; and whether its tests are
-    // portable (it has `ci-build`), read so too, which plans the native link jobs.
-    "fuzz_minutes",        "fuzzed",
-    "portable_tests",
-    // The configurations the package promises, which the build reads too (`consumer.declared`).
-         "configurations",
-};
+const workflow_options = keys.workflow;
 
 /// The minutes the fuzz job fuzzes for, `fuzz_minutes` in the configuration: 15 unless it
 /// says, 0 for no fuzz job. The job's own limit is these and 20 more, for the build that comes
@@ -948,7 +925,7 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
         for (workflow_options ++ obsolete ++ obsolete_sanitizer) |known| {
             if (std.mem.eql(u8, name, known)) break;
         } else {
-            problem = name;
+            problem = try a.print("`{s}` is not a key of this file{s}", .{ name, try keys.hint(a, .workflow, name) });
             return error.UnknownWorkflowOption;
         }
     }

@@ -857,6 +857,24 @@ test "a repository still naming a retired lint setting fails by name" {
     try std.testing.expect(std.mem.find(u8, result.stderr, "`ziglint_exceptions` is retired") != null);
 }
 
+test "a key ci/preflight.json does not hold fails the lint by name, with where it belongs or the nearest key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = "{\"policy\": \"family\", \"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"hardened\": true, \"test_suport\": []}\n" });
+    const result = try lintFixture(a, tmp.dir);
+    try std.testing.expect(result.term == .exited and result.term.exited != 0);
+    for ([_][]const u8{ "ci/preflight.json: `hardened` is not a key of this file: `hardened` belongs in ci/workflow.json", "ci/preflight.json: `test_suport` is not a key of this file; the nearest key is `test_support`" }) |said| {
+        if (std.mem.find(u8, result.stderr, said) == null) {
+            std.log.err("the lint did not say:\n{s}\nit printed:\n{s}", .{ said, result.stderr });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "an extra check that runs a step the lint sits under is refused by name before it runs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -289,11 +289,18 @@ const guest_global_cache = "ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache";
 /// lies in a directory of `reach`, those the machine binds or makes at the same path: any
 /// other names a path the machine cannot open, or opens as its own, different file, and
 /// its name is added to `dropped`.
+/// `HOME` passes: the machine makes the user's home, empty, at that path (vm/guest.zig's and
+/// vm/freebsd/guest.zig's `makeHome`). A user directory under it (`XDG_*`) passes too, a place
+/// in that home; any other path under it is the host's (a runner's temp and workspace live in
+/// its home) and passes only where the machine binds it.
 fn guestEnviron(gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, reach: []const []const u8, dropped: *std.ArrayList([]const u8)) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
+    const home = environ.get("HOME") orelse "";
+    const in_home = if (home.len > 1 and home[0] == '/') try std.mem.concat(gpa, []const u8, &.{ reach, &.{home} }) else reach;
     for (environ.keys(), environ.values()) |key, value| {
         if (std.mem.eql(u8, key, "ZIG_PROGRESS") or std.mem.eql(u8, key, "PATH") or std.mem.eql(u8, key, "TMPDIR") or std.mem.eql(u8, key, "ZIG_GLOBAL_CACHE_DIR")) continue;
-        if (!reachable(value, reach)) {
+        const passes = std.mem.eql(u8, key, "HOME") or reachable(value, if (std.mem.startsWith(u8, key, "XDG_")) in_home else reach);
+        if (!passes) {
             try dropped.append(gpa, key);
             continue;
         }
@@ -616,6 +623,12 @@ test "a guest never inherits a host path: its Zig's global cache is its own, a h
     try environ.put("PATH", "/usr/bin");
     try environ.put("TMPDIR", "/home/runner/work/_temp");
     try environ.put("ZIG_PROGRESS", "3");
+    // The machine makes HOME at the host's path: it passes, and what lies under it.
+    try environ.put("HOME", "/home/runner");
+    try environ.put("XDG_CACHE_HOME", "/home/runner/.cache");
+    try environ.put("XDG_CONFIG_DIRS", "/etc/xdg");
+    // Under HOME, but the host's: the runner's temp, not a place in the machine's home.
+    try environ.put("RUNNER_TOOL_CACHE", "/home/runner/work/_tool");
     const reach = [_][]const u8{ "/home/runner/work/pkg", "/home/runner/work/pkg/.zig-cache/tmp" };
     var dropped: std.ArrayList([]const u8) = .empty;
     const written = try guestEnviron(a, &environ, &reach, &dropped);
@@ -628,13 +641,15 @@ test "a guest never inherits a host path: its Zig's global cache is its own, a h
         "GITHUB_SERVER_URL=https://github.com",
         "CI=true",
         "RELATIVE=zig-out/bin",
+        "HOME=/home/runner",
+        "XDG_CACHE_HOME=/home/runner/.cache",
         "TMPDIR=/tmp",
         guest_global_cache,
     };
     try std.testing.expectEqual(want.len, got.items.len);
     for (want, got.items) |w, g| try std.testing.expectEqualStrings(w, g);
     // What was left out is named, one line, never a value.
-    try std.testing.expectEqualStrings("preflight-vm: left out of the machine's environment, naming host paths it does not reach: ZIG_LOCAL_CACHE_DIR, ZIG_LIB_DIR, RUNNER_TEMP, LD_LIBRARY_PATH, ESCAPE\n", (try droppedLine(a, dropped.items)).?);
+    try std.testing.expectEqualStrings("preflight-vm: left out of the machine's environment, naming host paths it does not reach: ZIG_LOCAL_CACHE_DIR, ZIG_LIB_DIR, RUNNER_TEMP, LD_LIBRARY_PATH, ESCAPE, XDG_CONFIG_DIRS, RUNNER_TOOL_CACHE\n", (try droppedLine(a, dropped.items)).?);
     try std.testing.expectEqual(@as(?[]u8, null), try droppedLine(a, &.{}));
     // A cache the host keeps inside a bound directory is still not the machine's.
     var bound_cache: std.process.Environ.Map = .init(a);

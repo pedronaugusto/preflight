@@ -4,6 +4,7 @@ const configure = @import("configure.zig");
 const portable = @import("portable.zig");
 const objects = @import("objects.zig");
 const record = @import("record.zig");
+const run_bound = @import("runs.zig");
 pub const consumer = @import("consumer.zig");
 pub const nested = @import("nested.zig");
 const bench = @import("bench.zig");
@@ -25,6 +26,11 @@ pub const Config = struct {
     /// The watchdog: one test, its Io teardown included, fails by name,
     /// phase and seed once it runs this long, in local runs too.
     test_timeout: TestTimeout = .default,
+    /// The watchdog on each run of `tests` that is no test (an example, a generator, a
+    /// benchmark's smoke run): past 300 seconds (`runs.default_limit`), or its
+    /// own bound named here with its reason, the run is ended and fails naming its step and
+    /// its command, in local runs too. A run is named by its step's name (`run exe example`).
+    run_bounds: []const RunBound = &.{},
     /// The `std.log` level a test prints at. Zig's runner prints `.warn`
     /// and above; a library that logs what it does can ask for `.info`.
     test_log_level: std.log.Level = .warn,
@@ -67,6 +73,7 @@ pub const Hardened = hardened.Profile;
 pub const ReleaseFast = struct { artifact: []const u8, reason: []const u8 };
 
 pub const TestTimeout = record.TestTimeout;
+pub const RunBound = run_bound.RunBound;
 
 /// A module of a dependency, or null while the dependency is still waiting for
 /// one of its own lazy dependencies: its script ends before it adds modules, and
@@ -171,6 +178,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .release = b.option(bool, "ci-release", "The release tier's source checks: every shipped ban's finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
+        .bound = b.option(bool, run_bound.option, "Run every run of preflight's steps under its bound; false only for reading the configured graph, which then holds each run as the build wrote it") orelse true,
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on an x86_64 Linux host, on PATH)") orelse false,
     };
 }
@@ -184,6 +192,8 @@ pub const CiOptions = struct {
     timing: bool,
     checks: ?[]const u8,
     vm: bool,
+    /// Whether the runs of preflight's steps run under their bound (`runs.zig`).
+    bound: bool,
 };
 
 const Steps = struct {
@@ -202,6 +212,7 @@ const Steps = struct {
     checks: ?[]const u8,
     smoke: bool,
     vm: bool,
+    bound: bool,
     profile_options: hardened.Options,
 
     fn create(b: *std.Build, config: Config) Steps {
@@ -214,7 +225,7 @@ const Steps = struct {
         const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .bound = controls.bound, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -322,6 +333,13 @@ const Steps = struct {
         // Once the source checks sit beside the tests, the steps an extra check runs are as the
         // build will run them.
         refuseReentry(b, package, config.config, &lint.runs);
+        // Last, after every walk above read the runs as the build wrote them: every run of
+        // preflight's steps under its bound, the package's runs of the tests their own.
+        run_bound.declare(b, pkg, steps.bound);
+        var others: std.ArrayList(*std.Build.Step) = .empty;
+        // The fuzz steps' sessions end at their budget's end (`checks/budget.zig`).
+        for (configure.claimedSteps(b)) |step| if (std.mem.find(u8, step.name, "fuzz") == null) others.append(b.allocator, step) catch @panic("OOM");
+        run_bound.add(b, config.tests, others.items, config.run_bounds, slowdown, executable);
     }
 
     /// The source checks' steps, which `addCi` sets beside the tests once `ci-test` has them:

@@ -5,6 +5,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const configure = @import("configure.zig");
+const run_bound = @import("runs.zig");
 const input = @import("build/input.zig");
 const plain = @import("plain.zig");
 const nested = @import("nested.zig");
@@ -181,6 +182,8 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         });
         build.addArgs(configuration.modules orelse names);
         build.has_side_effects = true;
+        // A consumer build that hangs is ended at the job's deadline, named.
+        run_bound.job(b, build);
         step.dependOn(&build.step);
     }
     // The program checked against the package's own modules too, which also tells lint what

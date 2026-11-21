@@ -9,6 +9,7 @@ const order_module = @import("preflight_order");
 const options = @import("preflight_runner_options");
 const bound = @import("preflight_watchdog");
 const inbound = @import("runner/input.zig");
+const process_tree = @import("runner/tree.zig");
 const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
@@ -536,7 +537,7 @@ const Supervisor = struct {
         // ended. The forwarding stops then, losing nothing it read, and the
         // rest is read here, until the pipe ends or stays quiet for `release`
         // with a process still holding it.
-        const status = waitStatus(&child);
+        const status = process_tree.waitStatus(&child);
         const term = try child.wait(sio);
         const forwarded = try forwarding.cancel(sio);
         const held = switch (forwarded) {
@@ -548,88 +549,7 @@ const Supervisor = struct {
         return .{ .term = term, .status = status, .held = held };
     }
 
-    /// The tests' process and every process started under it, ended together
-    /// once the tests' process has ended, as conduit contains a child's
-    /// descendants: a test the watchdog ends, or one that leaves a process
-    /// running, leaves nothing behind (a `zig build` an integration test
-    /// started once held a fixture's corpus lock after its test had ended).
-    /// POSIX: a process group of the tests' own, the tests' process its
-    /// leader; a process that makes a group or session of its own leaves it.
-    /// Windows: a job that ends its processes when its last handle closes,
-    /// which a process leaves only when started to break away from it.
-    const Tree = struct {
-        job: if (builtin.target.os.tag == .windows) std.os.windows.HANDLE else void,
-        group: if (builtin.target.os.tag == .windows) void else std.posix.pid_t,
-
-        /// The child was started suspended on Windows, so nothing it starts
-        /// can be outside the job; elsewhere it leads a new process group.
-        fn hold(child: *std.process.Child) !Tree {
-            if (builtin.target.os.tag != .windows) return .{ .job = {}, .group = child.id.? };
-            const windows = std.os.windows;
-            errdefer _ = TerminateProcess(child.id.?, 1);
-            const job = CreateJobObjectW(null, null) orelse return error.JobUncreated;
-            errdefer windows.CloseHandle(job);
-            var limits = std.mem.zeroes(ExtendedLimits);
-            limits.basic.flags = kill_on_job_close;
-            if (SetInformationJobObject(job, extended_limit_information, &limits, @sizeOf(ExtendedLimits)) == .FALSE) return error.JobUnlimited;
-            if (AssignProcessToJobObject(job, child.id.?) == .FALSE) return error.JobUnassigned;
-            if (ResumeThread(child.thread_handle) == std.math.maxInt(windows.DWORD)) return error.TestsUnresumed;
-            return .{ .job = job, .group = {} };
-        }
-
-        /// Kills every process left in the tree. The group's leader has ended
-        /// and been waited for, so an empty group is no process at all.
-        fn end(tree: Tree, sio: std.Io) void {
-            if (builtin.target.os.tag == .windows) {
-                _ = TerminateJobObject(tree.job, 1);
-                std.os.windows.CloseHandle(tree.job);
-                return;
-            }
-            // A process of the group starting another as the group is signaled
-            // may add one the signal missed: signal until none is left. An
-            // ended process its parent has not waited for still counts, so the
-            // tries are bounded.
-            for (0..50) |_| {
-                switch (std.posix.errno(std.posix.system.kill(-tree.group, .KILL))) {
-                    .SUCCESS => {},
-                    else => return,
-                }
-                // A cancel only shortens the waits between signals: the tree is still ended,
-                // and the cancel is armed again for the caller's next cancelation point.
-                sio.sleep(.fromMilliseconds(10), .awake) catch |err| switch (err) {
-                    error.Canceled => sio.recancel(),
-                };
-            }
-        }
-
-        const kill_on_job_close: u32 = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        const extended_limit_information: c_int = 9; // JobObjectExtendedLimitInformation
-        /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
-        const ExtendedLimits = extern struct {
-            basic: extern struct {
-                per_process_user_time: i64,
-                per_job_user_time: i64,
-                flags: u32,
-                minimum_working_set: usize,
-                maximum_working_set: usize,
-                active_processes: u32,
-                affinity: usize,
-                priority_class: u32,
-                scheduling_class: u32,
-            },
-            io: [6]u64,
-            process_memory: usize,
-            job_memory: usize,
-            peak_process_memory: usize,
-            peak_job_memory: usize,
-        };
-        extern "kernel32" fn CreateJobObjectW(security: ?*std.os.windows.SECURITY_ATTRIBUTES, name: ?[*:0]const u16) callconv(.winapi) ?std.os.windows.HANDLE;
-        extern "kernel32" fn SetInformationJobObject(job: std.os.windows.HANDLE, class: c_int, information: *const anyopaque, length: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
-        extern "kernel32" fn AssignProcessToJobObject(job: std.os.windows.HANDLE, process: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
-        extern "kernel32" fn TerminateJobObject(job: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
-        extern "kernel32" fn TerminateProcess(process: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
-        extern "kernel32" fn ResumeThread(thread: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.DWORD;
-    };
+    const Tree = process_tree.Tree;
 
     /// A pipe whose write end only the supervisor holds; the tests' process
     /// holds the read end, which ends when the supervisor does.
@@ -883,44 +803,17 @@ const Supervisor = struct {
         }
     };
 
-    /// Windows' exit status whole, read before `wait` closes the process
-    /// handle; elsewhere the status is all in the term.
-    fn waitStatus(child: *std.process.Child) u32 {
-        if (builtin.target.os.tag != .windows) return 0;
-        const windows = std.os.windows;
-        const process = child.id.?;
-        _ = WaitForSingleObject(process, std.math.maxInt(windows.DWORD)); // INFINITE
-        var code: windows.DWORD = 0;
-        if (GetExitCodeProcess(process, &code) == .FALSE) return 1;
-        return code;
-    }
-
     /// Ends this process as the tests' process ended: with its exit status,
     /// or by its signal, so the build reads the tests' ending as its own.
     /// Held output fails a run that would have passed.
     fn exitAs(ending: Ending) noreturn {
-        if (builtin.target.os.tag == .windows) {
-            const status: u32 = if (ending.status == 0 and ending.held) 1 else ending.status;
-            std.os.windows.ntdll.RtlExitUserProcess(status);
-        }
-        switch (ending.term) {
-            .exited => |code| std.process.exit(if (code == 0 and ending.held) 1 else code),
-            .signal => |sig| {
-                const default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
-                std.posix.sigaction(sig, &default, null);
-                var only = std.posix.sigemptyset();
-                std.posix.sigaddset(&only, sig);
-                std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &only, null);
-                // A signal this process cannot raise ends it below, with the shell's code for that signal.
-                std.posix.raise(sig) catch |err| report("preflight test runner: the tests' signal {t} not raised here ({t}): exiting with the shell's code for it\n", .{ sig, err });
-                std.process.exit(128 +| @as(u8, @truncate(@backingInt(sig))));
-            },
-            .stopped, .unknown => std.process.exit(1),
-        }
+        const status: u32 = if (ending.status == 0 and ending.held) 1 else ending.status;
+        const term: std.process.Child.Term = switch (ending.term) {
+            .exited => |code| .{ .exited = if (code == 0 and ending.held) 1 else code },
+            else => ending.term,
+        };
+        process_tree.exitAs(term, status, "preflight test runner: the tests' process");
     }
-
-    extern "kernel32" fn WaitForSingleObject(handle: std.os.windows.HANDLE, milliseconds: std.os.windows.DWORD) callconv(.winapi) std.os.windows.DWORD;
-    extern "kernel32" fn GetExitCodeProcess(process: std.os.windows.HANDLE, code: *std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
 };
 
 /// The build's protocol, on streams of the runner's own. Zig hands the runner

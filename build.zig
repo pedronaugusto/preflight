@@ -107,6 +107,8 @@ pub fn dev(b: *std.Build, _: type) void {
     // watchdog, by the sample's own lint, where it was the cost of whichever test met it first
     // (preflight's own suite on Windows, release run 44384954419, past its 300 s).
     const warm = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--cache-dir" });
+    // Named for its bound (`run_bounds` below): Zig names a command's run by its path.
+    warm.step.name = "warm the fixtures' cache";
     warm.addDirectoryArg2(package.path(".zig-cache/fixtures"), .{});
     warm.addArg("lint");
     warm.setCwd(package.path("sample"));
@@ -157,7 +159,7 @@ pub fn dev(b: *std.Build, _: type) void {
     for ([_]vm.Kind{ .riscv64_linux, .x86_64_freebsd }) |kind| check.dependOn(&b.addObject(.{ .name = "preflight-vm-init", .root_module = vm.guestModule(b, package, kind) }).step);
     // preflight gates its own sources with the checks it ships: the preflight
     // the gate finds among this build's dependencies is this package.
-    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
+    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .run_bounds = &.{.{ .step = "warm the fixtures' cache", .limit = .fromSeconds(1800), .reason = "the sample's whole lint, which compiles preflight's checks, runner and tools from cold" }}, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
         .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" }, .{ .name = "configuration", .source = "bench/configuration.zig" } },
         .imports = &bench_imports,
         .target = target,

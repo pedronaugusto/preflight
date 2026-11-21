@@ -55,12 +55,31 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
         try argv.append(c.a, option);
     }
     var snapshot = try capture(c, argv.items);
+    // The graph as the build wrote it: each run of preflight's steps without the bound program
+    // `addCi` puts before it in every other configuration (`runs.zig`), unless the reader asks
+    // for one or the other by name. Only a build that declares the option takes it: one
+    // without `addCi` refuses an option it does not declare, and has no bound to leave out.
+    const chosen = for (options) |option| {
+        if (std.mem.startsWith(u8, option, "-Dci-bound=")) break true;
+    } else false;
+    if (!chosen and declares(&snapshot.config, "ci-bound")) {
+        try argv.append(c.a, "-Dci-bound=false");
+        snapshot = try capture(c, argv.items);
+    }
     snapshot.options = try c.a.dupe([]const u8, options);
     if (c.bay) |bay| {
         snapshot.instances = try checkedPackage(c, bay, &snapshot.config);
         snapshot.package = snapshot.instances[0];
     }
     return snapshot;
+}
+
+/// Whether the build declares the option `name` (`-D<name>`).
+fn declares(config: *const C, name: []const u8) bool {
+    for (config.available_options) |option| {
+        if (std.mem.eql(u8, option.name.slice(config), name)) return true;
+    }
+    return false;
 }
 
 /// Every instance of the package at the checked directory, among the owners of the build's

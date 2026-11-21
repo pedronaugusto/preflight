@@ -94,9 +94,7 @@ pub fn run(c: *src.Context, cache_path: []const u8, cwd: []const u8, argv: []con
             .expired => expired = true,
         }
     } else {
-        var child = try std.process.spawn(c.io, .{ .argv = build, .cwd = .{ .path = cwd }, .environ_map = &env });
-        const term = try child.wait(c.io);
-        if (term != .exited or term.exited != 0) return c.fail("fuzz campaign: the build failed", .{});
+        if (!try c.runChild(.{ .name = "fuzz campaign", .argv = build, .cwd = .{ .path = cwd }, .environ_map = &env })) return c.fail("fuzz campaign: the build failed", .{});
     }
     const after = try state(c.io, cache);
     switch (judge(before, after)) {

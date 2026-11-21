@@ -583,6 +583,88 @@ test "a program the build makes for the host replays on another CPU: it is built
     try std.testing.expect(command.succeeded(executed));
 }
 
+test "a run of the tests that is no test and never ends is ended at its bound, failing by its step and command; a bound naming no run is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // An example the tests run that never ends, as blackbox's example spun 45 hours.
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
+        \\    step.dependOn(&b.addRunArtifact(tests).step);
+        \\    const hang = b.addExecutable(.{ .name = "hang", .root_module = b.createModule(.{ .root_source_file = b.path("src/hang.zig"), .target = target }) });
+        \\    const spins = b.addRunArtifact(hang);
+        \\    spins.addArg("--spin");
+        \\    step.dependOn(&spins.step);
+        \\
+    );
+    try edit(a, tmp.dir, "build.zig", "        .tests = step,\n", "        .tests = step,\n        .run_bounds = &.{.{ .step = \"run exe hang\", .limit = .fromSeconds(2), .reason = \"the bound under test\" }},\n");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/hang.zig", .data =
+        \\const std = @import("std");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    try std.Io.File.stderr().writeStreamingAll(init.io, "spinning on the example's last step\n");
+        \\    while (true) try init.io.sleep(.fromSeconds(1), .awake);
+        \\}
+        \\
+    });
+    const started: std.Io.Clock.Timestamp = .now(io, .awake);
+    const hung = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const took = started.untilNow(io).raw;
+    // 2000 ms, or that times a sanitizer's or an emulator's slowdown, as the tests' bound.
+    const named = "preflight: watchdog: `run exe hang` exceeded ";
+    if (command.succeeded(hung) or std.mem.find(u8, hung.stderr, named) == null) std.debug.print("{s}", .{hung.stderr});
+    try std.testing.expect(!command.succeeded(hung));
+    try std.testing.expect(std.mem.find(u8, hung.stderr, named) != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, " ms; it runs ") != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, "hang --spin") != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, "its last line: spinning on the example's last step") != null);
+    // Ended at its bound, not the test's watchdog's.
+    try std.testing.expect(took.toSeconds() < 240);
+    // A bound that names no run would change nothing, silently: it is refused by name.
+    try edit(a, tmp.dir, "build.zig", ".step = \"run exe hang\"", ".step = \"run exe gone\"");
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&spins.step);\n", "");
+    const stale = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const refused = "run_bounds: `run exe gone` names no run of the tests step that is no test";
+    if (command.succeeded(stale) or std.mem.find(u8, stale.stderr, refused) == null) std.debug.print("{s}", .{stale.stderr});
+    try std.testing.expect(!command.succeeded(stale));
+    try std.testing.expect(std.mem.find(u8, stale.stderr, refused) != null);
+}
+
+test "lint reads the configured graph as the build wrote it: identical to the graph with the bound off, the bound program in none of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A run of the tests the bound puts its program before, in every configuration but the reading's.
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
+        \\    step.dependOn(&b.addRunArtifact(tests).step);
+        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
+        \\    step.dependOn(&b.addRunArtifact(tool).step);
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data = "pub fn main() void {}\n" });
+    var read: [3][]const u8 = undefined;
+    for ([_][]const []const u8{ &.{}, &.{"-Dci-bound=false"}, &.{"-Dci-bound=true"} }, &read) |options, *graph| {
+        const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "facts", "--" }, options });
+        const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir } });
+        if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(command.succeeded(result));
+        // The graph, without the options the reading was asked for, which it records first.
+        const steps = std.mem.find(u8, result.stdout, "\"steps\":") orelse return error.NoSteps;
+        graph.* = result.stdout[steps..];
+    }
+    try std.testing.expectEqualStrings(read[1], read[0]);
+    try std.testing.expect(std.mem.find(u8, read[0], "preflight-bound") == null);
+    try std.testing.expect(std.mem.find(u8, read[0], "run exe tool") != null);
+    // Configured with the bound, as every run is, the graph holds its program.
+    try std.testing.expect(std.mem.find(u8, read[2], "preflight-bound") != null);
+}
+
 test "a test given a path in its package, one in Zig's library and Zig itself replays with the replaying runner's own; any other path is refused" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

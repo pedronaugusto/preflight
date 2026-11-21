@@ -7,6 +7,7 @@ const deprecations = @import("deprecations.zig");
 const src = checks.source;
 const facts = @import("facts.zig");
 const watchdog = @import("watchdog.zig");
+const bounded = @import("bounded.zig");
 const Cli = @import("cli.zig").Cli;
 const Command = @FieldType(Cli, "command");
 
@@ -16,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    var c: src.Context = .{ .a = a, .io = init.io };
+    var c: src.Context = .{ .a = a, .io = init.io, .bound = runBounded };
     c.bay = c.bayFor(init.environ_map);
     switch (cli.command) {
         .facts => |args| try exportFacts(&c, args),
@@ -42,13 +43,13 @@ pub fn main(init: std.process.Init) !void {
             // and only where it runs tests; on the machine at hand `prepare` does both.
             const hosted = std.mem.eql(u8, init.environ_map.get("GITHUB_ACTIONS") orelse "", "true");
             const names_git = src.get(try c.options("ci/workflow.json"), "git") != .null;
-            if (names_git and (args.held_git or !hosted)) try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{"ci-held-git"} }));
+            if (names_git and (args.held_git or !hosted)) try checks.command.execute(c, "ci-held-git", try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{"ci-held-git"} }));
             if (args.held_git) return;
-            if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
+            if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, step, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
         },
         .profile => |args| try profileCommand(c, args),
         .runners => |args| try checks.runners.check(&c, args.jobs),
-        .fetch => for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, argv),
+        .fetch => for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, "fetch", argv),
         .fuzz_campaign => |args| {
             c.environ_map = init.environ_map;
             try checks.campaign.run(&c, args.cache, args.cwd, args.build);
@@ -416,7 +417,7 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     for (try src.items(src.get(config, "extra_checks"))) |command| {
         const argv = try checks.docs.zigCommand(c.a, c.buildCommand(), command);
         timer = stage(c, try std.mem.join(c.a, " ", argv));
-        try checks.command.execute(c.*, argv);
+        try checks.command.execute(c.*, try std.mem.join(c.a, " ", argv), argv);
         timer.end(c.*, log);
     }
 }
@@ -504,13 +505,13 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
         if (try setupStep(c, env)) |setup_step| if (!std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
             const timer = checks.phases.Timer.begin(c, "install the external tools");
             defer timer.end(c, log);
-            try checks.command.retry(c, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{setup_step} }));
+            try checks.command.retry(c, setup_step, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{setup_step} }));
         };
         const before = src.get(config, "before_tests_step");
         if (before == .string) {
             const timer = checks.phases.Timer.begin(c, "before the tests");
             defer timer.end(c, log);
-            try checks.command.execute(c, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{before.string} }));
+            try checks.command.execute(c, before.string, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{before.string} }));
         }
     }
     try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
@@ -586,21 +587,25 @@ fn runLegs(c: src.Context, env: *std.process.Environ.Map, text: []const u8) !voi
 /// Runs one command of a leg in its directory with its environment; whether it exited 0. A
 /// command that cannot start is that leg's failure, named by the caller; a cancel ends the job.
 fn legStep(c: src.Context, env: *const std.process.Environ.Map, directory: []const u8, argv: []const []const u8) std.Io.Cancelable!bool {
-    var child = std.process.spawn(c.io, .{ .argv = argv, .cwd = .{ .path = directory }, .environ_map = env }) catch |err| switch (err) {
+    const name = c.a.print("{s} in {s}", .{ argv[1], directory }) catch return false;
+    return c.runChild(.{ .name = name, .argv = argv, .cwd = .{ .path = directory }, .environ_map = env }) catch |err| switch (err) {
         error.Canceled => return error.Canceled,
         else => {
-            c.report("preflight: {s} did not start in {s} ({t})\n", .{ argv[1], directory, err });
+            c.report("preflight: {s} did not run in {s} ({t})\n", .{ argv[1], directory, err });
             return false;
         },
     };
-    const term = child.wait(c.io) catch |err| switch (err) {
-        error.Canceled => return error.Canceled,
-        else => {
-            c.report("preflight: {s} in {s} was not waited for ({t})\n", .{ argv[1], directory, err });
-            return false;
-        },
-    };
-    return term == .exited and term.exited == 0;
+}
+
+/// Runs `child` under preflight's bound (`bounded.zig`), whose bound here is the hosted job's
+/// deadline (`PREFLIGHT_DEADLINE`, which `gate` sets from the job's start and limit): ended
+/// before the host cancels the job, it names the child, its command and the last line it
+/// printed. Outside a hosted job, nothing ends it. Whether it exited 0.
+fn runBounded(c: src.Context, child: src.Child) anyerror!bool {
+    const environ = child.environ_map orelse c.environ_map;
+    const deadline = if (environ) |map| try watchdog.parseDeadline(map.get("PREFLIGHT_DEADLINE")) else null;
+    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .limit = null, .deadline = deadline });
+    return ended.passed();
 }
 
 /// Runs `zig build <step> <build_args>`, or `bay <step> ...` under bay, as the hosted gate does, timed.
@@ -663,7 +668,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         // PREFLIGHT_SHARD reaches the test runners through the environment.
         const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
         defer timer.end(c, log);
-        try checks.command.execute(counting, argv.items);
+        try checks.command.execute(counting, step, argv.items);
     }
     // A step that runs no tests counts none.
     const counts = c.read(counted) catch |err| switch (err) {
@@ -728,7 +733,7 @@ fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, targ
         const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step, jobs);
         const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
         defer timer.end(c, log);
-        try checks.command.execute(c, argv);
+        try checks.command.execute(c, try c.a.print("{s} {s}", .{ kind.label, name }), argv);
     }
 }
 
@@ -776,7 +781,7 @@ fn heldGitCommand(c: *src.Context, environ: *const std.process.Environ.Map, args
     const out = try heldgit.build(c, environ, held, p, .{ .zig = c.zig, .zlib = args.zlib.?, .libressl = args.libressl.?, .nghttp2 = args.nghttp2.?, .curl = args.curl.?, .sdk = sdk, .jobs = std.Thread.getCpuCount() catch 4 }, store);
     if (args.copy_to) |to| {
         try std.Io.Dir.cwd().createDirPath(c.io, to);
-        try checks.command.execute(c.*, &.{ "cp", "-R", try c.a.print("{s}/.", .{out}), to });
+        try checks.command.execute(c.*, "copy the held git", &.{ "cp", "-R", try c.a.print("{s}/.", .{out}), to });
     }
     if (args.target != null) return;
     return firstOnPath(c, environ, try std.fs.path.join(c.a, &.{ out, "bin" }), "git");

@@ -176,6 +176,19 @@ test "a dependency of the package is one name past its prefix" {
     try std.testing.expect(!directDependency("", "gantry.glint."));
 }
 
+/// The steps preflight claimed whose names reach them: none the build already had.
+pub fn claimedSteps(b: *std.Build) []const *std.Build.Step {
+    var steps: std.ArrayList(*std.Build.Step) = .empty;
+    for (claimed.items) |name| {
+        if (for (taken.items) |other| {
+            if (std.mem.eql(u8, other, name)) break true;
+        } else false) continue;
+        const top = b.top_level_steps.get(name) orelse continue;
+        steps.append(b.allocator, &top.step) catch @panic("OOM");
+    }
+    return steps.items;
+}
+
 /// Fails `tests` naming each step of preflight's that the build, or the package's
 /// own build, already had: the gate runs preflight's steps by name, so a package
 /// step of the same name would run in their place.

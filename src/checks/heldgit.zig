@@ -535,9 +535,7 @@ fn exists(io: std.Io, path: []const u8) bool {
 }
 
 fn run(c: *src.Context, environ: *const std.process.Environ.Map, cwd: []const u8, argv: []const []const u8) !void {
-    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = .{ .path = cwd }, .environ_map = environ });
-    const term = try child.wait(c.io);
-    if (term == .exited and term.exited == 0) return;
+    if (try c.runChild(.{ .name = "held git build", .argv = argv, .cwd = .{ .path = cwd }, .environ_map = environ })) return;
     c.fail("held git: `{s}` in {s} failed", .{ try std.mem.join(c.a, " ", argv), cwd });
     return error.CheckFailed;
 }

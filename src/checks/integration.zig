@@ -604,6 +604,7 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     try tmp.dir.writeFile(io, .{ .sub_path = "src/hang.zig", .data =
         \\const std = @import("std");
         \\pub fn main(init: std.process.Init) !void {
+        \\    try std.Io.File.stderr().writeStreamingAll(init.io, "spinning on the example's last step\n");
         \\    while (true) try init.io.sleep(.fromSeconds(1), .awake);
         \\}
         \\
@@ -618,6 +619,7 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     try std.testing.expect(std.mem.find(u8, hung.stderr, named) != null);
     try std.testing.expect(std.mem.find(u8, hung.stderr, " ms; it runs ") != null);
     try std.testing.expect(std.mem.find(u8, hung.stderr, "hang --spin") != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, "its last line: spinning on the example's last step") != null);
     // Ended at its bound, not the test's watchdog's.
     try std.testing.expect(took.toSeconds() < 240);
     // A bound that names no run would change nothing, silently: it is refused by name.
@@ -628,6 +630,39 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     if (command.succeeded(stale) or std.mem.find(u8, stale.stderr, refused) == null) std.debug.print("{s}", .{stale.stderr});
     try std.testing.expect(!command.succeeded(stale));
     try std.testing.expect(std.mem.find(u8, stale.stderr, refused) != null);
+}
+
+test "lint reads the configured graph as the build wrote it: identical to the graph with the bound off, the bound program in none of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // A run of the tests the bound puts its program before, in every configuration but the reading's.
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
+        \\    step.dependOn(&b.addRunArtifact(tests).step);
+        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
+        \\    step.dependOn(&b.addRunArtifact(tool).step);
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data = "pub fn main() void {}\n" });
+    var read: [3][]const u8 = undefined;
+    for ([_][]const []const u8{ &.{}, &.{"-Dci-bound=false"}, &.{"-Dci-bound=true"} }, &read) |options, *graph| {
+        const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "facts", "--" }, options });
+        const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir } });
+        if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
+        try std.testing.expect(command.succeeded(result));
+        // The graph, without the options the reading was asked for, which it records first.
+        const steps = std.mem.find(u8, result.stdout, "\"steps\":") orelse return error.NoSteps;
+        graph.* = result.stdout[steps..];
+    }
+    try std.testing.expectEqualStrings(read[1], read[0]);
+    try std.testing.expect(std.mem.find(u8, read[0], "preflight-bound") == null);
+    try std.testing.expect(std.mem.find(u8, read[0], "run exe tool") != null);
+    // Configured with the bound, as every run is, the graph holds its program.
+    try std.testing.expect(std.mem.find(u8, read[2], "preflight-bound") != null);
 }
 
 test "a test given a path in its package, one in Zig's library and Zig itself replays with the replaying runner's own; any other path is refused" {

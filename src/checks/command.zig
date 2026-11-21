@@ -4,12 +4,11 @@ const std = @import("std");
 const aegis = @import("aegis");
 const src = @import("source.zig");
 
-/// Runs `argv` in the context's directory and fails unless it exits 0. Its output is this
+/// Runs `argv` in the context's directory under preflight's bound (`Context.runChild`), named
+/// `name` should the job's time run out, and fails unless it exits 0. Its output reaches this
 /// process's streams.
-pub fn execute(c: src.Context, argv: []const []const u8) !void {
-    var child = try std.process.spawn(c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map });
-    const term = try child.wait(c.io);
-    if (term != .exited or term.exited != 0) return error.CommandFailed;
+pub fn execute(c: src.Context, name: []const u8, argv: []const []const u8) !void {
+    if (!try c.runChild(.{ .name = name, .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map })) return error.CommandFailed;
 }
 
 /// Whether a finished child exited with status 0.
@@ -25,9 +24,9 @@ pub const backoff = [_]std.Io.Duration{ Wait.literal("5s").toIoDuration(), Wait.
 
 /// Runs `argv` up to three times, waiting `backoff` on `c.io` between
 /// attempts, for a fetch the network may fail.
-pub fn retry(c: src.Context, argv: []const []const u8) !void {
+pub fn retry(c: src.Context, name: []const u8, argv: []const []const u8) !void {
     for (0..backoff.len + 1) |attempt| {
-        execute(c, argv) catch |err| {
+        execute(c, name, argv) catch |err| {
             if (attempt == backoff.len) return err;
             c.report("preflight: fetch failed; retry {d}/{d}\n", .{ attempt + 2, backoff.len + 1 });
             try std.Io.sleep(c.io, backoff[attempt], .awake);
@@ -68,7 +67,7 @@ test "a fetch is retried twice, after 5 s and then 10 s, on the context's clock"
         const Self = @This();
         fn run(context: src.Context, attempt: *Self) void {
             // A fetch of nothing: zig says so in one line and exits nonzero.
-            attempt.result = retry(context, &.{ "zig", "fetch" });
+            attempt.result = retry(context, "fetch", &.{ "zig", "fetch" });
         }
     };
     var attempt: Attempt = .{};

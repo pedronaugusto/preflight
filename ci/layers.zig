@@ -6,7 +6,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "supported Zig versions", .patterns = &.{"src/zig_version.zig"} },
     .{ .name = "family policy", .patterns = &.{"src/family.zig"} },
     .{ .name = "test runner modules", .patterns = &.{ "src/order.zig", "src/timings.zig", "src/watchdog.zig" } },
-    .{ .name = "test runner", .patterns = &.{ "src/runner/input.zig", "src/runner/tree.zig", "src/runner.zig", "src/bound.zig" } },
+    .{ .name = "test runner", .patterns = &.{ "src/runner/input.zig", "src/runner/tree.zig", "src/runner.zig", "src/bounded.zig", "src/bound.zig" } },
     .{ .name = "test machine", .patterns = &.{ "src/vm/input.zig", "src/vm/freebsd/input.zig", "src/vm/identity.zig", "src/vm/cpio.zig", "src/vm/iso9660.zig", "src/vm/ustar.zig", "src/vm/guest.zig", "src/vm/freebsd/guest.zig", "src/vm/freebsd.zig", "src/vm/host.zig" } },
     .{ .name = "build helper", .patterns = &.{ "src/build/input.zig", "src/vm.zig", "src/held.zig", "src/configure.zig", "src/bench.zig", "src/fuzz.zig", "src/hardened.zig", "src/record.zig", "src/portable.zig", "src/objects.zig", "src/consumer.zig", "src/plain.zig", "src/owned.zig", "src/nested.zig", "src/library_path.zig", "src/tool.zig", "src/runs.zig", "src/build.zig" } },
     .{ .name = "checks", .patterns = &.{ "src/checks/*.zig", "src/checks/glint/*.zig" } },

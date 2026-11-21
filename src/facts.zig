@@ -54,6 +54,12 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
         if (!std.mem.startsWith(u8, option, "-D") or std.mem.findScalar(u8, option, 0) != null) return error.InvalidConfigurationOption;
         try argv.append(c.a, option);
     }
+    // The graph as the build wrote it: each run of preflight's steps without the bound program
+    // `addCi` puts before it in every other configuration (`runs.zig`), unless the reader asks
+    // for one or the other by name.
+    for (options) |option| {
+        if (std.mem.startsWith(u8, option, "-Dci-bound=")) break;
+    } else try argv.append(c.a, "-Dci-bound=false");
     var snapshot = try capture(c, argv.items);
     snapshot.options = try c.a.dupe([]const u8, options);
     if (c.bay) |bay| {

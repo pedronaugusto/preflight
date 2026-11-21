@@ -111,10 +111,16 @@ pub fn sanitized(target: std.Target) bool {
     return (target.os.tag == .linux or target.os.tag == .macos) and (target.cpu.arch == .x86_64 or target.cpu.arch == .aarch64);
 }
 
-/// This same build run again with `args`: the development build under bay, else zig build.
+/// This same build run again with `args`: the development build under bay, else zig build; on
+/// this build's own cache, which a `--cache-dir` given to it names: without it the run took the
+/// package's `.zig-cache`, and compiled there from cold what this build had compiled (preflight's
+/// runner and checks, the tests), three to four minutes on a busy machine. Behind `args`, where
+/// bay passes it on after its own and Zig takes the last one given.
 fn again(b: *std.Build, package: *std.Build, args: []const []const u8) *std.Build.Step.Run {
     const run = b.addSystemCommand(configure.rerun(b, package));
     run.addArgs(args);
+    run.addArg("--cache-dir");
+    run.addDirectoryArg2(std.Build.LazyPath.cache_root, .{});
     return run;
 }
 

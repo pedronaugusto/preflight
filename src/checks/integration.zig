@@ -784,6 +784,10 @@ fn lintFixtureWith(a: std.mem.Allocator, dir: std.Io.Dir, options: []const []con
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
+    // The builds the lint starts (its reading of the configured graph, an extra check) share
+    // the fixtures' cache as the lint's own build does, so the build script and the tools it
+    // compiled are found there, not compiled again from cold in the fixture's own cache.
+    try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
     const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, options });
     return seam.build(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
@@ -1008,8 +1012,11 @@ test "an extra check beside the lint runs and passes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    // `check` only compiles the tests: no lint under it, so the check runs and passes.
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = "{\"policy\": \"family\", \"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"extra_checks\": [[\"zig\", \"build\", \"check\"]]}\n" });
+    // `check-imports` runs the structure check alone: no lint under it, so the check runs and
+    // passes. Not `check`, which starts a build for each of the ci tier's seven targets, each
+    // compiling the tests for its target, inside this test's bound: work that is not what it
+    // tests, which ran it past 300 s on a busy machine.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = "{\"policy\": \"family\", \"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"extra_checks\": [[\"zig\", \"build\", \"check-imports\"]]}\n" });
     const beside = try lintFixture(a, tmp.dir);
     if (!command.succeeded(beside)) std.debug.print("{s}\n", .{beside.stderr});
     try std.testing.expect(command.succeeded(beside));
@@ -2765,6 +2772,9 @@ test "toolchain hosted runner forwards its benchmark control exactly once" {
     try env.put("STEP", "hardened");
     try env.put("BUILD_ARGS", "-Dci-lint=false -Dci-bench-smoke=false");
     try env.put("PREFLIGHT_SETUP", "false");
+    // The builds the gate starts take the job's cache, which its workflow names, as the
+    // fixtures' build does: in the fixture's own they compiled from cold what it had compiled.
+    try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
@@ -2791,6 +2801,8 @@ test "toolchain hosted runner passes the SDK only to a build that declares it" {
     try env.put("PREFLIGHT_SETUP", "false");
     // The runner's SDK, as `setup` writes it on a macOS host.
     try env.put("SDKROOT", fixture_root);
+    // The job's cache, as the fixtures' build has it (the test above).
+    try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
@@ -2828,6 +2840,8 @@ test "toolchain hosted runner refuses a test that joined the tests after addCi r
     try env.put("STEP", "ci-test");
     try env.put("BUILD_ARGS", "-Dci-lint=false");
     try env.put("PREFLIGHT_SETUP", "false");
+    // The job's cache, as the fixtures' build has it.
+    try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "late-tests: `ci` runs it without preflight's runner") != null);

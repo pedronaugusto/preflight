@@ -66,6 +66,10 @@ pub const Config = struct {
     /// git (`git` in ci/workflow.json) is on the machine already, built from git's
     /// own release, and `git` beside it is refused.
     vm_packages: []const []const u8 = &.{},
+    /// The glint program the lint runs. Null: the glint preflight pins, built here, or the one
+    /// beside the checks on a hosted runner (`-Dci-glint`). glint's own build passes the glint
+    /// it builds, so its lint is the glint it is about to ship.
+    glint: ?std.Build.LazyPath = null,
 };
 
 pub const Bench = bench.Bench;
@@ -177,6 +181,7 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .lint_enabled = b.option(bool, "ci-lint", "Run glint's lint beside the tests; false leaves it out, and only it: the other source checks run either way") orelse true,
         .release = b.option(bool, "ci-release", "The release tier's source checks: every shipped ban's finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
+        .glint = b.option([]const u8, "ci-glint", "Path of the glint preflight pins, which the hosted runner holds beside the checks, in place of building it"),
         .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
         .bound = b.option(bool, run_bound.option, "Run every run of preflight's steps under its bound; false only for reading the configured graph, which then holds each run as the build wrote it") orelse true,
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on an x86_64 Linux host, on PATH)") orelse false,
@@ -191,6 +196,7 @@ pub const CiOptions = struct {
     release: bool,
     timing: bool,
     checks: ?[]const u8,
+    glint: ?[]const u8,
     vm: bool,
     /// Whether the runs of preflight's steps run under their bound (`runs.zig`).
     bound: bool,
@@ -210,6 +216,7 @@ const Steps = struct {
     timing: bool,
     sdk: ?[]const u8,
     checks: ?[]const u8,
+    glint: ?[]const u8,
     smoke: bool,
     vm: bool,
     bound: bool,
@@ -225,7 +232,7 @@ const Steps = struct {
         const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .bound = controls.bound, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .glint = controls.glint, .smoke = controls.smoke, .vm = controls.vm, .bound = controls.bound, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -234,6 +241,16 @@ const Steps = struct {
     fn checksTool(steps: Steps, b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget) ?Tool {
         if (steps.checks) |path| return .{ .prebuilt = path };
         return .{ .compiled = b.addExecutable(.{ .name = "preflight-checks", .root_module = programModule(b, pkg, host) orelse return null }) };
+    }
+
+    /// The glint the lint runs: the hosted runner's, beside the checks; the build's own
+    /// (`Config.glint`); else the one preflight pins, built here, whose lazy package is fetched
+    /// only then. Null while it is still to be fetched.
+    fn glintProgram(steps: Steps, pkg: *std.Build, host: std.Build.ResolvedTarget, config: Config) ?std.Build.LazyPath {
+        if (steps.glint) |path| return .{ .cwd_relative = path };
+        if (config.glint) |given| return given;
+        const glint = configure.lazy(pkg, "glint", .{ .target = host, .optimize = .safe }) orelse return null;
+        return glint.artifact("glint").getEmittedBin();
     }
 
     /// `package` is the package checked; `pkg` is the preflight whose sources and tools the gate runs.
@@ -245,6 +262,7 @@ const Steps = struct {
         // The structure program reads its configuration through preflight's own aegis.
         const aegis = pkg.dependency("aegis", .{ .target = host, .optimize = .debug }).module("aegis");
         const executable = steps.checksTool(b, pkg, host) orelse return;
+        const glint = steps.glintProgram(pkg, host, config) orelse return;
         // What the project holds itself to, from its configuration: a policy misspelt is refused,
         // and held to the family's meanwhile, so nothing it would have caught passes.
         const policy = configure.policy(package, config.config) orelse refused: {
@@ -309,7 +327,7 @@ const Steps = struct {
         for (named) |name| if (b.top_level_steps.contains(name)) for (test_steps.items) |kept| {
             if (std.mem.eql(u8, kept, name)) break;
         } else test_steps.append(b.allocator, name) catch @panic("OOM");
-        const lint = steps.addLint(b, package, pkg, config, executable, gantry, gantry_zig, aegis, test_steps.items);
+        const lint = steps.addLint(b, package, pkg, config, executable, glint, gantry, gantry_zig, aegis, test_steps.items);
         const source = lint.checks;
         if (policy == .family) releaseModes(b, config);
         record.counts(b, config.tests, executable, counted);
@@ -344,7 +362,7 @@ const Steps = struct {
 
     /// The source checks' steps, which `addCi` sets beside the tests once `ci-test` has them:
     /// the lint (glint's and the rest), or the rest alone with `-Dci-lint=false`, and the snippets.
-    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) Lint {
+    fn addLint(steps: Steps, b: *std.Build, package: *std.Build, pkg: *std.Build, config: Config, executable: Tool, glint: std.Build.LazyPath, gantry: *std.Build.Module, gantry_zig: *std.Build.Module, aegis: *std.Build.Module, test_steps: []const []const u8) Lint {
         // A package that declares no structure is held to none.
         const checker = structureChecker(b, pkg, if (configure.exists(package, config.layers)) package.path(config.layers) else pkg.path(default_layers), gantry, gantry_zig, aegis);
         var format_paths: std.ArrayList([]const u8) = .empty;
@@ -372,6 +390,8 @@ const Steps = struct {
         const checks = executable.run(b);
         checks.addArgs(&.{ "lint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+        checks.addArg("--glint");
+        checks.addFileArg2(glint, .{});
         if (steps.release) checks.addArg("--release");
         for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
         if (config.portable_tests) checks.addArg("--portable-tests");
@@ -398,8 +418,12 @@ const Steps = struct {
         const fixing = executable.run(b);
         fixing.addArgs(&.{ "lint", "--fix", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         fixing.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
+        fixing.addArg("--glint");
+        fixing.addFileArg2(glint, .{});
         for (test_steps) |name| fixing.addArgs(&.{ "--test-step", name });
         if (config.portable_tests) fixing.addArg("--portable-tests");
+        // The modules the package exports, which the project file names as glint's own run does.
+        exported(b, package, fixing);
         buildScripts(b, package, fixing);
         configurationOptions(b, fixing);
         // `zig build fix -- --escapes-before FILE`: the record the escape rename reads.

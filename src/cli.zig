@@ -135,6 +135,7 @@ pub const Lint = struct {
     escapes_before: ?[]const u8 = null,
     release: bool = false,
     skip_glint: bool = false,
+    glint: ?[]const u8 = null,
     module: []const []const u8 = &.{},
     build_scripts: ?[]const u8 = null,
     portable_tests: bool = false,
@@ -142,6 +143,7 @@ pub const Lint = struct {
         .about = "The caller workflow as generate makes it, the source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The source checks' configuration" },
+            .glint = .{ .value_name = "FILE", .hint = .file, .help = "The glint program the lint runs over a project file (glint's program contract, version 1): the build passes it" },
             .zig_exe = zig_exe,
             .zig_std = .{ .value_name = "DIR", .hint = .directory, .help = "The standard library the package builds with, for the lint's types" },
             .build_option = build_option,

@@ -97,6 +97,9 @@ pub fn dev(b: *std.Build, _: type) void {
     options.addOptionPath("preflight", executable.getEmittedBin());
     const fake = b.addExecutable(.{ .name = "bay", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/bay.zig"), .target = target, .optimize = .debug }) });
     options.addOptionPath("fake_bay", fake.getEmittedBin());
+    // The lint's tests run glint as the lint does: the program preflight pins.
+    const glint_program = (package.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch return pending(b)).artifact("glint");
+    options.addOptionPath("glint", glint_program.getEmittedBin());
     tests.root_module.addOptions("test_options", options);
     // The gate below gives every test here preflight's runner, as it does a
     // consumer's tests: the order module's and the watchdog's tests import
@@ -251,8 +254,13 @@ fn benchImports(_: *const Bench.Imports, b: *std.Build, target: std.Build.Resolv
     const changelog = package.dependency("bay", .{ .target = target, .optimize = optimize }).module("changelog");
     const aegis = package.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
     const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = package.path("src/order.zig") }) } };
+    // The lint runs glint as a program: the one preflight pins, built for the machine the
+    // benchmark runs on, as the lint's own build makes it.
+    const glint_options = b.addOptions();
+    glint_options.addOptionPath("glint", package.dependency("glint", .{ .target = b.graph.host, .optimize = .safe }).artifact("glint").getEmittedBin());
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = package.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },
+        .{ .name = "bench_glint", .module = glint_options.createModule() },
     }) catch @panic("OOM");
 }

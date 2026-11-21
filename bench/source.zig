@@ -1,5 +1,6 @@
-//! The code rules over a repository: policy, selection, project assembly,
-//! std's parse and lowering, and every selected rule, as one lint step runs them.
+//! The code rules over a repository, as one lint step runs them: the policy, the selection and
+//! the project file preflight writes, then glint's run over it (its assembly, std's parse and
+//! lowering, every selected rule) and the report read back.
 const std = @import("std");
 const checks = @import("checks");
 const measuring = @import("shakedown").bench;
@@ -16,7 +17,7 @@ const Context = struct {
             // What the check says is held: a run prints nothing per unit.
             var held: std.Io.Writer.Allocating = .init(c.scratch.allocator());
             var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io, .dir = .of(c.dir), .held = &held };
-            checks.glint.check(&context, .{ .gpa = c.gpa, .config = c.config }) catch |err| switch (err) {
+            checks.glint.check(&context, .{ .gpa = c.gpa, .config = c.config, .glint = @import("bench_glint").glint }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.CheckFailed,
             };

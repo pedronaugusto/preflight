@@ -288,7 +288,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const exported = try modules(a, args.module);
     const exported_roots = try a.alloc([]const u8, exported.len);
     for (exported_roots, exported) |*root, module| root.* = module.root;
-    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint, .glint = args.glint }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -376,7 +376,7 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool, skip_glint: bool = false, glint: ?[]const u8 = null }, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
@@ -384,8 +384,14 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     try checks.fuzz.summary(c, sources, config, c.summary_path);
     // Without glint (`-Dci-lint=false`) the rest of the source checks still run.
     if (!mode.skip_glint) {
+        const glint = mode.glint orelse {
+            c.fail("lint: no glint to run (--glint): the build passes the one its lint runs", .{});
+            return;
+        };
+        const named = try c.a.alloc(checks.glint.project.Exported, exported.len);
+        for (named, exported) |*entry, module| entry.* = .{ .name = module.name, .root = module.root };
         const timer = stage(c, "glint");
-        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
+        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .exported = named, .glint = glint, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
         timer.end(c.*, log);
         if (c.errors != 0) return;
     }
@@ -600,12 +606,29 @@ fn legStep(c: src.Context, env: *const std.process.Environ.Map, directory: []con
 /// Runs `child` under preflight's bound (`bounded.zig`), whose bound here is the hosted job's
 /// deadline (`PREFLIGHT_DEADLINE`, which `gate` sets from the job's start and limit): ended
 /// before the host cancels the job, it names the child, its command and the last line it
-/// printed. Outside a hosted job, nothing ends it. Whether it exited 0.
-fn runBounded(c: src.Context, child: src.Child) anyerror!bool {
+/// printed. Outside a hosted job, nothing ends it. Its exit status, or null where it did not
+/// exit of itself.
+fn runBounded(c: src.Context, child: src.Child) anyerror!?u8 {
     const environ = child.environ_map orelse c.environ_map;
     const deadline = if (environ) |map| try watchdog.parseDeadline(map.get("PREFLIGHT_DEADLINE")) else null;
-    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .limit = null, .deadline = deadline });
-    return ended.passed();
+    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .stdout = child.stdout, .limit = null, .deadline = deadline });
+    return switch (ended) {
+        .exited => |exited| if (exited.term == .exited) exited.term.exited else null,
+        .expired => null,
+    };
+}
+
+/// The program `name` in this program's own directory, where the hosted toolchain puts the
+/// programs it builds together; null where there is none.
+fn besideSelf(c: src.Context, name: []const u8) !?[]const u8 {
+    const directory = try std.process.executableDirPathAlloc(c.io, c.a);
+    const file = if (builtin.target.os.tag == .windows) try c.a.print("{s}.exe", .{name}) else name;
+    const path = try std.Io.Dir.path.join(c.a, &.{ directory, file });
+    std.Io.Dir.cwd().access(c.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    return path;
 }
 
 /// Runs `zig build <step> <build_args>`, or `bay <step> ...` under bay, as the hosted gate does, timed.
@@ -642,6 +665,8 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
             // This program is the checks the build would compile, built from the same commit.
             if (std.mem.eql(u8, name, "ci-checks")) try argv.append(c.a, try c.a.print("-Dci-checks={s}", .{try std.process.executablePathAlloc(c.io, c.a)}));
+            // The glint the toolchain built beside this program, from the pin it built from.
+            if (std.mem.eql(u8, name, "ci-glint")) if (try besideSelf(c, "glint")) |glint| try argv.append(c.a, try c.a.print("-Dci-glint={s}", .{glint}));
             // SDK identity is an explicit build option, so Zig configuration caches
             // cannot retain a different runner's SDKROOT environment. A build that
             // does not declare it (a nested package, a custom step) is not asked: Zig

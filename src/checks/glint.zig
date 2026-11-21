@@ -1,19 +1,22 @@
-//! The code rules are glint's. This is the linter that runs them for a
-//! repository: the default policy, amended, over the repository's files, in one
-//! project glint holds in memory, so that nothing stands between a finding
-//! and the gate, and a run that did not finish is not a run that passed.
+//! The code rules are glint's, and glint is a program the lint runs (its program contract,
+//! version 1): preflight writes a project file (the build's modules, the files it selects with
+//! what each is, the policy as data), runs glint over it, and reads glint's report back with the
+//! run's record, which vouches that the report is this run's and whole. Nothing stands between a
+//! finding and the gate, and a run that did not finish is not a run that passed.
 const std = @import("std");
-const aegis = @import("aegis");
-const glint = @import("glint");
 const src = @import("source.zig");
 const seam = @import("input.zig");
 const fetched = @import("manifest.zig");
 pub const policy = @import("glint/policy.zig");
 pub const assembly = @import("glint/assembly.zig");
+pub const project = @import("glint/project.zig");
+pub const report = @import("glint/report.zig");
 
 test {
     _ = policy;
     _ = assembly;
+    _ = project;
+    _ = report;
 }
 
 pub const Inputs = struct {
@@ -21,6 +24,10 @@ pub const Inputs = struct {
     /// `ci/preflight.json`.
     config: src.Value,
     build: assembly.Build = .{},
+    /// The modules the package exports, by the name a consumer imports each by.
+    exported: []const project.Exported = &.{},
+    /// The glint program the lint runs: the one preflight's toolchain builds, or the build's own.
+    glint: []const u8,
     /// Apply the findings' fixes to the package's sources (`zig build fix`).
     fix: bool = false,
     /// With `fix`, the escapes a lint before reported, by which an escape in the older form is
@@ -34,13 +41,17 @@ pub const Inputs = struct {
 /// How many lines of one kind a run prints before it counts the rest.
 const printed = 25;
 
-/// Fails the run on a finding the policy gates and on any analysis glint
-/// did not finish: a file it could not parse or lower, work it ran out of
-/// budget for, a site a gating rule could not decide, a suppression that
-/// suppresses nothing.
+/// Where the lint keeps what it hands glint and what glint answers, relative to the package.
+const lint_dir = ".zig-cache/preflight-lint";
+const project_path = lint_dir ++ "/project.json";
+const report_path = lint_dir ++ "/report.json";
+const record_path = lint_dir ++ "/result.json";
+
+/// Fails the run on a finding glint's verdict fails and on any analysis glint did not finish: a
+/// file it could not parse or lower, work it ran out of budget for, a suppression that
+/// suppresses nothing; and on a glint that cannot read this project file, or whose report its
+/// record does not vouch for.
 pub fn check(c: *src.Context, inputs: Inputs) !void {
-    // Read before this run writes its own record over the one kept.
-    const before: []const glint.Fix.Escaped = if (inputs.escapes_before) |path| (try escapeRecord(c, path)) orelse return else &.{};
     const shipped = fetched.shippedPaths(c) catch |err| switch (err) {
         error.InvalidManifest => return,
         error.FileNotFound => {
@@ -49,132 +60,196 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
         },
         else => return err,
     };
-    var chosen = (try policy.parse(c, inputs.config, shipped)) orelse return;
+    const chosen = (try policy.parse(c, inputs.config, shipped)) orelse return;
     const paths = (try assembly.select(c, chosen)) orelse return;
-    var assembled = (try assembly.assemble(c, inputs.gpa, chosen, paths, inputs.build)) orelse return;
-    defer assembled.deinit();
-    // The rules the program's packages declare join the policy, and every name glint itself
-    // does not have resolves against them.
-    const errors = c.errors;
-    const declared = glint.packageRules(c.a, &assembled.project) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            c.fail("glint: the packages' lint_rules could not be read ({t}): two packages declare one rule id, or more rules than ids", .{err});
-            return;
-        },
-    };
-    try chosen.resolve(c, declared);
-    if (c.errors != errors) return;
-    var files: std.ArrayList(glint.FileConfig) = .empty;
-    for (assembled.selected, 0..) |file, index| {
-        try files.append(c.a, .{ .file = try assembled.project.fileAt(index), .config = try chosen.forFile(c.a, file.path) });
+    const before = c.errors;
+    const kept = try upstreamCopies(c, chosen);
+    if (c.errors != before) return;
+    const file = try projectFile(c, inputs, chosen, paths, kept);
+    if (!try contract(c, inputs.glint)) return;
+    const answer = (try runGlint(c, inputs, file)) orelse return;
+    if (answer.fixed) |fixed| c.report("preflight: glint: fixed {d} sites in {d} files; what follows is the run before them\n", .{ fixed.sites, fixed.files });
+    for (answer.notes) |note| {
+        c.report("glint: note: {s}\n", .{note});
+        c.notes += 1;
     }
-    var report = glint.run(inputs.gpa, &assembled.project, .{
-        .config = chosen.base,
-        .files = files.items,
-        .io = c.io,
-    }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.Canceled => return error.Canceled,
-        else => {
-            c.fail("glint: the run did not finish ({t})", .{err});
-            return;
-        },
-    };
-    defer report.deinit();
-    if (inputs.fix) try applyFixes(c, &assembled.project, &report, before);
-    judge(c, chosen, &assembled.project, &report, inputs.release);
-    assertions(c, &assembled.project, &report);
+    judge(c, kept, answer, paths.len);
+    assertions(c, answer);
 }
 
-/// Writes each source glint's fixes change (`zig build fix`): the deterministic answers, the
-/// escape for a reason written the older way, an unused escape gone. The run's report is the
-/// one before them; the next lint reads what is left.
-fn applyFixes(c: *src.Context, project: *const glint.Project, report: *const glint.Report, before: []const glint.Fix.Escaped) !void {
-    const changed = try glint.Fix.apply(c.a, project, report, .{ .escapes_before = before });
-    var made: usize = 0;
-    for (changed) |file| {
-        c.directory().writeFile(c.io, .{ .sub_path = project.at(file.file).input.name, .data = file.bytes }) catch |err| {
-            c.fail("glint: {s}: the fixed source was not written ({t})", .{ project.at(file.file).input.name, err });
-            continue;
+/// The project file for the files `paths` selects, each with what it is: a test, test support or
+/// production code; whether it ships; its function budget and reasoned ceilings; the upstream
+/// whose verification it carries while it is that copy (`kept`).
+fn projectFile(c: *src.Context, inputs: Inputs, chosen: policy.Policy, paths: []const []const u8, kept: []const policy.Vendored) !project.ProjectFile {
+    const a = c.a;
+    const files = try a.alloc(project.File, paths.len);
+    for (files, paths) |*entry, path| {
+        const vendored = for (kept) |copy| {
+            if (std.mem.eql(u8, copy.path, path)) break project.Vendored{ .upstream = copy.upstream, .verification = copy.verification };
+        } else null;
+        entry.* = .{
+            .path = path,
+            .kind = switch (chosen.kind(path)) {
+                .production => .production,
+                .test_file => .@"test",
+                .support => .support,
+            },
+            .ships = chosen.ships(path),
+            .max_function_lines = chosen.functionLines(path),
+            .function_exceptions = try chosen.exceptionsAt(a, path),
+            .vendored = vendored,
         };
-        made += file.edits;
     }
-    c.report("preflight: glint: fixed {d} sites in {d} files; what follows is the run before them\n", .{ made, changed.len });
+    const modules = try a.alloc(project.Module, inputs.build.modules.len);
+    for (modules, inputs.build.modules) |*module, built| {
+        const imports = try a.alloc(project.Binding, built.imports.len);
+        for (imports, built.imports) |*binding, import| binding.* = .{ .name = import.name, .module = import.module };
+        module.* = .{ .root = built.root, .contents = built.contents, .script = built.script, .imports = imports };
+    }
+    // glint's options have one home, the repository's glint.json, which a glint run without
+    // preflight reads too; glint reads it where the package has one.
+    const options: ?[]const u8 = if (c.directory().access(c.io, "glint.json", .{})) |_| "glint.json" else |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    return .{
+        .zig_lib = if (inputs.build.std_dir) |dir| std.Io.Dir.path.dirname(dir) else null,
+        .release = inputs.release,
+        .modules = modules,
+        .exported = inputs.exported,
+        .files = files,
+        .policy = chosen.data(options),
+    };
 }
 
-/// The escapes a lint before reported (its `escapes.txt`, kept), each with the rules it covered.
-fn escapeRecord(c: *src.Context, path: []const u8) !?[]const glint.Fix.Escaped {
-    const bytes = seam.document(c.io, std.Io.Dir.cwd(), path, c.a, .list) catch |err| {
-        c.fail("glint: {s}: the escapes before were not read ({t})", .{ path, err });
-        return null;
-    };
-    // A record is a file another run wrote: input until parsed.
-    return aegis.input.Untrusted([]const u8).init(bytes).parse(c.a, glint.Fix.escapeRecord) catch |err| switch (err) {
+/// Whether `glint` reads the project file this preflight writes (`glint --contract` lists its
+/// version); one that does not fails the run by name.
+fn contract(c: *src.Context, glint: []const u8) !bool {
+    const listed = seam.run(c.a, c.io, .{ .argv = &.{ glint, "--contract" }, .cwd = c.childCwd(), .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromSeconds(60) } } }, .line) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
         error.OutOfMemory => return error.OutOfMemory,
-        error.InvalidEscapeRecord => {
-            c.fail("glint: {s}: a line names an escape and is not one", .{path});
+        else => {
+            c.fail("glint: {s} did not run ({t})", .{ glint, err });
+            return false;
+        },
+    };
+    const line = std.mem.trim(u8, listed.stdout, " \r\n");
+    if (listed.term == .exited and listed.term.exited == 0) if (std.mem.cutPrefix(u8, line, "glint-contract ")) |versions| {
+        var each = std.mem.tokenizeScalar(u8, versions, ' ');
+        while (each.next()) |text| if ((std.fmt.parseInt(u32, text, 10) catch continue) == project.version) return true;
+    };
+    c.fail("glint: {s} reads no project file of version {d}, the one this preflight writes (`glint --contract` said `{s}`): a glint older than 0.9.0, or another contract's", .{ glint, project.version, line });
+    return false;
+}
+
+/// Runs glint over `file`: its report, once its record vouches for it; null where the run failed,
+/// named.
+fn runGlint(c: *src.Context, inputs: Inputs, file: project.ProjectFile) !?report.Report {
+    const a = c.a;
+    const dir = c.directory();
+    try dir.createDirPath(c.io, lint_dir);
+    try dir.writeFile(c.io, .{ .sub_path = project_path, .data = try project.text(a, file) });
+    // A record a run before left is no record of this one; the id says which run wrote it.
+    dir.deleteFile(c.io, record_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    var id: [8]u8 = undefined;
+    c.io.random(&id);
+    const run_id = try a.print("lint-{x}", .{&id});
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ inputs.glint, "--project", project_path, "--format", "json", "--result", record_path, "--run-id", run_id });
+    if (inputs.fix) try argv.append(a, "--fix");
+    if (inputs.escapes_before) |path| try argv.appendSlice(a, &.{ "--escapes-before", try std.Io.Dir.cwd().realPathFileAlloc(c.io, path, a) });
+    const status = status: {
+        const out = try dir.createFile(c.io, report_path, .{});
+        defer out.close(c.io);
+        break :status try c.runStatus(.{ .name = "glint", .argv = argv.items, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = out });
+    };
+    const output = try seam.document(c.io, dir, report_path, a, .report);
+    const record = seam.document(c.io, dir, record_path, a, .list) catch |err| switch (err) {
+        error.FileNotFound => {
+            c.fail("glint: the run left no record ({s}), exit status {?d}: it ended before it began, and its report is no answer", .{ record_path, status });
+            return null;
+        },
+        else => return err,
+    };
+    switch (try report.verdict(a, record, run_id, status, output)) {
+        .report => {},
+        .failed => |outcome| {
+            c.fail("glint: the run ended with {s}, which glint says above: no report", .{outcome});
+            return null;
+        },
+        .mismatch => |why| {
+            c.fail("glint: the run's report is not vouched for: {s}", .{why});
+            return null;
+        },
+    }
+    return report.parse(a, output) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            c.fail("glint: {s}: not a report this preflight reads ({t})", .{ report_path, err });
             return null;
         },
     };
 }
 
-/// glint's assertion counts, each call by the declaration it resolves to
-/// (std's `debug.assert`, and what a package names in its place), never by its
-/// spelling: a report, never a gate, since a count says nothing of what an
-/// assertion checks. In a hosted job the per-file table goes to its summary.
-fn assertions(c: *src.Context, project: *const glint.Project, report: *const glint.Report) void {
-    const metrics = report.metrics orelse return;
-    const t = metrics.total;
-    c.report("preflight: assertions: {d} in {d} functions, {d} of them with one\n", .{ t.total(), t.functions, t.asserted });
+/// glint's assertion counts, each call by the declaration it resolves to (std's `debug.assert`,
+/// and what a package names in its place), never by its spelling: a report, never a gate, since a
+/// count says nothing of what an assertion checks. In a hosted job the per-file table goes to its
+/// summary.
+fn assertions(c: *src.Context, answer: report.Report) void {
+    const metrics = answer.metrics orelse return;
+    c.report("preflight: assertions: {d} in {d} functions, {d} of them with one\n", .{ report.total(metrics.assertions), metrics.functions, metrics.asserted });
     const path = c.summary_path orelse return;
     var text: std.Io.Writer.Allocating = .init(c.a);
     text.writer.writeAll("\nAssertions (report only)\n\n| File | Functions | With one | Assertions |\n|---|---:|---:|---:|\n") catch @panic("OOM");
     for (metrics.files) |file| {
-        const n = file.counts;
-        if (n.functions == 0) continue;
-        text.writer.print("| `{s}` | {d} | {d} | {d} |\n", .{ project.at(file.file).input.name, n.functions, n.asserted, n.total() }) catch @panic("OOM");
+        if (file.functions == 0) continue;
+        text.writer.print("| `{s}` | {d} | {d} | {d} |\n", .{ file.source, file.functions, file.asserted, report.total(file.assertions) }) catch @panic("OOM");
     }
     // The summary is a copy for the hosted job: one not written leaves the line printed above.
     appendTo(c.*, c.directory(), path, text.written()) catch |err| c.report("preflight: assertions: the job's summary {s} was not written ({t})\n", .{ path, err });
 }
 
-fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, report: *const glint.Report, release: bool) void {
+/// Prints and counts what `answer` says of the `selected` files: each finding by glint's verdict,
+/// the first `printed` of a rule, every one in the cache's list; each incomplete site likewise.
+fn judge(c: *src.Context, kept: []const policy.Vendored, answer: report.Report, selected: usize) void {
     var failing: usize = 0;
     var warned: usize = 0;
-    var shown: std.AutoHashMapUnmanaged(glint.Rule, usize) = .empty;
+    // How many of each rule's findings the run has met, for the first `printed` it prints.
+    var shown: std.array_hash_map.String(usize) = .empty;
+    // Each shipped ban's findings, for the line a sizing or a review reads.
+    var bans: std.array_hash_map.String(usize) = .empty;
+    for (shipped_order) |rule| bans.put(c.a, rule, 0) catch @panic("OOM");
     // Every finding, where the run prints the first `printed` of a rule.
     var all: std.Io.Writer.Allocating = .init(c.a);
     var held = false;
-    const kept = upstreamCopies(c, chosen);
     const carried = c.a.alloc(usize, kept.len) catch @panic("OOM");
     @memset(carried, 0);
-    for (report.diagnostics) |d| {
-        const file = project.at(d.span.file).input.name;
-        all.writer.print("{s}: {s}:{d}:{d}: {s}", .{ d.name, file, d.span.line, d.span.column, d.message }) catch @panic("OOM");
+    for (answer.diagnostics) |d| {
+        all.writer.print("{s}: {s}:{d}:{d}: {s}", .{ d.rule, d.source, d.span.line, d.span.column, d.message }) catch @panic("OOM");
         // A danger site of an upstream's unchanged file carries the upstream's verification.
-        if (chosen.shippedBan(d.rule)) if (for (kept, 0..) |entry, i| {
-            if (std.mem.eql(u8, entry.path, file)) break i;
+        if (d.carried) if (for (kept, 0..) |entry, i| {
+            if (std.mem.eql(u8, entry.path, d.source)) break i;
         } else null) |at| {
             all.writer.print(" (vendored: carried by {s}'s verification)\n", .{kept[at].upstream}) catch @panic("OOM");
             carried[at] += 1;
             continue;
         };
         all.writer.writeByte('\n') catch @panic("OOM");
-        const fails = d.level == .gate or chosen.fails(d.rule) or (release and chosen.shippedBan(d.rule));
-        const seen = shown.getOrPutValue(c.a, d.rule, 0) catch null;
-        if (seen) |count| {
-            count.value_ptr.* += 1;
-            if (count.value_ptr.* == printed + 1) c.report("glint: more {s} follow\n", .{d.name});
-            held = held or count.value_ptr.* > printed;
-        }
-        const quiet = if (seen) |count| count.value_ptr.* > printed else false;
-        if (fails) {
-            if (quiet) c.errors += 1 else c.fail("{s}: {s}:{d}:{d}: {s}", .{ d.name, file, d.span.line, d.span.column, d.message });
+        if (d.shipped_ban) (bans.getOrPutValue(c.a, d.rule, 0) catch @panic("OOM")).value_ptr.* += 1;
+        const count = shown.getOrPutValue(c.a, d.rule, 0) catch @panic("OOM");
+        count.value_ptr.* += 1;
+        if (count.value_ptr.* == printed + 1) c.report("glint: more {s} follow\n", .{d.rule});
+        const quiet = count.value_ptr.* > printed;
+        held = held or quiet;
+        if (d.fails) {
+            if (quiet) c.errors += 1 else c.fail("{s}: {s}:{d}:{d}: {s}", .{ d.rule, d.source, d.span.line, d.span.column, d.message });
             failing += 1;
         } else {
             if (!quiet) {
-                c.report("glint: {s}: {s}:{d}:{d}: {s}\n", .{ d.name, file, d.span.line, d.span.column, d.message });
+                c.report("glint: {s}: {s}:{d}:{d}: {s}\n", .{ d.rule, d.source, d.span.line, d.span.column, d.message });
                 c.notes += 1;
             }
             warned += 1;
@@ -191,23 +266,23 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
     // Every run error, where the run prints the first `printed`: glint's output is findings,
     // reports and run errors, and a run error stops the run.
     var sites: std.Io.Writer.Allocating = .init(c.a);
-    for (report.errors) |run_error| {
+    for (answer.errors) |run_error| {
         const start = sites.written().len;
-        if (run_error.file) |file| {
-            sites.writer.print("glint: error: {s}: {s}\n", .{ project.at(file).input.name, run_error.why }) catch @panic("OOM");
+        if (run_error.source) |file| {
+            sites.writer.print("glint: error: {s}: {s}\n", .{ file, run_error.why }) catch @panic("OOM");
         } else sites.writer.print("glint: error: {s}\n", .{run_error.why}) catch @panic("OOM");
         if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
         unfinished += 1;
     }
-    for (report.malformed) |entry| {
+    for (answer.malformed) |entry| {
         const start = sites.written().len;
-        sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ project.at(entry.span.file).input.name, entry.span.line, entry.why }) catch @panic("OOM");
+        sites.writer.print("glint: incomplete: {s}:{d}: malformed: {s}\n", .{ entry.source, entry.line, entry.why }) catch @panic("OOM");
         if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
         unfinished += 1;
     }
-    for (report.stale) |stale| {
+    for (answer.stale) |stale| {
         const start = sites.written().len;
-        sites.writer.print("glint: incomplete: {s}:{d}: {s} suppression suppresses nothing\n", .{ project.at(stale.span.file).input.name, stale.span.line, stale.name }) catch @panic("OOM");
+        sites.writer.print("glint: incomplete: {s}:{d}: {s} suppression suppresses nothing\n", .{ stale.source, stale.line, stale.rule }) catch @panic("OOM");
         if (unfinished < printed) c.report("{s}", .{sites.written()[start..]});
         unfinished += 1;
     }
@@ -216,22 +291,39 @@ fn judge(c: *src.Context, chosen: policy.Policy, project: *const glint.Project, 
         summarizeSites(c, sites.written());
         c.report("glint: {d} more incomplete sites; all {d}: {s}\n", .{ unfinished - printed, unfinished, sites_at });
     }
-    if (!report.complete) {
-        c.fail("glint: the run did not complete ({d} run errors, malformed or stale suppressions, {d} of them suppressions that suppress nothing): an incomplete run is not a pass", .{ unfinished, report.stale_suppressions });
+    if (!answer.analysis_complete) {
+        c.fail("glint: the run did not complete ({d} run errors, malformed or stale suppressions, {d} of them suppressions that suppress nothing): an incomplete run is not a pass", .{ unfinished, answer.stale_suppressions });
     }
-    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} incomplete\n", .{ project.count(), failing, warned, report.suppressed, unfinished });
-    byRule(c, chosen, shown);
+    c.report("preflight: glint: {d} files, {d} findings fail, {d} reported, {d} suppressed, {d} incomplete\n", .{ selected, failing, warned, answer.suppressed, unfinished });
+    byRule(c, bans);
+}
+
+/// The family's shipped bans, first in the line that counts them; the packages' follow as met.
+const shipped_order = policy.shipped_bans;
+
+/// Each shipped ban's findings, counted: the line a sizing or a review reads (P007, P008, P009,
+/// then the rules the packages declare).
+fn byRule(c: *src.Context, bans: std.array_hash_map.String(usize)) void {
+    var line: std.Io.Writer.Allocating = .init(c.a);
+    for (bans.keys(), bans.values()) |rule, found| {
+        if (found == 0) continue;
+        line.writer.print("{s}{s} {d}", .{ if (line.written().len == 0) "" else ", ", rule, found }) catch @panic("OOM");
+    }
+    if (line.written().len != 0) c.report("preflight: glint: shipped bans' findings: {s}\n", .{line.written()});
 }
 
 /// The vendored files that are still their upstream's copy, by the SHA-256 their entries record.
 /// One that is not fails the run: changed, it is the package's own code, and its danger sites
 /// need their own reasons.
-fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendored {
+fn upstreamCopies(c: *src.Context, chosen: policy.Policy) ![]const policy.Vendored {
     var out: std.ArrayList(policy.Vendored) = .empty;
     for (chosen.vendored) |entry| {
-        const bytes = seam.document(c.io, c.directory(), entry.path, c.a, .whole) catch |err| {
-            c.fail("vendored: {s}: not read ({t})", .{ entry.path, err });
-            continue;
+        const bytes = seam.document(c.io, c.directory(), entry.path, c.a, .whole) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            else => {
+                c.fail("vendored: {s}: not read ({t})", .{ entry.path, err });
+                continue;
+            },
         };
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
@@ -239,29 +331,9 @@ fn upstreamCopies(c: *src.Context, chosen: policy.Policy) []const policy.Vendore
             c.fail("vendored: {s}: its SHA-256 is {x}, not the {x} of {s}'s file its entry records; changed, it is the package's own code", .{ entry.path, &digest, &entry.sha256, entry.upstream });
             continue;
         }
-        out.append(c.a, entry) catch @panic("OOM");
+        try out.append(c.a, entry);
     }
     return out.items;
-}
-
-/// Each shipped ban's findings, counted: the line a sizing or a review reads (P007, P008, P009,
-/// then the rules the packages declare).
-fn byRule(c: *src.Context, chosen: policy.Policy, shown: std.AutoHashMapUnmanaged(glint.Rule, usize)) void {
-    var line: std.Io.Writer.Allocating = .init(c.a);
-    var bans: std.ArrayList(glint.Rule) = .empty;
-    bans.appendSlice(c.a, &.{ .P007, .P008, .P009 }) catch @panic("OOM");
-    for (chosen.declared) |definition| bans.append(c.a, definition.id) catch @panic("OOM");
-    for (bans.items) |id| {
-        const found = shown.get(id) orelse 0;
-        if (found == 0) continue;
-        line.writer.print("{s}{s} {d}", .{ if (line.written().len == 0) "" else ", ", ruleName(chosen, id), found }) catch @panic("OOM");
-    }
-    if (line.written().len != 0) c.report("preflight: glint: shipped bans' findings: {s}\n", .{line.written()});
-}
-
-fn ruleName(chosen: policy.Policy, rule: glint.Rule) []const u8 {
-    for (chosen.declared) |definition| if (definition.id == rule) return definition.name;
-    return @tagName(rule);
 }
 
 /// In a hosted job, the whole list of incomplete sites in the job's summary too,
@@ -287,10 +359,10 @@ fn writeList(c: *src.Context, path: []const u8, text: []const u8) []const u8 {
 }
 
 /// The whole list of a lint's incomplete sites, relative to the package; empty after a run with none.
-pub const sites_path = ".zig-cache/preflight-lint/incomplete.txt";
+pub const sites_path = lint_dir ++ "/incomplete.txt";
 
 /// Every finding of a lint, relative to the package; empty after a run with none.
-pub const findings_path = ".zig-cache/preflight-lint/findings.txt";
+pub const findings_path = lint_dir ++ "/findings.txt";
 
 fn appendTo(c: src.Context, dir: std.Io.Dir, path: []const u8, text: []const u8) !void {
     const file = try dir.createFile(c.io, path, .{ .truncate = false, .read = true });
@@ -305,6 +377,9 @@ fn appendTo(c: src.Context, dir: std.Io.Dir, path: []const u8, text: []const u8)
 fn parsed(a: std.mem.Allocator, text: []const u8) !src.Value {
     return (try std.json.parseFromSlice(src.Value, a, text, .{ .allocate = .alloc_always })).value;
 }
+
+/// The glint the tests run: the one preflight pins, built by the test build.
+const test_glint = @import("test_options").glint;
 
 const Fixture = struct {
     arena: std.heap.ArenaAllocator,
@@ -332,7 +407,7 @@ const Fixture = struct {
     /// Runs the check on the files written so far; the errors it counted.
     fn run(self: *Fixture, config: []const u8, build: assembly.Build) !usize {
         self.c.errors = 0;
-        try check(&self.c, .{ .gpa = std.testing.allocator, .config = try parsed(self.c.a, config), .build = build });
+        try check(&self.c, .{ .gpa = std.testing.allocator, .config = try parsed(self.c.a, config), .build = build, .glint = test_glint });
         return self.c.errors;
     }
 };
@@ -348,14 +423,19 @@ test "a clean repository passes and one finding of the policy's gate fails it" {
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p); // glint-ignore: P007 -- the same type\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}));
     // A discarded error fails unless its reason is written at the site; under the family's
-    // policy a repository cannot lower it to a report, and without it the report is its choice.
+    // policy a repository cannot lower it to a report (glint refuses it below the floor), and
+    // without it the report is its choice, which glint notes.
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    f() catch {};\n}\n");
     const reported = "{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}";
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"]}", .{}) != 0);
     try std.testing.expect(try f.run("{\"policy\":\"family\"," ++ reported[1..], .{}) != 0);
+    f.c.notes = 0;
     try std.testing.expectEqual(@as(usize, 0), try f.run(reported, .{}));
+    try std.testing.expect(f.c.notes != 0);
     try f.file("src/root.zig", "pub fn drop(f: anytype) void {\n    // glint-ignore: Z026 -- cleanup after a failure the caller already gets\n    f() catch {};\n}\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    // A name no rule of the run has is glint's to refuse, in its words: no report.
+    try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"rules\":[{\"id\":\"Z999\",\"level\":\"gate\"}]}}", .{}) != 0);
 }
 
 test "the shipped bans are findings under the family's policy and reports elsewhere" {
@@ -364,6 +444,10 @@ test "the shipped bans are findings under the family's policy and reports elsewh
     try f.file("src/root.zig", "pub fn run(p: *const u8) *const u8 {\n    return @ptrCast(p);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
+    // The release tier fails a shipped ban's finding wherever it reports.
+    f.c.errors = 0;
+    try check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}"), .glint = test_glint, .release = true });
+    try std.testing.expect(f.c.errors != 0);
     // `glint.escapes` went with the escape form.
     try std.testing.expect(try f.run("{\"glint_paths\":[\"src\"],\"glint\":{\"escapes\":{\"no-danger\":{\"P007\":1}}}}", .{}) != 0);
 }
@@ -446,7 +530,7 @@ test "the list of every finding names a vendored file's carried sites as carried
     var config: std.Io.Writer = .fixed(&buffer);
     try config.print("{{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"vendored\":{{\"src/vendor/fiat.zig\":{{\"upstream\":\"fiat-crypto\",\"verification\":\"fiat's CI regenerates it\",\"sha256\":\"{x}\"}}}}}}", .{&digest});
     try std.testing.expect(try f.run(config.buffered(), .{}) != 0);
-    const list = try f.tmp.dir.readFileAlloc(f.c.io, findings_path, f.c.a, .limited(1 << 20));
+    const list = try f.c.read(findings_path);
     var lines = std.mem.splitScalar(u8, list, '\n');
     var carried: usize = 0;
     var failing: usize = 0;
@@ -566,8 +650,8 @@ test "assertions are counted by the declaration a call resolves to, never by its
     const f = try Fixture.init();
     defer f.deinit();
     // A stub standard library: `debug.assert` is the declaration the counts look for.
-    try f.file("stdlib/std.zig", "pub const debug = @import(\"debug.zig\");\n");
-    try f.file("stdlib/debug.zig", "pub fn assert(ok: bool) void {\n    if (!ok) unreachable; // unreachable: what an assertion is\n}\n");
+    try f.file("lib/std/std.zig", "pub const debug = @import(\"debug.zig\");\n");
+    try f.file("lib/std/debug.zig", "pub fn assert(ok: bool) void {\n    if (!ok) unreachable; // unreachable: what an assertion is\n}\n");
     try f.file("src/root.zig",
         \\const std = @import("std");
         \\pub fn checked(x: u8) u8 {
@@ -587,11 +671,25 @@ test "assertions are counted by the declaration a call resolves to, never by its
     var held: std.Io.Writer.Allocating = .init(f.c.a);
     f.c.held = &held;
     f.c.summary_path = "summary.md";
-    _ = try f.run("{\"glint_paths\":[\"src\"]}", .{ .std_dir = "stdlib" });
+    _ = try f.run("{\"glint_paths\":[\"src\"]}", .{ .std_dir = "lib/std" });
     const out = held.written();
     try std.testing.expect(std.mem.find(u8, out, "preflight: assertions: 1 in 3 functions, 1 of them with one") != null);
     const summary = try f.c.read("summary.md");
     try std.testing.expect(std.mem.find(u8, summary, "| `src/root.zig` | 3 | 1 | 1 |") != null);
+}
+
+test "a glint that reads no project file of this version fails the run by name, never a pass" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.file("src/root.zig", "pub const x = 1;\n");
+    var held: std.Io.Writer.Allocating = .init(f.c.a);
+    f.c.held = &held;
+    f.c.errors = 0;
+    // Any program that does not print the line, as glint 0.8 exits with its usage: here the
+    // tests' stand-in for bay, which knows no `--contract`.
+    try check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}"), .glint = @import("test_options").fake_bay });
+    try std.testing.expectEqual(@as(usize, 1), f.c.errors);
+    try std.testing.expect(std.mem.find(u8, held.written(), "reads no project file of version 1") != null);
 }
 
 /// An `Io` on which every task has been asked to stop.
@@ -603,14 +701,14 @@ const Canceled = @import("shakedown").Layer(u8, .{
     }.checkCancel,
 });
 
-test "a cancel while glint builds the project or runs its rules ends the check with Canceled, never a failure or a pass" {
+test "a cancel while the lint gathers the project or glint runs ends the check with Canceled, never a failure or a pass" {
     const f = try Fixture.init();
     defer f.deinit();
     try f.file("src/root.zig", "pub const x = 1;\n");
     var canceled: Canceled = .init(std.testing.io, 0);
     f.c.io = canceled.io();
     f.c.errors = 0;
-    try std.testing.expectError(error.Canceled, check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}") }));
+    try std.testing.expectError(error.Canceled, check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}"), .glint = test_glint }));
     try std.testing.expect(f.c.errors == 0);
     f.c.io = std.testing.io;
     try std.testing.expectEqual(@as(usize, 0), try f.run("{\"glint_paths\":[\"src\"]}", .{}));
@@ -626,7 +724,7 @@ test "a file that cannot be read fails the run with the cause, never a pass" {
         defer faults.deinit();
         f.c.io = faults.io();
         f.c.errors = 0;
-        const result = check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}") });
+        const result = check(&f.c, .{ .gpa = std.testing.allocator, .config = try parsed(f.c.a, "{\"glint_paths\":[\"src\"]}"), .glint = test_glint });
         try std.testing.expectError(failure, result);
         try std.testing.expectEqual(@as(u64, 1), faults.count(.dirOpenFile));
     }

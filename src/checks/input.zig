@@ -135,11 +135,14 @@ pub const Document = enum {
     /// follows, a vendored copy whose digest is checked, a run's profile, the configuration a
     /// build wrote: 64 MiB.
     whole,
+    /// glint's report of one lint, every finding with its message and span: 256 MiB.
+    report,
 
     fn bytes(kind: Document) aegis.units.Bytes(u64) {
         return .fromRaw(switch (kind) {
             .source, .list => 16 * 1024 * 1024,
             .whole => 64 * 1024 * 1024,
+            .report => 256 * 1024 * 1024,
         });
     }
 };

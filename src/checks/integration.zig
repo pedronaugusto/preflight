@@ -2462,7 +2462,7 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try tmp.dir.createDirPath(io, ".github/workflows");
-    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"portable_tests\":true,\"shards\":{\"macos\":2},\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"portable_tests\":true,\"shards\":{\"macos\":{\"min\":2}},\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     // The fixture's build uses the local dependency. The generator independently
     // reads the declared publication pin, as it does after a consumer's repin.

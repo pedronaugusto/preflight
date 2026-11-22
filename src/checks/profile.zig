@@ -7,6 +7,10 @@ const seam = @import("input.zig");
 pub const Durations = struct {
     tests: std.array_hash_map.String(std.array_hash_map.String(f64)) = .empty,
     keys: std.array_hash_map.String(void) = .empty,
+    /// The columns a finished run measured last: each holds every test that job runs, so a
+    /// test one lacks is not run there (an end-to-end suite the emulated build leaves out),
+    /// where a column only cut runs measured may lack a test they never reached.
+    complete: std.array_hash_map.String(void) = .empty,
     records: usize = 0,
 
     fn put(d: *Durations, a: std.mem.Allocator, name: []const u8, column: []const u8, seconds: f64) !void {
@@ -28,7 +32,8 @@ pub fn reset(c: src.Context, root: []const u8) !void {
 /// or ran out of time), and every test they do not record keeps its earlier
 /// cell, so the tests a killed job never reached keep what an earlier run
 /// measured of them. A test that two shards of one column both ran fails: the
-/// split is broken.
+/// split is broken. A column a finished run measured is complete (`Durations.complete`), and
+/// stays so through a cut run, which records a share of the same tests.
 pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial: bool) !Durations {
     var result: Durations = .{};
     // The shard that recorded each test, by name and column.
@@ -62,6 +67,11 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial:
     }
     if (!split) return error.TestOnTwoShards;
     const measured = try result.keys.clone(c.a);
+    for (try src.items(src.get(previous, "complete"))) |column| {
+        if (column != .string) return error.InvalidDurations;
+        try result.complete.put(c.a, column.string, {});
+    }
+    if (!partial) for (measured.keys()) |column| try result.complete.put(c.a, column, {});
     const keys = try src.items(src.get(previous, "keys"));
     const tests = src.get(previous, "tests");
     if (tests == .object) {
@@ -137,6 +147,13 @@ pub fn render(a: std.mem.Allocator, d: Durations) ![]const u8 {
     const w = &out.writer;
     try w.writeAll("{\n  \"keys\": ");
     try std.json.Stringify.value(columns, .{}, w);
+    // Only columns the record still holds: one whose every test went is no column.
+    var complete: std.ArrayList([]const u8) = .empty;
+    for (columns) |column| if (d.complete.contains(column)) try complete.append(a, column);
+    if (complete.items.len != 0) {
+        try w.writeAll(",\n  \"complete\": ");
+        try std.json.Stringify.value(complete.items, .{}, w);
+    }
     try w.writeAll(",\n  \"tests\": {");
     for (names, 0..) |name, i| {
         try w.writeAll(if (i == 0) "\n    " else ",\n    ");
@@ -175,6 +192,7 @@ test "a refresh replaces the columns it measured, keeps the rest, and takes the 
     try std.testing.expectEqualStrings(
         \\{
         \\  "keys": ["linux-Debug","macos-Debug","windows-Debug"],
+        \\  "complete": ["linux-Debug","windows-Debug"],
         \\  "tests": {
         \\    "first": [null, 2.00, 4.50],
         \\    "gone": [null, 1.00, null],
@@ -211,10 +229,12 @@ test "a run that did not finish refreshes what it recorded and keeps every test 
         \\}
         \\
     , try render(a, try summarize(c, ".", previous, true)));
-    // A finished run's column is the run's alone: `reached`, unrecorded, is gone from it.
+    // A finished run's column is the run's alone: `reached`, unrecorded, is gone from it, and
+    // the column is complete: what it lacks does not run there.
     try std.testing.expectEqualStrings(
         \\{
         \\  "keys": ["linux-debug","linux-riscv64-debug"],
+        \\  "complete": ["linux-riscv64-debug"],
         \\  "tests": {
         \\    "first": [3.00, 30.00],
         \\    "gone": [1.00, null],
@@ -223,6 +243,12 @@ test "a run that did not finish refreshes what it recorded and keeps every test 
         \\}
         \\
     , try render(a, try summarize(c, ".", previous, false)));
+    // A cut run neither makes a column complete nor unmakes one: it ran a share of its tests.
+    try std.testing.expect(!(try summarize(c, ".", previous, true)).complete.contains("linux-riscv64-debug"));
+    const finished = (try std.json.parseFromSlice(src.Value, a,
+        \\{"keys":["linux-debug","linux-riscv64-debug"],"complete":["linux-riscv64-debug"],"tests":{"first":[3,20],"gone":[1,null]}}
+    , .{})).value;
+    try std.testing.expect((try summarize(c, ".", finished, true)).complete.contains("linux-riscv64-debug"));
 }
 
 test "restored timings are discarded before a gate records this run" {

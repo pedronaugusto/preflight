@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const args = try init.minimal.args.toSlice(a);
     const config = (try std.json.parseFromSlice(checks.source.Value, a,
-        \\{"portable_tests":true,"shards":{"windows":3,"macos":2},"targets":["x86_64-linux-gnu","aarch64-linux-gnu","x86_64-linux-musl","x86_64-windows-gnu","aarch64-windows-gnu","x86_64-macos","aarch64-macos"]}
+        \\{"portable_tests":true,"shards":{"windows":{"min":3},"macos":{"min":2}},"targets":["x86_64-linux-gnu","aarch64-linux-gnu","x86_64-linux-musl","x86_64-windows-gnu","aarch64-windows-gnu","x86_64-macos","aarch64-macos"]}
     , .{})).value;
     var context: Context = .{ .scratch = .init(init.gpa), .config = config };
     defer context.scratch.deinit();

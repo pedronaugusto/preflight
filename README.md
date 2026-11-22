@@ -614,8 +614,8 @@ The gate has two tiers, the second holding everything the first checks:
 
 - **ci**: what every push to main and every pull request runs, on that commit: the source
   checks, the documented snippets (a job of their own, so a red lint never hides a broken
-  one), the Linux Debug suite in as many shards as `fast_shards` asks for, the macOS and
-  Windows Debug suites (sharded as `shards` says), and an object compile of every configured
+  one), the Linux Debug, macOS and Windows Debug suites, each in as many jobs as its record
+  says, and an object compile of every configured
   cross target in as many jobs as `cross_jobs` asks for. Test, helper and public-module
   objects are compiled for each target, and the benchmarks in Debug: this proves
   compilation, not linking. Main is kept green: a red push is fixed forward at once.
@@ -697,7 +697,7 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   `runners` job names its failure in the log and the run's summary (a package's tests against
   a dependency's unreleased head, such as relic's against git's). Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
-- `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
+- `targets`, `build_args`, `shards`, `cross_jobs`, `cross_seconds`,
   `riscv64_seconds`, `portable_hosts`, `hardened`: what the tiers build and
   run, described below.
 - `compile_step` (default `check`): the step the release tier's ReleaseSmall job compiles.
@@ -874,8 +874,7 @@ These flags must be individual whitespace-free `-D` arguments. Malformed
 triples, arrays, CPUs, shard counts, booleans and portable-host declarations are
 refused, and so is `windows_git_latest` (the held git replaces it). A
 workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test.
-`fast_shards` splits the Linux Debug tests; the source checks and the cross
-compile are jobs of their own. `cross_jobs` sets how many jobs share the cross
+The source checks and the cross compile are jobs of their own. `cross_jobs` sets how many jobs share the cross
 targets, and `cross_seconds` how many seconds of compiling each may hold. Static jobs explicitly distinguish `execute`, `objects`,
 `link` and `replay` operations. A build with portable tests (`.portable_tests`, its
 `ci-build` step) has the separate native link and shard replay matrices; they never move
@@ -906,17 +905,21 @@ keep the test gate. A push to main that changes only `docs/**` and top-level Mar
 no run; a pull request and the release tier always run the whole gate, documentation or
 not, so what a landing passes does not depend on a path filter.
 
-`"shards": {"windows": 5, "macos": 2}` runs each mode on that host as so many
-jobs (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`, `riscv64` for the
-riscv64 job on its emulated kernel, and `tsan` for the hardened ThreadSanitizer run). The
-riscv64 suite, several times as long emulated, is otherwise sized by its record: as few jobs
-as hold `riscv64_seconds` of its tests each (half of `test_job_timeout` by default; the other
-half builds the suite and boots the kernel), by the seconds `ci/durations.json` holds, a test
-the riscv64 column has none of weighed by its Linux Debug record times the ratio of the two
-columns over the tests both recorded. With no record of either, it is one job, whose record
-sizes the next plan; `shards.riscv64` fixes the count instead. The hardened runs take `test_job_timeout`; `hardened` splits
-as the Linux jobs do, `hardened-tsan` by `tsan` (else as they do), and the fuzz campaign is one
-job. Every job compiles the whole suite once, or downloads it where the tests are
+Every host's suite is sized by its record: as few jobs as hold half their time limit of
+the tests its columns in `ci/durations.json` record (`test_job_timeout`, or
+`windows_job_timeout` on Windows; FreeBSD's and ThreadSanitizer's scaled as their jobs are),
+the most any mode it runs needs. The riscv64 job holds `riscv64_seconds` of its tests (half
+of `test_job_timeout` by default; the rest of its time builds the suite and boots the
+kernel). A column a finished run measured is `complete`, and holds every test that job
+runs: only those are weighed. A column no finished run measured weighs every test, one it
+has none of by its Linux Debug record times the ratio of the two columns over the tests both
+recorded, so a suite whose run never finished is still sized by what it did run. With no
+record of either, a host's suite is one job, whose record sizes the next plan.
+`"shards": {"windows": {"max": 4}, "macos": {"min": 2}}` caps or floors a host's count
+where a package means one (keys `linux`, `macos`, `windows`, `linux_arm`, `windows_arm`,
+`riscv64`, `freebsd`, and `tsan` for the hardened ThreadSanitizer run). `hardened` takes the
+Linux Debug count, `hardened-tsan` its own column's (`linux-debug-tsan`), and the fuzz
+campaign is one job. Every job compiles the whole suite once, or downloads it where the tests are
 portable, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`, a column per system, architecture and mode, and one more for a

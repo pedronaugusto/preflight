@@ -369,7 +369,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":3}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":{\"min\":3}}}", .{})).value;
     const first_pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const next_pin = "76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9";
     const first = try render(a, config, first_pin, ".", false, "ci.yml", 0);
@@ -444,7 +444,7 @@ test "caller output refuses symlink files and directories and propagates write f
 }
 
 fn allocationRender(a: std.mem.Allocator) !void {
-    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":2}}", .{});
+    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":{\"min\":2}}}", .{});
     defer parsed.deinit();
     // Rendering uses an arena by contract. Exercise each allocation in the
     // arena's growth, and verify its error cleanup against the leak checker.

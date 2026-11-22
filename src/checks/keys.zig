@@ -21,16 +21,19 @@ pub const preflight_retired = [_][]const u8{ "ziglint_exceptions", "ziglint_path
 /// The options of `ci/workflow.json`, and keys the planner adds to it as it reads it (from
 /// `ci/costs.json` and `ci/durations.json` beside it, from the build, and the policy from
 /// the `ci/preflight.json` beside it).
-pub const workflow = [_][]const u8{
-    "jobs",              "targets",          "build_args",          "shards",
-    "fast_shards",       "cross_jobs",       "cross_seconds",       "portable_hosts",
-    "hardened",          "compile_step",     "setup_step",          "before_tests_step",
-    "git",               "test_job_timeout", "windows_job_timeout", "source_job_timeout",
-    "cross_job_timeout", "riscv64_seconds",  "fuzz_minutes",        "configurations",
-    // Added as the planner reads the file, never written in it.
-    "measured",          "durations",        "sdk_targets",         "policy",
-    "fuzzed",            "portable_tests",
+pub const workflow = written ++ planned;
+
+/// The options a package writes in `ci/workflow.json`.
+const written = [_][]const u8{
+    "jobs",             "targets",             "build_args",         "shards",
+    "cross_jobs",       "cross_seconds",       "portable_hosts",     "hardened",
+    "compile_step",     "setup_step",          "before_tests_step",  "git",
+    "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout",
+    "riscv64_seconds",  "fuzz_minutes",        "configurations",
 };
+
+/// Added as the planner reads the file, never written in it.
+const planned = [_][]const u8{ "measured", "durations", "sdk_targets", "policy", "fuzzed", "portable_tests" };
 
 pub const File = enum { preflight, workflow };
 

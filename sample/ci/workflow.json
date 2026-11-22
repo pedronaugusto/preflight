@@ -1,6 +1,6 @@
 {
   "cross_jobs": 1,
-  "shards": {"windows": 2},
+  "shards": {"windows": {"min": 2}},
   "targets": ["x86_64-linux-gnu", "aarch64-linux-gnu", "x86_64-linux-musl", "x86_64-windows-gnu", "aarch64-windows-gnu", "x86_64-macos", "aarch64-macos"],
   "hardened": true,
   "fuzz_minutes": 3,

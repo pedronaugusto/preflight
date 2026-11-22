@@ -19,6 +19,8 @@ const freebsd_host_name = "freebsd";
 /// The `shards` key of the hardened ThreadSanitizer run, several times slower than the suite;
 /// the hardened run without it takes the Linux count.
 const tsan_name = "tsan";
+/// Every `shards` key: a host whose job count the record makes, within the bounds it sets.
+pub const shard_hosts = host_names ++ arm_host_names ++ .{ emulated_host_name, freebsd_host_name, tsan_name };
 /// Every runner a job may name.
 const every_host = hosts ++ arm_hosts;
 /// Named cases with weights gave way to per-test shards that the test runner
@@ -238,10 +240,9 @@ pub fn plan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     if (tier == .release and planned) {
         // Each runs the suite as the Linux test jobs do, so each has their time limit; the suite and its
         // ThreadSanitizer run split into shards as those jobs do, and a fuzz campaign is one job.
-        const shards = src.get(config, "shards");
-        const linux = try shardCount(src.get(shards, host_names[0]));
-        const tsan = src.get(shards, tsan_name);
-        for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, [_]usize{ linux, 1, if (tsan == .null) linux else try shardCount(tsan) }) |step, count| for (0..count) |i| {
+        const linux = try jobCount(a, config, host_names[0], &.{"linux-debug"}, halfOf(try minutes(config, "test_job_timeout")));
+        const tsan = try jobCount(a, config, tsan_name, &.{"linux-debug-tsan"}, halfOf(try scaled(config, "test_job_timeout", .tsan)));
+        for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, [_]usize{ linux, 1, tsan }) |step, count| for (0..count) |i| {
             const shard = try shardName(a, i, count);
             var job: Job = .{
                 .os = hosts[0],
@@ -459,7 +460,8 @@ fn configurationJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayLi
 
 /// The test jobs of one host: each mode in the host's shard count.
 fn hostJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job), host: []const u8, host_name: []const u8, modes: []const Mode) !void {
-    const count = try shardCount(src.get(src.get(config, "shards"), host_name));
+    const limit = try minutes(config, if (windowsHost(host)) "windows_job_timeout" else "test_job_timeout");
+    const count = try jobCount(a, config, host_name, try columnsOf(a, stemOf(host_name), modes), halfOf(limit));
     for (modes) |mode| for (0..count) |i| {
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
@@ -488,7 +490,7 @@ fn linuxHost(host: []const u8) bool {
 /// it splits into as many jobs as `emulatedCount` says; its durations, QEMU's, are a column
 /// of their own, which balances them.
 fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
-    const count = try emulatedCount(a, config);
+    const count = try jobCount(a, config, emulated_host_name, &.{emulated_column}, try emulatedBudget(config));
     for (0..count) |i| {
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
@@ -506,34 +508,122 @@ fn emulatedJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Jo
 /// The `ci/durations.json` column the riscv64 suite records, as its test runner names it.
 const emulated_column = "linux-riscv64-debug";
 
-/// How many jobs the riscv64 suite takes: `shards.riscv64` when it fixes the count, else as
-/// few as hold `riscv64_seconds` of tests each, half the job's time when that does not say
-/// (the other half builds the suite, boots the kernel and is the margin). The seconds are
-/// the last run's record (`ci/durations.json`): a test the riscv64 column has none of
-/// weighs its Linux Debug time scaled as the tests both recorded ran (`order.estimate`), so
-/// a suite whose emulated run never finished is still sized by what it did run. With no
-/// record to go by, one job, whose record sizes the next plan.
-fn emulatedCount(a: std.mem.Allocator, config: src.Value) !usize {
-    const fixed = src.get(src.get(config, "shards"), emulated_host_name);
-    if (fixed != .null) return shardCount(fixed);
+/// The seconds of tests the riscv64 job holds: `riscv64_seconds`, else half the native job's
+/// time; its build, its kernel's boot and QEMU's translation take the rest of its scaled time.
+fn emulatedBudget(config: src.Value) !f64 {
     const budget_value = src.get(config, "riscv64_seconds");
     if (budget_value != .null and !((number(budget_value) orelse 0) > 0)) return error.InvalidEmulatedSeconds;
-    const budget = number(budget_value) orelse (@as(f64, @floatFromInt(try minutes(config, "test_job_timeout") * 60)) / 2);
+    return number(budget_value) orelse halfOf(try minutes(config, "test_job_timeout"));
+}
+
+/// The seconds of recorded tests a job of `limit` minutes holds: half its time, the other half
+/// its build, its setup and the margin.
+fn halfOf(limit: usize) f64 {
+    return @as(f64, @floatFromInt(limit * 60)) / 2;
+}
+
+/// A floor and a cap on a host's job count, which `shards.<host>` sets where a package means
+/// one beside its record: `{"min": 2}` keeps two jobs whatever the record says, `{"max": 4}`
+/// holds it to four.
+const Bounds = struct { min: usize = 1, max: usize = std.math.maxInt(usize) };
+
+/// `shards.<host>`, read: an object of `min`, `max` or both, each a count of at least one.
+fn shardBounds(a: std.mem.Allocator, shards: src.Value, host: []const u8) !Bounds {
+    const value = src.get(shards, host);
+    if (value == .null) return .{};
+    if (value != .object or value.object.count() == 0) {
+        problem = try a.print("shards.{s}: {{\"min\": n}}, {{\"max\": n}} or both, a floor or a cap on the jobs its record makes", .{host});
+        return error.InvalidShardCount;
+    }
+    var bounds: Bounds = .{};
+    for (value.object.keys(), value.object.values()) |bound, count| {
+        if (count == .null) return error.InvalidShardCount;
+        if (std.mem.eql(u8, bound, "min")) {
+            bounds.min = try shardCount(count);
+        } else if (std.mem.eql(u8, bound, "max")) {
+            bounds.max = try shardCount(count);
+        } else return error.InvalidShardCount;
+    }
+    if (bounds.min > bounds.max) return error.InvalidShardCount;
+    return bounds;
+}
+
+/// How many jobs a host's suite takes, every host alike: as few as hold `budget` seconds each of
+/// the tests it runs, by each of its `columns` in `ci/durations.json` (the most any one needs,
+/// a job running every mode's share), within `shards.<host>`'s bounds. A column a finished run
+/// measured (`complete`) holds every test that job runs, and only those are weighed: a test it
+/// lacks does not run there (an end-to-end suite the emulated build leaves out: bay's riscv64
+/// job runs its 132 unit tests, and its 75 end-to-end tests, weighed at Linux Debug's minutes
+/// scaled, planned it seven jobs). Any other column weighs every test, one it has none of at its
+/// Linux Debug time scaled as the tests both recorded ran (`order.estimate`), so a suite whose
+/// run never finished is still sized by what it did run. With no record to go by, one job,
+/// whose record sizes the next plan.
+fn jobCount(a: std.mem.Allocator, config: src.Value, host: []const u8, columns: []const []const u8, budget: f64) !usize {
+    const bounds = try shardBounds(a, src.get(config, "shards"), host);
+    var needed: usize = 1;
+    for (columns) |column| needed = @max(needed, try columnJobs(a, config, column, budget));
+    return std.math.clamp(needed, bounds.min, bounds.max);
+}
+
+/// The jobs one column's tests take at `budget` seconds a job: at least one, and no more than
+/// it has tests.
+fn columnJobs(a: std.mem.Allocator, config: src.Value, column: []const u8, budget: f64) !usize {
     const durations = src.get(config, "durations");
     if (durations == .null) return 1;
     const tests = src.get(durations, "tests");
     if (tests != .object) return error.InvalidDurations;
-    const names = tests.object.keys();
-    const estimate = preflight_order.estimate(a, durations, names, emulated_column) catch |err| switch (err) {
+    const names = if (try completeColumn(durations, column)) try recordedIn(a, durations, column) else tests.object.keys();
+    if (names.len == 0) return 1;
+    const estimate = preflight_order.estimate(a, durations, names, column) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.InvalidDurations => return error.InvalidDurations,
     };
     if (estimate.recorded == 0) return 1;
     var total: f64 = 0;
     for (estimate.weights) |seconds| total += seconds;
-    // A job holds at least one test, so no more jobs than tests.
-    const needed = std.math.lossyCast(usize, @ceil(total / budget));
-    return std.math.clamp(needed, 1, names.len);
+    return std.math.clamp(std.math.lossyCast(usize, @ceil(total / budget)), 1, names.len);
+}
+
+/// A host's columns in `modes`: `<stem>-<mode>`, as its test runner names them (`order.key`).
+fn columnsOf(a: std.mem.Allocator, stem: []const u8, modes: []const Mode) ![]const []const u8 {
+    const out = try a.alloc([]const u8, modes.len);
+    for (out, modes) |*column, mode| column.* = try a.print("{s}-{t}", .{ stem, mode });
+    return out;
+}
+
+/// The stem of a `shards` host's columns: its system, and its architecture where a system's
+/// runners have two.
+fn stemOf(host: []const u8) []const u8 {
+    for (host_names ++ arm_host_names, [_][]const u8{ "linux", "macos", "windows", "linux-aarch64", "windows-aarch64" }) |name, stem| {
+        if (std.mem.eql(u8, name, host)) return stem;
+    }
+    unreachable; // every caller names a host of `host_names` or `arm_host_names`
+}
+
+/// Whether a finished run measured `column` last (`complete` in `ci/durations.json`): it holds
+/// every test that job runs.
+fn completeColumn(durations: src.Value, column: []const u8) !bool {
+    for (try src.items(src.get(durations, "complete"))) |each| {
+        if (each != .string) return error.InvalidDurations;
+        if (std.mem.eql(u8, each.string, column)) return true;
+    }
+    return false;
+}
+
+/// The tests `column` records a time of.
+fn recordedIn(a: std.mem.Allocator, durations: src.Value, column: []const u8) ![]const []const u8 {
+    const columns = try src.items(src.get(durations, "keys"));
+    const index = for (columns, 0..) |named, i| {
+        if (named == .string and std.mem.eql(u8, named.string, column)) break i;
+    } else return &.{};
+    var out: std.ArrayList([]const u8) = .empty;
+    var rows = src.get(durations, "tests").object.iterator();
+    while (rows.next()) |row| {
+        const cells = try src.items(row.value_ptr.*);
+        if (cells.len != columns.len) return error.InvalidDurations;
+        if (cells[index] != .null) try out.append(a, row.key_ptr.*);
+    }
+    return out.items;
 }
 
 /// The Debug suite on x86_64 FreeBSD, which no hosted runner is: built for it on the Linux
@@ -541,7 +631,7 @@ fn emulatedCount(a: std.mem.Allocator, config: src.Value) !usize {
 /// claims of FreeBSD (kqueue, its sockets and kernel TLS) has a kernel's evidence, not a
 /// cross-compile's. It splits into `shards.freebsd` jobs, its durations a column of their own.
 fn freebsdJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job)) !void {
-    const count = try shardCount(src.get(src.get(config, "shards"), freebsd_host_name));
+    const count = try jobCount(a, config, freebsd_host_name, &.{"freebsd-debug"}, halfOf(try scaled(config, "test_job_timeout", .kvm)));
     for (0..count) |i| {
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
@@ -583,7 +673,8 @@ fn ownTargetJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(J
         var options: std.Io.Writer.Allocating = .init(a);
         defer options.deinit();
         for (try crossOptions(a, config, target)) |arg| try options.writer.print(" {s}", .{arg});
-        const count = try shardCount(src.get(src.get(config, "shards"), runner.name));
+        const limit = try minutes(config, if (windowsHost(runner.host)) "windows_job_timeout" else "test_job_timeout");
+        const count = try jobCount(a, config, runner.name, try columnsOf(a, stemOf(runner.name), &.{.debug}), halfOf(limit));
         for (0..count) |i| {
             const shard = try shardName(a, i, count);
             try jobs.append(a, .{
@@ -711,12 +802,12 @@ fn legJob(a: std.mem.Allocator, legs: []const Job) !Job {
     return job;
 }
 
-/// The source checks and Linux Debug in `fast_shards` jobs, each recording
+/// The source checks and Linux Debug in Linux's jobs (`jobCount`), each recording
 /// its durations.
 fn linuxPlan(a: std.mem.Allocator, config: src.Value) ![]Job {
     var jobs: std.ArrayList(Job) = .empty;
     try jobs.append(a, try lintJob(a, config, .ci));
-    const count = try shardCount(src.get(config, "fast_shards"));
+    const count = try jobCount(a, config, host_names[0], &.{"linux-debug"}, halfOf(try minutes(config, "test_job_timeout")));
     for (0..count) |i| {
         const shard = try shardName(a, i, count);
         try jobs.append(a, .{
@@ -953,7 +1044,15 @@ fn validate(a: std.mem.Allocator, config: src.Value) !void {
     _ = try validatedArgs(a, src.get(config, "build_args"));
     const shards = src.get(config, "shards");
     if (shards != .null and shards != .object) return error.InvalidShardCount;
-    for (host_names ++ arm_host_names ++ .{ emulated_host_name, freebsd_host_name, tsan_name }) |host| _ = try shardCount(src.get(shards, host));
+    for (shard_hosts) |host| _ = try shardBounds(a, shards, host);
+    if (shards == .object) for (shards.object.keys()) |host| {
+        for (shard_hosts) |known| {
+            if (std.mem.eql(u8, known, host)) break;
+        } else {
+            problem = try a.print("shards: `{s}` is no host", .{host});
+            return error.InvalidShardCount;
+        }
+    };
     for ([_][]const u8{"portable_tests"}) |name| {
         const value = src.get(config, name);
         if (value != .null and value != .bool) return error.InvalidWorkflowBoolean;
@@ -1208,7 +1307,7 @@ test "the release tier asks for one macOS runner: its macOS jobs are legs in seq
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"macos\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"macos\":{\"min\":2}}}", .{})).value;
     const jobs = try plan(a, config, .release);
     var planned: std.ArrayList(Job) = .empty;
     for (jobs) |job| if (std.mem.eql(u8, job.os, hosts[1])) try planned.append(a, job);
@@ -1235,7 +1334,7 @@ test "the release tier asks for one macOS runner: its macOS jobs are legs in seq
     // The ci tier keeps its one macOS test job as it was.
     for ((try split(a, config, try plan(a, config, .ci), .ci)).native) |ci| try std.testing.expect(ci.legs == null);
     // Legs past GitHub's 360 minutes start a second job, each named as one of two.
-    const long = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"macos\":2},\"test_job_timeout\":100}", .{})).value;
+    const long = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"macos\":{\"min\":2}},\"test_job_timeout\":100}", .{})).value;
     var parts: std.ArrayList([]const u8) = .empty;
     for ((try split(a, long, try plan(a, long, .release), .release)).native) |each| if (std.mem.eql(u8, each.os, hosts[1])) {
         try std.testing.expect(each.job_timeout <= 360);
@@ -1249,7 +1348,7 @@ test "each host's shards run every mode, split by count, with the lint and compi
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":3,\"macos\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":{\"min\":3},\"macos\":{\"min\":2}}}", .{})).value;
     const jobs = try plan(a, config, .release);
     var windows: usize = 0;
     var macos: usize = 0;
@@ -1273,14 +1372,14 @@ test "each host's shards run every mode, split by count, with the lint and compi
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
     // The source checks job owns lint in the release tier; no test job repeats it.
     for (jobs) |job| if (!std.mem.eql(u8, job.step, "lint") and job.setup) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-lint=false") != null);
-    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":0}}", .{})).value, .release));
+    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":{\"min\":0}}}", .{})).value, .release));
 }
 
 test "the FreeBSD job on its kernel splits into its shards, and runs where KVM is" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":{\"min\":2}}}", .{})).value;
     var shards: usize = 0;
     for (try plan(a, config, .release)) |job| if (job.machine == .freebsd) {
         shards += 1;
@@ -1291,7 +1390,7 @@ test "the FreeBSD job on its kernel splits into its shards, and runs where KVM i
     try std.testing.expectEqual(@as(usize, 2), shards);
     // Only the release tier runs it.
     for (try plan(a, config, .ci)) |job| try std.testing.expect(job.machine == .none);
-    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":0}}", .{})).value, .release));
+    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"freebsd\":{\"min\":0}}}", .{})).value, .release));
 }
 
 test "a configured target a runner executes, on an ABI not its own, runs its Debug suite there" {
@@ -1299,7 +1398,7 @@ test "a configured target a runner executes, on an ABI not its own, runs its Deb
     defer arena.deinit();
     const a = arena.allocator();
     const config = (try std.json.parseFromSlice(src.Value, a,
-        \\{"portable_tests":true,"shards":{"windows":2},"build_args":["-Dfeature=true"],"targets":[
+        \\{"portable_tests":true,"shards":{"windows":{"min":2}},"build_args":["-Dfeature=true"],"targets":[
         \\"x86_64-windows-msvc",{"target":"aarch64-windows-msvc","args":["-Dsdk=true"]},"x86_64-linux-musl",
         \\"x86_64-windows-gnu","x86_64-windows",{"target":"aarch64-linux-gnu","cpu":"cortex_a72"},"aarch64-macos","x86_64-macos","riscv64-linux-musl"]}
     , .{})).value;
@@ -1337,7 +1436,7 @@ test "the riscv64 job on its emulated kernel splits into its shards" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":{\"min\":2}}}", .{})).value;
     var shards: usize = 0;
     for (try plan(a, config, .release)) |job| if (job.machine == .riscv64) {
         shards += 1;
@@ -1345,7 +1444,7 @@ test "the riscv64 job on its emulated kernel splits into its shards" {
         try std.testing.expect(std.mem.endsWith(u8, job.name, try a.print(" shard {d}/2", .{shards})));
     };
     try std.testing.expectEqual(@as(usize, 2), shards);
-    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":0}}", .{})).value, .release));
+    try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"riscv64\":{\"min\":0}}}", .{})).value, .release));
 }
 
 test "the riscv64 suite takes as many jobs as hold half a job of its recorded tests, those it never ran weighed by Linux Debug" {
@@ -1360,9 +1459,9 @@ test "the riscv64 suite takes as many jobs as hold half a job of its recorded te
     ;
     for ([_]struct { text: []const u8, jobs: usize }{
         .{ .text = recorded, .jobs = 2 },
-        // `riscv64_seconds` sets the share; `shards.riscv64` fixes the count.
+        // `riscv64_seconds` sets the share; `shards.riscv64` floors the count.
         .{ .text = "{\"riscv64_seconds\":300," ++ recorded[1..], .jobs = 3 },
-        .{ .text = "{\"shards\":{\"riscv64\":4}," ++ recorded[1..], .jobs = 4 },
+        .{ .text = "{\"shards\":{\"riscv64\":{\"min\":4}}," ++ recorded[1..], .jobs = 4 },
         // No record of the column or of Linux to scale: one job, whose record sizes the next.
         .{ .text = "{\"durations\":{\"keys\":[\"linux-debug\"],\"tests\":{\"a\":[null]}}}", .jobs = 1 },
         .{ .text = "{}", .jobs = 1 },
@@ -1376,6 +1475,76 @@ test "the riscv64 suite takes as many jobs as hold half a job of its recorded te
     }
     const bad = (try std.json.parseFromSlice(src.Value, a, "{\"riscv64_seconds\":0}", .{})).value;
     try std.testing.expectError(error.InvalidEmulatedSeconds, plan(a, bad, .release));
+}
+
+test "every host's job count is its record's, each against its own job's time, within the bounds shards sets" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A 20-minute job holds 600 s of tests. Windows records 1500 s of Debug and 1700 s of
+    // ReleaseSafe: three jobs, every mode's share in each. macOS records 500 s: one. Linux's
+    // Debug 1300 s: three, in the ci tier's Linux Debug and the release tier's alike. Three
+    // tests, so that each of three jobs has one to run.
+    const record =
+        \\"durations":{"keys":["linux-debug","macos-debug","windows-debug","windows-safe"],"complete":["linux-debug","macos-debug","windows-debug","windows-safe"],"tests":{"a":[500,100,500,500],"b":[400,200,500,700],"c":[400,200,500,500]}}
+    ;
+    const counted = struct {
+        fn jobs(planned: []const Job, prefix: []const u8) usize {
+            var n: usize = 0;
+            for (planned) |job| if (std.mem.startsWith(u8, job.name, prefix)) {
+                n += 1;
+            };
+            return n;
+        }
+    };
+    const config = (try std.json.parseFromSlice(src.Value, a, "{" ++ record ++ "}", .{})).value;
+    const release = try plan(a, config, .release);
+    try std.testing.expectEqual(@as(usize, 3 * 3), counted.jobs(release, "test (windows-latest,"));
+    try std.testing.expectEqual(@as(usize, 3), counted.jobs(release, "test (macos-latest,"));
+    try std.testing.expectEqual(@as(usize, 3 * 3), counted.jobs(release, "test (ubuntu-latest,"));
+    try std.testing.expectEqual(@as(usize, 3), counted.jobs(try plan(a, config, .ci), "Linux Debug"));
+    // A Windows job of 30 minutes holds 900 s: two.
+    const longer = (try std.json.parseFromSlice(src.Value, a, "{\"windows_job_timeout\":30," ++ record ++ "}", .{})).value;
+    try std.testing.expectEqual(@as(usize, 2 * 3), counted.jobs(try plan(a, longer, .release), "test (windows-latest,"));
+    // A cap and a floor a package means: Windows held to two, macOS kept at two.
+    const bounded = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":{\"max\":2},\"macos\":{\"min\":2}}," ++ record ++ "}", .{})).value;
+    const held = try plan(a, bounded, .release);
+    try std.testing.expectEqual(@as(usize, 2 * 3), counted.jobs(held, "test (windows-latest,"));
+    try std.testing.expectEqual(@as(usize, 2 * 3), counted.jobs(held, "test (macos-latest,"));
+    // A host's entry is bounds alone: a count, bounds that bound nothing, an unknown bound and
+    // a host that is none are refused.
+    for ([_][]const u8{ "{\"shards\":{\"windows\":6}}", "{\"shards\":{\"windows\":{\"min\":3,\"max\":2}}}", "{\"shards\":{\"windows\":{}}}", "{\"shards\":{\"windows\":{\"most\":2}}}", "{\"shards\":{\"solaris\":{\"min\":2}}}" }) |text| {
+        try std.testing.expectError(error.InvalidShardCount, plan(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, .release));
+    }
+}
+
+test "a riscv64 column a finished run measured weighs only the tests that job runs, never the end-to-end ones it leaves out" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // bay's shape: unit tests the emulated job runs (recorded there, seconds each), and
+    // end-to-end tests it never runs, minutes on Linux Debug and nothing on riscv64.
+    const tests =
+        \\"unit.a":[0.5,4],"unit.b":[0.2,2],"unit.c":[0.1,1],"e2e.resolve":[100,null],"e2e.release":[110,null],"e2e.prebuilt":[95,null]
+    ;
+    const finished = "{\"durations\":{\"keys\":[\"linux-debug\",\"linux-riscv64-debug\"],\"complete\":[\"linux-riscv64-debug\"],\"tests\":{" ++ tests ++ "}}}";
+    // The same record before any finished run: an end-to-end test the column lacks may be one
+    // a cut job never reached, and weighs its Linux time scaled (7 s / 0.8 s here): about 2,680 s
+    // of tests in 600 s jobs, five.
+    const cut = "{\"durations\":{\"keys\":[\"linux-debug\",\"linux-riscv64-debug\"],\"tests\":{" ++ tests ++ "}}}";
+    for ([_]struct { text: []const u8, jobs: usize }{
+        .{ .text = finished, .jobs = 1 },
+        .{ .text = cut, .jobs = 5 },
+        // A complete column that recorded nothing: one job, whose record sizes the next.
+        .{ .text = "{\"durations\":{\"keys\":[\"linux-debug\",\"linux-riscv64-debug\"],\"complete\":[\"linux-riscv64-debug\"],\"tests\":{\"e2e\":[100,null]}}}", .jobs = 1 },
+    }) |case| {
+        const config = (try std.json.parseFromSlice(src.Value, a, case.text, .{})).value;
+        var count: usize = 0;
+        for (try plan(a, config, .release)) |job| if (job.machine == .riscv64) {
+            count += 1;
+        };
+        try std.testing.expectEqual(case.jobs, count);
+    }
 }
 
 test "named weighted cases are refused, naming the per-test shards that replace them" {
@@ -1400,11 +1569,11 @@ test "a workflow-level test timeout is refused; the watchdog bounds each test" {
         try std.testing.expect(std.mem.find(u8, job.args, "test-timeout") == null);
 }
 
-test "fast shards split the Linux Debug tests, which no other job runs" {
+test "Linux's job count splits the ci tier's Linux Debug tests, which no other job runs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"fast_shards\":3}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"linux\":{\"min\":3}}}", .{})).value;
     const jobs = try plan(a, config, .ci);
     try std.testing.expectEqual(@as(usize, 7), jobs.len);
     try std.testing.expectEqualStrings("lint", jobs[0].step);
@@ -1422,7 +1591,7 @@ test "portable shards share one compilation per host and mode" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":3}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":{\"min\":3}}}", .{})).value;
     const jobs = try plan(a, config, .release);
     const tiers = try split(a, config, jobs, .release);
     // Windows and ARM Windows: macOS builds where it runs.
@@ -1468,7 +1637,7 @@ test "the ci tier is the source checks, the Debug suite on Linux, macOS and Wind
         try std.testing.expect(!std.mem.eql(u8, job.step, "ci-link"));
     }
     for (jobs, 0..) |x, i| for (jobs[i + 1 ..]) |y| try std.testing.expect(!std.mem.eql(u8, x.cache_key, y.cache_key));
-    const shards = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":2}}", .{})).value;
+    const shards = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"windows\":{\"min\":2}}}", .{})).value;
     try std.testing.expectEqualStrings("test (windows-latest, Debug) shard 2/2", (try plan(a, shards, .ci))[4].name);
 }
 
@@ -1476,7 +1645,7 @@ test "the ci tier runs macOS and Windows Debug natively, every shard building it
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"windows\":{\"min\":2}}}", .{})).value;
     const jobs = try plan(a, config, .ci);
     const tiers = try split(a, config, jobs, .ci);
     try std.testing.expectEqual(jobs.len, tiers.native.len);
@@ -1600,7 +1769,7 @@ test "the ci tier executes macOS and Windows, and only the release tier ARM" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"macos\":2}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"shards\":{\"macos\":{\"min\":2}}}", .{})).value;
     for ([_]Tier{ .ci, .release }) |tier| {
         const tiers = try split(a, config, try plan(a, config, tier), tier);
         var executed: usize = 0;
@@ -1730,7 +1899,7 @@ test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitiz
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":45,\"shards\":{\"linux\":2,\"tsan\":8},\"policy\":\"family\"}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":45,\"shards\":{\"linux\":{\"min\":2},\"tsan\":{\"min\":8}},\"policy\":\"family\"}", .{})).value;
     try validate(a, config);
     var counts = [_]usize{ 0, 0, 0 };
     for (try plan(a, config, .release)) |job| for ([_][]const u8{ "hardened", "hardened-fuzz", "hardened-tsan" }, &counts) |step, *count| {
@@ -1741,15 +1910,22 @@ test "the hardened jobs take the test jobs' time limit and shards, ThreadSanitiz
         if (std.mem.eql(u8, step, "hardened-fuzz")) try std.testing.expectEqualStrings("", job.shard) else try std.testing.expect(job.shard.len > 0);
     };
     try std.testing.expectEqual([_]usize{ 2, 1, 8 }, counts);
-    // Without a count of its own, ThreadSanitizer's run splits as the suite does.
-    const plain = (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"linux\":3},\"policy\":\"family\"}", .{})).value;
-    var tsan: usize = 0;
-    for (try plan(a, plain, .release)) |job| if (std.mem.eql(u8, job.step, "hardened-tsan")) {
-        tsan += 1;
-        try std.testing.expectEqual(@as(usize, 60), job.job_timeout);
-    };
-    try std.testing.expectEqual(@as(usize, 3), tsan);
-    try std.testing.expectError(error.InvalidShardCount, validate(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"tsan\":0}}", .{})).value));
+    // Without bounds of its own, ThreadSanitizer's run is sized by its own record, never by the
+    // suite's floor: with none yet, one job; with 4000 s of instrumented tests and 1800 s a job
+    // (half its 60 minutes), three.
+    for ([_]struct { text: []const u8, jobs: usize }{
+        .{ .text = "{\"shards\":{\"linux\":{\"min\":3}},\"policy\":\"family\"}", .jobs = 1 },
+        .{ .text = "{\"policy\":\"family\",\"durations\":{\"keys\":[\"linux-debug\",\"linux-debug-tsan\"],\"complete\":[\"linux-debug-tsan\"],\"tests\":{\"a\":[100,1500],\"b\":[100,1500],\"c\":[100,1000]}}}", .jobs = 3 },
+    }) |case| {
+        const own = (try std.json.parseFromSlice(src.Value, a, case.text, .{})).value;
+        var tsan: usize = 0;
+        for (try plan(a, own, .release)) |job| if (std.mem.eql(u8, job.step, "hardened-tsan")) {
+            tsan += 1;
+            try std.testing.expectEqual(@as(usize, 60), job.job_timeout);
+        };
+        try std.testing.expectEqual(case.jobs, tsan);
+    }
+    try std.testing.expectError(error.InvalidShardCount, validate(a, (try std.json.parseFromSlice(src.Value, a, "{\"shards\":{\"tsan\":{\"min\":0}}}", .{})).value));
 }
 
 test "a package's own jobs join the tiers they name, on the hosts they name, with the gate's setup" {

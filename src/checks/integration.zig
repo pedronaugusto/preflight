@@ -614,12 +614,19 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     const took = started.untilNow(io).raw;
     // 2000 ms, or that times a sanitizer's or an emulator's slowdown, as the tests' bound.
     const named = "preflight: watchdog: `run exe hang` exceeded ";
-    if (command.succeeded(hung) or std.mem.find(u8, hung.stderr, named) == null) std.debug.print("{s}", .{hung.stderr});
+    // The command as it ran: the program by its file's name, which on Windows ends in `.exe`.
+    const spun = if (builtin.os.tag == .windows) "hang.exe --spin" else "hang --spin";
+    const last = "its last line: spinning on the example's last step";
+    const said = !command.succeeded(hung) and for ([_][]const u8{ named, " ms; it runs ", spun, last }) |part| {
+        if (std.mem.find(u8, hung.stderr, part) == null) break false;
+    } else true;
+    // What the run said, whenever it is not what the test expects.
+    if (!said) std.debug.print("{s}", .{hung.stderr});
     try std.testing.expect(!command.succeeded(hung));
     try std.testing.expect(std.mem.find(u8, hung.stderr, named) != null);
     try std.testing.expect(std.mem.find(u8, hung.stderr, " ms; it runs ") != null);
-    try std.testing.expect(std.mem.find(u8, hung.stderr, "hang --spin") != null);
-    try std.testing.expect(std.mem.find(u8, hung.stderr, "its last line: spinning on the example's last step") != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, spun) != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, last) != null);
     // Ended at its bound, not the test's watchdog's.
     try std.testing.expect(took.toSeconds() < 240);
     // A bound that names no run would change nothing, silently: it is refused by name.

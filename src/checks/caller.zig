@@ -102,7 +102,7 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
         defer walker.deinit();
         while (try walker.next(c.io)) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
-            try checkUses(c, root, try c.a.print(".github/{s}", .{entry.path}), &local);
+            try checkUses(c, root, try c.a.print(".github/{s}", .{try repositoryPath(c.a, entry.path)}), &local);
         }
     } else |err| switch (err) {
         error.FileNotFound => {},
@@ -114,7 +114,7 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
         const action = local.keys()[next];
         if (action.len == 0 or std.mem.eql(u8, action, ".github") or std.mem.startsWith(u8, action, ".github/")) continue;
         const file = for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
-            const candidate = try std.Io.Dir.path.join(c.a, &.{ action, name });
+            const candidate = try c.a.print("{s}/{s}", .{ action, name });
             if (root.access(c.io, candidate, .{})) |_| break candidate else |err| switch (err) {
                 error.FileNotFound => {},
                 else => return err,
@@ -126,6 +126,14 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
         try checkUses(c, root, file, &local);
     }
     if (c.errors != before) return error.CallerRefused;
+}
+
+/// `path`, a walker's path below the repository's top, as the repository and its workflows
+/// write one: with `/`, whatever the system's separator.
+fn repositoryPath(a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const copy = try a.dupe(u8, path);
+    if (std.Io.Dir.path.sep != '/') std.mem.replaceScalar(u8, copy, std.Io.Dir.path.sep, '/');
+    return copy;
 }
 
 /// Checks each `uses:` of the YAML at `path` (from the repository's top), adding the local

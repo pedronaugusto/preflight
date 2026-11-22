@@ -77,10 +77,17 @@ fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.P
     };
 }
 
-/// A package's name, from its hash: `name-version-digest`, a name holding no `-`.
+/// A package's name, from its hash: `name-version-digest`, a name holding no `-`. A package
+/// whose manifest names none (a tarball with no `build.zig.zon`, as a grammar or a C library's
+/// release is) Zig hashes as `N-V-<digest>`: it has no identity beside its bytes, so its whole
+/// hash is its name, and no other pin is a revision of it.
 fn packageOf(hash: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, hash, nameless)) return hash;
     return hash[0 .. std.mem.findScalar(u8, hash, '-') orelse hash.len];
 }
+
+/// How Zig's hash begins for a package whose manifest names no name and no version.
+const nameless = "N-V-";
 
 /// `name-version`, the hash without its digest.
 fn labelOf(hash: []const u8) []const u8 {
@@ -146,4 +153,17 @@ test "two packages that pin a third at two revisions are a conflict; one revisio
     // 0.1.4 and 0.1.5 are one line, so naming aegis to coexist does not allow them.
     const named = try std.mem.replaceOwned(u8, a, root, ".name = .bay,", ".name = .bay, .coexist = .{.aegis},");
     try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, io, named, "bay", .{ .global = .of(tmp.dir) })).len);
+}
+
+test "packages with no name of their own are each their own, never revisions of one another" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // ztreesitter pins each of its 309 grammars, a tarball with no manifest, so: N-V-<digest>.
+    const root = ".{ .name = .ztreesitter, .dependencies = .{ .grammar_ada = .{ .url = \"https://e.invalid/ada.tar.gz\", .hash = \"N-V-__8AAFeLLgAMlZ-oww89rYNC9Nmju4xIKFv_2fXpFMpv\", .lazy = true }, .grammar_agda = .{ .url = \"https://e.invalid/agda.tar.gz\", .hash = \"N-V-__8AAB_8-AAdv1t_0ySFOohSHocj4babI8q-67vFrmBA\", .lazy = true } } }";
+    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, std.testing.io, root, "ztreesitter", .{ .global = .of(tmp.dir) })).len);
+    try std.testing.expectEqualStrings("aegis", packageOf("aegis-0.1.5-AAAA"));
+    try std.testing.expectEqualStrings("N-V-__8AAFeLLgAM", packageOf("N-V-__8AAFeLLgAM"));
 }

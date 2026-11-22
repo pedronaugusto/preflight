@@ -77,6 +77,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The consumer check takes a package whose manifest names no name (a tarball with no `build.zig.zon`: a grammar, a C library's release) for itself alone: Zig hashes every such package `N-V-<digest>`, and the check read the `N` as their one name, so ztreesitter, which pins its 309 grammars that way, was refused as holding package `N` at 309 revisions.
 - `gate` and the lint change nothing in the package: a retired key in `ci/workflow.json` (`attest`, `nightly`, `compile_once`) is refused by name ("run `bay generate`, which takes it out"), where the gate rewrote the file to drop it. Only `generate` writes.
 - The pinned-actions check follows each `./` use to its `action.yml` wherever it lives, and that action's own `./` uses in turn, checking every `uses:` line it reaches; it read only `.github`, so a local action under another directory used an unpinned action unseen. A `./` use that names no action is refused. Each file is named by its path from the repository's top with `/` on every system, as the workflows write it.
 - `ci/preflight.json` and `ci/workflow.json` refuse a key they do not hold, by name, with the file it belongs in or the nearest key of their own ("`hardened` is not a key of this file: `hardened` belongs in ci/workflow.json"). ci/preflight.json took any key and ignored the ones nothing read, so a misplaced or misspelt setting did nothing, silently; ci/workflow.json refused one naming only the key, and under the gate and the lint not even that.

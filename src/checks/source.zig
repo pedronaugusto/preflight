@@ -385,6 +385,11 @@ pub fn collectRoot(c: Context, root: []const u8, out: *std.ArrayList(Source)) !v
     }
 }
 
+test "a package's own path is inside it and in no fetched package, cache or output" {
+    for ([_][]const u8{ "tests/tests.zig", "src/a.zig", "zig-pkgs/x.zig" }) |path| try std.testing.expect(ownPath(path));
+    for ([_][]const u8{ "", "/abs/a.zig", "../a.zig", "zig-pkg/dep/a.zig", ".zig-cache/o/a.zig", "zig-out/a.zig" }) |path| try std.testing.expect(!ownPath(path));
+}
+
 test "parser ignores imports and braces in literals, finds named test blocks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -431,6 +436,16 @@ test "malformed test support fails even after a matching pattern or with no sour
 
 /// Two relative paths naming the same file, whichever separator each was written with:
 /// the build graph gives Windows paths with `\`, the source walk may give `/`.
+/// Whether `path`, from the package's directory, is a file of the package's own: inside it, and
+/// in no fetched package, build cache or build output.
+pub fn ownPath(path: []const u8) bool {
+    if (path.len == 0 or std.Io.Dir.path.isAbsolute(path) or std.mem.startsWith(u8, path, "..")) return false;
+    for ([_][]const u8{ "zig-pkg", ".zig-cache", "zig-out" }) |outside| {
+        if (std.mem.startsWith(u8, path, outside) and (path.len == outside.len or isSeparator(path[outside.len]))) return false;
+    }
+    return true;
+}
+
 pub fn samePath(x: []const u8, y: []const u8) bool {
     if (x.len != y.len) return false;
     for (x, y) |p, q| if (p != q and !(isSeparator(p) and isSeparator(q))) return false;

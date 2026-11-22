@@ -35,7 +35,9 @@ const verbs = [_][]const u8{ "parse", "decode", "deserialize", "unpack", "unmars
 /// How many calls deep from a fuzz target a parser is looked for.
 const reach_depth = 8;
 
-pub fn report(a: std.mem.Allocator, sources: []const src.Source, config: src.Value) !Report {
+/// `tests` are test roots the source checks do not walk (an integration suite under `tests/`):
+/// they hold fuzz targets, and their parsers are no package's.
+pub fn report(a: std.mem.Allocator, sources: []const src.Source, tests: []const src.Source, config: src.Value) !Report {
     const fuzz = src.get(config, "fuzz");
     const named = try src.strings(a, src.get(fuzz, "parsers"));
     const trusted = src.get(fuzz, "trusted");
@@ -46,8 +48,9 @@ pub fn report(a: std.mem.Allocator, sources: []const src.Source, config: src.Val
         if (!test_code) try collectParsers(a, s, named, trusted, &parsers);
         try collectFunctions(a, s, &functions);
     }
+    for (tests) |*s| try collectFunctions(a, s, &functions);
     var reached: Reached = .empty;
-    for (sources) |*s| try collectReached(a, s, &functions, &reached);
+    for ([_][]const src.Source{ sources, tests }) |set| for (set) |*s| try collectReached(a, s, &functions, &reached);
     var unfuzzed: std.ArrayList(Parser) = .empty;
     for (parsers.items) |p| if (!reached.contains(p.decl)) try unfuzzed.append(a, p);
     return .{ .parsers = parsers.items, .unfuzzed = unfuzzed.items };
@@ -228,8 +231,8 @@ fn reach(a: std.mem.Allocator, s: *const src.Source, node: Ast.Node.Index, funct
 }
 
 /// Prints the report, and adds it to the job summary when there is one.
-pub fn summary(c: *src.Context, sources: []const src.Source, config: src.Value, output: ?[]const u8) !void {
-    const r = try report(c.a, sources, config);
+pub fn summary(c: *src.Context, sources: []const src.Source, tests: []const src.Source, config: src.Value, output: ?[]const u8) !void {
+    const r = try report(c.a, sources, tests, config);
     const failing = fails(src.policy(config), r);
     c.report("preflight: fuzz: {d} parsers of untrusted input, {d} with no fuzz target\n", .{ r.parsers.len, r.unfuzzed.len });
     for (r.unfuzzed) |p| {
@@ -271,7 +274,7 @@ test "a parser of bytes is reported until a check property reaches it, a trusted
     const config = (try std.json.parseFromSlice(src.Value, a,
         \\{"fuzz":{"parsers":["read"],"trusted":{"parseOwnCache":"the package's own cache file"}}}
     , .{})).value;
-    const r = try report(a, &sources, config);
+    const r = try report(a, &sources, &.{}, config);
     try std.testing.expectEqual(@as(usize, 3), r.parsers.len);
     try std.testing.expectEqual(@as(usize, 2), r.unfuzzed.len);
     try std.testing.expectEqualStrings("decodeFrame", r.unfuzzed[0].name);
@@ -296,7 +299,7 @@ test "a parser a property reaches through the package's pipeline, file to file, 
             \\test "scan" { try shakedown.check(property, .{}); }
         ),
     };
-    const r = try report(a, &sources, .null);
+    const r = try report(a, &sources, &.{}, .null);
     try std.testing.expectEqual(@as(usize, 2), r.parsers.len);
     try std.testing.expectEqual(@as(usize, 1), r.unfuzzed.len);
     try std.testing.expectEqualStrings("parseLockfile", r.unfuzzed[0].name);
@@ -326,7 +329,7 @@ test "a parser reached by a long path and then a short one is fuzzed, whichever 
             \\test "chain" { try shakedown.check(property, .{}); }
         ),
     };
-    const r = try report(a, &sources, .null);
+    const r = try report(a, &sources, &.{}, .null);
     try std.testing.expectEqual(@as(usize, 1), r.parsers.len);
     try std.testing.expectEqual(@as(usize, 0), r.unfuzzed.len);
 }
@@ -356,7 +359,7 @@ test "parsers of one name are told apart by their container, in the configuratio
     const config = (try std.json.parseFromSlice(src.Value, a,
         \\{"fuzz":{"parsers":["config.parse"],"trusted":{"Trailer.parse":"the package's own trailer"}}}
     , .{})).value;
-    const r = try report(a, &sources, config);
+    const r = try report(a, &sources, &.{}, config);
     try std.testing.expectEqual(@as(usize, 2), r.parsers.len);
     // The property's `Header.parse` reaches Header's alone: config's stays unfuzzed.
     try std.testing.expectEqual(@as(usize, 1), r.unfuzzed.len);
@@ -369,4 +372,29 @@ test "a parser with no fuzz target fails the check under the family's policy, an
     try std.testing.expect(fails(.family, r));
     try std.testing.expect(!fails(.adapt, r));
     try std.testing.expect(!fails(.family, .{ .parsers = &unfuzzed, .unfuzzed = &.{} }));
+}
+
+test "a fuzz target in a test root the source checks do not walk reaches the package's parser, and a parser there is none of the package's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sources = [_]src.Source{
+        try .parse(a, "src/parser.zig",
+            \\pub const Parser = struct {
+            \\    pub fn parseSlice(p: *Parser, text: []const u8) !void { _ = p; _ = text; }
+            \\};
+        ),
+    };
+    // ztreesitter's integration suite, under tests/, against the module a consumer gets.
+    const tests = [_]src.Source{
+        try .parse(a, "tests/tests.zig",
+            \\fn parsesAnyBytes(g: u8, case: anytype) !void { var parser: ts.Parser = .init(); _ = g; try parser.parseSlice(case.bytes()); }
+            \\pub fn parseFixture(bytes: []const u8) !void { _ = bytes; }
+            \\test "fuzz: any bytes parse" { try shakedown.check(gpa, 0, parsesAnyBytes, .{}); }
+        ),
+    };
+    try std.testing.expectEqual(@as(usize, 1), (try report(a, &sources, &.{}, .null)).unfuzzed.len);
+    const r = try report(a, &sources, &tests, .null);
+    try std.testing.expectEqual(@as(usize, 1), r.parsers.len);
+    try std.testing.expectEqual(@as(usize, 0), r.unfuzzed.len);
 }

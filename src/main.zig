@@ -248,15 +248,22 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     // A test root may be in what ships or in what the repository keeps beside it (its
     // checks under ci/, its benchmarks), which is linted and never shipped.
     const code = try src.collectCode(c.*, config);
-    for (roots.run) |root| for ([_][]const src.Source{ sources, code }) |set| {
-        const found = for (set) |source| {
-            if (src.samePath(root, source.path)) break source.path;
-        } else null;
-        if (found) |path| {
-            try root_values.append(a, .{ .string = path });
-            break;
-        }
-    };
+    // A test root neither walks, the package's own (an integration suite under `tests/`), is
+    // read for the fuzz targets it holds: a target is a test wherever the package keeps it.
+    var tests: std.ArrayList(src.Source) = .empty;
+    for (roots.run) |root| {
+        const walked = for ([_][]const src.Source{ sources, code }) |set| {
+            const found = for (set) |source| {
+                if (src.samePath(root, source.path)) break source.path;
+            } else null;
+            if (found) |path| {
+                try root_values.append(a, .{ .string = path });
+                break true;
+            }
+        } else false;
+        if (walked or !src.ownPath(root) or !try c.exists(root)) continue;
+        try tests.append(a, try src.Source.parse(a, root, try c.read(root)));
+    }
     try config.object.put(a, "test_roots", .{ .array = root_values.toManaged(a) });
     var unrun_values: std.ArrayList(src.Value) = .empty;
     for (roots.unrun) |unrun| {
@@ -291,7 +298,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const exported = try modules(a, args.module);
     const exported_roots = try a.alloc([]const u8, exported.len);
     for (exported_roots, exported) |*root, module| root.* = module.root;
-    try lint(c, init.gpa, config, sources, code, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, code, tests.items, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -379,12 +386,12 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, tests: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
     if (c.errors != 0) return;
-    try checks.fuzz.summary(c, sources, config, c.summary_path);
+    try checks.fuzz.summary(c, sources, tests, config, c.summary_path);
     // Without glint (`-Dci-lint=false`) the rest of the source checks still run.
     if (!mode.skip_glint) {
         const timer = stage(c, "glint");

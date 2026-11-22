@@ -17,8 +17,9 @@ pub const Child = struct {
     argv: []const []const u8,
     cwd: std.process.Child.Cwd = .inherit,
     environ_map: ?*const std.process.Environ.Map = null,
-    /// Where its output goes, held whole (glint's report); null: this process's own.
-    stdout: ?std.Io.File = null,
+    /// Where its output goes, held whole (glint's report): the caller's file, which it closes;
+    /// null: this process's own.
+    stdout: ?aegis.own.Unowned(std.Io.File) = null,
 };
 
 pub const Context = struct {
@@ -105,7 +106,7 @@ pub const Context = struct {
     /// itself (a signal, the bound), for a program whose status is its answer (glint's).
     pub fn runStatus(c: Context, child: Child) !?u8 {
         if (c.bound) |bound| return bound(c, child);
-        var process = try std.process.spawn(c.io, .{ .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .stdout = if (child.stdout) |file| .{ .file = file } else .inherit });
+        var process = try std.process.spawn(c.io, .{ .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .stdout = if (child.stdout) |file| .{ .file = file.get() } else .inherit });
         // A wait that fails, canceled among the reasons, ends the child and reaps it before the
         // error goes on.
         const term = process.wait(c.io) catch |err| {

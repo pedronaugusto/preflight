@@ -280,6 +280,8 @@ fn benchImports(_: *const Bench.Imports, b: *std.Build, target: std.Build.Resolv
     // benchmark runs on, as the lint's own build makes it.
     const glint_options = b.addOptions();
     glint_options.addOptionPath("glint", package.dependency("glint", .{ .target = b.graph.host, .optimize = .safe }).artifact("glint").getEmittedBin());
+    // That path is the build's, relative to where it ran; a benchmark runs in a directory of its own.
+    glint_options.addOption([]const u8, "build_cwd", std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, ".", b.allocator) catch @panic("the build's directory unavailable"));
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "checks", .module = b.createModule(.{ .root_source_file = package.path("src/checks.zig"), .target = target, .optimize = optimize, .imports = imports }) },
         .{ .name = "facts", .module = b.createModule(.{ .root_source_file = package.path("src/facts.zig"), .target = target, .optimize = optimize, .imports = imports }) },

@@ -300,8 +300,12 @@ fn known(names: []const []const u8, key: []const u8) bool {
 /// The repository's `rules`, each an id and a level glint reads. Whether glint or a package of
 /// the run has the id, and whether the level is below the floor, is glint's to say.
 fn parseRules(c: *src.Context, rules: src.Value, out: *std.ArrayList(project.Setting)) !void {
-    if (rules != .null and rules != .array) c.fail("glint: `rules` is a list of {{id, level}}", .{});
-    for (try src.items(rules)) |entry| {
+    if (rules == .null) return;
+    if (rules != .array) {
+        c.fail("glint: `rules` is a list of {{id, level}}", .{});
+        return;
+    }
+    for (rules.array.items) |entry| {
         const id = src.get(entry, "id");
         const named = src.get(entry, "level");
         if (id != .string or named != .string) {

@@ -21,8 +21,8 @@ pub const Command = struct {
     cwd: std.process.Child.Cwd = .inherit,
     environ_map: ?*const std.process.Environ.Map = null,
     /// Where the run's output goes, held whole: a program whose output is its answer (glint's
-    /// report). Null forwards it to this process's own.
-    stdout: ?std.Io.File = null,
+    /// report). The caller's, lent for the run; null forwards it to this process's own.
+    stdout: ?*const std.Io.File = null,
     /// The run's own bound; null bounds it by the job's deadline alone.
     limit: ?std.Io.Duration,
     /// The hosted job's deadline, whole seconds of the real clock; null outside a hosted job.
@@ -77,7 +77,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
     child.stdout = null;
     child.stderr = null;
     var forwarders: [2]std.Thread = undefined;
-    for (streams, [2]std.Io.File{ command.stdout orelse .stdout(), .stderr() }, &forwarders) |from, to, *thread| thread.* = try std.Thread.spawn(.{}, Output.forward, .{ output, from, to });
+    for (streams, [2]std.Io.File{ if (command.stdout) |file| file.* else .stdout(), .stderr() }, &forwarders) |from, to, *thread| thread.* = try std.Thread.spawn(.{}, Output.forward, .{ output, from, to });
     var watch: Watch = .{ .limit = wait.limit, .tree = tree };
     const watcher: ?std.Thread = if (bounded) try std.Thread.spawn(.{}, Watch.run, .{ &watch, io }) else null;
     const status = process_tree.waitStatus(&child);

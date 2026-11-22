@@ -611,7 +611,9 @@ fn legStep(c: src.Context, env: *const std.process.Environ.Map, directory: []con
 fn runBounded(c: src.Context, child: src.Child) anyerror!?u8 {
     const environ = child.environ_map orelse c.environ_map;
     const deadline = if (environ) |map| try watchdog.parseDeadline(map.get("PREFLIGHT_DEADLINE")) else null;
-    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .stdout = child.stdout, .limit = null, .deadline = deadline });
+    // The child's output file is the caller's, lent for the run.
+    const output = if (child.stdout) |file| file.get() else null;
+    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .stdout = if (output) |*file| file else null, .limit = null, .deadline = deadline });
     return switch (ended) {
         .exited => |exited| if (exited.term == .exited) exited.term.exited else null,
         .expired => null,

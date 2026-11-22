@@ -4,6 +4,7 @@
 //! run's record, which vouches that the report is this run's and whole. Nothing stands between a
 //! finding and the gate, and a run that did not finish is not a run that passed.
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
 const seam = @import("input.zig");
 const fetched = @import("manifest.zig");
@@ -46,6 +47,8 @@ const lint_dir = ".zig-cache/preflight-lint";
 const project_path = lint_dir ++ "/project.json";
 const report_path = lint_dir ++ "/report.json";
 const record_path = lint_dir ++ "/result.json";
+/// How long `glint --contract` may take to say which project files it reads: it reads none.
+const contract_bound: aegis.units.Duration(.second, u64) = .literal("60s");
 
 /// Fails the run on a finding glint's verdict fails and on any analysis glint did not finish: a
 /// file it could not parse or lower, work it ran out of budget for, a suppression that
@@ -66,8 +69,11 @@ pub fn check(c: *src.Context, inputs: Inputs) !void {
     const kept = try upstreamCopies(c, chosen);
     if (c.errors != before) return;
     const file = try projectFile(c, inputs, chosen, paths, kept);
-    if (!try contract(c, inputs.glint)) return;
-    const answer = (try runGlint(c, inputs, file)) orelse return;
+    // `--glint` names the program from this process's directory; glint runs in the package's.
+    var resolved = inputs;
+    resolved.glint = try std.Io.Dir.path.resolveAlloc(c.a, &.{ try std.process.currentPathAlloc(c.io, c.a), inputs.glint });
+    if (!try contract(c, resolved.glint)) return;
+    const answer = (try runGlint(c, resolved, file)) orelse return;
     if (answer.fixed) |fixed| c.report("preflight: glint: fixed {d} sites in {d} files; what follows is the run before them\n", .{ fixed.sites, fixed.files });
     for (answer.notes) |note| {
         c.report("glint: note: {s}\n", .{note});
@@ -125,7 +131,7 @@ fn projectFile(c: *src.Context, inputs: Inputs, chosen: policy.Policy, paths: []
 /// Whether `glint` reads the project file this preflight writes (`glint --contract` lists its
 /// version); one that does not fails the run by name.
 fn contract(c: *src.Context, glint: []const u8) !bool {
-    const listed = seam.run(c.a, c.io, .{ .argv = &.{ glint, "--contract" }, .cwd = c.childCwd(), .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromSeconds(60) } } }, .line) catch |err| switch (err) {
+    const listed = seam.run(c.a, c.io, .{ .argv = &.{ glint, "--contract" }, .cwd = c.childCwd(), .timeout = .{ .duration = .{ .clock = .awake, .raw = contract_bound.toIoDuration() } } }, .line) catch |err| switch (err) {
         error.Canceled => return error.Canceled,
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -136,7 +142,7 @@ fn contract(c: *src.Context, glint: []const u8) !bool {
     const line = std.mem.trim(u8, listed.stdout, " \r\n");
     if (listed.term == .exited and listed.term.exited == 0) if (std.mem.cutPrefix(u8, line, "glint-contract ")) |versions| {
         var each = std.mem.tokenizeScalar(u8, versions, ' ');
-        while (each.next()) |text| if ((std.fmt.parseInt(u32, text, 10) catch continue) == project.version) return true;
+        while (each.next()) |text| if (std.mem.eql(u8, text, std.fmt.comptimePrint("{d}", .{project.version}))) return true;
     };
     c.fail("glint: {s} reads no project file of version {d}, the one this preflight writes (`glint --contract` said `{s}`): a glint older than 0.9.0, or another contract's", .{ glint, project.version, line });
     return false;
@@ -158,14 +164,20 @@ fn runGlint(c: *src.Context, inputs: Inputs, file: project.ProjectFile) !?report
     c.io.random(&id);
     const run_id = try a.print("lint-{x}", .{&id});
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ inputs.glint, "--project", project_path, "--format", "json", "--result", record_path, "--run-id", run_id });
+    // The record's request comes first: glint reads it before the line, so a line it refuses
+    // still leaves a record.
+    try argv.appendSlice(a, &.{ inputs.glint, "--result", record_path, "--run-id", run_id, "--project", project_path, "--format", "json" });
     if (inputs.fix) try argv.append(a, "--fix");
     if (inputs.escapes_before) |path| try argv.appendSlice(a, &.{ "--escapes-before", try std.Io.Dir.cwd().realPathFileAlloc(c.io, path, a) });
+    // glint is another process: a cancel is this one's to see, before the run and after it,
+    // where a canceled run's report is no answer.
+    try c.io.checkCancel();
     const status = status: {
         const out = try dir.createFile(c.io, report_path, .{});
         defer out.close(c.io);
-        break :status try c.runStatus(.{ .name = "glint", .argv = argv.items, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = out });
+        break :status try c.runStatus(.{ .name = "glint", .argv = argv.items, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = .of(out) });
     };
+    try c.io.checkCancel();
     const output = try seam.document(c.io, dir, report_path, a, .report);
     const record = seam.document(c.io, dir, record_path, a, .list) catch |err| switch (err) {
         error.FileNotFound => {

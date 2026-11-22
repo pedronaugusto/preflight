@@ -5,6 +5,7 @@ const std = @import("std");
 const checks = @import("checks");
 const measuring = @import("shakedown").bench;
 const metadata = @import("preflight_bench_options");
+const built = @import("bench_glint");
 const WorkloadError = error{ OutOfMemory, UnexpectedFindings, CheckFailed };
 const Context = struct {
     scratch: std.heap.ArenaAllocator,
@@ -12,12 +13,13 @@ const Context = struct {
     io: std.Io,
     dir: std.Io.Dir,
     config: checks.source.Value,
+    glint: []const u8,
     fn scan(c: *Context, units: u64) WorkloadError!void {
         for (0..units) |_| {
             // What the check says is held: a run prints nothing per unit.
             var held: std.Io.Writer.Allocating = .init(c.scratch.allocator());
             var context: checks.source.Context = .{ .a = c.scratch.allocator(), .io = c.io, .dir = .of(c.dir), .held = &held };
-            checks.glint.check(&context, .{ .gpa = c.gpa, .config = c.config, .glint = @import("bench_glint").glint }) catch |err| switch (err) {
+            checks.glint.check(&context, .{ .gpa = c.gpa, .config = c.config, .glint = c.glint }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.CheckFailed,
             };
@@ -48,6 +50,8 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
         .dir = dir,
         .config = (try std.json.parseFromSlice(checks.source.Value, a, "{\"glint_paths\":[\"src\"],\"function_limits\":{\"src/**\":120}}", .{})).value,
+        // The build names glint from where it ran; this program runs in a directory of its own.
+        .glint = try std.Io.Dir.path.resolveAlloc(a, &.{ built.build_cwd, built.glint }),
     };
     defer context.scratch.deinit();
     var buffer: [4096]u8 = undefined;

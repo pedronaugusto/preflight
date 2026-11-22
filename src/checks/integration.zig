@@ -2480,6 +2480,9 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     }
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.py", .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "ci/plan.zig", .{}));
+    // The repository's .gitattributes beside the caller: every text file LF, on every checkout.
+    const made = try tmp.dir.readFileAlloc(io, ".gitattributes", a, .limited(1024 * 1024));
+    try std.testing.expect(std.mem.find(u8, made, "\n* text=auto eol=lf\n") != null);
 }
 
 test "the plan links a macOS target on Linux unless its build links a framework" {

@@ -31,6 +31,7 @@ test {
     _ = @import("cli.zig");
     _ = @import("structure/check.zig");
     _ = @import("checks/surface.zig");
+    _ = @import("checks/attributes.zig");
     _ = @import("consumer.zig");
     _ = @import("nested.zig");
     _ = @import("library_path.zig");

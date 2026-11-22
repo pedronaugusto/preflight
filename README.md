@@ -730,6 +730,13 @@ bay generate
 the repository's top when there is none; a caller that is current is left as it is. A train
 (`bay --workspace release`) runs it after moving a member's pins.
 
+It writes the repository's `.gitattributes` beside it: every text file LF on every system
+(`* text=auto eol=lf`), so a Windows checkout writes no CRLF into a file a test reads byte for
+byte; the files the package holds as bytes, named as patterns from its directory in
+`ci/preflight.json`'s `binary` (`"binary": ["testdata/**", "src/zone/tzdb.bin"]`); and
+`CHANGELOG.md merge=union`, so two changes that add entries under one group both keep them.
+The lint and the gate hold the file to what `generate` makes, as they hold the caller.
+
 The generator reads the manifest's full immutable preflight URL pin; it never uses an old
 workflow's pin. It refuses to replace a caller holding a job the configuration does not
 declare, naming it, so nothing is dropped unseen; `--drop <job>`, repeated, lets go of a job
@@ -759,7 +766,7 @@ tags it only once the release tier has run green on that commit (`preflight atte
 run's proof). The gate (`zig build gate`, `bay gate` under bay), a step `addCi` adds, checks
 in seconds what a release needs beside that run, each refusal naming its fix:
 
-1. the caller is what `generate` makes for the package's pins and
+1. the caller and `.gitattributes` are what `generate` makes for the package's pins and
    configuration, so the hosted runs check the package with the preflight it pins (the
    lint checks this too, in a git work tree, so a stale caller fails the local gate and
    the ci tier before a push, not first at a release);

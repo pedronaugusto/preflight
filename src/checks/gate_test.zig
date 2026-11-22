@@ -7,6 +7,7 @@
 const std = @import("std");
 const test_options = @import("test_options");
 const workflow = @import("workflow.zig");
+const attributes = @import("attributes.zig");
 
 const pin = "0000000000000000000000000000000000000000";
 
@@ -48,6 +49,8 @@ const Package = struct {
         try p.write("ci/workflow.json", config);
         const parsed = (try std.json.parseFromSlice(std.json.Value, a, config, .{})).value;
         try p.write(".github/workflows/ci.yml", try workflow.render(a, parsed, pin, ".", false, if (developed == .bay) "ci/workflow.json: bay generate" else "ci/workflow.json: zig build generate", 0));
+        var problem: []const u8 = "";
+        try p.write(attributes.path, try attributes.render(a, &.{}, ".", &problem));
         try p.git(&.{ "add", "-A" });
         try p.git(&.{ "commit", "-q", "-m", "First" });
         try p.git(&.{ "tag", "v0.1.0" });
@@ -101,6 +104,21 @@ test "the gate refuses a public declaration changed with no breaking entry" {
     try p.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n### Changed\n\n- A smaller size.\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- First.\n");
     try p.git(&.{ "commit", "-q", "-am", "Smaller" });
     try refused(try p.gate(), "removed or changed these public declarations");
+}
+
+test "the gate refuses a repository whose .gitattributes is missing or not what generate makes" {
+    const p = try Package.init();
+    defer p.deinit();
+    // datapad's first ci run: no file, and a Windows checkout wrote its spec texts with CRLF.
+    try p.git(&.{ "rm", "-q", attributes.path });
+    try p.git(&.{ "commit", "-q", "-m", "No attributes" });
+    try refused(try p.gate(), ".gitattributes is missing: what generate makes");
+    // A binary path declared and the file not made again.
+    try p.write(attributes.path, "* text=auto eol=lf\n");
+    try p.write("ci/preflight.json", "{\"binary\":[\"testdata/**\"]}\n");
+    try p.git(&.{ "add", "-A" });
+    try p.git(&.{ "commit", "-q", "-m", "Bytes declared" });
+    try refused(try p.gate(), ".gitattributes is not what generate makes for this package's ci/preflight.json");
 }
 
 test "the gate refuses a manifest and a CHANGELOG at different releases" {

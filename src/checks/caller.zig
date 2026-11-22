@@ -9,6 +9,7 @@ const seam = @import("input.zig");
 const actions = @import("actions.zig");
 const workflow = @import("workflow.zig");
 const matrix = @import("matrix.zig");
+const attributes = @import("attributes.zig");
 
 /// Adds `sdk_targets` and `fuzzed` to a gate configuration, read from the build in the gate's directory.
 pub const Sdk = *const fn (*src.Context, *src.Value, []const u8) anyerror!void;
@@ -285,9 +286,36 @@ fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     const existing = try at_top.read(path);
     const own = std.mem.find(u8, existing, own_ref) != null;
-    if (std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}, false))) return;
-    c.fail("{s} is not what generate makes for this package's pins and {s}: run `{s}` and commit it", .{ path, found.config, c.stepCommand("generate") });
-    return error.CallerRefused;
+    const before = c.errors;
+    if (!std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}, false)))
+        c.fail("{s} is not what generate makes for this package's pins and {s}: run `{s}` and commit it", .{ path, found.config, c.stepCommand("generate") });
+    // The checkout's line endings are generate's too: a repository without the file, or with
+    // another, has a Windows checkout write CRLF into what its tests read.
+    const held: ?[]const u8 = if (try at_top.exists(attributes.path)) try at_top.read(attributes.path) else null;
+    const wanted = try attributesFor(c, found);
+    if (if (held) |text| !std.mem.eql(u8, text, wanted) else true)
+        c.fail("{s} is {s} what generate makes for this package's ci/preflight.json (every text file LF, its `binary` files as bytes, CHANGELOG.md merged as a union): run `{s}` and commit it", .{ attributes.path, if (held == null) "missing:" else "not", c.stepCommand("generate") });
+    if (c.errors != before) return error.CallerRefused;
+}
+
+/// The `.gitattributes` generate makes for the package: `binary` from its ci/preflight.json,
+/// each pattern from the package's directory. A `binary` the file cannot hold is refused.
+fn attributesFor(c: *src.Context, found: Caller) ![]const u8 {
+    const binary = src.strings(c.a, src.get(try c.options("ci/preflight.json"), "binary")) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            c.fail("ci/preflight.json: binary: a list of the patterns of the files the package holds as bytes (`[\"testdata/**\"]`)", .{});
+            return error.CallerRefused;
+        },
+    };
+    var problem: []const u8 = "";
+    return attributes.render(c.a, binary, found.directory, &problem) catch |err| switch (err) {
+        error.InvalidBinary => {
+            c.fail("ci/preflight.json: refused: {s}", .{problem});
+            return error.CallerRefused;
+        },
+        else => return err,
+    };
 }
 
 /// `lint`'s look at the caller, so a stale one fails the local gate and the ci tier, not only
@@ -338,6 +366,13 @@ pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
     const existing = if (try at_top.exists(path)) try at_top.read(path) else null;
     const own = request.own or (if (existing) |text| std.mem.find(u8, text, own_ref) != null else false);
     const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops, true);
+    // The repository's .gitattributes beside it, made again where it is not what it should be.
+    const wanted = try attributesFor(c, found);
+    const held: ?[]const u8 = if (try at_top.exists(attributes.path)) try at_top.read(attributes.path) else null;
+    if (if (held) |old| !std.mem.eql(u8, old, wanted) else true) {
+        try top.writeFile(c.io, .{ .sub_path = attributes.path, .data = wanted });
+        c.report("generate: wrote {s}\n", .{attributes.path});
+    }
     if (existing) |old| if (std.mem.eql(u8, old, text)) return path;
     try top.createDirPath(c.io, ".github/workflows");
     try workflow.write(at_top, path, text);

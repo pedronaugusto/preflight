@@ -11,6 +11,7 @@ pub const preflight = [_][]const u8{
     "test_support",        "glint",             "glint_paths",    "extra_checks",
     "docs",                "layout_exceptions", "function_limit", "function_limits",
     "function_exceptions", "shipped",           "fuzz",           "vendored",
+    "binary",
 };
 
 /// Keys of ci/preflight.json that were ziglint's or a ledger's: glint/policy.zig refuses each

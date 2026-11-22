@@ -157,10 +157,14 @@ pub const Report = enum {
     /// What a program lists or writes out: git's tags, paths and trees, a docs generator's
     /// text, `zig env`'s settings: 16 MiB.
     text,
+    /// A revision's Zig sources, archived (`git archive`), for glint to read its surface:
+    /// 256 MiB.
+    tree,
 
     fn limit(report: Report) std.Io.Limit {
         return .limited(switch (report) {
             .text => 16 * 1024 * 1024,
+            .tree => 256 * 1024 * 1024,
         });
     }
 };

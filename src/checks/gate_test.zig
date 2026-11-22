@@ -73,9 +73,11 @@ const Package = struct {
         }
     }
 
-    /// `preflight gate` as the package's build runs it, with the module it exports.
+    /// `preflight gate` as the package's build runs it, with the module it exports and the
+    /// glint that lists its surface.
     fn gate(p: *Package) !std.process.RunResult {
-        return p.preflight(&.{ "gate", "--module", "build.zig=build.zig", "--module", "pkg=src/a.zig" });
+        const glint = try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, test_options.glint, p.arena.allocator());
+        return p.preflight(&.{ "gate", "--glint", glint, "--module", "build.zig=build.zig", "--module", "pkg=src/a.zig" });
     }
 
     /// The preflight program run in the package with `args`.

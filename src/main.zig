@@ -185,7 +185,7 @@ fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
     if (checks.release.held(c, src.policy(try c.options("ci/preflight.json")))) {
         try checks.release.versionAgrees(c);
         var builds: checks.release.Builds = .{ .c = c, .configure = configuredModules };
-        try checks.release.changelogNamesChanges(c, try modules(c.a, args.module), &builds);
+        try checks.release.changelogNamesChanges(c, try glintOf(c, args.glint), try modules(c.a, args.module), &builds);
     }
     if (c.errors != 0) return error.CheckFailed;
     try stdout(c.*, "gate: the caller, the version and the CHANGELOG hold; a tag needs a green release run on its commit\n");
@@ -348,19 +348,29 @@ fn configuredModules(c: *src.Context) !checks.glint.assembly.Build {
     return .{ .modules = try facts.buildModules(c.a, try facts.read(c.*, c.zig, &.{}), null) };
 }
 
+/// The glint program a command lists the public surface with (`--glint`), which the build
+/// passes; a command run without one fails, named.
+fn glintOf(c: *src.Context, glint: ?[]const u8) ![]const u8 {
+    return glint orelse {
+        c.fail("no glint to list the public surface with (--glint): the build passes the one its lint runs", .{});
+        return error.CheckFailed;
+    };
+}
+
 /// `surface`: the public surface of the modules the package exports, a line per declaration;
 /// with `--since <revision>`, what changed since it: `-` before a line removed or changed, `+`
 /// before one added. A release refuses a removed line without a `### Breaking` entry.
 fn surfaceCommand(c: *src.Context, args: @FieldType(Command, "surface")) !void {
     if (args.zig_exe) |zig| c.zig = zig;
     const exported = try modules(c.a, args.module);
+    const glint = try glintOf(c, args.glint);
     var builds: checks.release.Builds = .{ .c = c, .configure = configuredModules };
     var out: std.Io.Writer.Allocating = .init(c.a);
     if (args.since) |since| {
-        const change = try checks.release.surfaceSince(c, since, exported, &builds);
+        const change = try checks.release.surfaceSince(c, glint, since, exported, &builds);
         for (change.removed) |line| try out.writer.print("- {s}\n", .{line});
         for (change.added) |line| try out.writer.print("+ {s}\n", .{line});
-    } else for (try checks.release.surfaceOf(c, exported, &builds)) |line| try out.writer.print("{s}\n", .{line});
+    } else for (try checks.release.surfaceOf(c, glint, exported, &builds)) |line| try out.writer.print("{s}\n", .{line});
     try stdout(c.*, out.written());
 }
 
@@ -383,15 +393,15 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     if (c.errors != 0) return;
     try checks.fuzz.summary(c, sources, config, c.summary_path);
     // Without glint (`-Dci-lint=false`) the rest of the source checks still run.
-    if (!mode.skip_glint) {
-        const glint = mode.glint orelse {
-            c.fail("lint: no glint to run (--glint): the build passes the one its lint runs", .{});
-            return;
-        };
+    const glint: ?[]const u8 = if (mode.skip_glint) null else mode.glint orelse {
+        c.fail("lint: no glint to run (--glint): the build passes the one its lint runs", .{});
+        return;
+    };
+    if (glint) |program| {
         const named = try c.a.alloc(checks.glint.project.Exported, exported.len);
         for (named, exported) |*entry, module| entry.* = .{ .name = module.name, .root = module.root };
         const timer = stage(c, "glint");
-        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .exported = named, .glint = glint, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
+        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .exported = named, .glint = program, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
         timer.end(c.*, log);
         if (c.errors != 0) return;
     }
@@ -414,11 +424,15 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
         try checks.release.versionAgrees(c);
         timer.end(c.*, log);
         if (c.errors != 0) return;
-        timer = stage(c, "changelog");
-        var builds: checks.release.Builds = .{ .known = build };
-        try checks.release.changelogNamesChanges(c, exported, &builds);
-        timer.end(c.*, log);
-        if (c.errors != 0) return;
+        // The public surface is glint's to list: a lint without glint leaves the comparison
+        // to the lint that runs it, and to the gate a release runs.
+        if (glint) |program| {
+            timer = stage(c, "changelog");
+            var builds: checks.release.Builds = .{ .known = build };
+            try checks.release.changelogNamesChanges(c, program, exported, &builds);
+            timer.end(c.*, log);
+            if (c.errors != 0) return;
+        }
     }
     for (try src.items(src.get(config, "extra_checks"))) |command| {
         const argv = try checks.docs.zigCommand(c.a, c.buildCommand(), command);

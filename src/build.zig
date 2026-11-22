@@ -88,14 +88,13 @@ pub fn dependencyModule(dep: *std.Build.Dependency, name: []const u8) ?*std.Buil
 }
 
 /// The preflight program's root module from `pkg`'s sources, built in `b` for `target`:
-/// ReleaseSafe with glint, which gantry's Zig frontend shares, so gantry is built the
-/// same way, and ensign for its command line. Null while a lazy dependency is still to
+/// ReleaseSafe, gantry with it, and ensign for its command line. glint is a program the
+/// lint runs (`glintProgram`), never a library of the checks. Null while a lazy dependency is still to
 /// be fetched.
 pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedTarget) ?*std.Build.Module {
     const gantry_dep = pkg.dependencyLazy("gantry", .{ .target = target, .optimize = .safe }) catch return null;
     const gantry = dependencyModule(gantry_dep, "gantry") orelse return null;
     const gantry_zig = dependencyModule(gantry_dep, "gantry.zig") orelse return null;
-    const glint = pkg.dependencyLazy("glint", .{ .target = target, .optimize = .safe }) catch return null;
     const ensign = pkg.dependencyLazy("ensign", .{ .target = target, .optimize = .safe }) catch return null;
     // CHANGELOG.md read as bay, which releases from it, reads it.
     const bay = pkg.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch return null;
@@ -106,7 +105,7 @@ pub fn programModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedT
         .target = target,
         .optimize = .safe,
         // The planner weighs tests as the runner does, through its order module, which links std alone.
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint.module("glint") }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = pkg.path("src/order.zig") }) } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "ensign", .module = ensign.module("ensign") }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = pkg.path("src/order.zig") }) } },
     });
 }
 
@@ -318,7 +317,7 @@ const Steps = struct {
         // After the projection read `check`, so it never reads its own objects back.
         check.dependOn(steps.objects);
         if (config.portable_tests) portable.add(b, package, config.tests, executable, counted.names);
-        addCommandSteps(b, package, executable, config);
+        addCommandSteps(b, package, executable, glint, config);
         // The steps CI runs tests under, whose runs make a file a test root: `ci` holds the
         // tests, and the fuzzer and the hardened profile run the steps they name.
         var test_steps: std.ArrayList([]const u8) = .empty;
@@ -444,10 +443,11 @@ const Steps = struct {
 
 /// The steps that run one of the checks program's commands over `package`: the caller's plan
 /// and its regeneration, the build's facts and public surface, the release gate, the cache's
-/// pruning, the documentation regions and the deprecation codemod.
+/// pruning, the documentation regions and the deprecation codemod. The public surface is
+/// `glint`'s to list (`glint surface`): `surface` and `gate` run it, built only when they run.
 /// The planner reads the build's own facts: `plan`, `generate` and `gate` are told whether
 /// the tests are portable (`.portable_tests`), as the native link jobs need its `ci-build`.
-fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config: Config) void {
+fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, glint: std.Build.LazyPath, config: Config) void {
     const plan = executable.run(b);
     plan.addArg("plan");
     plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
@@ -472,7 +472,8 @@ fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config:
     configure.claim(b, "facts", "Read modules, steps and test roots from the Zig 0.17 configured build").dependOn(&facts.step);
     const surface = executable.run(b);
     // The build's modules, configured by this Zig, are what a facade is read through.
-    surface.addArgs(&.{ "surface", "--zig-exe", b.graph.zig_exe });
+    surface.addArgs(&.{ "surface", "--zig-exe", b.graph.zig_exe, "--glint" });
+    surface.addFileArg2(glint, .{});
     exported(b, package, surface);
     surface.addPassthruArgs();
     surface.setCwd(package.path("."));
@@ -481,7 +482,8 @@ fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config:
     // The gate a release runs (`bay release`): what a release needs beside its hosted
     // release run, in seconds. Releasing is bay's; preflight verifies.
     const gate = executable.run(b);
-    gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
+    gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe, "--glint" });
+    gate.addFileArg2(glint, .{});
     if (config.portable_tests) gate.addArg("--portable-tests");
     exported(b, package, gate);
     gate.addPassthruArgs();

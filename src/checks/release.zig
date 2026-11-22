@@ -11,6 +11,7 @@ const family = @import("../family.zig");
 const zon = @import("../zon.zig");
 const surface = @import("surface.zig");
 const assembly = @import("glint/assembly.zig");
+const lint = @import("glint.zig");
 
 const Manifest = struct { version: []const u8 };
 
@@ -76,8 +77,8 @@ pub fn versionAgrees(c: *src.Context) !void {
 /// `[Unreleased]` or in a release made since, and a removed or changed public declaration a
 /// breaking one (`### Breaking` or `### Removed`). Each failure names its fix. A package that
 /// has released nothing has no surface to compare with; one whose release tag this clone
-/// lacks fails (`lastTag`).
-pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module, builds: *Builds) !void {
+/// lacks fails (`lastTag`). `glint` is the program that lists each surface.
+pub fn changelogNamesChanges(c: *src.Context, glint: []const u8, modules: []const surface.Module, builds: *Builds) !void {
     if (!try c.exists("CHANGELOG.md") or modules.len == 0) return;
     const tag = (lastTag(c, try c.read("CHANGELOG.md")) catch |err| switch (err) {
         error.HistoryUnreadable, error.ReleaseUnnamed => return,
@@ -97,7 +98,7 @@ pub fn changelogNamesChanges(c: *src.Context, modules: []const surface.Module, b
         },
     };
     // Reported where it was found.
-    const change = surfaceSince(c, tag, modules, builds) catch |err| switch (err) {
+    const change = surfaceSince(c, glint, tag, modules, builds) catch |err| switch (err) {
         error.SurfaceUnreadable, error.HistoryUnreadable => return,
         else => return err,
     };
@@ -342,10 +343,11 @@ pub const Change = struct {
 /// The public surface's change since `tag`, each module read where `tag`'s `build.zig` rooted
 /// it, so a module moved or gone is compared too. `configured` is what the configured build
 /// exports now (`modulesSince`), and `builds` its modules, which a facade is read through.
-pub fn surfaceSince(c: *src.Context, tag: []const u8, configured: []const surface.Module, builds: *Builds) !Change {
+/// `glint` is the program that lists each surface (`glint surface`).
+pub fn surfaceSince(c: *src.Context, glint: []const u8, tag: []const u8, configured: []const surface.Module, builds: *Builds) !Change {
     const modules = try modulesSince(c, tag, configured);
-    const then = try surfaceAt(c, tag, modules.then, builds);
-    const now = try surfaceOf(c, modules.now, builds);
+    const then = try surfaceAt(c, glint, tag, modules.then, builds);
+    const now = try surfaceOf(c, glint, modules.now, builds);
     return .{ .removed = try surface.removed(c.a, then, now), .added = try surface.added(c.a, then, now) };
 }
 
@@ -375,8 +377,8 @@ fn modulesSince(c: *src.Context, tag: []const u8, configured: []const surface.Mo
 }
 
 /// The configured build's modules, which the public surface reads a facade through: known
-/// already (the lint's), or configured by `configure` the first time a surface imports a
-/// module, once for every surface read after.
+/// already (the lint's), or configured by `configure` the first time a surface is read, once
+/// for every surface read after.
 pub const Builds = struct {
     c: ?*src.Context = null,
     known: ?assembly.Build = null,
@@ -390,48 +392,121 @@ pub const Builds = struct {
     }
 };
 
-/// The working tree's public surface, a facade read through the modules `builds` gives.
-pub fn surfaceOf(c: *src.Context, modules: []const surface.Module, builds: *Builds) ![]const []const u8 {
-    return surface.list(c.a, c.a, c.io, modules, Tree{ .c = c }, builds);
+/// The working tree's public surface, as glint lists it, a facade read through the modules
+/// `builds` gives.
+pub fn surfaceOf(c: *src.Context, glint: []const u8, modules: []const surface.Module, builds: *Builds) ![]const []const u8 {
+    return surfaceIn(c, glint, ".", modules, builds);
 }
 
-/// The public surface at `revision`, its files read there and a facade read through the
-/// modules the configured build binds now: what a module's name means is the build's, and a
-/// revision's build is not configured here.
-fn surfaceAt(c: *src.Context, revision: []const u8, modules: []const surface.Module, builds: *Builds) ![]const []const u8 {
-    var files: ?std.StringHashMapUnmanaged(void) = null;
-    return surface.list(c.a, c.a, c.io, modules, Revision{ .c = c, .name = revision, .files = &files }, builds);
+/// Where a revision's sources are written for glint to list its surface, from the package's
+/// directory: one directory a revision, emptied before each write.
+const revisions_dir = ".zig-cache/preflight-lint/revisions";
+
+/// The public surface at `revision`, its sources written out of git and listed by glint, a
+/// facade read through the modules the configured build binds now: what a module's name means
+/// is the build's, and a revision's build is not configured here.
+fn surfaceAt(c: *src.Context, glint: []const u8, revision: []const u8, modules: []const surface.Module, builds: *Builds) ![]const []const u8 {
+    if (modules.len == 0) return &.{};
+    return surfaceIn(c, glint, try writeRevision(c, revision), modules, builds);
 }
 
-/// The package's files as the working tree holds them.
-pub const Tree = struct {
-    c: *const src.Context,
+/// The surface glint lists of the tree at `root`; a run that failed is reported, and its
+/// surface unreadable.
+fn surfaceIn(c: *src.Context, glint: []const u8, root: []const u8, modules: []const surface.Module, builds: *Builds) ![]const []const u8 {
+    if (modules.len == 0) return &.{};
+    const exported = try c.a.alloc(lint.project.Exported, modules.len);
+    for (exported, modules) |*entry, module| entry.* = .{ .name = module.name, .root = module.root };
+    // The build's bindings, which glint reads a facade through: those the caller knows, or
+    // the build configured where a file the surface reads imports a module by name, so a
+    // package that imports none never configures its build.
+    const build: assembly.Build = if (builds.known) |known| known else if (try importsModule(c, root, modules)) try builds.get() else .{};
+    return try lint.surface(c, .{ .glint = glint, .root = root, .exported = exported, .build = build }) orelse error.SurfaceUnreadable;
+}
 
-    pub fn read(tree: Tree, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
-        if (!try tree.c.exists(path)) return null;
-        return try a.dupe(u8, try tree.c.read(path));
+/// Files one surface's walk reads at most, as glint bounds a project.
+const max_reached = 4096;
+
+/// Whether a file the modules' roots reach through relative imports, in the tree at `root`,
+/// imports a module by name (`@import("dep")`): Zig's own names (`std`, `builtin`, `root`) are
+/// none, and a file outside the tree is another package's.
+fn importsModule(c: *src.Context, root: []const u8, modules: []const surface.Module) !bool {
+    const a = c.a;
+    var tree = try c.directory().openDir(c.io, root, .{});
+    defer tree.close(c.io);
+    var queued: std.array_hash_map.String(void) = .empty;
+    for (modules) |module| try queued.put(a, try assembly.normalize(a, module.root), {});
+    var next: usize = 0;
+    while (next < queued.count()) : (next += 1) {
+        if (next == max_reached) return true;
+        const path = queued.keys()[next];
+        const text = seam.document(c.io, tree, path, a, .source) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
+        var tokens = std.zig.Tokenizer.init(try a.dupeSentinel(u8, text, 0));
+        var last: [2]std.zig.Token.Tag = .{ .invalid, .invalid };
+        var spelled: [2][]const u8 = .{ "", "" };
+        while (true) {
+            const token = tokens.next();
+            if (token.tag == .eof) break;
+            defer {
+                last = .{ last[1], token.tag };
+                spelled = .{ spelled[1], tokens.buffer[token.loc.start..token.loc.end] };
+            }
+            if (token.tag != .string_literal or last[1] != .l_paren or last[0] != .builtin or !std.mem.eql(u8, spelled[0], "@import")) continue;
+            const name = std.zig.string_literal.parseAlloc(a, tokens.buffer[token.loc.start..token.loc.end]) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                // A literal Zig cannot read names nothing: the compile fails there, not the surface.
+                error.InvalidLiteral => continue,
+            };
+            // A ZON file is data: it imports nothing.
+            if (std.mem.endsWith(u8, name, ".zon")) continue;
+            if (std.mem.endsWith(u8, name, ".zig")) {
+                const target = try assembly.normalize(a, try std.Io.Dir.path.join(a, &.{ std.Io.Dir.path.dirname(path) orelse ".", name }));
+                if (std.Io.Dir.path.isAbsolute(target) or std.mem.startsWith(u8, target, "..")) continue;
+                try queued.put(a, target, {});
+                continue;
+            }
+            for ([_][]const u8{ "std", "builtin", "root" }) |own| {
+                if (std.mem.eql(u8, name, own)) break;
+            } else return true;
+        }
     }
-};
+    return false;
+}
+
+/// Writes `revision`'s Zig sources (`git archive`, the package's directory in it) under
+/// `revisions_dir`: the directory they are in, from the package's.
+fn writeRevision(c: *src.Context, revision: []const u8) ![]const u8 {
+    const dir = c.directory();
+    const at = try c.a.print("{s}/{s}", .{ revisions_dir, revision });
+    // What a write before left there is no part of this revision.
+    try dir.deleteTree(c.io, at);
+    try dir.createDirPath(c.io, at);
+    const argv: []const []const u8 = &.{ "git", "archive", "--format=tar", try c.a.print("{s}:./", .{revision}), "--", "*.zig", "*.zon" };
+    const archived = try seam.runReport(c.a, c.io, .{ .argv = argv, .cwd = c.childCwd(), .environ_map = c.environ_map }, .tree);
+    if (!succeeded(archived)) {
+        c.fail("{s}: {s}", .{ try std.mem.join(c.a, " ", argv), std.mem.trim(u8, archived.stderr, " \r\n") });
+        return error.HistoryUnreadable;
+    }
+    var out = try dir.openDir(c.io, at, .{});
+    defer out.close(c.io);
+    var reader: std.Io.Reader = .fixed(archived.stdout);
+    std.tar.extract(c.io, out, &reader, .{}) catch |err| {
+        c.fail("{s}: its sources were not written to {s} ({t})", .{ try std.mem.join(c.a, " ", argv), at, err });
+        return error.HistoryUnreadable;
+    };
+    return at;
+}
 
 /// The package's files as a revision holds them. A file the revision does not hold is null; git
 /// failing otherwise is an error, reported, never a file that is not there.
 pub const Revision = struct {
     c: *src.Context,
     name: []const u8,
-    /// The revision's files, from the package's directory, listed by one git run on the first
-    /// read, where a surface reads hundreds; null asks git of each file.
-    files: ?*?std.StringHashMapUnmanaged(void) = null,
 
     pub fn read(at: Revision, a: std.mem.Allocator, path: []const u8) !?[]const u8 {
-        if (at.files) |known| {
-            if (known.* == null) {
-                var tree: std.StringHashMapUnmanaged(void) = .empty;
-                var lines = std.mem.splitScalar(u8, try must(at.c, &.{ "git", "ls-tree", "-r", "--name-only", at.name }), '\n');
-                while (lines.next()) |line| if (line.len != 0) try tree.put(at.c.a, line, {});
-                known.* = tree;
-            }
-            if (!known.*.?.contains(path)) return null;
-        } else if ((try must(at.c, &.{ "git", "ls-tree", "--name-only", at.name, "--", path })).len == 0) return null;
+        if ((try must(at.c, &.{ "git", "ls-tree", "--name-only", at.name, "--", path })).len == 0) return null;
         const result = try git(at.c.*, &.{ "git", "show", try a.print("{s}:./{s}", .{ at.name, path }) });
         if (!succeeded(result)) {
             at.c.fail("git show {s}:./{s}: {s}", .{ at.name, path, std.mem.trim(u8, result.stderr, " \r\n") });
@@ -443,10 +518,13 @@ pub const Revision = struct {
 
 // Tests ------------------------------------------------------------------
 
+/// The glint the lint's tests run, which lists the fixtures' surfaces.
+const test_glint = @import("test_options").glint;
+
 /// The changelog check with no build to read a facade through: the fixtures import no module.
 fn changelogUnbound(c: *src.Context, modules: []const surface.Module) !void {
     var builds: Builds = .{};
-    return changelogNamesChanges(c, modules, &builds);
+    return changelogNamesChanges(c, test_glint, modules, &builds);
 }
 
 // A package in a temporary directory with a git history of its own, away from the user's git configuration.
@@ -705,6 +783,34 @@ test "a shallow clone and a failing git are errors, never a surface compared wit
     try std.testing.expect(std.mem.find(u8, f.held.written(), "this clone is shallow") != null);
     var c = f.context();
     var unconfigured: Builds = .{};
-    try std.testing.expectError(error.HistoryUnreadable, surfaceSince(&c, "v9.9.9", &package_modules, &unconfigured));
+    try std.testing.expectError(error.HistoryUnreadable, surfaceSince(&c, test_glint, "v9.9.9", &package_modules, &unconfigured));
     try std.testing.expectEqual(@as(usize, 1), c.errors);
+}
+
+test "the build is configured for a surface only where a file the roots reach imports a module by name" {
+    const f = try Fixture.init("0.1.0");
+    defer f.deinit();
+    var c = f.context();
+    // std, a ZON file and a file outside the tree bind nothing of the build's.
+    try f.write("src/a.zig", "const std = @import(\"std\");\nconst zon = @import(\"../build.zig.zon\");\npub const b = @import(\"deep/b.zig\");\n");
+    try f.write("src/deep/b.zig", "const outside = @import(\"../../../elsewhere.zig\");\npub const x = 1;\n");
+    try f.write("bench/b.zig", "const dep = @import(\"dep\");\n");
+    try std.testing.expect(!try importsModule(&c, ".", &package_modules));
+    // Two relative imports away, a module by name.
+    try f.write("src/deep/b.zig", "pub const core = @import(\"pkg_core\");\n");
+    try std.testing.expect(try importsModule(&c, ".", &package_modules));
+    // A configuring build that cannot configure is never asked where nothing imports a module.
+    try f.write("src/deep/b.zig", "pub const x = 1;\n");
+    const Unconfigurable = struct {
+        fn configure(_: *src.Context) anyerror!assembly.Build {
+            return error.BuildNotConfigured;
+        }
+    };
+    var builds: Builds = .{ .c = &c, .configure = Unconfigurable.configure };
+    const lines = try surfaceOf(&c, test_glint, &package_modules, &builds);
+    try std.testing.expectEqual(0, c.errors);
+    // glint's lines, the declaration a relative import reaches among them.
+    for (lines) |line| {
+        if (std.mem.startsWith(u8, line, "pkg.b.x ")) break;
+    } else return error.TestUnexpectedResult;
 }

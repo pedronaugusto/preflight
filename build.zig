@@ -68,10 +68,6 @@ pub fn dev(b: *std.Build, _: type) void {
     const gantry_dep = package.dependencyLazy("gantry", .{ .target = target, .optimize = .debug }) catch return pending(b);
     const gantry = ci.dependencyModule(gantry_dep, "gantry") orelse return pending(b);
     const gantry_zig = ci.dependencyModule(gantry_dep, "gantry.zig") orelse return pending(b);
-    // Code rules are glint's; the checks import it as a library. A module that
-    // sets no optimize mode takes its importer's, so the tests, which build
-    // aegis in Debug for themselves, take glint in Debug and share it.
-    const glint = (package.dependencyLazy("glint", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("glint");
     // The command line's tests hold the forms the build and the workflows call it with.
     const ensign = (package.dependencyLazy("ensign", .{ .target = target, .optimize = .debug }) catch return pending(b)).module("ensign");
     const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = .debug }).module("shakedown");
@@ -85,7 +81,7 @@ pub fn dev(b: *std.Build, _: type) void {
         .root_source_file = package.path("src/checks.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "glint", .module = glint }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis } },
+        .imports = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_zig }, .{ .name = "ensign", .module = ensign }, .{ .name = "shakedown", .module = shakedown }, .{ .name = "changelog", .module = bay.module("changelog") }, .{ .name = "aegis", .module = aegis } },
     }), .filters = test_filters });
     const options = b.addOptions();
     options.addOptionPathUntracked("root", package.path("."));
@@ -272,10 +268,9 @@ fn benchImports(_: *const Bench.Imports, b: *std.Build, target: std.Build.Resolv
     // Lazy, and fetched already: dev returns before addCi while gantry, glint or bay is not.
     const gantry_dep = package.dependency("gantry", .{ .target = target, .optimize = optimize });
     const gantry = gantry_dep.module("gantry");
-    const glint = package.dependency("glint", .{ .target = target, .optimize = optimize }).module("glint");
     const changelog = package.dependency("bay", .{ .target = target, .optimize = optimize }).module("changelog");
     const aegis = package.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
-    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "glint", .module = glint }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = package.path("src/order.zig") }) } };
+    const imports: []const std.Build.Module.Import = &.{ .{ .name = "gantry", .module = gantry }, .{ .name = "gantry.zig", .module = gantry_dep.module("gantry.zig") }, .{ .name = "changelog", .module = changelog }, .{ .name = "aegis", .module = aegis }, .{ .name = "preflight_order", .module = b.createModule(.{ .root_source_file = package.path("src/order.zig") }) } };
     // The lint runs glint as a program: the one preflight pins, built for the machine the
     // benchmark runs on, as the lint's own build makes it.
     const glint_options = b.addOptions();

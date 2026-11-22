@@ -283,10 +283,12 @@ Missing markers, stale blocks and failed generators fail the gate.
 
 ### Code rules
 
-The code rules are glint's, and `zig build lint` runs them as a library: preflight
-reads the files, classifies them, resolves each import the way the configured build
-does and hands glint its policy in one project. Nothing is parsed twice and
-no child process stands between a finding and the gate.
+The code rules are glint's, and `zig build lint` runs glint as a program over a
+project file preflight writes (glint's program contract, version 1): the files it
+selects and what each is, the configured build's modules, and its policy. glint
+resolves each import the way the build binds it and gives each finding its verdict;
+the run's record vouches that the report read back is that run's and whole, and a
+run it does not vouch for fails. Nothing stands between a finding and the gate.
 
 **Files.** Every Zig file the package ships (`build.zig.zon`'s `.paths`), those under
 `examples`, `ci`, `conformance` and `bench` where they exist, and `build.zig`.
@@ -767,8 +769,9 @@ in seconds what a release needs beside that run, each refusal naming its fix:
    `b.addModule("name", .{ .root_source_file = b.path("...") })` calls at the last tag and now,
    so a module moved or no longer exported is compared too; a build that names a module or its
    root through anything but a literal is refused, since what its tag exported cannot be read.
-   The surface is read with glint's project model from the modules' root files, following
-   their relative imports and the types a function returning `type` makes. A line per
+   The surface is glint's (`glint surface`), read from the modules' root files, following
+   their relative imports and the types a function returning `type` makes: the working
+   tree's in place, the tag's from its Zig sources written out of git. A line per
    declaration: a function's parameter and return types, a field's type, the fields a struct
    literal must name, what a public constant aliases, a constant's value, and an exhaustive
    enum's tags and a tagged union's fields as one set, which every exhaustive switch names. A

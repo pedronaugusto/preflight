@@ -106,12 +106,6 @@ fn projectFile(c: *src.Context, inputs: Inputs, chosen: policy.Policy, paths: []
             .vendored = vendored,
         };
     }
-    const modules = try a.alloc(project.Module, inputs.build.modules.len);
-    for (modules, inputs.build.modules) |*module, built| {
-        const imports = try a.alloc(project.Binding, built.imports.len);
-        for (imports, built.imports) |*binding, import| binding.* = .{ .name = import.name, .module = import.module };
-        module.* = .{ .root = built.root, .contents = built.contents, .script = built.script, .imports = imports };
-    }
     // glint's options have one home, the repository's glint.json, which a glint run without
     // preflight reads too; glint reads it where the package has one.
     const options: ?[]const u8 = if (c.directory().access(c.io, "glint.json", .{})) |_| "glint.json" else |err| switch (err) {
@@ -121,7 +115,7 @@ fn projectFile(c: *src.Context, inputs: Inputs, chosen: policy.Policy, paths: []
     return .{
         .zig_lib = if (inputs.build.std_dir) |dir| std.Io.Dir.path.dirname(dir) else null,
         .release = inputs.release,
-        .modules = modules,
+        .modules = try modulesOf(a, inputs.build),
         .exported = inputs.exported,
         .files = files,
         .policy = chosen.data(options),
@@ -148,62 +142,149 @@ fn contract(c: *src.Context, glint: []const u8) !bool {
     return false;
 }
 
-/// Runs glint over `file`: its report, once its record vouches for it; null where the run failed,
+/// Where one kind of glint run keeps what it hands glint and what glint answers, from the
+/// package's directory, and the prefix of its run's id.
+const Kept = struct { name: []const u8, project: []const u8, output: []const u8, record: []const u8 };
+const lint_kept: Kept = .{ .name = "lint", .project = project_path, .output = report_path, .record = record_path };
+const surface_kept: Kept = .{ .name = "surface", .project = lint_dir ++ "/surface-project.json", .output = lint_dir ++ "/surface.txt", .record = lint_dir ++ "/surface-result.json" };
+
+/// What a glint run wrote, once its record vouches for it: its exit status and its output.
+const Vouched = struct { status: u8, output: []const u8 };
+
+/// Runs `glint` over `file`, `command` (none for a lint, `surface`) before the project file and
+/// `options` after it: its output, once its record vouches for it; null where the run failed,
 /// named.
-fn runGlint(c: *src.Context, inputs: Inputs, file: project.ProjectFile) !?report.Report {
+fn vouched(c: *src.Context, glint: []const u8, file: project.ProjectFile, kept: Kept, command: []const []const u8, options: []const []const u8) !?Vouched {
     const a = c.a;
     const dir = c.directory();
     try dir.createDirPath(c.io, lint_dir);
-    try dir.writeFile(c.io, .{ .sub_path = project_path, .data = try project.text(a, file) });
+    try dir.writeFile(c.io, .{ .sub_path = kept.project, .data = try project.text(a, file) });
     // A record a run before left is no record of this one; the id says which run wrote it.
-    dir.deleteFile(c.io, record_path) catch |err| switch (err) {
+    dir.deleteFile(c.io, kept.record) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
     var id: [8]u8 = undefined;
     c.io.random(&id);
-    const run_id = try a.print("lint-{x}", .{&id});
+    const run_id = try a.print("{s}-{x}", .{ kept.name, &id });
     var argv: std.ArrayList([]const u8) = .empty;
     // The record's request comes first: glint reads it before the line, so a line it refuses
     // still leaves a record.
-    try argv.appendSlice(a, &.{ inputs.glint, "--result", record_path, "--run-id", run_id, "--project", project_path, "--format", "json" });
-    if (inputs.fix) try argv.append(a, "--fix");
-    if (inputs.escapes_before) |path| try argv.appendSlice(a, &.{ "--escapes-before", try std.Io.Dir.cwd().realPathFileAlloc(c.io, path, a) });
+    try argv.appendSlice(a, &.{ glint, "--result", kept.record, "--run-id", run_id });
+    try argv.appendSlice(a, command);
+    try argv.appendSlice(a, &.{ "--project", kept.project });
+    try argv.appendSlice(a, options);
     // glint is another process: a cancel is this one's to see, before the run and after it,
-    // where a canceled run's report is no answer.
+    // where a canceled run's output is no answer.
     try c.io.checkCancel();
     const status = status: {
-        const out = try dir.createFile(c.io, report_path, .{});
+        const out = try dir.createFile(c.io, kept.output, .{});
         defer out.close(c.io);
         break :status try c.runStatus(.{ .name = "glint", .argv = argv.items, .cwd = c.childCwd(), .environ_map = c.environ_map, .stdout = .of(out) });
     };
     try c.io.checkCancel();
-    const output = try seam.document(c.io, dir, report_path, a, .report);
-    const record = seam.document(c.io, dir, record_path, a, .list) catch |err| switch (err) {
+    const output = try seam.document(c.io, dir, kept.output, a, .report);
+    const record = seam.document(c.io, dir, kept.record, a, .list) catch |err| switch (err) {
         error.FileNotFound => {
-            c.fail("glint: the run left no record ({s}), exit status {?d}: it ended before it began, and its report is no answer", .{ record_path, status });
+            c.fail("glint: the run left no record ({s}), exit status {?d}: it ended before it began, and its output is no answer", .{ kept.record, status });
             return null;
         },
         else => return err,
     };
     switch (try report.verdict(a, record, run_id, status, output)) {
-        .report => {},
+        .report => |code| return .{ .status = code, .output = output },
         .failed => |outcome| {
-            c.fail("glint: the run ended with {s}, which glint says above: no report", .{outcome});
+            c.fail("glint: the run ended with {s}, which glint says above: no answer", .{outcome});
             return null;
         },
         .mismatch => |why| {
-            c.fail("glint: the run's report is not vouched for: {s}", .{why});
+            c.fail("glint: the run's output is not vouched for: {s}", .{why});
             return null;
         },
     }
-    return report.parse(a, output) catch |err| switch (err) {
+}
+
+/// Runs glint's lint over `file`: its report, once its record vouches for it; null where the run
+/// failed, named.
+fn runGlint(c: *src.Context, inputs: Inputs, file: project.ProjectFile) !?report.Report {
+    const a = c.a;
+    var options: std.ArrayList([]const u8) = .empty;
+    try options.appendSlice(a, &.{ "--format", "json" });
+    if (inputs.fix) try options.append(a, "--fix");
+    if (inputs.escapes_before) |path| try options.appendSlice(a, &.{ "--escapes-before", try std.Io.Dir.cwd().realPathFileAlloc(c.io, path, a) });
+    const run = (try vouched(c, inputs.glint, file, lint_kept, &.{}, options.items)) orelse return null;
+    return report.parse(a, run.output) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             c.fail("glint: {s}: not a report this preflight reads ({t})", .{ report_path, err });
             return null;
         },
     };
+}
+
+/// What a public surface is read of.
+pub const SurfaceOf = struct {
+    /// The glint program, from this process's directory.
+    glint: []const u8,
+    /// The package's tree, from its directory: its own, or a revision's written out apart.
+    root: []const u8 = ".",
+    /// The modules the package exports, by the name a consumer imports each by.
+    exported: []const project.Exported,
+    /// The configured build's modules, through which glint reads a facade.
+    build: assembly.Build = .{},
+};
+
+/// The first line of the surface glint writes, by the contract's version.
+const surface_header = std.fmt.comptimePrint("glint-surface {d}", .{project.version});
+
+/// The public surface glint lists of `of.root` (`glint surface`): one line per declaration a
+/// consumer reaches through the exported modules, sorted, compared whole. Null where the run
+/// failed or its record does not vouch for its lines, named.
+pub fn surface(c: *src.Context, of: SurfaceOf) !?[]const []const u8 {
+    const a = c.a;
+    // `--glint` names the program from this process's directory; glint runs in the package's.
+    const glint = try std.Io.Dir.path.resolveAlloc(a, &.{ try std.process.currentPathAlloc(c.io, a), of.glint });
+    if (!try contract(c, glint)) return null;
+    // Each exported root is a file glint reads, once though two modules share it.
+    var files: std.ArrayList(project.File) = .empty;
+    for (of.exported) |module| {
+        for (files.items) |file| {
+            if (std.mem.eql(u8, file.path, module.root)) break;
+        } else try files.append(a, .{ .path = module.root, .kind = .production, .ships = true, .max_function_lines = null, .function_exceptions = &.{}, .vendored = null });
+    }
+    const file: project.ProjectFile = .{
+        .root = of.root,
+        .zig_lib = if (of.build.std_dir) |dir| std.Io.Dir.path.dirname(dir) else null,
+        .release = false,
+        .modules = try modulesOf(a, of.build),
+        .exported = of.exported,
+        .files = files.items,
+        // A surface runs no rule: the policy is the contract's to carry, and holds nothing.
+        .policy = .{ .levels = &.{}, .floor = null, .shipped_bans = &.{}, .disallowed = &.{}, .fact_budget = policy.fact_budget, .strict_suppressions = false, .metrics = false, .config = null, .repo_options = null },
+    };
+    const run = (try vouched(c, glint, file, surface_kept, &.{"surface"}, &.{})) orelse return null;
+    var lines = std.mem.splitScalar(u8, run.output, '\n');
+    if (run.status != 0 or !std.mem.eql(u8, std.mem.trimEnd(u8, lines.first(), "\r"), surface_header)) {
+        c.fail("glint: {s}: not a surface this preflight reads (exit status {d}; it reads `{s}` first)", .{ surface_kept.output, run.status, surface_header });
+        return null;
+    }
+    var listed: std.ArrayList([]const u8) = .empty;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimEnd(u8, line, "\r");
+        if (trimmed.len != 0) try listed.append(a, trimmed);
+    }
+    return listed.items;
+}
+
+/// The build's modules as the project file says them.
+fn modulesOf(a: std.mem.Allocator, build: assembly.Build) ![]const project.Module {
+    const modules = try a.alloc(project.Module, build.modules.len);
+    for (modules, build.modules) |*module, built| {
+        const imports = try a.alloc(project.Binding, built.imports.len);
+        for (imports, built.imports) |*binding, import| binding.* = .{ .name = import.name, .module = import.module };
+        module.* = .{ .root = built.root, .contents = built.contents, .script = built.script, .imports = imports };
+    }
+    return modules;
 }
 
 /// glint's assertion counts, each call by the declaration it resolves to (std's `debug.assert`,

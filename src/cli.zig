@@ -54,6 +54,7 @@ pub const Cli = struct {
 /// The Zig the build runs, which a command builds and reads the package with.
 const zig_exe: ensign.Option = .{ .value_name = "PATH", .hint = .command, .help = "The Zig the package builds with; zig on the path by default" };
 /// A module the package exports, as the build passes them, and its `build.zig`.
+const surface_glint: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The glint program that lists the public surface (`glint surface`, its program contract, version 1): the build passes it" };
 const module: ensign.Option = .{ .value_name = "NAME=ROOT", .help = "A module the package exports and its root file, repeated: the public surface a release must not break unannounced" };
 const working_directory: ensign.Option = .{ .value_name = "DIR", .hint = .directory, .help = "Where the planned jobs run, when not the repository's root (preflight's own gate runs its sample there)" };
 const workflow_config: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json of the working directory by default" };
@@ -161,12 +162,14 @@ pub const Lint = struct {
 
 pub const Surface = struct {
     zig_exe: ?[]const u8 = null,
+    glint: ?[]const u8 = null,
     since: ?[]const u8 = null,
     module: []const []const u8 = &.{},
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The public declarations of the modules the package exports, a line per declaration",
         .options = .{
             .zig_exe = zig_exe,
+            .glint = surface_glint,
             .since = .{ .value_name = "REVISION", .help = "What changed since this revision: - before a line removed or changed, + before one added" },
             .module = module,
         },
@@ -175,13 +178,14 @@ pub const Surface = struct {
 
 pub const Gate = struct {
     zig_exe: ?[]const u8 = null,
+    glint: ?[]const u8 = null,
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
     module: []const []const u8 = &.{},
     portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "What a release needs beside its hosted release run: the caller plan generates, the version the CHANGELOG's newest release, and the public API's changes named there",
-        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module, .portable_tests = portable_tests },
+        .options = .{ .zig_exe = zig_exe, .glint = surface_glint, .config = workflow_config, .working_directory = working_directory, .module = module, .portable_tests = portable_tests },
     };
 };
 

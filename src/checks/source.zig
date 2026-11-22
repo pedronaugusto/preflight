@@ -128,6 +128,24 @@ pub const Context = struct {
         c.errors += 1;
     }
 
+    /// Appends `text` to the hosted job's summary (`summary_path`), where it has one. The
+    /// summary is a copy of what the check says: one that cannot be written is said, and fails
+    /// nothing.
+    pub fn summarize(c: Context, text: []const u8) void {
+        const path = c.summary_path orelse return;
+        appendSummary(c, path, text) catch |err| c.report("preflight: the job's summary {s} was not written ({t})\n", .{ path, err });
+    }
+
+    fn appendSummary(c: Context, path: []const u8, text: []const u8) !void {
+        const file = try c.directory().createFile(c.io, path, .{ .truncate = false, .read = true });
+        defer file.close(c.io);
+        var buffer: [4096]u8 = undefined;
+        var writer = file.writer(c.io, &buffer);
+        writer.pos = (try file.stat(c.io)).size;
+        try writer.interface.writeAll(text);
+        try writer.interface.flush();
+    }
+
     pub fn read(c: Context, path: []const u8) ![]const u8 {
         return seam.packageFile(c.io, c.directory(), path, c.a);
     }

@@ -88,6 +88,10 @@ pub const Job = struct {
     prepare: []const u8 = "",
     /// A job of the package's own (`jobs`), which runs as declared: never split into a link and a replay.
     declared: bool = false,
+    /// A declared job whose result the run shows and does not take (`advisory`): the gate runs
+    /// it with `continue-on-error`, and its name says `non-blocking`, as Zig master's does, so
+    /// the `runners` job names its failure. Null, and so absent from the matrix, for the rest.
+    advisory: ?bool = null,
     /// The machine the job's tests run on (`-Dci-vm`), whose tools the runner installs.
     machine: Machine = .none,
     /// A job of the package's own that names no runner: the package's on any machine, which
@@ -277,7 +281,7 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
     for (declared.array.items) |entry| {
         if (entry != .object) return error.InvalidDeclaredJob;
         for (entry.object.keys()) |key_name| {
-            for ([_][]const u8{ "name", "step", "os", "tiers", "args", "directory", "setup", "timeout", "shards" }) |known| {
+            for ([_][]const u8{ "name", "step", "os", "tiers", "args", "directory", "setup", "timeout", "shards", "advisory" }) |known| {
                 if (std.mem.eql(u8, key_name, known)) break;
             } else {
                 problem = key_name;
@@ -304,6 +308,12 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
         const setup = src.get(entry, "setup");
         if (setup != .null and setup != .bool and setup != .string) return error.InvalidDeclaredJob;
         const count = shardCount(src.get(entry, "shards")) catch return error.InvalidDeclaredJob;
+        const marked = src.get(entry, "advisory");
+        if (marked != .null and marked != .bool) {
+            problem = try a.print("jobs: {s}: advisory is true or false", .{name});
+            return error.InvalidDeclaredJob;
+        }
+        const advisory = marked == .bool and marked.bool;
         const hosted = src.get(entry, "os");
         const systems: []const src.Value = if (hosted == .null) &.{.{ .string = hosts[0] }} else if (hosted == .array and hosted.array.items.len != 0) hosted.array.items else return error.InvalidDeclaredJob;
         for (systems) |system| {
@@ -315,9 +325,11 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
             const hosted_name = if (systems.len > 1) try a.print("{s} ({s})", .{ name, os }) else name;
             for (0..count) |i| {
                 const shard = try shardName(a, i, count);
+                const named = if (count > 1) try a.print("{s} shard {s}", .{ hosted_name, shard }) else hosted_name;
                 var job: Job = .{
                     .os = os,
-                    .name = if (count > 1) try a.print("{s} shard {s}", .{ hosted_name, shard }) else hosted_name,
+                    .name = if (advisory) try a.print("{s} (non-blocking)", .{named}) else named,
+                    .advisory = if (advisory) true else null,
                     .step = step,
                     .args = std.mem.trimStart(u8, try buildArgs(a, src.get(entry, "args")), " "),
                     .shard = shard,
@@ -1810,7 +1822,40 @@ test "a package's own jobs join the tiers they name, on the hosts they name, wit
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"shards\":\"2\"}]}",
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"needs\":\"gate\"}]}",
         "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\"},{\"name\":\"x\",\"step\":\"u\"}]}",
+        "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"advisory\":\"yes\"}]}",
     }) |bad| try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .ci)));
+}
+
+test "an advisory job runs as declared, says non-blocking in its name and carries its flag in the matrix" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // relic's git-master leg: its tests against git's unreleased head, shown and not taken.
+    const config = (try std.json.parseFromSlice(src.Value, a,
+        \\{"jobs":[
+        \\ {"name":"git master","step":"ci-git-master","advisory":true,"shards":2},
+        \\ {"name":"conformance","step":"test","advisory":false}]}
+    , .{})).value;
+    var advisory: usize = 0;
+    for (try plan(a, config, .ci)) |job| if (job.declared) {
+        if (std.mem.eql(u8, job.step, "ci-git-master")) {
+            advisory += 1;
+            try std.testing.expectEqual(@as(?bool, true), job.advisory);
+            try std.testing.expectEqualStrings(try a.print("git master shard {s} (non-blocking)", .{job.shard}), job.name);
+        } else {
+            // One that says false is any declared job: its result is the run's.
+            try std.testing.expectEqual(@as(?bool, null), job.advisory);
+            try std.testing.expectEqualStrings("conformance", job.name);
+        }
+    };
+    try std.testing.expectEqual(@as(usize, 2), advisory);
+    const listed = try include(a, try plan(a, config, .ci));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, listed, "\"advisory\":true"));
+    try std.testing.expect(std.mem.find(u8, listed, "\"advisory\":false") == null);
+    // A non-boolean is refused naming the job.
+    problem = "";
+    try std.testing.expectError(error.InvalidDeclaredJob, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"jobs\":[{\"name\":\"git master\",\"step\":\"t\",\"advisory\":1}]}", .{})).value, .ci));
+    try std.testing.expectEqualStrings("jobs: git master: advisory is true or false", problem);
 }
 
 test "the native link jobs are planned on the build's ci-build exactly when its tests are portable, never on a step it lacks" {

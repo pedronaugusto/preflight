@@ -48,7 +48,10 @@ pub fn main(init: std.process.Init) !void {
             if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, step, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
         },
         .profile => |args| try profileCommand(c, args),
-        .runners => |args| try checks.runners.check(&c, args.jobs),
+        .runners => |args| {
+            c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
+            try checks.runners.check(&c, args.jobs);
+        },
         .fetch => for (try checks.command.fetches(a, c.buildCommand(), init.environ_map.get("BUILD_ARGS") orelse "")) |argv| try checks.command.retry(c, "fetch", argv),
         .fuzz_campaign => |args| {
             c.environ_map = init.environ_map;

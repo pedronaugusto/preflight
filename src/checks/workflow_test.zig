@@ -132,9 +132,13 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "toolchain", "gate", "compile", "execute" }) |name| {
+    for ([_][]const u8{ "toolchain", "compile", "execute" }) |name| {
         try std.testing.expect(std.mem.find(u8, try job(workflow, name), "\n    continue-on-error:") == null);
     }
+    // The gate's jobs block the run, but for a declared job marked advisory (`matrix.advisory`).
+    const gate = try job(workflow, "gate");
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, gate, "\n    continue-on-error:"));
+    try contains(gate, "\n    continue-on-error: ${{ matrix.advisory == true }}\n");
     // Publishing the blocking gate's proof never depends on master.
     try contains(try job(workflow, "profile"), "needs: [toolchain, gate, compile, execute]");
 }

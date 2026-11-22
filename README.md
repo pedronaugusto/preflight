@@ -488,7 +488,9 @@ until GitHub cancelled it ("not acquired by Runner") ends cancelled with no runn
 step, and a cancelled result is no job's red: the profile skips, and the run could end with
 a platform's tests never run and nothing failing by name. `runners` reads the run attempt's
 jobs with the token's `actions: read` (`preflight runners --jobs`) and fails on each, with
-the minutes it was queued; a non-blocking job (Zig master's) is reported and fails nothing.
+the minutes it was queued; a non-blocking job (Zig master's, an advisory declared job's) is
+reported and fails nothing. It names each non-blocking job that failed too, in the log and
+the run's summary, and fails nothing: their failure is no job's red, and is shown there.
 Nothing is retried: the run is dispatched again by whoever reads why.
 The shared runner shuffles test order using the test seed in every tier and in local
 runs. A direct run prints the seed; under `zig build` a passing run prints
@@ -680,7 +682,8 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
     {"name": "conformance", "step": "test", "directory": "conformance", "os": ["ubuntu-latest", "macos-latest"]},
     {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["release"]},
     {"name": "corpus sizes", "step": "check-sizes", "tiers": ["ci", "release"], "setup": false, "timeout": 30},
-    {"name": "ThreadSanitizer", "step": "test", "args": ["-Dthread-sanitizer=true"], "tiers": ["release"], "shards": 3}
+    {"name": "ThreadSanitizer", "step": "test", "args": ["-Dthread-sanitizer=true"], "tiers": ["release"], "shards": 3},
+    {"name": "git master", "step": "ci-git-master", "advisory": true}
   ]}
   ```
 
@@ -690,7 +693,10 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   `setup_step` (true, the default), nothing (false) or a step of the job's own; `timeout` is
   in minutes; `shards` splits a test step over that many jobs on each host, each running the
   share `PREFLIGHT_SHARD` names, as the hosts' own test jobs are split. A declared job has the gate's setup, caches and toolchain, and a landing waits for
-  it. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
+  it. `advisory: true` runs it and shows its result without taking it, as the Zig master job
+  is run: the gate runs it with `continue-on-error`, its name says `non-blocking`, and the
+  `runners` job names its failure in the log and the run's summary (a package's tests against
+  a dependency's unreleased head, such as relic's against git's). Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
 - `targets`, `build_args`, `shards`, `fast_shards`, `cross_jobs`, `cross_seconds`,
   `riscv64_seconds`, `portable_hosts`, `hardened`: what the tiers build and

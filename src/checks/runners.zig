@@ -35,18 +35,48 @@ pub fn unserved(a: std.mem.Allocator, pages: src.Value) ![]const Unserved {
         // profile) waited for no runner: a job GitHub never gave one was queued a minute or more.
         if (completed - created < 60) continue;
         const name = try src.string(src.get(job, "name"), "(unnamed)");
-        try found.append(a, .{ .name = name, .minutes = @divFloor(completed - created, 60), .blocking = std.mem.find(u8, name, "non-blocking") == null });
+        try found.append(a, .{ .name = name, .minutes = @divFloor(completed - created, 60), .blocking = blocking(name) });
     };
     return found.items;
 }
 
-/// `runners`: fails on each job of the listing at `path` that GitHub never gave a runner.
+/// Whether the run takes a job's result: one named non-blocking (Zig master's, and a declared
+/// job marked `advisory`, which the gate runs with `continue-on-error`) shows its result and
+/// takes none.
+fn blocking(name: []const u8) bool {
+    return std.mem.find(u8, name, "non-blocking") == null;
+}
+
+/// The non-blocking jobs of `pages` that failed: their failure fails no job, so this is where the
+/// run names it.
+pub fn advisoryFailures(a: std.mem.Allocator, pages: src.Value) ![]const []const u8 {
+    var found: std.ArrayList([]const u8) = .empty;
+    for (try src.items(pages)) |page| for (try src.items(src.get(page, "jobs"))) |job| {
+        if (!std.mem.eql(u8, try src.string(src.get(job, "conclusion"), ""), "failure")) continue;
+        const name = try src.string(src.get(job, "name"), "(unnamed)");
+        if (!blocking(name)) try found.append(a, name);
+    };
+    return found.items;
+}
+
+/// `runners`: fails on each job of the listing at `path` that GitHub never gave a runner, and
+/// names each non-blocking job that failed, in the log and the job's summary, failing nothing.
 pub fn check(c: *src.Context, path: []const u8) !void {
-    const listed = try unserved(c.a, try c.json(path));
+    const pages = try c.json(path);
+    const listed = try unserved(c.a, pages);
     for (listed) |job| if (job.blocking) {
         c.fail("runners: {s}: queued {d} min and cancelled before any runner took it; its tests never ran. Dispatch the run again", .{ job.name, job.minutes });
     } else c.report("runners: {s}: queued {d} min and cancelled before any runner took it; it blocks nothing\n", .{ job.name, job.minutes });
     if (listed.len == 0) c.report("runners: every job of the run that was queued had a runner\n", .{});
+    const failed = try advisoryFailures(c.a, pages);
+    if (failed.len == 0) return;
+    var summary: std.Io.Writer.Allocating = .init(c.a);
+    try summary.writer.writeAll("### Non-blocking jobs that failed\n\nThe run does not take their results; each is named here.\n\n");
+    for (failed) |name| {
+        c.report("runners: {s}: failed; it is non-blocking and fails nothing\n", .{name});
+        try summary.writer.print("- {s}\n", .{name});
+    }
+    c.summarize(summary.written());
 }
 
 /// Seconds since the epoch of a UTC timestamp as the API writes one, `2026-11-16T15:25:14Z`.
@@ -115,4 +145,36 @@ test "the jobs GitHub never gave a runner are named with their minutes queued, a
     try std.testing.expectEqual(@as(i64, 6), found[2].minutes);
     try std.testing.expect(!found[2].blocking);
     try std.testing.expectEqual(@as(usize, 0), (try unserved(a, try std.json.parseFromSliceLeaky(src.Value, a, "[{\"jobs\":[]}]", .{}))).len);
+}
+
+test "a non-blocking job that failed is named in the log and the job's summary, and fails nothing" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // relic's git-master leg, a declared job marked advisory, failed beside a green blocking job
+    // and a blocking one that failed, whose failure is its own job's red.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "jobs.json", .data =
+        \\[{"jobs":[
+        \\ {"name":"gate / git master (non-blocking)","conclusion":"failure","runner_id":7,"steps":[{"name":"Set up job"}],"created_at":"2026-11-22T10:00:00Z","completed_at":"2026-11-22T10:20:00Z"},
+        \\ {"name":"gate / test (ubuntu-latest, Debug)","conclusion":"success","runner_id":8,"steps":[{"name":"Set up job"}],"created_at":"2026-11-22T10:00:00Z","completed_at":"2026-11-22T10:15:00Z"},
+        \\ {"name":"gate / test (macos-latest, Debug)","conclusion":"failure","runner_id":9,"steps":[{"name":"Set up job"}],"created_at":"2026-11-22T10:00:00Z","completed_at":"2026-11-22T10:15:00Z"},
+        \\ {"name":"gate / Zig master (Linux Debug, non-blocking)","conclusion":"success","runner_id":10,"steps":[{"name":"Set up job"}],"created_at":"2026-11-22T10:00:00Z","completed_at":"2026-11-22T10:30:00Z"}
+        \\]}]
+    });
+    var held: std.Io.Writer.Allocating = .init(a);
+    var c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .of(tmp.dir), .held = &held, .summary_path = "summary.md" };
+    try check(&c, "jobs.json");
+    try std.testing.expectEqual(@as(usize, 0), c.errors);
+    try std.testing.expect(std.mem.find(u8, held.written(), "runners: gate / git master (non-blocking): failed; it is non-blocking and fails nothing\n") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, held.written(), "failed;"));
+    const summary = try c.read("summary.md");
+    try std.testing.expect(std.mem.find(u8, summary, "- gate / git master (non-blocking)\n") != null);
+    try std.testing.expect(std.mem.find(u8, summary, "macos") == null);
+    // A run whose non-blocking jobs passed writes nothing to the summary.
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "jobs.json", .data = "[{\"jobs\":[]}]" });
+    try tmp.dir.deleteFile(std.testing.io, "summary.md");
+    try check(&c, "jobs.json");
+    try std.testing.expectError(error.FileNotFound, c.read("summary.md"));
 }

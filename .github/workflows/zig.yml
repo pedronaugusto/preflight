@@ -108,6 +108,9 @@ jobs:
     # A dispatched fuzz run's minutes are its own, which the plan never saw: its job has
     # GitHub's whole limit, and the budget (at most 330 minutes) ends it first.
     timeout-minutes: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
+    # A declared job marked advisory runs and shows its result without taking the run's: the
+    # `runners` job names its failure.
+    continue-on-error: ${{ matrix.advisory == true }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}

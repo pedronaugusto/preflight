@@ -6,14 +6,14 @@
     .paths = .{ "build.zig", "build.zig.zon", "src", "README.md", "CHANGELOG.md", "LICENSE" },
     .dependencies = .{
         .glint = .{
-            .url = "git+https://github.com/pedronaugusto/glint?ref=glint-0.8#f6cfbe306990894adedd805ff0bbf810d625c7fe",
-            .hash = "glint-0.7.5-3jcpof-bIQBLWMeEemGhQcr5iBvRoTwqUppFJTGjQbj5",
+            .url = "git+https://github.com/pedronaugusto/glint#91c4533f701faa4f8b2c87693e2409affd62d628",
+            .hash = "glint-0.7.5-3jcpobUgIAAm7BBYePtwL1298W-jyp88GMaaLWcq4he0",
             .lazy = true,
         },
 
         .gantry = .{
-            .url = "git+https://github.com/pedronaugusto/gantry?ref=main#7c88363ee579632a24d07d53e4bc5125559c3889",
-            .hash = "gantry-0.3.4-1iNrkYIWDQBVXfIFV8o3GhhbKfOqfVDbDq9jpyGBvndX",
+            .url = "git+https://github.com/pedronaugusto/gantry#868ab47957ebec82d49472e41c3bc9480f8ed777",
+            .hash = "gantry-0.3.4-1iNrkf9qDQAHC4u8Jc4OLJcfDG7jKj3idJgQEE3A0jOq",
             .lazy = true,
         },
 
@@ -21,10 +21,11 @@
         // built with by zig cc, from their releases, fetched by every build of a package that
         // names a held git (as it configures) and by no other.
         .held_git_zlib = .{
-            // zlib's own release asset, immutable: zlib.net serves only its current release and
-            // answers a moved one with an HTML page (riscv64's fetch in run 43773076157).
-            .url = "https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz",
-            .hash = "N-V-__8AAH8jNwDPTrkJ1_Rx__jQMDeVEmuPIIHps-wt3xza",
+            // zlib v1.4's commit, as GitHub archives it: its tree holds the `configure` the build
+            // runs. zlib.net serves only its current release and answers a moved one with an
+            // HTML page (riscv64's fetch in run 43773076157).
+            .url = "https://github.com/madler/zlib/archive/99623ef7097352da7993ba614161fd6a311e046e.tar.gz",
+            .hash = "N-V-__8AADeSNwCAtCXEaVDOpYKVEwzI_t4kH_e8MqWuSIdE",
             .lazy = true,
         },
 
@@ -94,26 +95,26 @@
         },
 
         .bay = .{
-            .url = "git+https://github.com/pedronaugusto/bay#b0070735645b594a61b8d07388589863594df7b7",
-            .hash = "bay-0.2.2-uwJ5Z2s7CwDsVgo2xJcxHlvNimcGQrAoR92ZRX7zc_Ne",
+            .url = "git+https://github.com/pedronaugusto/bay?ref=v0.3.0#a8f7ae14cdfdbc5495f6aee7022052e47c966d45",
+            .hash = "bay-0.3.0-uwJ5Z5BPDABiC7b1RnoojHbaZxOwIIEkAaW-QrWn1dYI",
             .lazy = true,
         },
 
         .ensign = .{
-            .url = "git+https://github.com/pedronaugusto/ensign#1e6ff3cbf3fa7fa6024ecc5e6e485a884af3b953",
-            .hash = "ensign-0.3.1-6eMTD4C3BQBEku2xvEmP1XX4xd4egoiEI4ztNGqx3foe",
+            .url = "git+https://github.com/pedronaugusto/ensign?ref=v0.4.0#b2eff8e12477646cb5080d4dc9046b9db01d4f6f",
+            .hash = "ensign-0.4.0-6eMTDzG9BQACQVy33mHglI09ENzUhYe8tWeRizNKAPky",
             .lazy = true,
         },
 
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#f52eabef3ec6534c3a74bea3a3b7d95a91ce2581",
-            .hash = "aegis-0.2.4-rsxouoquDQApwYDuGdd2YyEeTeNp6CnJoOZKdVCfc3jt",
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.4.0#4739dccd71cfc16b0c15bc27e2d7dca76de9bc21",
+            .hash = "aegis-0.4.0-rsxouv1KDgCdGc-mhY-qBfyE70ar4OQiGGKHKndirWnQ",
         },
     },
     .dev_dependencies = .{
         .shakedown = .{
-            .url = "git+https://github.com/pedronaugusto/shakedown?ref=main#b168f3a3a29db5009e8b69b70c4599772a6e30c7",
-            .hash = "shakedown-0.6.0-BR8U40OAGwB4GTWYxlXnxCIyekBpU9BYzfN1OlnPAkl2",
+            .url = "git+https://github.com/pedronaugusto/shakedown#1f3fdcca0dd9e614f740eb8ada7435e8846a54f3",
+            .hash = "shakedown-0.6.0-BR8U4-SXHABXCZHRi3IOVSI6f_OA0qhTnviVDKPtwTje",
         },
     },
 }

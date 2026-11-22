@@ -347,9 +347,8 @@ retired: there is no undecided count, and no escape count, to hold.
 policy a level below it (`off` for a reported rule, `off` or `report` for a finding) fails by
 name, since a repository may only raise the family's bar; without it the level is the
 project's, and the lint names each rule set below its default. A package's rule (`A004`)
-resolves once the run reads the packages' `lint_rules`. An unknown or removed id fails with
-glint's own words for it (`glint.RemovedRule`: A019 is P007 now, A010 is gone, A007 is
-aegis's), and P001, P002, P004 and E001 say where their sites went. There is no profile:
+resolves once the run reads the packages' `lint_rules`. An id that is neither glint's nor a
+package's fails by name ("`Z999` is not a rule glint has"). There is no profile:
 the default policy is preflight's, and a deviation is a visible line. `function_limit`
 (120), `function_limits` (a lower ceiling by path) and `function_exceptions` (an exact
 `path:function`, a ceiling and a reason; growth fails, and one that names no function

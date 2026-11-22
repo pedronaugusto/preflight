@@ -402,11 +402,9 @@ const Steps = struct {
         if (config.portable_tests) fixing.addArg("--portable-tests");
         buildScripts(b, package, fixing);
         configurationOptions(b, fixing);
-        // `zig build fix -- --escapes-before FILE`: the record the escape rename reads.
-        fixing.addPassthruArgs();
         fixing.setCwd(package.path("."));
         fixing.has_side_effects = true;
-        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources (the aegis pack's old escapes and names rewritten in glint's suppression form), then report what is left").dependOn(&fixing.step);
+        configure.claim(b, "fix", "Apply glint's deterministic fixes to the sources, then report what is left").dependOn(&fixing.step);
         // The documented snippets alone: a lint that fails, or refuses its configuration,
         // never hides a broken one, and the hosted plan runs them as a job of their own.
         const snippets = executable.run(b);

@@ -120,14 +120,6 @@ const retired = [_]struct { key: []const u8, instead: []const u8 }{
 
 const glint_keys = [_][]const u8{"rules"};
 
-/// The rules glint folded into others: a repository still naming one is told where its sites went.
-const folded = [_]struct { id: []const u8, instead: []const u8 }{
-    .{ .id = "P001", .instead = "a pointer conversion is P007's; the safe build checks the rest" },
-    .{ .id = "P002", .instead = "runtime safety switched off is P007's" },
-    .{ .id = "P004", .instead = "`catch unreachable` is Z026's" },
-    .{ .id = "E001", .instead = "a pointer into a function's frame is P009's" },
-};
-
 /// glint settings that went with the rules they set: P001's cast reasons are the danger rules'
 /// now (A010's integer conversions, A019's pointer conversions), whose sites carry the pack's
 /// escape.
@@ -472,13 +464,6 @@ fn parseBlock(c: *src.Context, block: src.Value, selections: *std.ArrayList(glin
             c.fail("glint: {s}: level `{s}` is not off, report or gate", .{ id.string, named.string });
             continue;
         };
-        const gone = for (folded) |rule| {
-            if (std.mem.eql(u8, id.string, rule.id)) break rule;
-        } else null;
-        if (gone) |rule| {
-            c.fail("glint: {s} is retired: {s}", .{ rule.id, rule.instead });
-            continue;
-        }
         const rule = glint.parseRule(id.string, &.{}) orelse {
             // A name of glint's own form that glint does not have is no package's either.
             if (glintForm(id.string)) {
@@ -537,13 +522,9 @@ fn glintOptions(c: *src.Context, base: *glint.Config) !void {
     }
 }
 
-/// What a configuration naming `name`, which no rule of the run has, is told: glint's own words
-/// for it (`glint.RemovedRule`), so preflight and glint refuse a name alike.
+/// What a configuration naming `name`, which no rule of the run has, is told.
 fn refusal(c: *src.Context, name: []const u8) []const u8 {
-    var out: std.Io.Writer.Allocating = .init(c.a);
-    // An allocating writer fails only when memory does.
-    glint.RemovedRule.refuse(&out.writer, name) catch @panic("OOM");
-    return out.written();
+    return c.a.print("`{s}` is not a rule glint has", .{name}) catch @panic("OOM");
 }
 
 /// Whether `name` is of glint's own form (Z, P or D and a number), which no package may declare.

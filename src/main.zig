@@ -298,7 +298,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const exported = try modules(a, args.module);
     const exported_roots = try a.alloc([]const u8, exported.len);
     for (exported_roots, exported) |*root, module| root.* = module.root;
-    try lint(c, init.gpa, config, sources, code, tests.items, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .escapes_before = args.escapes_before, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, code, tests.items, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -386,7 +386,7 @@ fn executable(c: src.Context, path: []const u8) !void {
     }
 }
 
-fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, tests: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, escapes_before: ?[]const u8, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
+fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, tests: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
     };
@@ -395,7 +395,7 @@ fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []c
     // Without glint (`-Dci-lint=false`) the rest of the source checks still run.
     if (!mode.skip_glint) {
         const timer = stage(c, "glint");
-        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .escapes_before = mode.escapes_before, .release = mode.release });
+        try checks.glint.check(c, .{ .gpa = gpa, .config = config, .build = build, .fix = mode.fix, .release = mode.release });
         timer.end(c.*, log);
         if (c.errors != 0) return;
     }

@@ -748,7 +748,7 @@ fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, targ
         var measured = c;
         measured.peak = &peak;
         const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
-        defer timer.endWith(c, log, if (peak) |p| .{ .bytes = p.tree, .single = p.single, .jobs = jobs orelse checks.phases.cpus() } else null);
+        defer timer.endWith(c, log, if (peak) |p| checks.phases.Memory.sampled(p.tree, p.single, jobs orelse checks.phases.cpus()) else null);
         try checks.command.execute(measured, try c.a.print("{s} {s}", .{ kind.label, name }), argv);
     }
 }

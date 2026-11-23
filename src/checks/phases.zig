@@ -30,8 +30,20 @@ pub const Log = struct {
 };
 
 /// The most memory a phase's tree held, and any one process of it, in bytes, and the jobs its
-/// build ran at once (`-j`).
-pub const Memory = struct { bytes: u64, single: u64, jobs: u32 };
+/// build ran at once (`-j`). The tree's is never less than the one process's.
+pub const Memory = struct {
+    bytes: u64,
+    single: u64,
+    jobs: u32,
+
+    /// A phase's memory from its bound's reading (`bounded.zig`). Linux's tree is the most a
+    /// sample saw of the group's resident sum, its one process the kernel's own high-water mark
+    /// (`VmHWM`), which a compile peaking between samples leaves above any sample of the sum;
+    /// the tree held that process, so it held at least as much.
+    pub fn sampled(tree: u64, single: u64, jobs: u32) Memory {
+        return .{ .bytes = @max(tree, single), .single = single, .jobs = jobs };
+    }
+};
 
 /// The CPUs a build runs a job on each of by default, as Zig's `-j` does; one where unknown.
 pub fn cpus() u32 {
@@ -119,6 +131,21 @@ test "a phase is added to the summary and the record, after what the files hold"
     try std.testing.expect(std.mem.find(u8, record, "\n{\"phase\":\"compile \\\"x\\\"\",\"seconds\":") != null);
     try std.testing.expect(std.mem.find(u8, record, "\"peak_bytes\":16106127360,\"single_bytes\":9234179072,\"jobs\":4}\n") != null);
     try std.testing.expect(std.mem.find(u8, text, "at most 15.00 GiB, 8.60 GiB in one process, at -j4\n") != null);
+}
+
+test "a peak one process held between the tree's samples is the tree's too, so profile reads it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = arena.allocator(), .io = std.testing.io, .dir = .of(tmp.dir) };
+    const log: Log = .{ .summary = "summary.md", .record = "phases-job.ndjson" };
+    // Linux: the samples saw 1 GiB resident across the group, the kernel 3 GiB in one process.
+    const memory: Memory = .sampled(1 << 30, 3 << 30, 2);
+    try std.testing.expectEqual(@as(u64, 3 << 30), memory.bytes);
+    Timer.begin(c, "compile x86_64-linux").endWith(c, log, memory);
+    const record = try c.read("phases-job.ndjson");
+    try std.testing.expect(std.mem.find(u8, record, "\"peak_bytes\":3221225472,\"single_bytes\":3221225472,\"jobs\":2}\n") != null);
 }
 
 test "a job without a name keeps no record" {

@@ -496,15 +496,10 @@ test "every caller runs the ci tier on each push to main and pull request, and t
     try std.testing.expect(std.mem.find(u8, plain, "options: [ci, release, fuzz]") != null);
     // Each push runs on its own commit; nothing confirms another run's, and the release tier runs weekly.
     try std.testing.expect(std.mem.find(u8, plain, "format('push-{0}', github.sha)") != null);
-    for ([_][]const u8{ "merge_group", "attest", "status-only", "fast-matrix", "merge-matrix" }) |gone| try std.testing.expect(std.mem.find(u8, plain, gone) == null);
     try std.testing.expect(std.mem.find(u8, plain, "      ci-matrix: >-\n") != null);
     // Releasing is bay's: no caller lands, tags or writes.
     try std.testing.expect(std.mem.find(u8, plain, "land") == null);
     try std.testing.expect(std.mem.find(u8, plain, "contents: write") == null);
-    // A caller that still asks for the old triggers is refused by name.
-    for ([_][]const u8{ "{\"attest\":true}", "{\"nightly\":false}" }) |text| {
-        try std.testing.expectError(error.ObsoleteTrigger, render(a, (try std.json.parseFromSlice(src.Value, a, text, .{})).value, pin, ".", false, "ci.yml", 0));
-    }
 }
 
 test "the weekly release time is a minute of the week of the package's own, spread over the week" {

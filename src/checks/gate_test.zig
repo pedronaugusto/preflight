@@ -159,13 +159,13 @@ test "lint refuses a stale caller before a push, not first at a release's gate, 
     }
 }
 
-test "the gate changes nothing in the package: a retired key in ci/workflow.json is refused by name, and left for generate" {
+test "the gate changes nothing in the package: a key it refuses stays as written" {
     const p = try Package.init();
     defer p.deinit();
-    const config = "{\"nightly\":true}\n";
+    const config = "{\"lnad\":true}\n";
     try p.write("ci/workflow.json", config);
-    try p.git(&.{ "commit", "-q", "-am", "A retired trigger" });
-    try refused(try p.gate(), "ci/workflow.json: `nightly` is retired: run `bay generate`, which takes it out, and commit it");
+    try p.git(&.{ "commit", "-q", "-am", "A key the planner does not read" });
+    try refused(try p.gate(), "ci/workflow.json: refused: `lnad` is not a key of this file");
     const kept = try p.tmp.dir.readFileAlloc(std.testing.io, "ci/workflow.json", p.arena.allocator(), .limited(4096));
     try std.testing.expectEqualStrings(config, kept);
 }
@@ -213,27 +213,6 @@ test "a package carrying what a release needs passes the gate, which runs no job
         return error.TestUnexpectedResult;
     }
     try std.testing.expect(std.mem.find(u8, result.stdout, "a tag needs a green release run on its commit") != null);
-}
-
-test "generate takes the retired triggers and switches out of ci/workflow.json, naming each, and the gate passes after" {
-    const p = try Package.init();
-    defer p.deinit();
-    try p.write("ci/workflow.json", "{\"attest\": true, \"compile_once\": true, \"cross_jobs\": 1, \"nightly\": false}\n");
-    try p.git(&.{ "commit", "-q", "-am", "The old triggers" });
-    const generated = try p.preflight(&.{"generate"});
-    if (generated.term != .exited or generated.term.exited != 0) {
-        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ generated.stdout, generated.stderr });
-        return error.TestUnexpectedResult;
-    }
-    for ([_][]const u8{ "dropped `attest`", "dropped `nightly`", "dropped `compile_once`" }) |said| try std.testing.expect(std.mem.find(u8, generated.stderr, said) != null);
-    const config = try p.tmp.dir.readFileAlloc(std.testing.io, "ci/workflow.json", p.arena.allocator(), .limited(4096));
-    try std.testing.expectEqualStrings("{\n  \"cross_jobs\": 1\n}\n", config);
-    try p.git(&.{ "commit", "-q", "-am", "Generated" });
-    const gated = try p.gate();
-    if (gated.term != .exited or gated.term.exited != 0) {
-        std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ gated.stdout, gated.stderr });
-        return error.TestUnexpectedResult;
-    }
 }
 
 test "the documented snippets are checked on their own, a broken one named where the lint refuses its configuration" {

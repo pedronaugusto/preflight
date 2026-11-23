@@ -14,7 +14,7 @@ The policy is the group review's. Z026 (a discarded error needs its reason) gate
 
 A run is complete or it is not a pass. The run fails on a file that does not parse or lower, on an exhausted fact budget, on a site a gating rule could not decide, on a file that cannot be read, and on a suppression that suppresses nothing (the default; a repository may turn it off). A finding the policy allows never hides one of these. This closes the review's finding F04, which the ziglint fork could not close: it had no outcome for an analysis that stopped. There is no profile to select: the default policy is preflight's, a repository amends it rule by rule, and a setting preflight cannot honour fails by name rather than turn a gate off.
 
-Exceptions are glint's inline `glint-ignore` with a reason, one site each. The exact-match ledgers (`ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`) and their shrinking budget retire with the tool they were for. A retired key fails the repository that still names it.
+Exceptions are glint's inline `glint-ignore` with a reason, one site each. A key preflight does not read fails the repository that names it.
 
 ## Configured builds and target projection
 

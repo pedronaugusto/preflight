@@ -214,13 +214,10 @@ const own_ref = "preflight-ref: ${{ github.sha }}\n";
 
 /// The caller at `path` (from the repository's top), `existing` if there is one, as
 /// `generate` makes it now for the package's pins and configuration.
-/// Only `generate` `writes`: it takes retired keys out of the configuration. The gate and the
-/// lint change nothing in the package, and refuse a retired key by name.
-fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: ?[]const u8, own: bool, manifest: []const u8, drops: []const []const u8, writes: bool) ![]const u8 {
+fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, existing: ?[]const u8, own: bool, manifest: []const u8, drops: []const []const u8) ![]const u8 {
     const given = if (std.mem.eql(u8, found.config, "ci/workflow.json")) null else found.config;
     const label = try workflow.heading(c.a, given, path, found.working_directory, own, c.stepCommand("generate"));
     var config = try workflow.configuration(c.*, found.config);
-    if (writes) try dropRetired(c, found.config, &config) else try refuseRetired(c, found.config, config);
     if (sdk) |add| try add(c, &config, found.gate);
     return workflow.generate(c.*, config, manifest, found.gate, own, label, existing, drops) catch |err| {
         if (err == error.UndeclaredCallerJob) {
@@ -230,43 +227,6 @@ fn generateCaller(c: *src.Context, found: Caller, sdk: ?Sdk, path: []const u8, e
         } else c.fail("generate: {s} cannot be generated again: {t}", .{ path, err });
         return error.CallerRefused;
     };
-}
-
-/// Takes the keys of triggers and switches that are gone (`matrix.obsolete_triggers`,
-/// `matrix.obsolete_switches`) out of the package's
-/// configuration at `path`, writing it again without them and naming each: moving a package
-/// to this preflight is `generate` alone, where `plan` and `gate` refuse them by name.
-fn dropRetired(c: *src.Context, path: []const u8, config: *src.Value) !void {
-    if (config.* != .object) return;
-    // The file as written: the configuration read for planning holds the records beside it.
-    var written = try c.options(path);
-    if (written != .object) return;
-    var dropped = false;
-    for (matrix.obsolete_triggers) |name| if (written.object.orderedRemove(name)) {
-        _ = config.object.orderedRemove(name);
-        c.report("generate: {s}: dropped `{s}`: every push to main runs the ci tier, and the release tier runs weekly at the package's own time\n", .{ path, name });
-        dropped = true;
-    };
-    for (matrix.obsolete_switches) |name| if (written.object.orderedRemove(name)) {
-        _ = config.object.orderedRemove(name);
-        c.report("generate: {s}: dropped `{s}`: the tests compile once exactly when the build's are portable (addCi's .portable_tests, its ci-build step)\n", .{ path, name });
-        dropped = true;
-    };
-    if (!dropped) return;
-    var text: std.Io.Writer.Allocating = .init(c.a);
-    try std.json.Stringify.value(written, .{ .whitespace = .indent_2 }, &text.writer);
-    try text.writer.writeByte('\n');
-    try c.directory().writeFile(c.io, .{ .sub_path = path, .data = text.written() });
-}
-
-/// Refuses, by name, each key of triggers and switches that are gone in the configuration at
-/// `path`: `generate` takes them out, and nothing but `generate` writes the package.
-fn refuseRetired(c: *src.Context, path: []const u8, config: src.Value) !void {
-    if (config != .object) return;
-    const before = c.errors;
-    for (matrix.obsolete_triggers ++ matrix.obsolete_switches) |name| if (config.object.contains(name))
-        c.fail("{s}: `{s}` is retired: run `{s}`, which takes it out, and commit it", .{ path, name, c.stepCommand("generate") });
-    if (c.errors != before) return error.CallerRefused;
 }
 
 /// `c` reading and writing from `top`, the repository's top opened.
@@ -287,7 +247,7 @@ fn requireCurrentCaller(c: *src.Context, found: Caller, sdk: ?Sdk) !void {
     const existing = try at_top.read(path);
     const own = std.mem.find(u8, existing, own_ref) != null;
     const before = c.errors;
-    if (!std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{}, false)))
+    if (!std.mem.eql(u8, existing, try generateCaller(c, found, sdk, path, existing, own, "build.zig.zon", &.{})))
         c.fail("{s} is not what generate makes for this package's pins and {s}: run `{s}` and commit it", .{ path, found.config, c.stepCommand("generate") });
     // The checkout's line endings are generate's too: a repository without the file, or with
     // another, has a Windows checkout write CRLF into what its tests read.
@@ -365,7 +325,7 @@ pub fn generate(c: *src.Context, request: Request, sdk: ?Sdk) ![]const u8 {
     const path = try c.a.print(".github/workflows/{s}", .{found.name});
     const existing = if (try at_top.exists(path)) try at_top.read(path) else null;
     const own = request.own or (if (existing) |text| std.mem.find(u8, text, own_ref) != null else false);
-    const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops, true);
+    const text = try generateCaller(c, found, sdk, path, existing, own, request.manifest, request.drops);
     // The repository's .gitattributes beside it, made again where it is not what it should be.
     const wanted = try attributesFor(c, found);
     const held: ?[]const u8 = if (try at_top.exists(attributes.path)) try at_top.read(attributes.path) else null;

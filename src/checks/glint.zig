@@ -441,13 +441,12 @@ test "the list of every finding names a vendored file's carried sites as carried
     try std.testing.expect(failing > printed);
 }
 
-test "a site a ban cannot decide is a finding, and `glint.unresolved` is retired by name" {
+test "a site a ban cannot decide is a finding" {
     const f = try Fixture.init();
     defer f.deinit();
     // `@setRuntimeSafety` with a computed argument: P007 cannot show the checks stay on.
     try f.file("src/root.zig", "pub fn run(comptime on: bool) void {\n    @setRuntimeSafety(on);\n}\n");
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", .{}) != 0);
-    try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"],\"glint\":{\"unresolved\":{\"P007\":1}}}", .{}) != 0);
 }
 
 test "function length: the limit, a per-path ceiling and a reasoned exception that cannot grow or go stale" {

@@ -330,8 +330,7 @@ sites carry, and changed, it fails the run. Every rule takes one suppression,
 `// glint-ignore: <rule>, ... -- <reason>`; the aegis escape form is read no more, and
 `zig build fix` (`bay dev fix`) rewrites it into that form. The run prints the first 25
 findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when there are
-more) and a line of the shipped bans' findings. `glint.unresolved` and `glint.escapes` are
-retired: there is no undecided count, and no escape count, to hold.
+more) and a line of the shipped bans' findings.
 
 **A repository amends the policy** in the `glint` object of `ci/preflight.json`:
 
@@ -361,11 +360,9 @@ nothing. A finding that policy allows
 never hides one of these.
 
 **Suppression** is glint's: one real comment, one site, a reason,
-`// glint-ignore: Z026 -- cleanup after a failure the caller already gets`. There are
-no ledgers: `ziglint_exceptions`, `unreachable_exceptions`, `debug_print_exceptions`,
-`ziglint_paths` and `glint_config` are retired, as are `glint.casts`,
-`glint.cast_scope` and `glint.strict_suppressions`, and a repository that still names one fails by name, so that no gate
-is believed that is not there. A malformed suppression or escape is named where it is and
+`// glint-ignore: Z026 -- cleanup after a failure the caller already gets`. A key
+preflight does not read fails the run by name, so that no gate is believed that is not
+there. A malformed suppression or escape is named where it is and
 leaves the run incomplete.
 
 Assertion counts per function and package appear in the run summary as a report,
@@ -454,8 +451,7 @@ Compiling and invoked Zig must be the same build, and one `src/zig_version.zig` 
 Packages with relocatable test binaries set `.portable_tests = true` in the
 build helper, and that one switch plans the release tier's native link jobs: `plan`,
 `gate` and `generate` read from the build whether it has `ci-build`, so a link job is
-never planned on a step the build lacks (`compile_once` in `ci/workflow.json` was a
-second switch; `generate` drops it). Each Windows runner links its tests with the native SDK (macOS builds them
+never planned on a step the build lacks. Each Windows runner links its tests with the native SDK (macOS builds them
 where they run, its legs sharing one runner); shards download
 and execute those binaries through
 Zig's test protocol, retaining per-test timeouts and custom watchdogs. A program

@@ -965,19 +965,6 @@ test "the sample's clean code passes the gate" {
     try lintSample(null, null, false);
 }
 
-test "a repository still naming a retired lint setting fails by name" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/preflight.json", .data = "{\"sources\": [\"src\"], \"test_roots\": [\"src/sample.zig\"], \"ziglint_exceptions\": \"ci/ziglint-exceptions.json\"}\n" });
-    const result = try lintFixture(a, tmp.dir);
-    try std.testing.expect(result.term == .exited and result.term.exited != 0);
-    try std.testing.expect(std.mem.find(u8, result.stderr, "`ziglint_exceptions` is retired") != null);
-}
-
 test "a key ci/preflight.json does not hold fails the lint by name, with where it belongs or the nearest key" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

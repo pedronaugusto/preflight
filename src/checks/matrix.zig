@@ -23,20 +23,6 @@ const tsan_name = "tsan";
 pub const shard_hosts = host_names ++ arm_host_names ++ .{ emulated_host_name, freebsd_host_name, tsan_name };
 /// Every runner a job may name.
 const every_host = hosts ++ arm_hosts;
-/// Named cases with weights gave way to per-test shards that the test runner
-/// balances by `ci/durations.json`.
-const obsolete = [_][]const u8{ "windows_shards", "fast_windows_shards", "shard_jobs", "fast_linux_shards", "fast_linux_jobs", "test_timeout" };
-/// Every push and pull request runs the ci tier on its commit and the release tier runs weekly and by dispatch, so
-/// a push that only confirmed another run (`attest`) and the nightly (`nightly`) are gone; a caller that still sets
-/// them is refused by name.
-pub const obsolete_triggers = [_][]const u8{ "attest", "nightly" };
-/// Whether the tests compile once and link on each host was a switch beside the build's own
-/// (`addCi`'s `.portable_tests`, its `ci-build` step), and the two disagreed: native link jobs
-/// planned on a `ci-build` the build never defined (riverrun, cairn, tide: "no such step:
-/// ci-build"). The build's fact is the one switch now; `generate` drops the old one.
-pub const obsolete_switches = [_][]const u8{"compile_once"};
-/// A ThreadSanitizer run of a package's own step is a declared job (`jobs`), and preflight's own is `hardened`.
-const obsolete_sanitizer = [_][]const u8{ "sanitizer", "sanitizer_job_timeout" };
 
 /// What the last refused configuration got wrong, for the command to print beside the error: the
 /// planner is a library, and a test that expects the refusal must not see it logged as a failure.
@@ -370,13 +356,6 @@ fn relativeDirectory(path: []const u8) !void {
 
 fn basePlan(a: std.mem.Allocator, config: src.Value, tier: Tier) ![]Job {
     try validate(a, config);
-    for (obsolete) |name| if (src.get(config, name) != .null and !std.mem.eql(u8, name, "test_timeout")) return error.ObsoleteShardConfig;
-    for (obsolete_sanitizer) |name| if (src.get(config, name) != .null) {
-        problem = name;
-        return error.ObsoleteSanitizer;
-    };
-    // The watchdog bounds each test (`Config.test_timeout`).
-    if (src.get(config, "test_timeout") != .null) return error.ObsoleteTestTimeout;
     switch (tier) {
         .ci => return ciPlan(a, config),
         .release => {},
@@ -1008,24 +987,12 @@ fn releaseJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job
 
 fn validate(a: std.mem.Allocator, config: src.Value) !void {
     if (config != .object) return error.InvalidWorkflowConfig;
-    for (obsolete_triggers) |name| if (config.object.contains(name)) {
-        problem = name;
-        return error.ObsoleteTrigger;
-    };
-    for (obsolete_switches) |name| if (config.object.contains(name)) {
-        problem = "compile_once is gone: the build's tests compile once exactly when they are portable (addCi's .portable_tests, its ci-build step); `generate` drops it";
-        return error.ObsoleteSwitch;
-    };
-    if (config.object.contains("windows_git_latest")) {
-        problem = "windows_git_latest is gone: a package holds one git on every job, Windows' as that Git for Windows release; name it with `preflight held-git-pin <version>`";
-        return error.ObsoleteWindowsGit;
-    }
     _ = heldgit.parse(config) catch |err| {
         problem = heldgit.problem;
         return err;
     };
     for (config.object.keys()) |name| {
-        for (workflow_options ++ obsolete ++ obsolete_sanitizer) |known| {
+        for (workflow_options) |known| {
             if (std.mem.eql(u8, name, known)) break;
         } else {
             problem = try a.print("`{s}` is not a key of this file{s}", .{ name, try keys.hint(a, .workflow, name) });
@@ -1547,24 +1514,10 @@ test "a riscv64 column a finished run measured weighs only the tests that job ru
     }
 }
 
-test "named weighted cases are refused, naming the per-test shards that replace them" {
+test "no job passes a test timeout: the watchdog bounds each test" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    for ([_][]const u8{ "{\"windows_shards\":[{\"name\":\"core\",\"seconds\":3}]}", "{\"fast_linux_jobs\":2}", "{\"shard_jobs\":5}" }) |text| {
-        const config = (try std.json.parseFromSlice(src.Value, a, text, .{})).value;
-        try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, .release));
-        try std.testing.expectError(error.ObsoleteShardConfig, plan(a, config, .ci));
-    }
-}
-
-test "a workflow-level test timeout is refused; the watchdog bounds each test" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"test_timeout\":\"--test-timeout 120s\"}", .{})).value;
-    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .release));
-    try std.testing.expectError(error.ObsoleteTestTimeout, plan(a, config, .ci));
     for (try plan(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, .release)) |job|
         try std.testing.expect(std.mem.find(u8, job.args, "test-timeout") == null);
 }
@@ -2053,12 +2006,8 @@ test "an option the planner does not know, or a malformed timeout or step, is re
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    for ([_][]const u8{ "{\"attest\":true}", "{\"nightly\":false}" }) |old|
-        try std.testing.expectError(error.ObsoleteTrigger, plan(a, (try std.json.parseFromSlice(src.Value, a, old, .{})).value, .ci));
-    try std.testing.expectError(error.ObsoleteSwitch, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"compile_once\":true}", .{})).value, .release));
     for ([_][]const u8{ "{\"lnad\":true}", "{\"package\":\"x\"}", "{\"test_job_timeout\":\"30\"}", "{\"test_job_timeout\":400}", "{\"compile_step\":3}", "{\"setup_step\":\"a b\"}" }) |bad|
         try std.testing.expect(std.meta.isError(plan(a, (try std.json.parseFromSlice(src.Value, a, bad, .{})).value, .ci)));
-    try std.testing.expectError(error.ObsoleteSanitizer, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"sanitizer\":\"test\"}", .{})).value, .release));
 }
 
 test "only the release tier's source checks hold every aegis-pack finding to the bar" {

@@ -108,32 +108,7 @@ const defaults = [_]Entry{
 /// run's packages declare hold it too (`Policy.declared`).
 const shipped_bans = [_]glint.Rule{ .P007, .P008, .P009 };
 
-/// Keys that were ziglint's or a ledger's. A repository still naming one
-/// would lose the gate it believes it has, so each fails by name.
-const retired = [_]struct { key: []const u8, instead: []const u8 }{
-    .{ .key = "ziglint_exceptions", .instead = "write `// glint-ignore: <rule> -- <reason>` at the site" },
-    .{ .key = "ziglint_paths", .instead = "name the files in `glint_paths`" },
-    .{ .key = "unreachable_exceptions", .instead = "write `// glint-ignore: <rule> -- <reason>` at the site" },
-    .{ .key = "debug_print_exceptions", .instead = "write `// glint-ignore: P005 -- <reason>` at the site" },
-    .{ .key = "glint_config", .instead = "move its fields into the `glint` object" },
-};
-
 const glint_keys = [_][]const u8{"rules"};
-
-/// glint settings that went with the rules they set: P001's cast reasons are the danger rules'
-/// now (A010's integer conversions, A019's pointer conversions), whose sites carry the pack's
-/// escape.
-const retired_glint = [_]struct { key: []const u8, instead: []const u8 }{
-    .{ .key = "casts", .instead = "P007 finds every pointer conversion; write `// glint-ignore: P007 -- <reason>` at a raw one" },
-    .{ .key = "escapes", .instead = "the aegis escape form is gone: every rule takes `// glint-ignore: <rule> -- <reason>`, which the report counts" },
-    .{ .key = "unresolved", .instead = "glint 0.8 leaves no site undecided: a ban reports what it cannot decide and hygiene stays silent, so there is no count to hold" },
-    .{ .key = "cast_scope", .instead = "the danger rules read production code only" },
-    .{ .key = "fact_budget", .instead = "glint's options have one home: write `fact_budget` in the repository's glint.json" },
-    .{ .key = "max_line_length", .instead = "glint's options have one home: write `max_line_length` in the repository's glint.json" },
-    .{ .key = "disallowed", .instead = "glint's options have one home: write `disallowed` in the repository's glint.json" },
-    .{ .key = "peer_writers", .instead = "it went with A018, which read it" },
-    .{ .key = "strict_suppressions", .instead = "suppressions are strict in every repository: one that suppresses nothing fails" },
-};
 
 pub const Limit = struct { pattern: *const gantry.rules.Pattern, lines: u32 };
 /// A rule name glint itself does not have, as the repository wrote it in `rules`, with its level.
@@ -334,7 +309,6 @@ fn levelOf(weight: Weight) glint.Config.Level {
 pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?Policy {
     const a = c.a;
     const before = c.errors;
-    for (retired) |entry| if (src.get(config, entry.key) != .null) c.fail("glint: `{s}` is retired: {s}", .{ entry.key, entry.instead });
     const policy_kind = family.of(src.get(config, family.key)) catch fail: {
         c.fail("{s}", .{family.refusal});
         break :fail .family;
@@ -360,11 +334,6 @@ pub fn parse(c: *src.Context, config: src.Value, shipped: []const []const u8) !?
             const key = entry.key_ptr.*;
             if (std.mem.eql(u8, key, "profile")) {
                 c.fail("glint: `profile` is not a setting: the default policy is preflight's, and a repository amends it by rule in `rules`", .{});
-            } else for (retired_glint) |gone| {
-                if (std.mem.eql(u8, key, gone.key)) {
-                    c.fail("glint: `{s}` is retired: {s}", .{ key, gone.instead });
-                    break;
-                }
             } else if (!known(&glint_keys, key)) c.fail("glint: unknown setting `{s}`", .{key});
         }
         try parseBlock(c, block, &chosen, &pending);
@@ -709,27 +678,13 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"P006\",\"level\":\"off\"}]}}",
         "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"Z026\",\"level\":\"report\"}]}}",
         "{\"policy\":\"family\",\"glint\":{\"rules\":[{\"id\":\"Z011\",\"level\":\"report\"}]}}",
-        "{\"glint\":{\"strict_suppressions\":false}}",
         "{\"glint\":{\"profile\":\"none\"}}",
         "{\"glint\":{\"rule\":[]}}",
         "{\"glint\":{\"rules\":[{\"id\":\"Z999\",\"level\":\"gate\"}]}}",
         "{\"glint\":{\"rules\":[{\"id\":\"Z004\",\"level\":\"gate\"}]}}",
         "{\"glint\":{\"rules\":[{\"id\":\"Z006\",\"level\":\"loud\"}]}}",
         "{\"glint\":{\"rules\":[{\"id\":\"Z006\",\"level\":\"gate\"},{\"id\":\"Z006\",\"level\":\"off\"}]}}",
-        "{\"glint\":{\"casts\":\"all\"}}",
-        "{\"glint\":{\"cast_scope\":\"all\"}}",
-        "{\"glint\":{\"unresolved\":{\"A007\":0}}}",
-        "{\"glint\":{\"escapes\":{\"fast\":{\"A019\":1}}}}",
-        "{\"glint\":{\"escapes\":{\"boundary\":{\"A019\":0}}}}",
-        "{\"glint\":{\"escapes\":{\"boundary\":1}}}",
-        "{\"glint\":{\"escapes\":{\"boundary\":{\"A999\":1}}}}",
-        "{\"glint\":{\"escapes\":{\"boundary\":{\"Z006\":1}}}}",
-        "{\"glint\":{\"escapes\":3}}",
-        "{\"glint\":{\"unresolved\":{\"Z003\":3}}}",
-        "{\"glint\":{\"unresolved\":{\"Z024\":3}}}",
         "{\"glint\":{\"rules\":[{\"id\":\"P001\",\"level\":\"gate\"}]}}",
-        "{\"glint\":{\"fact_budget\":0}}",
-        "{\"glint\":{\"disallowed\":[{\"source\":\"src/a.zig\",\"declaration\":\"x\",\"reason\":\"\",\"replacement\":\"y\"}]}}",
         "{\"glint_paths\":[]}",
         "{\"function_exceptions\":{\"src/a.zig:f\":{\"lines\":9,\"reason\":\" \"}}}",
         "{\"function_exceptions\":{\"nocolon\":{\"lines\":9,\"reason\":\"why\"}}}",
@@ -740,11 +695,6 @@ test "a repository amends the policy by rule and cannot swap it for another prof
         "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\" \",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
         "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\"v\",\"sha256\":\"aaaa\"}}}",
         "{\"vendored\":{\"src/a.zig\":{\"upstream\":\"u\",\"verification\":\"v\",\"sha256\":\"zzaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
-        "{\"ziglint_exceptions\":\"ci/ziglint-exceptions.json\"}",
-        "{\"unreachable_exceptions\":\"ci/u.json\"}",
-        "{\"debug_print_exceptions\":\"ci/d.json\"}",
-        "{\"ziglint_paths\":[\"src\"]}",
-        "{\"glint_config\":\"ci/glint.json\"}",
         // A policy misspelt holds the project to none.
         "{\"policy\":\"famliy\"}",
     }) |text| {

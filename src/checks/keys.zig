@@ -14,10 +14,6 @@ pub const preflight = [_][]const u8{
     "binary",
 };
 
-/// Keys of ci/preflight.json that were ziglint's or a ledger's: glint/policy.zig refuses each
-/// by name, with what replaced it, so they are not unknown here.
-pub const preflight_retired = [_][]const u8{ "ziglint_exceptions", "ziglint_paths", "unreachable_exceptions", "debug_print_exceptions", "glint_config" };
-
 /// The options of `ci/workflow.json`, and keys the planner adds to it as it reads it (from
 /// `ci/costs.json` and `ci/durations.json` beside it, from the build, and the policy from
 /// the `ci/preflight.json` beside it).
@@ -70,7 +66,7 @@ pub fn refuseUnknown(c: *src.Context, path: []const u8, config: src.Value, file:
 
 fn known(file: File, key: []const u8) bool {
     const lists: []const []const []const u8 = switch (file) {
-        .preflight => &.{ &preflight, &preflight_retired },
+        .preflight => &.{&preflight},
         .workflow => &.{&workflow},
     };
     for (lists) |list| for (list) |name| if (std.mem.eql(u8, name, key)) return true;
@@ -124,7 +120,7 @@ test "a key of the other file is told where it belongs; a misspelt one its neare
         defer if (said.len != 0) a.free(said);
         try std.testing.expectEqualStrings(case.said, said);
     }
-    for (preflight ++ preflight_retired) |key| try std.testing.expect(known(.preflight, key));
+    for (preflight) |key| try std.testing.expect(known(.preflight, key));
     for (workflow) |key| try std.testing.expect(known(.workflow, key));
     try std.testing.expect(!known(.preflight, "hardened"));
     try std.testing.expectEqual(@as(usize, 3), distance("kitten", "sitting"));

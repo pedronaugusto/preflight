@@ -4,6 +4,11 @@
 //! binaries, as the runner.
 const std = @import("std");
 const builtin = @import("builtin");
+const inbound = @import("input.zig");
+
+/// A tree's memory, in bytes: what it holds as a whole, and the most any one process of it holds.
+/// Parallel compiles do not each hold a share of the whole: one may hold most of it.
+pub const Usage = struct { tree: u64, single: u64 };
 
 /// The tests' process and every process started under it, ended together
 /// once the tests' process has ended, as conduit contains a child's
@@ -14,10 +19,6 @@ const builtin = @import("builtin");
 /// leader; a process that makes a group or session of its own leaves it.
 /// Windows: a job that ends its processes when its last handle closes,
 /// which a process leaves only when started to break away from it.
-/// A tree's memory, in bytes: what it holds as a whole, and the most any one process of it holds.
-/// Parallel compiles do not each hold a share of the whole: one may hold most of it.
-pub const Usage = struct { tree: u64, single: u64 };
-
 pub const Tree = struct {
     job: if (builtin.target.os.tag == .windows) std.os.windows.HANDLE else void,
     group: if (builtin.target.os.tag == .windows) void else std.posix.pid_t,
@@ -125,25 +126,34 @@ pub const Tree = struct {
 /// has held, read from `/proc`; null where `/proc` cannot be listed. A process that ends while
 /// it is read is not counted.
 fn groupResident(io: std.Io, group: std.posix.pid_t) ?Usage {
-    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return null;
+    var proc = std.Io.Dir.openDirAbsolute(io, "/proc", .{ .iterate = true }) catch return null;
     defer proc.close(io);
     var entries = proc.iterate();
     var pages: u64 = 0;
     var single: u64 = 0;
-    var path: [32]u8 = undefined;
     var buffer: [1024]u8 = undefined;
     while (entries.next(io) catch return null) |entry| {
-        if (entry.kind != .directory) continue;
-        // A process's directory is its number; the others are the kernel's.
-        _ = std.fmt.parseUnsigned(u32, entry.name, 10) catch continue;
-        const stat_path = std.fmt.bufPrint(&path, "{s}/stat", .{entry.name}) catch continue;
-        const line = proc.readFile(io, stat_path, &buffer) catch continue;
-        const read = statGroupPages(line) orelse continue;
+        // A process's directory is its number; the others (self, net) are the kernel's.
+        if (entry.name.len == 0 or std.mem.findNone(u8, entry.name, "0123456789") != null) continue;
+        var process = proc.openDir(io, entry.name, .{}) catch |err| switch (err) {
+            // A process that ended since the listing holds nothing.
+            error.FileNotFound => continue,
+            // Any other failure leaves the tree's memory unread rather than counted short.
+            else => return null,
+        };
+        defer process.close(io);
+        const line = inbound.file(io, process, "stat", &buffer) catch |err| switch (err) {
+            error.FileNotFound => continue, // it ended since it was opened
+            else => return null, // unread rather than counted short
+        };
+        const read = statGroupPages(line) orelse return null;
         if (read.group != group) continue;
         pages +|= read.pages;
-        const status_path = std.fmt.bufPrint(&path, "{s}/status", .{entry.name}) catch continue;
-        const status = proc.readFile(io, status_path, &buffer) catch continue;
-        single = @max(single, highWater(status) orelse read.pages *| std.heap.pageSize());
+        const status = inbound.file(io, process, "status", &buffer) catch |err| switch (err) {
+            error.FileNotFound => continue, // it ended since its stat was read
+            else => return null, // unread rather than counted short
+        };
+        single = @max(single, highWater(status) orelse (read.pages *| std.heap.pageSize()));
     }
     return .{ .tree = pages *| std.heap.pageSize(), .single = single };
 }

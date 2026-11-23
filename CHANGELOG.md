@@ -77,6 +77,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `check-consumer` names a pin whose `zig fetch` fails, with how the fetch ended and what it printed, where it failed with a bare `error.FetchFailed` (glint's gate, glint 66915ae0, named neither the pin nor the cause).
 - The consumer check takes a package whose manifest names no name (a tarball with no `build.zig.zon`: a grammar, a C library's release) for itself alone: Zig hashes every such package `N-V-<digest>`, and the check read the `N` as their one name, so ztreesitter, which pins its 309 grammars that way, was refused as holding package `N` at 309 revisions.
 - The fuzz report reads the fuzz targets of a test root the source checks do not walk (an integration suite under `tests/`, against the module a consumer gets), where it read only `sources`: under the family's policy ztreesitter's `parseSlice` failed as reached by no target, though `tests/tests.zig` fuzzes it. A parser declared there is no parser of the package's.
 - `gate` and the lint change nothing in the package: a retired key in `ci/workflow.json` (`attest`, `nightly`, `compile_once`) is refused by name ("run `bay generate`, which takes it out"), where the gate rewrote the file to drop it. Only `generate` writes.

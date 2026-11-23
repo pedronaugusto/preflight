@@ -267,13 +267,22 @@ pub fn main(init: std.process.Init) !void {
     var global: OwnedDir = .init(try cwd.openDir(io, args[7], .{}));
     defer global.deinit(io);
     const package_manifest = try input.file(io, cwd, try std.Io.Dir.path.join(a, &.{ root, "build.zig.zon" }), a, .manifest);
-    const found = try plain.conflicts(a, io, package_manifest, shape.package, .{ .global = .of(global.borrow().*), .zig = args[1] });
-    if (found.len != 0) {
-        var buffer: [1024]u8 = undefined;
-        var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
-        try plain.describe(&stderr.interface, found);
-        try stderr.interface.flush();
-        std.process.exit(1);
+    switch (try plain.conflicts(a, io, package_manifest, shape.package, .{ .global = .of(global.borrow().*), .zig = args[1] })) {
+        .conflicts => |found| if (found.len != 0) {
+            var buffer: [1024]u8 = undefined;
+            var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
+            try plain.describe(&stderr.interface, found);
+            try stderr.interface.flush();
+            std.process.exit(1);
+        },
+        .fetch_failed => |failure| {
+            var buffer: [1024]u8 = undefined;
+            var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
+            try stderr.interface.print("check-consumer: {s}'s graph as plain zig builds it could not be read: ", .{shape.package});
+            try plain.describeFetch(&stderr.interface, failure);
+            try stderr.interface.flush();
+            std.process.exit(1);
+        },
     }
     try dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = text });
     const relative = if (try fetched(a, io, root, dir, directory, package_manifest)) fetched_name else in_place;

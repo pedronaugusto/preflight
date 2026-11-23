@@ -14,6 +14,12 @@ pub const Revision = struct { hash: []const u8, by: []const u8 };
 /// A package the graph holds at more than one revision.
 pub const Conflict = struct { package: []const u8, revisions: []const Revision };
 
+/// What the walk found: the packages held at more than one revision, or a pin whose fetch failed.
+pub const Found = union(enum) { conflicts: []const Conflict, fetch_failed: FetchFailure };
+
+/// A pin `zig fetch` could not fetch: its url, how the fetch ended, and what it said on stderr.
+pub const FetchFailure = struct { url: []const u8, term: std.process.Child.Term, stderr: []const u8 };
+
 /// Where the walk finds each pinned package as published.
 pub const Packages = struct {
     /// Zig's global cache, whose `p/<hash>` is the package as fetched: the caller's, which
@@ -26,8 +32,9 @@ pub const Packages = struct {
 /// The packages the graph of the package whose manifest is `root`, named
 /// `name`, holds at more than one revision, but for those its `.coexist`
 /// names on different lines. A lazy pin is followed only when it is fetched
-/// already: a consumer fetches one only when its build asks for it.
-pub fn conflicts(a: std.mem.Allocator, io: std.Io, root: []const u8, name: []const u8, packages: Packages) ![]const Conflict {
+/// already: a consumer fetches one only when its build asks for it. A pin whose fetch fails
+/// ends the walk, named with what the fetch said.
+pub fn conflicts(a: std.mem.Allocator, io: std.Io, root: []const u8, name: []const u8, packages: Packages) !Found {
     var seen: std.array_hash_map.String(std.ArrayList(Revision)) = .empty;
     var walked: std.array_hash_map.String(void) = .empty;
     var pending: std.ArrayList(struct { text: []const u8, by: []const u8 }) = .empty;
@@ -42,8 +49,11 @@ pub fn conflicts(a: std.mem.Allocator, io: std.Io, root: []const u8, name: []con
             } else false;
             if (!known) try entry.value_ptr.append(a, .{ .hash = pin.hash, .by = manifest.by });
             if ((try walked.getOrPut(a, pin.hash)).found_existing) continue;
-            const text = try published(a, io, packages, pin) orelse continue;
-            try pending.append(a, .{ .text = text, .by = labelOf(pin.hash) });
+            switch (try published(a, io, packages, pin)) {
+                .manifest => |text| try pending.append(a, .{ .text = text, .by = labelOf(pin.hash) }),
+                .none => {},
+                .failed => |failure| return .{ .fetch_failed = failure },
+            }
         }
     }
     const coexist = try nested.coexistIn(a, root);
@@ -55,24 +65,39 @@ pub fn conflicts(a: std.mem.Allocator, io: std.Io, root: []const u8, name: []con
         } else false;
         if (!allowed) try found.append(a, .{ .package = package, .revisions = revisions.items });
     }
-    return found.items;
+    return .{ .conflicts = found.items };
 }
 
+/// Writes what `failure` says: the pin, how its fetch ended, what it printed.
+pub fn describeFetch(w: *std.Io.Writer, failure: FetchFailure) std.Io.Writer.Error!void {
+    try w.print("zig fetch {s} ", .{failure.url});
+    switch (failure.term) {
+        .exited => |code| try w.print("exited {d}", .{code}),
+        .signal => |sig| try w.print("was ended by signal {t}", .{sig}),
+        .stopped => |sig| try w.print("was stopped by signal {t}", .{sig}),
+        .unknown => |code| try w.print("ended with status {d}", .{code}),
+    }
+    const said = std.mem.trim(u8, failure.stderr, " \t\r\n");
+    if (said.len == 0) try w.writeAll(", printing nothing\n") else try w.print(":\n{s}\n", .{said});
+}
+
+const Published = union(enum) { manifest: []const u8, none, failed: FetchFailure };
+
 /// The manifest of `pin` as published, fetched first when the cache lacks it and
-/// the pin is not lazy; null when it is not there.
-fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.Pin) !?[]const u8 {
+/// the pin is not lazy; none when it is not there.
+fn published(a: std.mem.Allocator, io: std.Io, packages: Packages, pin: nested.Pin) !Published {
     const path = try std.Io.Dir.path.join(a, &.{ "p", pin.hash, "build.zig.zon" });
-    if (input.file(io, packages.global.get(), path, a, .manifest)) |text| return text else |err| switch (err) {
+    if (input.file(io, packages.global.get(), path, a, .manifest)) |text| return .{ .manifest = text } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
-    const zig = packages.zig orelse return null;
-    if (pin.lazy) return null;
+    const zig = packages.zig orelse return .none;
+    if (pin.lazy) return .none;
     const fetched = try input.run(a, io, .{ .argv = &.{ zig, "fetch", pin.url } }, .report);
-    if (fetched.term != .exited or fetched.term.exited != 0) return error.FetchFailed;
-    return input.file(io, packages.global.get(), path, a, .manifest) catch |err| switch (err) {
+    if (fetched.term != .exited or fetched.term.exited != 0) return .{ .failed = .{ .url = pin.url, .term = fetched.term, .stderr = fetched.stderr } };
+    return if (input.file(io, packages.global.get(), path, a, .manifest)) |text| .{ .manifest = text } else |err| switch (err) {
         // A package with no manifest pins nothing.
-        error.FileNotFound => null,
+        error.FileNotFound => .none,
         else => err,
     };
 }
@@ -142,17 +167,17 @@ test "two packages that pin a third at two revisions are a conflict; one revisio
         try tmp.dir.writeFile(io, .{ .sub_path = try std.Io.Dir.path.join(a, &.{ dir, "build.zig.zon" }), .data = package[1] });
     }
     const root = ".{ .name = .bay, .dependencies = .{ .aegis = .{ .url = \"git+https://e.invalid/aegis#5\", .hash = \"" ++ aegis5 ++ "\" }, .ensign = .{ .url = \"git+https://e.invalid/ensign#1\", .hash = \"" ++ ensign ++ "\" } } }";
-    const found = try conflicts(a, io, root, "bay", .{ .global = .of(tmp.dir) });
+    const found = (try conflicts(a, io, root, "bay", .{ .global = .of(tmp.dir) })).conflicts;
     try std.testing.expectEqual(@as(usize, 1), found.len);
     try std.testing.expectEqualStrings("aegis", found[0].package);
     var text: std.Io.Writer.Allocating = .init(a);
     try describe(&text.writer, found);
     try std.testing.expectEqualStrings("aegis is in the graph plain zig builds at 2 revisions: aegis-0.1.5, pinned by bay; aegis-0.1.4, pinned by ensign-0.2.1. bay builds one; a consumer building without bay links each: pin one revision throughout\n", text.written());
     const agreeing = try std.mem.replaceOwned(u8, a, root, aegis5, aegis4);
-    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, io, agreeing, "bay", .{ .global = .of(tmp.dir) })).len);
+    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, io, agreeing, "bay", .{ .global = .of(tmp.dir) })).conflicts.len);
     // 0.1.4 and 0.1.5 are one line, so naming aegis to coexist does not allow them.
     const named = try std.mem.replaceOwned(u8, a, root, ".name = .bay,", ".name = .bay, .coexist = .{.aegis},");
-    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, io, named, "bay", .{ .global = .of(tmp.dir) })).len);
+    try std.testing.expectEqual(@as(usize, 1), (try conflicts(a, io, named, "bay", .{ .global = .of(tmp.dir) })).conflicts.len);
 }
 
 test "packages with no name of their own are each their own, never revisions of one another" {
@@ -163,7 +188,7 @@ test "packages with no name of their own are each their own, never revisions of 
     defer tmp.cleanup();
     // ztreesitter pins each of its 309 grammars, a tarball with no manifest, so: N-V-<digest>.
     const root = ".{ .name = .ztreesitter, .dependencies = .{ .grammar_ada = .{ .url = \"https://e.invalid/ada.tar.gz\", .hash = \"N-V-__8AAFeLLgAMlZ-oww89rYNC9Nmju4xIKFv_2fXpFMpv\", .lazy = true }, .grammar_agda = .{ .url = \"https://e.invalid/agda.tar.gz\", .hash = \"N-V-__8AAB_8-AAdv1t_0ySFOohSHocj4babI8q-67vFrmBA\", .lazy = true } } }";
-    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, std.testing.io, root, "ztreesitter", .{ .global = .of(tmp.dir) })).len);
+    try std.testing.expectEqual(@as(usize, 0), (try conflicts(a, std.testing.io, root, "ztreesitter", .{ .global = .of(tmp.dir) })).conflicts.len);
     try std.testing.expectEqualStrings("aegis", packageOf("aegis-0.1.5-AAAA"));
     try std.testing.expectEqualStrings("N-V-__8AAFeLLgAM", packageOf("N-V-__8AAFeLLgAM"));
 }

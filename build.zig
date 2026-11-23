@@ -101,6 +101,8 @@ pub fn dev(b: *std.Build, _: type) void {
     // The bound's tests run its program as the build puts it before a run: Debug, as there.
     const bound = b.addExecutable(.{ .name = "preflight-bound", .root_module = b.createModule(.{ .root_source_file = package.path("src/bound.zig"), .target = target, .optimize = .debug }) });
     options.addOptionPath("bound", bound.getEmittedBin());
+    // The fetch tests run the Zig the build runs, as the consumer check does.
+    options.addOption([]const u8, "zig", b.graph.zig_exe);
     tests.root_module.addOptions("test_options", options);
     // The gate below gives every test here preflight's runner, as it does a
     // consumer's tests: the order module's and the watchdog's tests import

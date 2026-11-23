@@ -144,8 +144,10 @@ fn memoryOf(bytes: src.Value, single: src.Value, jobs: src.Value) ?Memory {
     const held = std.math.cast(u64, bytes.integer) orelse return null;
     const one = std.math.cast(u64, single.integer) orelse return null;
     const count = std.math.cast(u32, jobs.integer) orelse return null;
-    if (count == 0 or one > held) return null;
-    return .{ .bytes = held, .single = one, .jobs = count };
+    if (count == 0) return null;
+    // The tree held its one process: a record whose one process's peak passes its tree's
+    // (Linux's high-water mark against samples of the group's sum) held at least that.
+    return .sampled(held, one, count);
 }
 
 fn number(value: src.Value) !f64 {
@@ -404,6 +406,21 @@ pub fn renderCosts(a: std.mem.Allocator, costs: Costs) ![]const u8 {
     }
     try w.writeAll("\n}\n");
     return out.written();
+}
+
+test "a phase record whose one process's peak passes its tree's reads as the tree holding at least that" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .of(tmp.dir) };
+    // As a Linux cross job's bound wrote it: samples of the group's sum saw 2.1 GB, VmHWM 3.4 GB.
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "phases-cross.ndjson", .data = "{\"phase\":\"configure the build\",\"seconds\":0.2}\n{\"phase\":\"compile x86_64-windows\",\"seconds\":88.5,\"peak_bytes\":2100000000,\"single_bytes\":3400000000,\"jobs\":4}\n" });
+    const costs = try measure(c, ".", .null);
+    const peak = costs.peaks.get("compile x86_64-windows").?;
+    try std.testing.expectEqual(Memory{ .bytes = 3_400_000_000, .single = 3_400_000_000, .jobs = 4 }, peak);
+    try std.testing.expectEqual(@as(?Memory, null), memoryOf(.{ .integer = 1 }, .{ .integer = 1 }, .{ .integer = 0 }));
 }
 
 test "a refresh of the phase costs takes the longest record and keeps the phases it did not measure" {

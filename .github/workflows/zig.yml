@@ -220,6 +220,8 @@ jobs:
           PREFLIGHT_PREPARED: 'true'
           PREFLIGHT_SETUP: ${{ matrix.setup }}
           PREFLIGHT_TARGETS: ${{ matrix.targets }}
+          # The compiles a cross job runs at once, as its runner's memory holds them (`build_jobs`).
+          PREFLIGHT_JOBS: ${{ matrix.build_jobs }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
           # With the job's start, its deadline: a test running then ends named.
           PREFLIGHT_JOB_TIMEOUT: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}

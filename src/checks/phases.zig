@@ -29,6 +29,16 @@ pub const Log = struct {
     }
 };
 
+/// The most memory a phase's tree held, and any one process of it, in bytes, and the jobs its
+/// build ran at once (`-j`).
+pub const Memory = struct { bytes: u64, single: u64, jobs: u32 };
+
+/// The CPUs a build runs a job on each of by default, as Zig's `-j` does; one where unknown.
+pub fn cpus() u32 {
+    const count = std.Thread.getCpuCount() catch return 1;
+    return std.math.cast(u32, count) orelse std.math.maxInt(u32);
+}
+
 pub const Timer = struct {
     label: []const u8,
     start: std.Io.Clock.Timestamp,
@@ -45,26 +55,40 @@ pub const Timer = struct {
     /// Prints the phase and adds it to the log. A log that cannot be written
     /// loses only its line, and says so.
     pub fn end(timer: Timer, c: src.Context, log: Log) void {
+        timer.endWith(c, log, null);
+    }
+
+    /// `end`, with the most memory the phase's tree held where it was measured.
+    pub fn endWith(timer: Timer, c: src.Context, log: Log, memory: ?Memory) void {
         const elapsed = timer.seconds(c);
-        c.report("preflight: phase {s}: {d:.1} s\n", .{ timer.label, elapsed });
-        timer.logged(c, log, elapsed) catch |err| c.report("preflight: phase {s}: not logged ({s})\n", .{ timer.label, @errorName(err) });
+        if (memory) |m| {
+            c.report("preflight: phase {s}: {d:.1} s, at most {d:.2} GiB, {d:.2} GiB in one process, at -j{d}\n", .{ timer.label, elapsed, gib(m.bytes), gib(m.single), m.jobs });
+        } else c.report("preflight: phase {s}: {d:.1} s\n", .{ timer.label, elapsed });
+        timer.logged(c, log, elapsed, memory) catch |err| c.report("preflight: phase {s}: not logged ({s})\n", .{ timer.label, @errorName(err) });
     }
 
     /// Adds the phase, `elapsed` seconds long, to the summary and the record `log` names.
-    fn logged(timer: Timer, c: src.Context, log: Log, elapsed: f64) !void {
+    fn logged(timer: Timer, c: src.Context, log: Log, elapsed: f64, memory: ?Memory) !void {
         if (log.summary) |path| {
-            try append(c, path, try c.a.print("- phase `{s}`: {d:.1} s\n", .{ timer.label, elapsed }));
+            const held = if (memory) |m| try c.a.print(", at most {d:.2} GiB, {d:.2} GiB in one process, at -j{d}", .{ gib(m.bytes), gib(m.single), m.jobs }) else "";
+            try append(c, path, try c.a.print("- phase `{s}`: {d:.1} s{s}\n", .{ timer.label, elapsed, held }));
         }
         if (log.record) |path| {
             var line: std.Io.Writer.Allocating = .init(c.a);
             try line.writer.writeAll("{\"phase\":");
             try std.json.Stringify.value(timer.label, .{}, &line.writer);
-            try line.writer.print(",\"seconds\":{d:.2}}}\n", .{elapsed});
+            try line.writer.print(",\"seconds\":{d:.2}", .{elapsed});
+            if (memory) |m| try line.writer.print(",\"peak_bytes\":{d},\"single_bytes\":{d},\"jobs\":{d}", .{ m.bytes, m.single, m.jobs });
+            try line.writer.writeAll("}\n");
             if (std.Io.Dir.path.dirname(path)) |parent| try c.directory().createDirPath(c.io, parent);
             try append(c, path, line.written());
         }
     }
 };
+
+fn gib(bytes: u64) f64 {
+    return @as(f64, @floatFromInt(bytes)) / (1024 * 1024 * 1024);
+}
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
     const file = try c.directory().createFile(c.io, path, .{ .truncate = false, .read = true });
@@ -86,12 +110,15 @@ test "a phase is added to the summary and the record, after what the files hold"
     const log: Log = .{ .summary = "summary.md", .record = "cache/phases-job.ndjson" };
     Timer.begin(c, "lint").end(c, log);
     Timer.begin(c, "compile \"x\"").end(c, log);
+    Timer.begin(c, "compile x86_64-macos").endWith(c, log, .{ .bytes = 16_106_127_360, .single = 9_234_179_072, .jobs = 4 });
     const text = try c.read("summary.md");
     try std.testing.expect(std.mem.startsWith(u8, text, "kept\n- phase `lint`: "));
     try std.testing.expect(std.mem.find(u8, text, "\n- phase `compile \"x\"`: ") != null);
     const record = try c.read("cache/phases-job.ndjson");
     try std.testing.expect(std.mem.startsWith(u8, record, "{\"phase\":\"lint\",\"seconds\":"));
     try std.testing.expect(std.mem.find(u8, record, "\n{\"phase\":\"compile \\\"x\\\"\",\"seconds\":") != null);
+    try std.testing.expect(std.mem.find(u8, record, "\"peak_bytes\":16106127360,\"single_bytes\":9234179072,\"jobs\":4}\n") != null);
+    try std.testing.expect(std.mem.find(u8, text, "at most 15.00 GiB, 8.60 GiB in one process, at -j4\n") != null);
 }
 
 test "a job without a name keeps no record" {

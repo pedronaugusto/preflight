@@ -614,7 +614,8 @@ fn legStep(c: src.Context, env: *const std.process.Environ.Map, directory: []con
 fn runBounded(c: src.Context, child: src.Child) anyerror!bool {
     const environ = child.environ_map orelse c.environ_map;
     const deadline = if (environ) |map| try watchdog.parseDeadline(map.get("PREFLIGHT_DEADLINE")) else null;
-    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .limit = null, .deadline = deadline });
+    const ended = try bounded.run(c.io, c.a, .{ .name = child.name, .argv = child.argv, .cwd = child.cwd, .environ_map = child.environ_map, .limit = null, .deadline = deadline, .measure = c.peak != null });
+    if (c.peak) |slot| slot.* = if (ended == .exited) if (ended.exited.peak) |p| .{ .tree = p.tree, .single = p.single } else null else null;
     return ended.passed();
 }
 
@@ -741,9 +742,14 @@ fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, targ
     for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
         if (index == 1 and !bench) break;
         const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step, jobs);
+        // The compile's tree at its most, with the jobs it ran at once: what the next plan sizes
+        // a cross job's `-j` by. Zig's default is a job per CPU.
+        var peak: ?src.Peak = null;
+        var measured = c;
+        measured.peak = &peak;
         const timer = checks.phases.Timer.begin(c, try c.a.print("{s} {s}", .{ kind.label, name }));
-        defer timer.end(c, log);
-        try checks.command.execute(c, try c.a.print("{s} {s}", .{ kind.label, name }), argv);
+        defer timer.endWith(c, log, if (peak) |p| .{ .bytes = p.tree, .single = p.single, .jobs = jobs orelse checks.phases.cpus() } else null);
+        try checks.command.execute(measured, try c.a.print("{s} {s}", .{ kind.label, name }), argv);
     }
 }
 

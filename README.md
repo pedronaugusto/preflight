@@ -933,7 +933,14 @@ of it (`ci/costs.json`, which the run's proof artifact carries beside
 300 s of setup, and a target past that is refused by name. A target no run has measured
 has a job of its own, named for it (`Cross compile <target>, unmeasured`), of GitHub's
 360 minutes: no guess of its cost could be held to a bound, and its job finishes and
-measures it. `cross_jobs` fixes the count instead, those jobs among it. The checks run on their host's baseline CPU target, so a
+measures it. `cross_jobs` fixes the count instead, those jobs among it. A cross job runs as
+many compiles at once (`-j`) as three quarters of its runner's memory (16 GB) holds of its
+largest single compile, its CPUs at most: each phase's entry in `ci/costs.json` (`peaks`) is
+its job tree's most and the most any one process of it held, recorded on Linux and Windows
+beside the `-j` it ran at. Compiles run at once do not share the tree's peak evenly: relic's
+x86_64-windows-gnu held 15 GiB at -j4, 8.6 GB of it in one compile, so it runs one at a time.
+A job of several targets takes the fewest any allows, and a target with no recorded peak runs
+one compile at a time, which its run records. The checks run on their host's baseline CPU target, so a
 binary built once serves every runner model.
 
 Every job takes the checks as a binary, and none compiles them. The first job of a

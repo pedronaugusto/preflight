@@ -26,6 +26,9 @@ pub const Command = struct {
     deadline: ?i64,
     /// What the timeout's message says after the run is named: how to give it longer.
     hint: []const u8 = "",
+    /// Whether to keep the peak of the memory the run's tree holds (`Tree.memory`), sampled
+    /// while it runs: what a plan sizes the jobs a build runs at once by.
+    measure: bool = false,
 };
 
 /// How a run ended: of itself, or at its bound, named.
@@ -34,6 +37,9 @@ pub const Ended = union(enum) {
         term: std.process.Child.Term,
         /// Windows' exit status whole, where `term` keeps its low byte.
         status: u32,
+        /// The most memory the run's tree held, and any one process of it, where `measure` asked
+        /// for it and the system's is read (`Tree.memory`); null otherwise.
+        peak: ?process_tree.Usage = null,
     },
     expired,
 
@@ -77,10 +83,18 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
     for (streams, [2]std.Io.File{ .stdout(), .stderr() }, &forwarders) |from, to, *thread| thread.* = try std.Thread.spawn(.{}, Output.forward, .{ output, from, to });
     var watch: Watch = .{ .limit = wait.limit, .tree = tree };
     const watcher: ?std.Thread = if (bounded) try std.Thread.spawn(.{}, Watch.run, .{ &watch, io }) else null;
+    var measure: Measure = .{ .tree = tree };
+    const measurer: ?std.Thread = if (command.measure) try std.Thread.spawn(.{}, Measure.run, .{ &measure, io }) else null;
     const status = process_tree.waitStatus(&child);
     const term = try child.wait(io);
     watch.done.set(io);
     if (watcher) |thread| thread.join();
+    measure.done.set(io);
+    if (measurer) |thread| {
+        thread.join();
+        // Windows' job keeps its own peak: read once more, all of the run in it.
+        measure.take(io);
+    }
     tree.end(io);
     const held = watchdog.expired(io, &output.ended, release);
     if (held) {
@@ -95,8 +109,31 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
         try say(command, wait, output.lastLine());
         return .expired;
     }
-    return .{ .exited = .{ .term = term, .status = status } };
+    return .{ .exited = .{ .term = term, .status = status, .peak = measure.peak } };
 }
+
+/// How often the tree's memory is sampled for its peak: a compile's peak lasts seconds.
+const sample_every: std.Io.Duration = .fromMilliseconds(250);
+
+/// The thread that samples the run's tree for the most memory it holds, until the run ends.
+const Measure = struct {
+    tree: process_tree.Tree,
+    done: std.Io.Event = .unset,
+    peak: ?process_tree.Usage = null,
+
+    fn run(measure: *Measure, io: std.Io) void {
+        while (true) {
+            measure.take(io);
+            if (!watchdog.expired(io, &measure.done, sample_every)) return;
+        }
+    }
+
+    fn take(measure: *Measure, io: std.Io) void {
+        const now = measure.tree.memory(io) orelse return;
+        const was = measure.peak orelse now;
+        measure.peak = .{ .tree = @max(was.tree, now.tree), .single = @max(was.single, now.single) };
+    }
+};
 
 /// The thread that ends the run's tree once its wait is up.
 const Watch = struct {

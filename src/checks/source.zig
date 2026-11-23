@@ -19,6 +19,9 @@ pub const Child = struct {
     environ_map: ?*const std.process.Environ.Map = null,
 };
 
+/// A run's memory at its most, in bytes: its whole tree's, and any one process's of it.
+pub const Peak = struct { tree: u64, single: u64 };
+
 pub const Context = struct {
     a: std.mem.Allocator,
     io: std.Io,
@@ -47,6 +50,9 @@ pub const Context = struct {
     /// hosted job's deadline ends it and its tree, named with its command and the last line it
     /// printed. The commands' (`main.zig`); null, in the checks' own tests, runs it plainly.
     bound: ?*const fn (c: Context, child: Child) anyerror!bool = null,
+    /// Where the bound puts the most memory a child's tree held, and any one process of it
+    /// (`bounded.zig`'s `measure`), for a phase that records it; null asks for none.
+    peak: ?*?Peak = null,
 
     /// The command that runs the package's steps: under bay, `bay dev`, the
     /// development build that holds the package and the gate. Never bare `bay

@@ -2,6 +2,7 @@
 const std = @import("std");
 const src = @import("source.zig");
 const seam = @import("input.zig");
+const Memory = @import("phases.zig").Memory;
 
 /// Seconds per test name, per target column (`windows-Debug`).
 pub const Durations = struct {
@@ -119,6 +120,17 @@ const Records = struct {
         return null;
     }
 
+    /// The most memory the phase's tree and any one process of it held, and the jobs it ran at
+    /// once, where the record says.
+    fn memory(r: *Records, value: src.Value) !?Memory {
+        const bytes = src.get(value, "peak_bytes");
+        if (bytes == .null) return null;
+        return memoryOf(bytes, src.get(value, "single_bytes"), src.get(value, "jobs")) orelse {
+            r.c.report("profile: {s}/{s}:{d}: a peak that is not counts of bytes, the tree's and one process's, beside a count of jobs, at least 1\n", .{ r.root, r.path, r.line });
+            return error.InvalidPeak;
+        };
+    }
+
     fn seconds(r: *Records, value: src.Value) !f64 {
         return number(src.get(value, "seconds")) catch |err| {
             r.c.report("profile: {s}/{s}:{d}: a record without a duration in seconds\n", .{ r.root, r.path, r.line });
@@ -126,6 +138,15 @@ const Records = struct {
         };
     }
 };
+
+fn memoryOf(bytes: src.Value, single: src.Value, jobs: src.Value) ?Memory {
+    if (bytes != .integer or single != .integer or jobs != .integer) return null;
+    const held = std.math.cast(u64, bytes.integer) orelse return null;
+    const one = std.math.cast(u64, single.integer) orelse return null;
+    const count = std.math.cast(u32, jobs.integer) orelse return null;
+    if (count == 0 or one > held) return null;
+    return .{ .bytes = held, .single = one, .jobs = count };
+}
 
 fn number(value: src.Value) !f64 {
     const seconds: f64 = switch (value) {
@@ -302,6 +323,10 @@ test "a record that is not JSON, or has no seconds, fails the refresh naming its
 /// measured them. A plan balances its jobs by these.
 pub const Costs = struct {
     phases: std.array_hash_map.String(f64) = .empty,
+    /// The most memory each phase's tree and any one process of it held, beside the jobs its
+    /// build ran at once: what a plan sizes a cross job's `-j` by (the one process's). A phase no
+    /// run measured has none.
+    peaks: std.array_hash_map.String(Memory) = .empty,
 };
 
 /// Reads the phase records under `root`. A phase this run measured replaces
@@ -320,8 +345,14 @@ pub fn measure(c: src.Context, root: []const u8, previous: src.Value) !Costs {
             const label = src.get(value, "phase");
             if (label != .string) continue;
             const seconds = try records.seconds(value);
-            const cell = try result.phases.getOrPut(c.a, try c.a.dupe(u8, label.string));
+            const name = try c.a.dupe(u8, label.string);
+            const cell = try result.phases.getOrPut(c.a, name);
             cell.value_ptr.* = if (cell.found_existing) @max(cell.value_ptr.*, seconds) else seconds;
+            // Several records of one phase keep the one whose single process held the most.
+            if (try records.memory(value)) |m| {
+                const held = try result.peaks.getOrPut(c.a, cell.key_ptr.*);
+                if (!held.found_existing or m.single > held.value_ptr.single) held.value_ptr.* = m;
+            }
         }
     }
     const kept = src.get(previous, "phases");
@@ -330,6 +361,17 @@ pub fn measure(c: src.Context, root: []const u8, previous: src.Value) !Costs {
         while (rows.next()) |row| {
             if (result.phases.contains(row.key_ptr.*)) continue;
             try result.phases.put(c.a, row.key_ptr.*, try number(row.value_ptr.*));
+        }
+    }
+    // A peak this run did not record is kept: a job on a system whose memory is not read
+    // (macOS) records none.
+    const kept_peaks = src.get(previous, "peaks");
+    if (kept_peaks == .object) {
+        var rows = kept_peaks.object.iterator();
+        while (rows.next()) |row| {
+            if (result.peaks.contains(row.key_ptr.*)) continue;
+            const m = memoryOf(src.get(row.value_ptr.*, "bytes"), src.get(row.value_ptr.*, "single"), src.get(row.value_ptr.*, "jobs")) orelse return error.InvalidPeak;
+            try result.peaks.put(c.a, row.key_ptr.*, m);
         }
     }
     return result;
@@ -347,7 +389,20 @@ pub fn renderCosts(a: std.mem.Allocator, costs: Costs) ![]const u8 {
         try std.json.Stringify.value(label, .{}, w);
         try w.print(": {d:.2}", .{costs.phases.get(label).?});
     }
-    try w.writeAll("\n  }\n}\n");
+    try w.writeAll("\n  }");
+    if (costs.peaks.count() != 0) {
+        const named = try a.dupe([]const u8, costs.peaks.keys());
+        std.mem.sort([]const u8, named, {}, lessThan);
+        try w.writeAll(",\n  \"peaks\": {");
+        for (named, 0..) |label, i| {
+            try w.writeAll(if (i == 0) "\n    " else ",\n    ");
+            try std.json.Stringify.value(label, .{}, w);
+            const m = costs.peaks.get(label).?;
+            try w.print(": {{ \"bytes\": {d}, \"single\": {d}, \"jobs\": {d} }}", .{ m.bytes, m.single, m.jobs });
+        }
+        try w.writeAll("\n  }");
+    }
+    try w.writeAll("\n}\n");
     return out.written();
 }
 
@@ -358,10 +413,10 @@ test "a refresh of the phase costs takes the longest record and keeps the phases
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .of(tmp.dir) };
-    try tmp.dir.writeFile(c.io, .{ .sub_path = "phases-cross-objects-0.ndjson", .data = "{\"phase\":\"compile x86_64-macos\",\"seconds\":61.5}\n{\"phase\":\"compile x86_64-macos\",\"seconds\":70}\n{\"phase\":\"compile aarch64-macos\",\"seconds\":3}\n" });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "phases-cross-objects-0.ndjson", .data = "{\"phase\":\"compile x86_64-macos\",\"seconds\":61.5,\"peak_bytes\":8000000000,\"single_bytes\":8000000000,\"jobs\":1}\n{\"phase\":\"compile x86_64-macos\",\"seconds\":70,\"peak_bytes\":16000000000,\"single_bytes\":9200000000,\"jobs\":4}\n{\"phase\":\"compile aarch64-macos\",\"seconds\":3}\n" });
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-all.ndjson", .data = "{\"name\":\"second\",\"seconds\":0.25,\"status\":\"skip\",\"key\":\"linux-debug\"}\n" });
     const previous = (try std.json.parseFromSlice(src.Value, a,
-        \\{"phases":{"compile aarch64-macos":99,"benchmarks aarch64-macos":40.25}}
+        \\{"phases":{"compile aarch64-macos":99,"benchmarks aarch64-macos":40.25},"peaks":{"benchmarks aarch64-macos":{"bytes":3000000000,"single":2000000000,"jobs":2}}}
     , .{})).value;
     const costs = try measure(c, ".", previous);
     try std.testing.expectEqualStrings(
@@ -370,6 +425,10 @@ test "a refresh of the phase costs takes the longest record and keeps the phases
         \\    "benchmarks aarch64-macos": 40.25,
         \\    "compile aarch64-macos": 3.00,
         \\    "compile x86_64-macos": 70.00
+        \\  },
+        \\  "peaks": {
+        \\    "benchmarks aarch64-macos": { "bytes": 3000000000, "single": 2000000000, "jobs": 2 },
+        \\    "compile x86_64-macos": { "bytes": 16000000000, "single": 9200000000, "jobs": 4 }
         \\  }
         \\}
         \\

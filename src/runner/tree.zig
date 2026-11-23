@@ -14,6 +14,10 @@ const builtin = @import("builtin");
 /// leader; a process that makes a group or session of its own leaves it.
 /// Windows: a job that ends its processes when its last handle closes,
 /// which a process leaves only when started to break away from it.
+/// A tree's memory, in bytes: what it holds as a whole, and the most any one process of it holds.
+/// Parallel compiles do not each hold a share of the whole: one may hold most of it.
+pub const Usage = struct { tree: u64, single: u64 };
+
 pub const Tree = struct {
     job: if (builtin.target.os.tag == .windows) std.os.windows.HANDLE else void,
     group: if (builtin.target.os.tag == .windows) void else std.posix.pid_t,
@@ -70,6 +74,23 @@ pub const Tree = struct {
         }
     }
 
+    /// The memory the tree holds, or null where it is not read. Linux: what every process of
+    /// the group has resident now (`/proc/<pid>/stat`), and the most any one of them has held
+    /// (its `VmHWM`), so a caller samples it for its peaks. Windows: the most the job and any
+    /// one process of it have committed since it began, its own peaks, which no sample misses.
+    /// Elsewhere, as on macOS, it is not read.
+    pub fn memory(tree: Tree, io: std.Io) ?Usage {
+        switch (builtin.target.os.tag) {
+            .windows => {
+                var limits = std.mem.zeroes(ExtendedLimits);
+                if (QueryInformationJobObject(tree.job, extended_limit_information, &limits, @sizeOf(ExtendedLimits), null) == .FALSE) return null;
+                return .{ .tree = limits.peak_job_memory, .single = limits.peak_process_memory };
+            },
+            .linux => return groupResident(io, tree.group),
+            else => return null,
+        }
+    }
+
     const kill_on_job_close: u32 = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     const extended_limit_information: c_int = 9; // JobObjectExtendedLimitInformation
     /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
@@ -92,12 +113,77 @@ pub const Tree = struct {
         peak_job_memory: usize,
     };
     extern "kernel32" fn CreateJobObjectW(security: ?*std.os.windows.SECURITY_ATTRIBUTES, name: ?[*:0]const u16) callconv(.winapi) ?std.os.windows.HANDLE;
+    extern "kernel32" fn QueryInformationJobObject(job: std.os.windows.HANDLE, class: c_int, information: *anyopaque, length: std.os.windows.DWORD, returned: ?*std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
     extern "kernel32" fn SetInformationJobObject(job: std.os.windows.HANDLE, class: c_int, information: *const anyopaque, length: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
     extern "kernel32" fn AssignProcessToJobObject(job: std.os.windows.HANDLE, process: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
     extern "kernel32" fn TerminateJobObject(job: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
     extern "kernel32" fn TerminateProcess(process: std.os.windows.HANDLE, code: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
     extern "kernel32" fn ResumeThread(thread: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.DWORD;
 };
+
+/// The resident bytes of every process whose group is `group`, and the most any one of them
+/// has held, read from `/proc`; null where `/proc` cannot be listed. A process that ends while
+/// it is read is not counted.
+fn groupResident(io: std.Io, group: std.posix.pid_t) ?Usage {
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return null;
+    defer proc.close(io);
+    var entries = proc.iterate();
+    var pages: u64 = 0;
+    var single: u64 = 0;
+    var path: [32]u8 = undefined;
+    var buffer: [1024]u8 = undefined;
+    while (entries.next(io) catch return null) |entry| {
+        if (entry.kind != .directory) continue;
+        // A process's directory is its number; the others are the kernel's.
+        _ = std.fmt.parseUnsigned(u32, entry.name, 10) catch continue;
+        const stat_path = std.fmt.bufPrint(&path, "{s}/stat", .{entry.name}) catch continue;
+        const line = proc.readFile(io, stat_path, &buffer) catch continue;
+        const read = statGroupPages(line) orelse continue;
+        if (read.group != group) continue;
+        pages +|= read.pages;
+        const status_path = std.fmt.bufPrint(&path, "{s}/status", .{entry.name}) catch continue;
+        const status = proc.readFile(io, status_path, &buffer) catch continue;
+        single = @max(single, highWater(status) orelse read.pages *| std.heap.pageSize());
+    }
+    return .{ .tree = pages *| std.heap.pageSize(), .single = single };
+}
+
+/// The most a process has held resident, from its `/proc/<pid>/status` (`VmHWM`, in kB).
+fn highWater(status: []const u8) ?u64 {
+    var lines = std.mem.splitScalar(u8, status, '\n');
+    while (lines.next()) |line| {
+        const rest = std.mem.cutPrefix(u8, line, "VmHWM:") orelse continue;
+        var fields = std.mem.tokenizeAny(u8, rest, " \t");
+        const kb = std.fmt.parseUnsigned(u64, fields.next() orelse return null, 10) catch return null;
+        return kb *| 1024;
+    }
+    return null;
+}
+
+/// A process's group and resident pages, from its `/proc/<pid>/stat` line: fields 5 and 24,
+/// counted after the command's closing parenthesis, which may itself hold spaces and `)`.
+fn statGroupPages(line: []const u8) ?struct { group: i64, pages: u64 } {
+    const close = std.mem.findScalarLast(u8, line, ')') orelse return null;
+    var fields = std.mem.tokenizeScalar(u8, line[close + 1 ..], ' ');
+    var index: usize = 3;
+    var group: ?i64 = null;
+    while (fields.next()) |field| : (index += 1) {
+        if (index == 5) group = std.fmt.parseInt(i64, field, 10) catch return null;
+        if (index == 24) return .{ .group = group orelse return null, .pages = std.fmt.parseUnsigned(u64, field, 10) catch return null };
+    }
+    return null;
+}
+
+test "a process's group and resident pages are read past a command holding spaces and parentheses" {
+    const line = "4242 (zig (build) x) S 4200 4100 4100 0 -1 4194560 100 0 0 0 5 1 0 0 20 0 3 0 777 1234567 2048 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 17 2 0 0 0 0 0\n";
+    const read = statGroupPages(line).?;
+    try std.testing.expectEqual(@as(i64, 4100), read.group);
+    try std.testing.expectEqual(@as(u64, 2048), read.pages);
+    try std.testing.expectEqual(null, statGroupPages("4242 (cut) S 1 2"));
+    try std.testing.expectEqual(null, statGroupPages("no parenthesis"));
+    try std.testing.expectEqual(@as(?u64, 9_018_311 * 1024), highWater("Name:\tzig\nVmPeak:\t 12000000 kB\nVmHWM:\t 9018311 kB\nVmRSS:\t 100 kB\n"));
+    try std.testing.expectEqual(@as(?u64, null), highWater("Name:\tzig\n"));
+}
 
 /// Windows' exit status whole, read before `wait` closes the process
 /// handle; elsewhere the status is all in the term.

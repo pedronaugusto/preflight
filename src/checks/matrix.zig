@@ -6,6 +6,14 @@ const family = @import("../family.zig");
 const preflight_order = @import("preflight_order");
 
 pub const hosts = [_][]const u8{ "ubuntu-latest", "macos-latest", "windows-latest" };
+/// What each of `hosts` holds, as GitHub gives a public repository's standard runner: its
+/// memory, in `hosts` order, which a cross job's compiles share (`crossBuildJobs`).
+pub const host_memory = [_]u64{ 16 << 30, 7 << 30, 16 << 30 };
+/// Each of `hosts`' CPUs, in `hosts` order: more jobs at once than these only wait.
+pub const host_cpus = [_]u32{ 4, 3, 4 };
+/// The share of a runner's memory, in percent, a cross job's compiles may hold at once: the
+/// rest is the system's and the build runner's.
+const memory_share_percent = 75;
 /// The `shards` keys of `ci/workflow.json`, in `hosts` order.
 const host_names = [_][]const u8{ "linux", "macos", "windows" };
 /// The runners on ARM the release tier adds, Linux and Windows on aarch64 (the macOS runner is
@@ -91,6 +99,9 @@ pub const Job = struct {
     /// The jobs this one runs in sequence on its one runner, as JSON (`macosLegs`); null for a
     /// job that is one job.
     legs: ?[]const u8 = null,
+    /// The jobs its builds run at once (`-j`, `PREFLIGHT_JOBS`), where the plan sizes them by
+    /// memory (`crossBuildJobs`); null for Zig's default.
+    build_jobs: ?u32 = null,
 };
 
 /// A target no hosted runner is, whose tests run on its own kernel under QEMU.
@@ -857,6 +868,35 @@ fn targetSeconds(a: std.mem.Allocator, config: src.Value, name: []const u8, benc
     return compiled + benchmarks;
 }
 
+/// The jobs at once a cross job of `names` runs its builds with on `hosts[0]`: as many of its
+/// targets' largest single compiles as fit `memory_share_percent` of its memory (the most one
+/// process held, as `ci/costs.json` records each phase), at most its CPUs; the fewest any of its
+/// targets allows. Compiles run at once do not each hold a share of the tree's peak: one may
+/// hold most of it. A target whose compile no run measured allows one: one compile at a time
+/// is the floor, which always fits, and the run that compiles it records it. relic's
+/// x86_64-windows-gnu held 15 GiB at -j4 on a 16 GB runner, 8.6 GB of it in one compile.
+fn crossBuildJobs(a: std.mem.Allocator, config: src.Value, names: []const []const u8, bench: bool) !u32 {
+    const room = host_memory[0] / 100 * memory_share_percent;
+    var jobs: u32 = host_cpus[0];
+    for (names) |name| for ([_][]const u8{ "compile", "benchmarks" }, 0..) |label, index| {
+        if (index == 1 and !bench) break;
+        const single = try singlePeak(config, try a.print("{s} {s}", .{ label, name })) orelse return 1;
+        jobs = @min(jobs, std.math.cast(u32, room / @max(single, 1)) orelse jobs);
+    };
+    return @max(jobs, 1);
+}
+
+/// The most one process of a phase held, in bytes, as `ci/costs.json`'s `peaks` records the
+/// phase; null where it records none.
+fn singlePeak(config: src.Value, phase: []const u8) !?u64 {
+    const peaks = src.get(src.get(config, "measured"), "peaks");
+    if (peaks != .object) return null;
+    const entry = peaks.object.get(phase) orelse return null;
+    const single = src.get(entry, "single");
+    if (single != .integer or single.integer < 0) return error.InvalidPeak;
+    return @intCast(single.integer); // safe: not negative, checked above
+}
+
 fn number(value: src.Value) ?f64 {
     return switch (value) {
         .float => |seconds| seconds,
@@ -942,9 +982,11 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     const total = count + unmeasured.items.len;
     for (0..total) |group| {
         var names: std.ArrayList(u8) = .empty;
+        var named: std.ArrayList([]const u8) = .empty;
         for (targets, assignment) |target, owner| if (owner == group) {
             if (names.items.len > 0) try names.append(a, ' ');
             try names.appendSlice(a, try targetName(target));
+            try named.append(a, try targetName(target));
         };
         const alone = group >= count;
         try jobs.append(a, .{
@@ -958,6 +1000,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
             .job_timeout = if (alone) unmeasured_job_minutes else try minutes(config, "cross_job_timeout"),
             .cache_key = try a.print("cross-{s}-{d}", .{ if (bench) "bench" else "objects", group }),
             .targets = names.items,
+            .build_jobs = try crossBuildJobs(a, config, named.items, bench),
         });
     }
 }
@@ -1102,6 +1145,8 @@ pub fn crossArgs(a: std.mem.Allocator, command: []const []const u8, config: src.
 /// count, or null for Zig's own default when it is unset. Anything else is refused.
 pub fn jobsFrom(environ: *const std.process.Environ.Map) error{InvalidJobs}!?u32 {
     const text = environ.get("PREFLIGHT_JOBS") orelse return null;
+    // A job the plan sizes none for is given the variable empty.
+    if (text.len == 0) return null;
     const count = std.fmt.parseUnsigned(u32, text, 10) catch return error.InvalidJobs;
     if (count == 0) return error.InvalidJobs;
     return count;
@@ -2039,8 +2084,50 @@ test "a cross compile's build runs with the jobs PREFLIGHT_JOBS allows, and with
         try environ.put("PREFLIGHT_JOBS", bad);
         try std.testing.expectError(error.InvalidJobs, jobsFrom(&environ));
     }
+    // A job the plan sizes none for has the variable empty: Zig's default.
+    try environ.put("PREFLIGHT_JOBS", "");
+    try std.testing.expectEqual(@as(?u32, null), try jobsFrom(&environ));
 }
 
+test "a cross job runs as many of its targets' largest single compiles at once as its runner's memory holds, one where a target has none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // relic's measured cross compiles: x86_64-windows-gnu held 15 GiB at -j4 on a 16 GB runner,
+    // 8.6 GB of it in one compile; aarch64-linux-gnu is timed and its memory not read.
+    const gib: u64 = 1 << 30;
+    const gb: u64 = 1_000_000_000;
+    const config = (try std.json.parseFromSlice(src.Value, a, try a.print(
+        \\{{"targets":["aarch64-windows-gnu","x86_64-linux-musl","x86_64-windows-gnu","aarch64-linux-gnu"],"cross_jobs":4,"cross_job_timeout":25,
+        \\"measured":{{"phases":{{"compile aarch64-windows-gnu":819.9,"compile x86_64-linux-musl":268.2,"compile x86_64-windows-gnu":600,"compile aarch64-linux-gnu":200}},
+        \\"peaks":{{"compile aarch64-windows-gnu":{{"bytes":{d},"single":{d},"jobs":4}},"compile x86_64-linux-musl":{{"bytes":{d},"single":{d},"jobs":4}},"compile x86_64-windows-gnu":{{"bytes":{d},"single":{d},"jobs":4}}}}}}}}
+    , .{ 11 * gib, 5 * gib, 3 * gib, 1 * gib, 15 * gib, 86 * gb / 10 }), .{})).value;
+    var jobs: std.ArrayList(Job) = .empty;
+    try crossJobs(a, config, &jobs, try src.items(src.get(config, "targets")), false);
+    try std.testing.expectEqual(@as(usize, 4), jobs.items.len);
+    // 75% of 16 GiB is 12 GiB: one 8.6 GB compile fits once, 5 GiB twice, 1 GiB more often
+    // than the runner's 4 CPUs.
+    const want = [_]struct { []const u8, u32 }{ .{ "x86_64-windows-gnu", 1 }, .{ "aarch64-windows-gnu", 2 }, .{ "x86_64-linux-musl", 4 }, .{ "aarch64-linux-gnu", 1 } };
+    for (want) |w| {
+        const job = for (jobs.items) |job| {
+            if (std.mem.eql(u8, job.targets, w[0])) break job;
+        } else return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(?u32, w[1]), job.build_jobs);
+    }
+    // A job of several targets takes the fewest any of them allows.
+    const shared = (try std.json.parseFromSlice(src.Value, a, try a.print(
+        \\{{"targets":["aarch64-windows-gnu","x86_64-linux-musl"],"cross_jobs":1,"cross_job_timeout":25,
+        \\"measured":{{"phases":{{"compile aarch64-windows-gnu":300,"compile x86_64-linux-musl":200}},
+        \\"peaks":{{"compile aarch64-windows-gnu":{{"bytes":{d},"single":{d},"jobs":4}},"compile x86_64-linux-musl":{{"bytes":{d},"single":{d},"jobs":4}}}}}}}}
+    , .{ 11 * gib, 5 * gib, 3 * gib, 1 * gib }), .{})).value;
+    jobs.clearRetainingCapacity();
+    try crossJobs(a, shared, &jobs, try src.items(src.get(shared, "targets")), false);
+    try std.testing.expectEqual(@as(usize, 1), jobs.items.len);
+    try std.testing.expectEqual(@as(?u32, 2), jobs.items[0].build_jobs);
+    var json: std.Io.Writer.Allocating = .init(a);
+    try std.json.Stringify.value(jobs.items[0], job_json, &json.writer);
+    try std.testing.expect(std.mem.find(u8, json.written(), "\"build_jobs\":2") != null);
+}
 test "the fuzz job: the release tier's and a dispatched fuzz run's alone, where the build has its step, for its minutes and 20 more" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -78,6 +78,7 @@ test {
     _ = keys;
     _ = @import("checks/actions.zig");
     _ = @import("checks/gate_test.zig");
+    _ = @import("checks/bound_test.zig");
     _ = lazy_import;
     _ = command;
     _ = paths;

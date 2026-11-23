@@ -122,11 +122,16 @@ pub fn exitAs(term: std.process.Child.Term, status: u32, who: []const u8) noretu
     switch (term) {
         .exited => |code| std.process.exit(code),
         .signal => |sig| {
-            const default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
-            std.posix.sigaction(sig, &default, null);
-            var only = std.posix.sigemptyset();
-            std.posix.sigaddset(&only, sig);
-            std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &only, null);
+            if (sig == .STOP) unreachable; // a wait reports a stopped program as stopped: STOP ends none
+            // KILL's action is the default and nothing blocks it: no process sets either, and
+            // std's sigaction asserts it is not asked to.
+            if (sig != .KILL) {
+                const default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
+                std.posix.sigaction(sig, &default, null);
+                var only = std.posix.sigemptyset();
+                std.posix.sigaddset(&only, sig);
+                std.posix.sigprocmask(std.posix.SIG.UNBLOCK, &only, null);
+            }
             // A signal this process cannot raise ends it with the shell's code for that signal,
             // said on stderr; a stderr that takes none of it leaves the code alone to say it.
             const code = 128 +| @as(u8, @truncate(@backingInt(sig)));

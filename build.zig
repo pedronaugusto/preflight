@@ -98,6 +98,9 @@ pub fn dev(b: *std.Build, _: type) void {
     options.addOptionPath("preflight", executable.getEmittedBin());
     const fake = b.addExecutable(.{ .name = "bay", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/bay.zig"), .target = target, .optimize = .debug }) });
     options.addOptionPath("fake_bay", fake.getEmittedBin());
+    // The bound's tests run its program as the build puts it before a run: Debug, as there.
+    const bound = b.addExecutable(.{ .name = "preflight-bound", .root_module = b.createModule(.{ .root_source_file = package.path("src/bound.zig"), .target = target, .optimize = .debug }) });
+    options.addOptionPath("bound", bound.getEmittedBin());
     tests.root_module.addOptions("test_options", options);
     // The gate below gives every test here preflight's runner, as it does a
     // consumer's tests: the order module's and the watchdog's tests import

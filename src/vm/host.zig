@@ -559,25 +559,26 @@ pub fn parseStatus(text: []const u8) ?Ending {
 
 /// Ends this process by the signal that ended the program, so that the build sees
 /// the crash as its own. Linux numbers signals alike on every architecture it runs
-/// tests on; a host that numbers them otherwise ends with 128 + the number. A
-/// program the machine's kernel killed or stopped (SIGKILL, SIGSTOP: no process
-/// sets their action, and std's sigaction asserts it is not asked to) ends this
-/// one with 128 + the signal, the signal named on standard error.
+/// tests on; a host that numbers them otherwise ends with 128 + the number.
 fn raiseOwn(io: Io, sig: u32) noreturn {
     const code: u8 = @truncate(128 +% sig); // safe: an exit code is a byte, as a shell takes 128 + a signal
-    if (builtin.target.os.tag == .linux and sig > 0 and sig < 32) {
-        if (uncatchable(sig)) |name| {
+    if (builtin.target.os.tag == .linux) switch (raising(sig)) {
+        .by_code => {},
+        .stopped => {
             var line: [128]u8 = undefined;
-            const text = std.mem.print(&line, "preflight-vm: the program ended by SIG{s} ({d}), which no process can catch: exit {d}\n", .{ name, sig, code }) catch std.process.exit(code);
+            const text = std.mem.print(&line, "preflight-vm: the program was stopped by SIGSTOP ({d}), which ends no process: exit {d}\n", .{ sig, code }) catch std.process.exit(code);
             Io.File.stderr().writeStreamingAll(io, text) catch std.process.exit(code);
-            std.process.exit(code);
-        }
-        const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: checked to lie between 1 and 31 above
-        var default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
-        std.posix.sigaction(signal, &default, null);
-        // A raise that fails ends the process as one whose signal is ignored does below.
-        std.posix.raise(signal) catch std.process.exit(code);
-    }
+        },
+        .as_is, .with_default => |how| {
+            const signal: std.posix.SIG = @fromBackingInt(@intCast(sig)); // safe: `raising` takes only 1 to 31 to these
+            if (how == .with_default) {
+                var default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
+                std.posix.sigaction(signal, &default, null);
+            }
+            // A raise that fails ends the process as one whose signal is ignored does below.
+            std.posix.raise(signal) catch std.process.exit(code);
+        },
+    };
     std.process.exit(code);
 }
 
@@ -587,20 +588,35 @@ fn raiseOwn(io: Io, sig: u32) noreturn {
 const linux_kill = 9;
 const linux_stop = 19;
 
-/// The name of `sig`, a Linux signal number, when no process can set its action or catch it.
-fn uncatchable(sig: u32) ?[]const u8 {
+/// How a Linux host ends as a program the machine's Linux ended by `sig`.
+const Raising = enum {
+    /// Raised with its action the default.
+    with_default,
+    /// Raised as it is: KILL, whose action no process sets, and std's sigaction asserts it is
+    /// not asked to.
+    as_is,
+    /// SIGSTOP: it ends no process, so 128 + it, named on standard error.
+    stopped,
+    /// No signal Linux numbers below 32: 128 + it.
+    by_code,
+};
+
+fn raising(sig: u32) Raising {
     return switch (sig) {
-        linux_kill => "KILL",
-        linux_stop => "STOP",
-        else => null,
+        linux_kill => .as_is,
+        linux_stop => .stopped,
+        1...linux_kill - 1, linux_kill + 1...linux_stop - 1, linux_stop + 1...31 => .with_default,
+        else => .by_code,
     };
 }
 
-test "a program the kernel killed or stopped ends the run by its exit code, its signal named, and sets no action for it" {
-    try std.testing.expectEqualStrings("KILL", uncatchable(9).?);
-    try std.testing.expectEqualStrings("STOP", uncatchable(19).?);
-    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(6));
-    try std.testing.expectEqual(@as(?[]const u8, null), uncatchable(11));
+test "a program the machine's kernel killed ends the run by KILL, raised with no action set; one it stopped by its exit code, its signal named" {
+    try std.testing.expectEqual(Raising.as_is, raising(9));
+    try std.testing.expectEqual(Raising.stopped, raising(19));
+    try std.testing.expectEqual(Raising.with_default, raising(6));
+    try std.testing.expectEqual(Raising.with_default, raising(11));
+    try std.testing.expectEqual(Raising.by_code, raising(0));
+    try std.testing.expectEqual(Raising.by_code, raising(32));
 }
 
 test "a guest never inherits a host path: its Zig's global cache is its own, a host path passes only where the machine binds it, and what is left out is named" {

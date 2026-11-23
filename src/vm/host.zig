@@ -185,9 +185,12 @@ fn gunzip(gpa: std.mem.Allocator, compressed: []const u8) ![]u8 {
 /// Runs `argv` on the machine and ends as it ended: its exit code, or its signal.
 fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, kernel: []const u8, initrd: []const u8, argv: []const []const u8) !u8 {
     const run_path = try describe(io, gpa, environ, argv);
-    const ending = boot(io, gpa, kernel, initrd, run_path, .offline);
-    try removeRun(io, gpa, run_path);
-    switch (try ending) {
+    const ending = boot(io, gpa, kernel, initrd, run_path, .offline) catch |err| {
+        try removeRun(io, gpa, run_path);
+        return err;
+    };
+    try endRun(io, gpa, run_path, ending);
+    switch (ending) {
         .exited => |code| return code,
         .signal => |sig| raiseOwn(io, sig),
     }
@@ -207,7 +210,7 @@ fn freebsdRun(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Enviro
         try stderr.writeStreamingAll(io, try gpa.print("preflight-vm: the FreeBSD machine's run is kept in {s}\n", .{run_path}));
         return err;
     };
-    try removeRun(io, gpa, run_path);
+    try endRun(io, gpa, run_path, ending);
     switch (ending) {
         .exited => |code| return code,
         .signal => |sig| if (freebsd.linuxSignal(sig)) |linux_sig| raiseOwn(io, linux_sig) else std.process.exit(@intCast(128 + sig)), // safe: classify takes no signal above freebsd.max_signal, 126, so 128 + it is a byte, as a shell's exit code for it
@@ -348,6 +351,46 @@ fn within(path: []const u8, reach: []const []const u8) bool {
 fn userLine(gpa: std.mem.Allocator) ![]u8 {
     const user = identity.current();
     return gpa.print("{d} {d}\n", .{ user.uid, user.gid });
+}
+
+/// Ends a run whose machine reported the program's ending: one that passed leaves nothing; one
+/// that did not is named, with its run directory kept, the machine's console among it, as the
+/// job keeps it for the hosted run's artifacts. A test run on FreeBSD failed with nothing
+/// else said (release run 45273561514): its build's summary never printed, and its directory,
+/// gone, held the only account of it.
+fn endRun(io: Io, gpa: std.mem.Allocator, run_path: []const u8, ending: Ending) !void {
+    if (std.meta.eql(ending, Ending{ .exited = 0 })) return removeRun(io, gpa, run_path);
+    var line: [512]u8 = undefined;
+    try Io.File.stderr().writeStreamingAll(io, try describeEnding(&line, ending, run_path));
+}
+
+/// What a run that did not pass says of itself.
+fn describeEnding(line: []u8, ending: Ending, run_path: []const u8) ![]const u8 {
+    return switch (ending) {
+        .exited => |code| std.mem.print(line, "preflight-vm: the program exited {d}; the machine's run is kept in {s}\n", .{ code, run_path }),
+        .signal => |sig| std.mem.print(line, "preflight-vm: the program ended by signal {d}; the machine's run is kept in {s}\n", .{ sig, run_path }),
+    };
+}
+
+test "a machine's run that did not pass is named and kept; one that passed is not described" {
+    var line: [512]u8 = undefined;
+    try std.testing.expectEqualStrings("preflight-vm: the program exited 1; the machine's run is kept in .zig-cache/preflight-vm-1\n", try describeEnding(&line, .{ .exited = 1 }, ".zig-cache/preflight-vm-1"));
+    try std.testing.expectEqualStrings("preflight-vm: the program ended by signal 9; the machine's run is kept in r\n", try describeEnding(&line, .{ .signal = 9 }, "r"));
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDir(io, "passed", .default_dir);
+    try tmp.dir.createDir(io, "failed", .default_dir);
+    const base = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(base);
+    const passed = try Io.Dir.path.join(std.testing.allocator, &.{ base, "passed" });
+    defer std.testing.allocator.free(passed);
+    const failed = try Io.Dir.path.join(std.testing.allocator, &.{ base, "failed" });
+    defer std.testing.allocator.free(failed);
+    try endRun(io, std.testing.allocator, passed, .{ .exited = 0 });
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "passed", .{}));
+    try endRun(io, std.testing.allocator, failed, .{ .exited = 1 });
+    try tmp.dir.access(io, "failed", .{});
 }
 
 /// Removes a run's directory once its machine has ended. One that cannot be removed is

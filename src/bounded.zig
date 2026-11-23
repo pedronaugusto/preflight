@@ -12,6 +12,7 @@ const builtin = @import("builtin");
 const watchdog = @import("watchdog.zig");
 const process_tree = @import("runner/tree.zig");
 const inbound = @import("runner/input.zig");
+const proc_stat = @import("proc_stat.zig");
 
 /// What to run, and the name its timeout gives it.
 pub const Command = struct {
@@ -129,11 +130,47 @@ const Measure = struct {
     }
 
     fn take(measure: *Measure, io: std.Io) void {
-        const now = measure.tree.memory(io) orelse return;
+        const now = (if (builtin.target.os.tag == .linux) groupResident(io, measure.tree.group) else measure.tree.memory()) orelse return;
         const was = measure.peak orelse now;
         measure.peak = .{ .tree = @max(was.tree, now.tree), .single = @max(was.single, now.single) };
     }
 };
+
+/// The resident bytes of every process whose group is `group`, and the most any one of them
+/// has held, read from `/proc`; null where `/proc` cannot be listed. A process that ends while
+/// it is read is not counted.
+fn groupResident(io: std.Io, group: std.posix.pid_t) ?process_tree.Usage {
+    var proc = std.Io.Dir.openDirAbsolute(io, "/proc", .{ .iterate = true }) catch return null;
+    defer proc.close(io);
+    var entries = proc.iterate();
+    var pages: u64 = 0;
+    var single: u64 = 0;
+    var buffer: [1024]u8 = undefined;
+    while (entries.next(io) catch return null) |entry| {
+        // A process's directory is its number; the others (self, net) are the kernel's.
+        if (entry.name.len == 0 or std.mem.findNone(u8, entry.name, "0123456789") != null) continue;
+        var process = proc.openDir(io, entry.name, .{}) catch |err| switch (err) {
+            // A process that ended since the listing holds nothing.
+            error.FileNotFound => continue,
+            // Any other failure leaves the tree's memory unread rather than counted short.
+            else => return null,
+        };
+        defer process.close(io);
+        const line = inbound.file(io, process, "stat", &buffer) catch |err| switch (err) {
+            error.FileNotFound => continue, // it ended since it was opened
+            else => return null, // unread rather than counted short
+        };
+        const read = proc_stat.groupPages(line) orelse return null;
+        if (read.group != group) continue;
+        pages +|= read.pages;
+        const status = inbound.file(io, process, "status", &buffer) catch |err| switch (err) {
+            error.FileNotFound => continue, // it ended since its stat was read
+            else => return null, // unread rather than counted short
+        };
+        single = @max(single, proc_stat.highWater(status) orelse (read.pages *| std.heap.pageSize()));
+    }
+    return .{ .tree = pages *| std.heap.pageSize(), .single = single };
+}
 
 /// The thread that ends the run's tree once its wait is up.
 const Watch = struct {

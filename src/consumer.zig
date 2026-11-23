@@ -26,16 +26,6 @@ pub const Options = struct {
     /// Options the consumer gives the package, as `b.dependency(name, .{ ... })` does: `.http = false`
     /// proves a build without a feature the package makes optional. The base of every configuration.
     options: []const Option = &.{},
-    /// Retired: the package's configurations are `configurations` in `ci/workflow.json`, the one
-    /// list the consumer check and the ci tier's compile of the package's `check` both read.
-    /// Set, the build fails saying so.
-    configurations: ?[]const Configuration = null,
-};
-
-/// Retired with `Options.configurations`: the entries of `ci/workflow.json`'s `configurations`.
-pub const Configuration = struct {
-    options: []const Option = &.{},
-    modules: ?[]const []const u8 = null,
 };
 
 /// One configuration the package promises, as `ci/workflow.json` declares it: a name, the
@@ -148,10 +138,6 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
     }
     const names = if (options.modules.len > 0) options.modules else &.{options.package};
     const step = configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package}));
-    if (options.configurations != null) {
-        step.dependOn(&b.addFail("addConsumerCheck .configurations: the package's configurations are `configurations` in ci/workflow.json, the one list the consumer check and the ci tier's compile of `check` read: {\"name\": \"no-http\", \"options\": {\"http\": false}, \"modules\": [...]}").step);
-        return;
-    }
     const configurations = switch (declared(b, package)) {
         .ok => |list| list,
         .problem => |problem| {

@@ -327,8 +327,7 @@ on every run.
 test support are not shipped, so they leave them out; a `vendored` file ships, and is held to
 them: while it is the copy its SHA-256 names, the upstream's verification is the reason its
 sites carry, and changed, it fails the run. Every rule takes one suppression,
-`// glint-ignore: <rule>, ... -- <reason>`; the aegis escape form is read no more, and
-`zig build fix` (`bay dev fix`) rewrites it into that form. The run prints the first 25
+`// glint-ignore: <rule>, ... -- <reason>`. The run prints the first 25
 findings of each rule (every one in `.zig-cache/preflight-lint/findings.txt` when there are
 more) and a line of the shipped bans' findings.
 

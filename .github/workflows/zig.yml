@@ -108,23 +108,35 @@ jobs:
     # A dispatched fuzz run's minutes are its own, which the plan never saw: its job has
     # GitHub's whole limit, and the budget (at most 330 minutes) ends it first.
     timeout-minutes: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
-    # A declared job marked advisory runs and shows its result without taking the run's: the
-    # `runners` job names its failure.
-    continue-on-error: ${{ matrix.advisory == true }}
+    # A declared job marked advisory runs and shows its result without taking the run's, as
+    # Zig master's does, by the same means: a job-level continue-on-error still concludes a
+    # called workflow's run "failure", so each step that can fail continues where the job is
+    # advisory, a step needing an earlier one runs only where it passed, and the report names
+    # each outcome. Its run step has the plan's `run_timeout`, and its job that and the other
+    # steps' budgets (`matrix.zig`'s advisory_overhead_minutes), so no advisory job meets its bound.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        id: package
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           fetch-depth: 0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        id: preflight
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
           path: .preflight
       - uses: ./.preflight/.github/actions/setup
         id: setup
+        if: steps.package.outcome == 'success' && steps.preflight.outcome == 'success'
+        timeout-minutes: 30
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           working-directory: ${{ matrix.directory || inputs.working-directory }}
           build-args: ${{ matrix.args }}
@@ -135,8 +147,10 @@ jobs:
       # apt's own deadlines end a stalled download and retry it; the step's is a backstop with
       # room for a slow mirror, where 5 minutes ended an install as apt finished it.
       - name: Install QEMU's riscv64 system emulation
-        if: matrix.machine == 'riscv64'
+        id: riscv64
+        if: matrix.machine == 'riscv64' && steps.setup.outcome == 'success'
         timeout-minutes: 15
+        continue-on-error: ${{ matrix.advisory == true }}
         run: |
           apt='-q -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60'
           sudo apt-get $apt update
@@ -147,8 +161,10 @@ jobs:
       # x86_64 FreeBSD runs on its own kernel under KVM (`-Dci-vm`): QEMU's x86_64 system
       # emulation, and the runner's /dev/kvm opened to the job's user.
       - name: Install QEMU's x86_64 system emulation and open KVM
-        if: matrix.machine == 'freebsd'
+        id: kvm
+        if: matrix.machine == 'freebsd' && steps.setup.outcome == 'success'
         timeout-minutes: 15
+        continue-on-error: ${{ matrix.advisory == true }}
         run: |
           apt='-q -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60'
           sudo apt-get $apt update
@@ -161,23 +177,26 @@ jobs:
       # recipe and the machine (the riscv64 machine's own builds in its tests' step).
       - name: Restore the held git
         id: held_git
-        if: matrix.setup && inputs.held-git != ''
+        if: matrix.setup && inputs.held-git != '' && steps.setup.outcome == 'success'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         timeout-minutes: 2
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           path: ${{ runner.temp }}/preflight-git
           key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
-        if: matrix.setup && inputs.held-git != ''
+        id: hold
+        if: matrix.setup && inputs.held-git != '' && steps.setup.outcome == 'success'
         timeout-minutes: 30
+        continue-on-error: ${{ matrix.advisory == true }}
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         run: preflight prepare --held-git
       # On a tools-cache miss the setup step builds the tools, cold: the first attempt has a
       # build's deadline then, and a setup's when they came from the cache.
       - name: Set up test tools (attempt 1/3)
         id: tools1
-        if: matrix.setup
+        if: matrix.setup && steps.setup.outcome == 'success' && steps.hold.outcome != 'failure'
         timeout-minutes: ${{ steps.setup.outputs.tools-hit == 'true' && 5 || 30 }}
         continue-on-error: true
         working-directory: ${{ matrix.directory || inputs.working-directory }}
@@ -197,6 +216,7 @@ jobs:
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
         timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
@@ -204,14 +224,20 @@ jobs:
       # The fuzz job's corpora, from the last run that saved them: each run starts where the
       # last one left the fuzzer, and saves what it adds.
       - name: Restore the fuzz corpora
-        if: matrix.step == 'ci-fuzz'
+        if: matrix.step == 'ci-fuzz' && steps.setup.outcome == 'success'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/cache/f
           key: preflight-fuzz-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             preflight-fuzz-${{ runner.os }}-
       - name: Run the gate
+        id: suite
+        if: steps.setup.outcome == 'success' && steps.hold.outcome != 'failure' && steps.riscv64.outcome != 'failure' && steps.kvm.outcome != 'failure' && (!matrix.setup || steps.tools1.outcome == 'success' || steps.tools2.outcome == 'success' || steps.tools3.outcome == 'success')
+        timeout-minutes: ${{ matrix.run_timeout || 360 }}
+        continue-on-error: ${{ matrix.advisory == true }}
         working-directory: ${{ matrix.directory || inputs.working-directory }}
         env:
           STEP: ${{ matrix.step }}
@@ -235,11 +261,14 @@ jobs:
         if: always() && matrix.setup && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         timeout-minutes: 2
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           path: ${{ runner.temp }}/preflight-git
           key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'hardened-fuzz'
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
           path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v
@@ -249,6 +278,8 @@ jobs:
       - name: Save the fuzz corpora
         if: always() && matrix.step == 'ci-fuzz'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-fuzz/*/cache/f
           key: preflight-fuzz-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -256,6 +287,8 @@ jobs:
       # an input that crashed the fuzzer among them (f/crash).
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.step == 'ci-fuzz'
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           name: fuzz-findings-${{ inputs.tier }}-${{ github.run_attempt }}
           path: |
@@ -266,6 +299,8 @@ jobs:
           retention-days: 30
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           name: timings-${{ matrix.cache_key }}
           path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/preflight-timings
@@ -275,12 +310,23 @@ jobs:
       # A FreeBSD machine that ended without its program's ending keeps its run, console among it.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure() && matrix.machine == 'freebsd'
+        timeout-minutes: 5
+        continue-on-error: ${{ matrix.advisory == true }}
         with:
           name: freebsd-runs-${{ matrix.cache_key }}
           path: ${{ matrix.directory || inputs.working-directory }}/.zig-cache/tmp/preflight-vm-*
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+      - name: Report
+        uses: ./.preflight/.github/actions/advisory-report
+        if: always() && matrix.advisory == true
+        timeout-minutes: 1
+        continue-on-error: true
+        with:
+          title: ${{ matrix.name }}
+          outcome: ${{ steps.suite.outcome }}
+          steps: setup ${{ steps.setup.outcome || 'not run' }}, tool setup ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome || steps.tools1.outcome || 'not run' }}
   master:
     # Zig master (the next release in development) never blocks: its result is
     # read at each merge, and a break is a note for the next port's codemod table.
@@ -401,19 +447,18 @@ jobs:
           path: ${{ runner.temp }}/preflight-git
           key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-none
       # Each outcome is the step's own: `failure` where it failed, `skipped` where what it
-      # needs did not pass, empty where it never ran.
+      # needs did not pass, empty where it never ran. The report is every non-blocking job's;
+      # without preflight's checkout it cannot run, nor can any blocking job, whose red shows.
       - name: Report
+        uses: ./.preflight/.github/actions/advisory-report
         timeout-minutes: 1
         if: always()
         continue-on-error: true
-        env:
-          SETUP: ${{ steps.setup.outcome }}
-          OUTCOME: ${{ steps.suite.outcome }}
-          TOOLS: ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome || steps.tools1.outcome }}
-        run: |
-          version=$(zig version 2>/dev/null || echo unknown)
-          echo "Zig master $version: setup ${SETUP:-not run}; tool setup ${TOOLS:-not run}; suite ${OUTCOME:-not run} (non-blocking)" >> "$GITHUB_STEP_SUMMARY" || true
-          if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass (setup ${SETUP:-not run}, tool setup ${TOOLS:-not run}, suite ${OUTCOME:-not run}); a note for the next port"; fi
+        with:
+          title: Zig master
+          outcome: ${{ steps.suite.outcome }}
+          steps: setup ${{ steps.setup.outcome || 'not run' }}, tool setup ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome || steps.tools1.outcome || 'not run' }}
+          note: a note for the next port
   compile:
     needs: toolchain
     # The native link jobs, planned exactly when the build's tests are portable (its ci-build).

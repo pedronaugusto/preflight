@@ -1,5 +1,6 @@
 //! Hosted setup deadlines and the generated caller's contract.
 const std = @import("std");
+const builtin = @import("builtin");
 const root = @import("test_options").root;
 const matrix = @import("matrix.zig");
 const heldgit = @import("heldgit.zig");
@@ -104,34 +105,105 @@ test "the Zig master leg has bay on the path before its setup fetches through it
     try std.testing.expect(bay < setup);
 }
 
-test "the Zig master job never fails: every step that can fail continues, a step needing another runs only where it passed, and the report warns" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "master");
-    // A job-level continue-on-error still concludes a called workflow's run "failure", which a
-    // release refuses: the job itself must end "success".
+/// The one rule of a non-blocking job, Zig master's and a declared advisory job's alike: the job
+/// ends "success" whatever its steps did, as a job-level continue-on-error does not in a called
+/// workflow, whose run it concludes "failure", which a release refuses. Every step continues on
+/// error (`flag`: always, or where the job is advisory) and has a budget, so none stalls into the
+/// job's bound; a failing setup skips what needs it; the suite runs on tools that passed; and the
+/// shared report, the last step, always names the suite's outcome.
+fn nonBlocking(a: std.mem.Allocator, body: []const u8, flag: []const u8) !void {
     try std.testing.expect(std.mem.find(u8, body, "\n    continue-on-error:") == null);
+    const continues = try a.print("\n        continue-on-error: {s}\n", .{flag});
     var steps = std.mem.splitSequence(u8, body, "\n      - ");
     _ = steps.next(); // the job's own keys
     var count: usize = 0;
     while (steps.next()) |step| {
         count += 1;
-        contains(step, "\n        continue-on-error: true\n") catch |err| {
-            std.debug.print("a step of the Zig master job can fail it:\n{s}\n", .{step});
-            return err;
-        };
+        const continued = std.mem.find(u8, step, continues) != null or std.mem.find(u8, step, "\n        continue-on-error: true\n") != null;
+        if (!continued or std.mem.find(u8, step, "\n        timeout-minutes: ") == null) {
+            std.debug.print("a step of a non-blocking job can fail it, or stall into its bound:\n{s}\n", .{step});
+            return error.TestStepCanFailTheJob;
+        }
     }
     try std.testing.expect(count >= 10);
-    // A failing setup or tools attempt skips what needs it; the suite runs on tools that passed.
+    try contains(body, "steps.setup.outcome == 'success'");
+    try contains(body, "steps.tools1.outcome == 'success' || steps.tools2.outcome == 'success' || steps.tools3.outcome == 'success'");
+    const report = body[std.mem.find(u8, body, "      - name: Report\n        uses: ./.preflight/.github/actions/advisory-report\n") orelse return error.TestExpectedReport ..];
+    try std.testing.expect(std.mem.find(u8, report[1..], "\n      - ") == null);
+    try contains(report, "        outcome: ${{ steps.suite.outcome }}\n");
+}
+
+test "the Zig master job never fails: every step that can fail continues, a step needing another runs only where it passed, and the report warns" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "master");
+    try nonBlocking(arena.allocator(), body, "true");
     try contains(body, "        if: steps.package.outcome == 'success' && steps.preflight.outcome == 'success' && steps.bay.outcome == 'success'\n");
     try contains(body, "        if: steps.setup.outcome == 'success'\n");
-    try contains(body, "        if: steps.tools1.outcome == 'success' || steps.tools2.outcome == 'success' || steps.tools3.outcome == 'success'\n");
-    // A failing suite, or one that never ran, is named in the summary and as a warning.
-    const report = body[std.mem.find(u8, body, "- name: Report") orelse return error.TestExpectedReport ..];
-    try contains(report, "        if: always()\n");
-    try contains(report, "OUTCOME: ${{ steps.suite.outcome }}");
-    try contains(report, ">> \"$GITHUB_STEP_SUMMARY\"");
-    try contains(report, "if [ \"$OUTCOME\" != success ]; then echo \"::warning title=Zig master::");
+    try contains(body, "      - name: Report\n        uses: ./.preflight/.github/actions/advisory-report\n        timeout-minutes: 1\n        if: always()\n");
+}
+
+test "a declared advisory job is non-blocking by Zig master's rule, and its budgets fit the plan's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const body = try job(try read(a, ".github/workflows/zig.yml"), "gate");
+    try nonBlocking(a, body, "${{ matrix.advisory == true }}");
+    try contains(body, "      - name: Report\n        uses: ./.preflight/.github/actions/advisory-report\n        if: always() && matrix.advisory == true\n");
+    // The run has the plan's run_timeout; the steps that can run on a declared job but it --
+    // none a machine's or a fuzz step's -- total the plan's advisory_overhead_minutes, so the
+    // job's bound (run_timeout and that) is never met first.
+    try contains(body, "      - name: Run the gate\n        id: suite\n");
+    try contains(body, "        timeout-minutes: ${{ matrix.run_timeout || 360 }}\n");
+    var total: usize = 0;
+    var steps = std.mem.splitSequence(u8, body, "\n      - ");
+    _ = steps.next();
+    while (steps.next()) |step| {
+        if (std.mem.startsWith(u8, step, "name: Run the gate\n")) continue;
+        if (std.mem.find(u8, step, "matrix.machine ==") != null or std.mem.find(u8, step, "matrix.step ==") != null) continue;
+        const at = (std.mem.find(u8, step, "\n        timeout-minutes: ") orelse return error.TestExpectedBudget) + 26;
+        const value = step[at .. std.mem.findScalarPos(u8, step, at, '\n') orelse step.len];
+        total += if (std.mem.eql(u8, value, first_attempt)) 30 else try std.fmt.parseInt(usize, value, 10);
+    }
+    try std.testing.expectEqual(matrix.advisory_overhead_minutes, total);
+}
+
+test "a failing advisory job leaves the run green, its outcome in the summary and a warning on the run" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The report's own script, run as the job runs it, for a suite that failed and one that passed.
+    const action = try read(a, ".github/actions/advisory-report/action.yml");
+    const begin = (std.mem.find(u8, action, "      run: |\n") orelse return error.TestExpectedScript) + 13;
+    var script: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, action[begin..], '\n');
+    while (lines.next()) |line| {
+        if (line.len != 0 and !std.mem.startsWith(u8, line, "        ")) break;
+        try script.appendSlice(a, if (line.len >= 8) line[8..] else line);
+        try script.append(a, '\n');
+    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const summary = try std.Io.Dir.path.join(a, &.{ try tmp.dir.realPathFileAlloc(std.testing.io, ".", a), "summary.md" });
+    for ([_][]const u8{ "failure", "success" }) |outcome| {
+        var environ: std.process.Environ.Map = .init(a);
+        try environ.put("PATH", "/usr/bin:/bin");
+        try environ.put("GITHUB_STEP_SUMMARY", summary);
+        try environ.put("TITLE", "git master: head, non-blocking");
+        try environ.put("OUTCOME", outcome);
+        try environ.put("STEPS", "setup success, tool setup success");
+        try environ.put("NOTE", "");
+        const ran = try std.process.run(a, std.testing.io, .{ .argv = &.{ "/bin/bash", "-c", script.items }, .environ_map = &environ });
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, ran.term);
+        const warned = std.mem.find(u8, ran.stdout, "::warning title=git master%3A head%2C non-blocking::Zig ") != null;
+        try std.testing.expectEqual(std.mem.eql(u8, outcome, "failure"), warned);
+        if (warned) try contains(ran.stdout, ": the suite did not pass (setup success, tool setup success, suite failure)\n");
+    }
+    const written = try tmp.dir.readFileAlloc(std.testing.io, "summary.md", a, .limited(4096));
+    try contains(written, "git master: head, non-blocking, Zig ");
+    try contains(written, ": setup success, tool setup success, suite failure (non-blocking)\n");
+    try contains(written, ": setup success, tool setup success, suite success (non-blocking)\n");
 }
 
 test "hosted advisory deadlines expire before the job can cancel the run" {
@@ -166,10 +238,9 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     for ([_][]const u8{ "toolchain", "compile", "execute" }) |name| {
         try std.testing.expect(std.mem.find(u8, try job(workflow, name), "\n    continue-on-error:") == null);
     }
-    // The gate's jobs block the run, but for a declared job marked advisory (`matrix.advisory`).
-    const gate = try job(workflow, "gate");
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, gate, "\n    continue-on-error:"));
-    try contains(gate, "\n    continue-on-error: ${{ matrix.advisory == true }}\n");
+    // The gate's jobs carry no job-level continue-on-error: a declared advisory job's steps
+    // continue instead (`nonBlocking`).
+    try std.testing.expect(std.mem.find(u8, try job(workflow, "gate"), "\n    continue-on-error:") == null);
     // Publishing the blocking gate's proof never depends on master.
     try contains(try job(workflow, "profile"), "needs: [toolchain, gate, compile, execute]");
 }

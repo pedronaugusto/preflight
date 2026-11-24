@@ -39,6 +39,11 @@ const every_host = hosts ++ arm_hosts;
 pub threadlocal var problem: []const u8 = "";
 
 /// A job's time limit in minutes: `name` in the configuration, or 20. GitHub ends any job at 360.
+/// The most minutes an advisory job's steps but its run take, as zig.yml's gate job budgets
+/// them: the two checkouts, the setup, the held git's restore, build and save, the three tools
+/// attempts, the timings upload and the report (workflow_test sums them from the workflow).
+pub const advisory_overhead_minutes = 120;
+
 fn minutes(config: src.Value, name: []const u8) !usize {
     const value = src.get(config, name);
     if (value == .null) return 20;
@@ -89,6 +94,10 @@ pub const Job = struct {
     /// it with `continue-on-error`, and its name says `non-blocking`, as Zig master's does, so
     /// the `runners` job names its failure. Null, and so absent from the matrix, for the rest.
     advisory: ?bool = null,
+    /// An advisory job's run step's budget: its declared `timeout`. Its job has that and
+    /// `advisory_overhead_minutes` more, so a stalled step ends before the job's bound would
+    /// cancel it and conclude the run "failure". Null, and absent from the matrix, for the rest.
+    run_timeout: ?usize = null,
     /// The machine the job's tests run on (`-Dci-vm`), whose tools the runner installs.
     machine: Machine = .none,
     /// A job of the package's own that names no runner: the package's on any machine, which
@@ -313,6 +322,11 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
             return error.InvalidDeclaredJob;
         }
         const advisory = marked == .bool and marked.bool;
+        const declared_timeout = try minutes(entry, "timeout");
+        if (advisory and declared_timeout + advisory_overhead_minutes > 360) {
+            problem = try a.print("jobs: {s}: an advisory job's timeout is at most {d} minutes, which leaves its other steps' {d} within GitHub's 360", .{ name, 360 - advisory_overhead_minutes, advisory_overhead_minutes });
+            return error.InvalidDeclaredJob;
+        }
         const hosted = src.get(entry, "os");
         const systems: []const src.Value = if (hosted == .null) &.{.{ .string = hosts[0] }} else if (hosted == .array and hosted.array.items.len != 0) hosted.array.items else return error.InvalidDeclaredJob;
         for (systems) |system| {
@@ -334,7 +348,8 @@ fn declaredJobs(a: std.mem.Allocator, config: src.Value, tier: Tier, jobs: *std.
                     .shard = shard,
                     .setup = setup != .bool or setup.bool,
                     .prepare = if (setup == .string) setup.string else "",
-                    .job_timeout = try minutes(entry, "timeout"),
+                    .job_timeout = if (advisory) declared_timeout + advisory_overhead_minutes else declared_timeout,
+                    .run_timeout = if (advisory) declared_timeout else null,
                     .directory = directory,
                     .declared = true,
                     .any_host = hosted == .null,
@@ -745,7 +760,8 @@ fn macosLegs(a: std.mem.Allocator, jobs: []Job) ![]Job {
     var legs: std.ArrayList(Job) = .empty;
     var first: ?usize = null;
     for (jobs) |job| {
-        if (!std.mem.eql(u8, job.os, hosts[1])) {
+        // An advisory job runs alone: in a leg its failure would be the legs job's.
+        if (!std.mem.eql(u8, job.os, hosts[1]) or job.advisory == true) {
             try kept.append(a, job);
             continue;
         }
@@ -2022,9 +2038,14 @@ test "an advisory job runs as declared, says non-blocking in its name and carrie
             advisory += 1;
             try std.testing.expectEqual(@as(?bool, true), job.advisory);
             try std.testing.expectEqualStrings(try a.print("git master shard {s} (non-blocking)", .{job.shard}), job.name);
+            // Its run has its declared timeout, its job that and its other steps' budgets.
+            try std.testing.expectEqual(@as(?usize, 20), job.run_timeout);
+            try std.testing.expectEqual(20 + advisory_overhead_minutes, job.job_timeout);
         } else {
             // One that says false is any declared job: its result is the run's.
             try std.testing.expectEqual(@as(?bool, null), job.advisory);
+            try std.testing.expectEqual(@as(?usize, null), job.run_timeout);
+            try std.testing.expectEqual(@as(usize, 20), job.job_timeout);
             try std.testing.expectEqualStrings("conformance", job.name);
         }
     };
@@ -2032,6 +2053,23 @@ test "an advisory job runs as declared, says non-blocking in its name and carrie
     const listed = try include(a, try plan(a, config, .ci));
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, listed, "\"advisory\":true"));
     try std.testing.expect(std.mem.find(u8, listed, "\"advisory\":false") == null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, listed, "\"run_timeout\":20"));
+    // A timeout that leaves no room for the other steps' budgets within GitHub's 360 is refused.
+    problem = "";
+    try std.testing.expectError(error.InvalidDeclaredJob, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"jobs\":[{\"name\":\"git master\",\"step\":\"t\",\"advisory\":true,\"timeout\":241}]}", .{})).value, .ci));
+    try std.testing.expectEqualStrings("jobs: git master: an advisory job's timeout is at most 240 minutes, which leaves its other steps' 120 within GitHub's 360", problem);
+    // A release tier's advisory macOS job runs alone, never a leg of the blocking macOS job.
+    const mac = (try std.json.parseFromSlice(src.Value, a,
+        \\{"jobs":[
+        \\ {"name":"git master","step":"ci-git-master","advisory":true,"os":["macos-latest"]},
+        \\ {"name":"conformance","step":"test","os":["macos-latest"]}]}
+    , .{})).value;
+    var alone = false;
+    for (try plan(a, mac, .release)) |job| {
+        if (job.advisory == true) alone = std.mem.eql(u8, job.step, "ci-git-master");
+        if (job.legs) |sequence| try std.testing.expect(std.mem.find(u8, sequence, "ci-git-master") == null);
+    }
+    try std.testing.expect(alone);
     // A non-boolean is refused naming the job.
     problem = "";
     try std.testing.expectError(error.InvalidDeclaredJob, plan(a, (try std.json.parseFromSlice(src.Value, a, "{\"jobs\":[{\"name\":\"git master\",\"step\":\"t\",\"advisory\":1}]}", .{})).value, .ci));

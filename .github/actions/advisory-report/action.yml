@@ -1,0 +1,41 @@
+name: Advisory report
+description: Names a non-blocking job's outcomes in the run's summary, and warns when its suite did not pass; never fails
+# A non-blocking job -- Zig master's, a declared job marked advisory -- ends "success" whatever
+# its steps did: a job-level continue-on-error still concludes a called workflow's run
+# "failure", which a release refuses. So each of its steps continues on error, and this report,
+# its last step, is where a failure shows: a line in the summary and a warning on the run.
+inputs:
+  title:
+    description: The job, as the summary and the warning name it
+    required: true
+  outcome:
+    description: The suite step's outcome; empty where it never ran
+    default: ''
+  steps:
+    description: What ran before the suite and how it ended, for the summary (`setup success, tool setup failure`)
+    default: ''
+  note:
+    description: What a failure means, after the warning
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Name the outcomes, and warn unless the suite passed
+      shell: bash
+      env:
+        TITLE: ${{ inputs.title }}
+        OUTCOME: ${{ inputs.outcome }}
+        STEPS: ${{ inputs.steps }}
+        NOTE: ${{ inputs.note }}
+      run: |
+        version=$(zig version 2>/dev/null || echo unknown)
+        ran="${STEPS:+$STEPS, }suite ${OUTCOME:-not run}"
+        echo "$TITLE, Zig $version: $ran (non-blocking)" >> "$GITHUB_STEP_SUMMARY" || true
+        if [ "$OUTCOME" != success ]; then
+          # A warning's properties end at a comma or a colon, and its message at a line break.
+          title=${TITLE//%/%25}; title=${title//,/%2C}; title=${title//:/%3A}
+          message="Zig $version: the suite did not pass ($ran)${NOTE:+; $NOTE}"
+          message=${message//%/%25}
+          echo "::warning title=$title::$message"
+        fi
+        exit 0

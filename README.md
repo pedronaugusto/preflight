@@ -688,9 +688,12 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   in minutes; `shards` splits a test step over that many jobs on each host, each running the
   share `PREFLIGHT_SHARD` names, as the hosts' own test jobs are split. A declared job has the gate's setup, caches and toolchain, and a landing waits for
   it. `advisory: true` runs it and shows its result without taking it, as the Zig master job
-  is run: the gate runs it with `continue-on-error`, its name says `non-blocking`, and the
-  `runners` job names its failure in the log and the run's summary (a package's tests against
-  a dependency's unreleased head, such as relic's against git's). Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
+  is run: each of its steps continues on error and has a budget, so the job ends "success"
+  whatever they did, its name says `non-blocking`, and its last step names each outcome in the
+  run's summary and warns on the run when its suite did not pass (a package's tests against a
+  dependency's unreleased head, such as relic's against git's). Its `timeout` is its run's,
+  at most 240 minutes; its job has that and 120 more for its other steps, and it runs on a
+  macOS runner of its own, never as a leg of the release tier's macOS job. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
 - `targets`, `build_args`, `shards`, `cross_jobs`, `cross_seconds`,
   `riscv64_seconds`, `portable_hosts`, `hardened`: what the tiers build and

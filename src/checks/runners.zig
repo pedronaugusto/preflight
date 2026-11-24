@@ -41,8 +41,7 @@ pub fn unserved(a: std.mem.Allocator, pages: src.Value) ![]const Unserved {
 }
 
 /// Whether the run takes a job's result: one named non-blocking (Zig master's, and a declared
-/// job marked `advisory`, which the gate runs with `continue-on-error`) shows its result and
-/// takes none.
+/// job marked `advisory`) shows its result and takes none.
 fn blocking(name: []const u8) bool {
     return std.mem.find(u8, name, "non-blocking") == null;
 }

@@ -97,6 +97,9 @@ pub fn dev(b: *std.Build, _: type) void {
     options.addOptionPath("bound", bound.getEmittedBin());
     // The fetch tests run the Zig the build runs, as the consumer check does.
     options.addOption([]const u8, "zig", b.graph.zig_exe);
+    // The package developed with bay that the warm run below writes and builds, at one place.
+    const developed = package.path(".zig-cache/fixtures/developed");
+    options.addOptionPathUntracked("developed", developed);
     tests.root_module.addOptions("test_options", options);
     // The gate below gives every test here preflight's runner, as it does a
     // consumer's tests: the order module's and the watchdog's tests import
@@ -133,6 +136,21 @@ pub fn dev(b: *std.Build, _: type) void {
     warm_program.setCwd(package.path("sample"));
     warm_program.expectExitCode(0);
     suite_run.step.dependOn(&warm_program.step);
+    // And a package developed with bay (`src/testing/developed.zig`), which its integration test
+    // runs: a development build compiles from a root of its own, where Zig keys the packages
+    // unpacked beside the package by their full paths, so the test's package, made afresh in a
+    // temporary directory, compiled preflight's checks, its build runner and the benchmarks from
+    // cold inside its bound (200 to 290 s at rest; past 300 s under load). Written at one place
+    // and built here, the test finds them compiled.
+    const warm_developed = b.addRunArtifact(b.addExecutable(.{ .name = "preflight-developed", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/developed.zig"), .target = target, .optimize = .debug }) }));
+    warm_developed.step.name = "warm the fixtures' cache with a package developed with bay";
+    warm_developed.addDirectoryArg2(developed, .{});
+    warm_developed.addDirectoryArg2(package.path("."), .{});
+    warm_developed.addArtifactArg2(bay.artifact("bay"), .{});
+    warm_developed.addDirectoryArg2(package.path(".zig-cache/fixtures"), .{});
+    warm_developed.has_side_effects = true;
+    warm_developed.expectExitCode(0);
+    suite_run.step.dependOn(&warm_developed.step);
     const suite = &suite_run.step;
     const order = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = package.path("src/order_test.zig"), .target = target, .optimize = .debug }), .filters = test_filters });
     const order_run = b.addRunArtifact(order);
@@ -175,7 +193,7 @@ pub fn dev(b: *std.Build, _: type) void {
     check.dependOn(&ci.structureChecker(b, package, package.path(ci.default_layers), gantry, gantry_zig, aegis).step);
     // preflight gates its own sources with the checks it ships: the preflight
     // the gate finds among this build's dependencies is this package.
-    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .run_bounds = &.{ .{ .step = "warm the fixtures' cache", .limit = .fromSeconds(1800), .reason = "the sample's whole lint and its consumer check, which compile preflight's checks, runner and tools and the consumers' global cache from cold" }, .{ .step = "warm the fixtures' cache with the program", .limit = .fromSeconds(1800), .reason = "the package build's preflight program, compiled from cold: 3.5 min at load 51" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
+    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .run_bounds = &.{ .{ .step = "warm the fixtures' cache", .limit = .fromSeconds(1800), .reason = "the sample's whole lint and its consumer check, which compile preflight's checks, runner and tools and the consumers' global cache from cold" }, .{ .step = "warm the fixtures' cache with the program", .limit = .fromSeconds(1800), .reason = "the package build's preflight program, compiled from cold: 3.5 min at load 51" }, .{ .step = "warm the fixtures' cache with a package developed with bay", .limit = .fromSeconds(1800), .reason = "a development build's checks, build runner and benchmarks, compiled from cold: 200 to 290 s at rest" } }, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
         .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" }, .{ .name = "configuration", .source = "bench/configuration.zig" } },
         .imports = &bench_imports,
         .target = target,

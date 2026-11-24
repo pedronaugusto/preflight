@@ -74,16 +74,16 @@ pub const Timer = struct {
     pub fn endWith(timer: Timer, c: src.Context, log: Log, memory: ?Memory) void {
         const elapsed = timer.seconds(c);
         if (memory) |m| {
-            c.report("preflight: phase {s}: {d:.1} s, at most {d:.2} GiB, {d:.2} GiB in one process, at -j{d}\n", .{ timer.label, elapsed, gib(m.bytes), gib(m.single), m.jobs });
-        } else c.report("preflight: phase {s}: {d:.1} s\n", .{ timer.label, elapsed });
+            c.report("preflight: phase {s}: {f}, at most {f}, {f} in one process, at -j{d}\n", .{ timer.label, shown(elapsed), mebibytes(m.bytes), mebibytes(m.single), m.jobs });
+        } else c.report("preflight: phase {s}: {f}\n", .{ timer.label, shown(elapsed) });
         timer.logged(c, log, elapsed, memory) catch |err| c.report("preflight: phase {s}: not logged ({s})\n", .{ timer.label, @errorName(err) });
     }
 
     /// Adds the phase, `elapsed` seconds long, to the summary and the record `log` names.
     fn logged(timer: Timer, c: src.Context, log: Log, elapsed: f64, memory: ?Memory) !void {
         if (log.summary) |path| {
-            const held = if (memory) |m| try c.a.print(", at most {d:.2} GiB, {d:.2} GiB in one process, at -j{d}", .{ gib(m.bytes), gib(m.single), m.jobs }) else "";
-            try append(c, path, try c.a.print("- phase `{s}`: {d:.1} s{s}\n", .{ timer.label, elapsed, held }));
+            const held = if (memory) |m| try c.a.print(", at most {f}, {f} in one process, at -j{d}", .{ mebibytes(m.bytes), mebibytes(m.single), m.jobs }) else "";
+            try append(c, path, try c.a.print("- phase `{s}`: {f}{s}\n", .{ timer.label, shown(elapsed), held }));
         }
         if (log.record) |path| {
             var line: std.Io.Writer.Allocating = .init(c.a);
@@ -98,8 +98,14 @@ pub const Timer = struct {
     }
 };
 
-fn gib(bytes: u64) f64 {
-    return @as(f64, @floatFromInt(bytes)) / (1024 * 1024 * 1024);
+/// A phase's length as it prints: to the millisecond.
+fn shown(seconds: f64) aegis.units.Duration(.millisecond, i64) {
+    return .fromRaw(std.math.lossyCast(i64, @round(seconds * 1000)));
+}
+
+/// Memory as it prints: whole mebibytes, rounded down.
+fn mebibytes(bytes: u64) aegis.units.Bytes(u64) {
+    return .fromRaw((bytes >> 20) << 20);
 }
 
 fn append(c: src.Context, path: []const u8, text: []const u8) !void {
@@ -130,7 +136,7 @@ test "a phase is added to the summary and the record, after what the files hold"
     try std.testing.expect(std.mem.startsWith(u8, record, "{\"phase\":\"lint\",\"seconds\":"));
     try std.testing.expect(std.mem.find(u8, record, "\n{\"phase\":\"compile \\\"x\\\"\",\"seconds\":") != null);
     try std.testing.expect(std.mem.find(u8, record, "\"peak_bytes\":16106127360,\"single_bytes\":9234179072,\"jobs\":4}\n") != null);
-    try std.testing.expect(std.mem.find(u8, text, "at most 15.00 GiB, 8.60 GiB in one process, at -j4\n") != null);
+    try std.testing.expect(std.mem.find(u8, text, "at most 15GiB, 8806MiB in one process, at -j4\n") != null);
 }
 
 test "a peak one process held between the tree's samples is the tree's too, so profile reads it" {

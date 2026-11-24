@@ -491,7 +491,7 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
     const name = try buildName(c.a, held, p);
     const out = try std.fs.path.join(c.a, &.{ store, name });
     const git = try std.fs.path.join(c.a, &.{ out, "bin", "git" });
-    if (exists(io, git)) {
+    if (try exists(io, git)) {
         c.report("held git: {s}, kept in {s}\n", .{ name, store });
         return out;
     }
@@ -529,8 +529,11 @@ pub fn build(c: *src.Context, environ: *const std.process.Environ.Map, held: Hel
     return out;
 }
 
-fn exists(io: std.Io, path: []const u8) bool {
-    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+fn exists(io: std.Io, path: []const u8) !bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => |e| return e,
+    };
     return true;
 }
 
@@ -601,7 +604,7 @@ pub fn installWindows(c: *src.Context, environ: *const std.process.Environ.Map, 
     const dir = try std.fs.path.join(c.a, &.{ store, try c.a.print("Git-{s}-{t}", .{ held.version, arch }) });
     const git = try std.fs.path.join(c.a, &.{ dir, "cmd", "git.exe" });
     const want = try c.a.print("git version {s}.windows.1", .{held.version});
-    if (exists(io, git)) if (try saysOther(c, git, want) == null) {
+    if (try exists(io, git)) if (try saysOther(c, git, want) == null) {
         c.report("held git: {s}, kept in {s}\n", .{ want, dir });
         return dir;
     };

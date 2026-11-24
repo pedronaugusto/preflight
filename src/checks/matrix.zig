@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
 const keys = @import("keys.zig");
 const heldgit = @import("heldgit.zig");
@@ -856,6 +857,11 @@ const default_cross_seconds = 200;
 /// its `cross_job_timeout` must leave room for: relic's jobs took about four minutes.
 const cross_setup_seconds = 300;
 
+/// `seconds`, to the nearest second, as a duration prints.
+fn wholeSeconds(seconds: f64) aegis.units.Duration(.second, i64) {
+    return .fromRaw(std.math.lossyCast(i64, @round(seconds)));
+}
+
 /// The seconds `name` takes to compile, as the last release run
 /// measured them (`ci/costs.json`, which the plan reads as `measured`), the
 /// benchmarks too when `bench` is set; null when nothing was measured.
@@ -945,7 +951,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
     const room = @as(f64, @floatFromInt(try minutes(config, "cross_job_timeout") * 60)) - cross_setup_seconds;
     var heaviest: f64 = 0;
     for (order) |index| if (cost[index] > room) {
-        problem = try a.print("{s} takes {d:.0} s to compile, more than the {d:.0} s a cross job's cross_job_timeout leaves after its setup: raise cross_job_timeout", .{ try targetName(targets[index]), cost[index], room });
+        problem = try a.print("{s} takes {f} to compile, more than the {f} a cross job's cross_job_timeout leaves after its setup: raise cross_job_timeout", .{ try targetName(targets[index]), wholeSeconds(cost[index]), wholeSeconds(room) });
         return error.CrossTargetPastTimeout;
     } else {
         heaviest = @max(heaviest, cost[index]);
@@ -974,7 +980,7 @@ fn crossJobs(a: std.mem.Allocator, config: src.Value, jobs: *std.ArrayList(Job),
             if (wanted != .null or count == order.len or longest <= limit) break;
         }
         if (longest > room) {
-            problem = try a.print("cross_jobs {d} puts {d:.0} s of compiling in one job, more than the {d:.0} s its cross_job_timeout leaves after its setup: raise cross_job_timeout or cross_jobs", .{ count + unmeasured.items.len, longest, room });
+            problem = try a.print("cross_jobs {d} puts {f} of compiling in one job, more than the {f} its cross_job_timeout leaves after its setup: raise cross_job_timeout or cross_jobs", .{ count + unmeasured.items.len, wholeSeconds(longest), wholeSeconds(room) });
             return error.CrossJobPastTimeout;
         }
     }
@@ -1665,7 +1671,7 @@ test "no cross job is dealt more compiling than its cross_job_timeout leaves, an
     const tight = (try std.json.parseFromSlice(src.Value, a, try a.print("{{\"targets\":[\"aarch64-windows-gnu\",\"x86_64-linux-gnu\"],{s}}}", .{measured}), .{})).value;
     jobs.clearRetainingCapacity();
     try std.testing.expectError(error.CrossTargetPastTimeout, crossJobs(a, tight, &jobs, try src.items(src.get(tight, "targets")), false));
-    try std.testing.expect(std.mem.find(u8, problem, "aarch64-windows-gnu takes 975 s") != null);
+    try std.testing.expect(std.mem.find(u8, problem, "aarch64-windows-gnu takes 16m15s") != null);
     const fixed = (try std.json.parseFromSlice(src.Value, a, try a.print("{{\"targets\":[\"aarch64-windows-gnu\",\"x86_64-linux-gnu\",\"aarch64-linux-gnu\"],\"cross_jobs\":1,\"cross_job_timeout\":25,{s}}}", .{measured}), .{})).value;
     jobs.clearRetainingCapacity();
     try std.testing.expectError(error.CrossJobPastTimeout, crossJobs(a, fixed, &jobs, try src.items(src.get(fixed, "targets")), false));

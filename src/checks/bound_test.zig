@@ -28,5 +28,5 @@ test "a program stopped, then killed at its bound, ends as the bound's kill, nam
     defer arena.deinit();
     const result = try bound(arena.allocator(), "300000000", "kill -STOP $$");
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 1 }, result.term);
-    try std.testing.expect(std.mem.find(u8, result.stderr, "preflight: watchdog: `the run` exceeded 300 ms; it runs /bin/sh -c kill -STOP $$; it printed nothing") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "preflight: watchdog: `the run` exceeded 300ms; it runs /bin/sh -c kill -STOP $$; it printed nothing") != null);
 }

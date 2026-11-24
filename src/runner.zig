@@ -303,13 +303,12 @@ const Watchdog = struct {
         var line: [512]u8 = undefined;
         var text: std.Io.Writer = .fixed(&line);
         const name = watchdog.name;
-        const limit_ms = options.test_timeout_ns / std.time.ns_per_ms;
         const phase = watchdog.phase.load(.acquire);
         // A line longer than the buffer is written as far as it fits, and ends marked cut.
         switch (bound.ending(wait)) {
             .not_started => text.print("\npreflight: watchdog: {s} did not start: the job's time had run out before its turn; seed {d}\n", .{ name, testing.random_seed }) catch cut(&text),
             .job_ran_out => text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {f} into it; phase {t}; seed {d}\n", .{ name, wait.limit, phase, testing.random_seed }) catch cut(&text),
-            .over_limit => text.print("\npreflight: watchdog: {s} exceeded {d} ms; phase {t}; seed {d}\n", .{ name, limit_ms, phase, testing.random_seed }) catch cut(&text),
+            .over_limit => text.print("\npreflight: watchdog: {s} exceeded {f}; phase {t}; seed {d}\n", .{ name, wait.limit, phase, testing.random_seed }) catch cut(&text),
         }
         var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         // The process ends next either way: a line lost on stderr has nowhere else to go.
@@ -691,7 +690,11 @@ const Supervisor = struct {
             };
             defer fds.close(sio);
             var descriptors = fds.iterate();
-            const holds = while (descriptors.next(sio) catch null) |fd| {
+            const holds = while (descriptors.next(sio) catch |err| switch (err) {
+                error.Canceled => |e| return e,
+                // A process that ends mid-listing leaves the rest of its descriptors unread.
+                else => null,
+            }) |fd| {
                 var target: [64]u8 = @splat(0);
                 const named = inbound.link(sio, fds, fd.name, &target) catch |err| switch (err) {
                     // A descriptor closed since the listing names nothing, and one whose

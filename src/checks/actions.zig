@@ -65,7 +65,6 @@ const Token = struct {
     kind: enum { scalar, colon, dash, open, close, comma, anchor, alias, tag, block },
     text: []const u8 = "",
     line: usize,
-    column: usize,
     quoted: bool = false,
     /// The text is the scalar's value as written: no escape, doubled quote or line break in
     /// a quoted one, which YAML would decode or fold.
@@ -119,11 +118,11 @@ const Scanner = struct {
                     const start = s.i + 1;
                     s.i = start;
                     while (s.i < s.text.len and !isSpace(s.text[s.i]) and !isFlow(s.text[s.i]) and s.text[s.i] != '\n' and s.text[s.i] != '\r') s.i += 1;
-                    try s.emitAt(switch (c) {
+                    try s.emit(switch (c) {
                         '&' => .anchor,
                         '*' => .alias,
                         else => .tag,
-                    }, s.text[start..s.i], start);
+                    }, s.text[start..s.i]);
                 },
                 '|', '>' => try s.block(),
                 '"' => try s.double(),
@@ -148,13 +147,29 @@ const Scanner = struct {
         if ((std.mem.startsWith(u8, rest, "---") or std.mem.startsWith(u8, rest, "...")) and s.separated(at + 3)) s.i = at + 3;
     }
 
+    /// Where this line's node begins, as YAML measures indentation: past the line's spaces and
+    /// each sequence entry's `- `. A mapping entry begins at its key, or at the key's anchor or
+    /// tag; a sequence entry's value, when `dash`, at its last `-`. Only spaces and dashes come
+    /// before either, so bytes count columns.
+    fn entryIndent(s: *const Scanner, dash: bool) usize {
+        var at = s.line_start;
+        var last = at;
+        while (true) {
+            while (at < s.text.len and s.text[at] == ' ') at += 1;
+            if (at >= s.text.len or s.text[at] != '-' or !s.separated(at + 1)) break;
+            last = at;
+            at += 1;
+        }
+        return (if (dash) last else at) - s.line_start;
+    }
+
     /// A literal or folded block scalar: its text is the lines indented past the key or
     /// sequence entry it is the value of, which are not keys.
     fn block(s: *Scanner) Error!void {
         const tokens = s.tokens.items;
         var parent: ?usize = null;
-        if (tokens.len >= 2 and tokens[tokens.len - 1].kind == .colon and tokens[tokens.len - 2].line == s.line) parent = tokens[tokens.len - 2].column;
-        if (tokens.len >= 1 and tokens[tokens.len - 1].kind == .dash and tokens[tokens.len - 1].line == s.line) parent = tokens[tokens.len - 1].column;
+        if (tokens.len >= 2 and tokens[tokens.len - 1].kind == .colon and tokens[tokens.len - 2].line == s.line) parent = s.entryIndent(false);
+        if (tokens.len >= 1 and tokens[tokens.len - 1].kind == .dash and tokens[tokens.len - 1].line == s.line) parent = s.entryIndent(true);
         try s.emit(.block, "");
         s.skipLine();
         while (s.i < s.text.len) {
@@ -171,7 +186,6 @@ const Scanner = struct {
 
     fn double(s: *Scanner) Error!void {
         const line = s.line;
-        const column = s.i - s.line_start;
         s.i += 1;
         const start = s.i;
         var exact = true;
@@ -181,13 +195,12 @@ const Scanner = struct {
             s.i += 1;
         }
         if (s.i >= s.text.len) return fail(s.problem, line, "a double-quoted scalar never closes");
-        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .column = column, .quoted = true, .exact = exact });
+        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .quoted = true, .exact = exact });
         s.i += 1;
     }
 
     fn single(s: *Scanner) Error!void {
         const line = s.line;
-        const column = s.i - s.line_start;
         s.i += 1;
         const start = s.i;
         var exact = true;
@@ -207,7 +220,7 @@ const Scanner = struct {
             s.i += 1;
         }
         if (s.i >= s.text.len) return fail(s.problem, line, "a single-quoted scalar never closes");
-        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .column = column, .quoted = true, .exact = exact });
+        try s.tokens.append(s.a, .{ .kind = .scalar, .text = s.text[start..s.i], .line = line, .quoted = true, .exact = exact });
         s.i += 1;
     }
 
@@ -222,7 +235,7 @@ const Scanner = struct {
             if (c == '#' and s.i > start and isSpace(s.text[s.i - 1])) break;
             if (s.depth > 0 and isFlow(c)) break;
         }
-        try s.emitAt(.scalar, std.mem.trimEnd(u8, s.text[start..s.i], " \t"), start);
+        try s.emit(.scalar, std.mem.trimEnd(u8, s.text[start..s.i], " \t"));
     }
 
     /// Whether the byte at `at` ends an indicator: a space, the line's end, the text's end,
@@ -241,11 +254,7 @@ const Scanner = struct {
     }
 
     fn emit(s: *Scanner, kind: @FieldType(Token, "kind"), text: []const u8) Error!void {
-        try s.emitAt(kind, text, s.i);
-    }
-
-    fn emitAt(s: *Scanner, kind: @FieldType(Token, "kind"), text: []const u8, at: usize) Error!void {
-        try s.tokens.append(s.a, .{ .kind = kind, .text = text, .line = s.line, .column = at - s.line_start });
+        try s.tokens.append(s.a, .{ .kind = kind, .text = text, .line = s.line });
     }
 
     fn skipLine(s: *Scanner) void {
@@ -315,6 +324,23 @@ test "a block scalar's text holds no keys, however it is indented past its key" 
         \\
         \\        uses: and/more@v0
         \\    uses: p/q@v2
+        \\
+    , &.{ "o/r@v1", "p/q@v2" });
+}
+
+test "a block scalar is measured from its entry's indentation, past a non-ASCII anchor before its key" {
+    // The key's column put the text's end past an anchor's name: `uses` inside the scripts
+    // read as keys, in bytes or in characters alike.
+    try expectUses(
+        \\&ä run: |
+        \\  uses: not/an@action
+        \\steps:
+        \\  - &ünïcode run: |
+        \\      uses: still/text@v0
+        \\    uses: o/r@v1
+        \\  - |
+        \\    uses: text/too@v0
+        \\uses: p/q@v2
         \\
     , &.{ "o/r@v1", "p/q@v2" });
 }

@@ -7,15 +7,23 @@ const input = @import("build/input.zig");
 /// Whether `sub_path`, relative to the build root, exists. The root and each
 /// directory on the way are declared, so the answer cannot go stale.
 pub fn exists(b: *std.Build, sub_path: []const u8) bool {
-    const io = b.graph.io;
     b.dependOnDirectoryMetadata(b.path("."));
     var start: usize = 0;
     while (std.mem.findScalarPos(u8, sub_path, start, '/')) |slash| : (start = slash + 1) {
         const parent = sub_path[0..slash];
-        b.root.access(io, parent, .{}) catch return false;
+        if (!present(b, parent)) return false;
         b.dependOnDirectoryMetadata(b.path(parent));
     }
-    b.root.access(io, sub_path, .{}) catch return false;
+    return present(b, sub_path);
+}
+
+/// Whether `sub_path`, relative to the build root, is there; any error but its absence
+/// stops the build, naming the path.
+fn present(b: *std.Build, sub_path: []const u8) bool {
+    b.root.access(b.graph.io, sub_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => std.debug.panic("{s}: {t}", .{ sub_path, err }),
+    };
     return true;
 }
 

@@ -255,7 +255,7 @@ fn say(command: Command, wait: watchdog.Bound, line: []const u8) std.Io.Writer.E
     switch (watchdog.ending(wait)) {
         .not_started => try w.writeAll("did not start: the job's time had run out before its turn"),
         .job_ran_out => try w.print("was running when the job's time ran out, {f} into it", .{wait.limit}),
-        .over_limit => try w.print("exceeded {d} ms", .{wait.limit.toMilliseconds()}),
+        .over_limit => try w.print("exceeded {f}", .{wait.limit}),
     }
     try w.writeAll("; it runs");
     for (command.argv) |arg| try w.print(" {s}", .{arg});

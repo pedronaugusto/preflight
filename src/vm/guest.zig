@@ -70,7 +70,7 @@ fn run(io: Io, gpa: std.mem.Allocator) !Ending {
     try loadModules(io, gpa, full_tree, &share_modules);
 
     try mount9p("run", run_mount);
-    if (exists(io, run_mount ++ "/network")) {
+    if (try exists(io, run_mount ++ "/network")) {
         try loadModules(io, gpa, full_tree, &network_modules);
         try networkUp(io);
     }
@@ -209,8 +209,11 @@ fn inet(address: [4]u8) linux.sockaddr {
     return .{ .family = linux.AF.INET, .data = data };
 }
 
-fn exists(io: Io, path: []const u8) bool {
-    Io.Dir.cwd().access(io, path, .{}) catch return false;
+fn exists(io: Io, path: []const u8) !bool {
+    Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => |e| return e,
+    };
     return true;
 }
 

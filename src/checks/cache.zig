@@ -1,4 +1,5 @@
 const std = @import("std");
+const aegis = @import("aegis");
 const src = @import("source.zig");
 
 pub fn trim(c: src.Context, path: []const u8, cap_kib: usize) !void {
@@ -17,7 +18,8 @@ pub fn trim(c: src.Context, path: []const u8, cap_kib: usize) !void {
         if (entry.kind == .file) bytes +|= (try entry.dir.statFile(c.io, entry.basename, .{})).size;
     }
     if (bytes / 1024 <= cap_kib) return;
-    c.report("cache: {d} KiB exceeds {d} KiB; rebuilding products\n", .{ bytes / 1024, cap_kib });
+    const Size = aegis.units.Bytes(u64);
+    c.report("cache: {f} exceeds {f}; rebuilding products\n", .{ Size.fromRaw(bytes), Size.fromRaw(@as(u64, cap_kib) *| 1024) });
     for ([_][]const u8{ "o", "h", "z", "tmp" }) |name| try dir.deleteTree(c.io, name);
 }
 

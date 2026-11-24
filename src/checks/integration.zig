@@ -617,14 +617,14 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     // The command as it ran: the program by its file's name, which on Windows ends in `.exe`.
     const spun = if (builtin.os.tag == .windows) "hang.exe --spin" else "hang --spin";
     const last = "its last line: spinning on the example's last step";
-    const said = !command.succeeded(hung) and for ([_][]const u8{ named, " ms; it runs ", spun, last }) |part| {
+    const said = !command.succeeded(hung) and for ([_][]const u8{ named, "; it runs ", spun, last }) |part| {
         if (std.mem.find(u8, hung.stderr, part) == null) break false;
     } else true;
     // What the run said, whenever it is not what the test expects.
     if (!said) std.debug.print("{s}", .{hung.stderr});
     try std.testing.expect(!command.succeeded(hung));
     try std.testing.expect(std.mem.find(u8, hung.stderr, named) != null);
-    try std.testing.expect(std.mem.find(u8, hung.stderr, " ms; it runs ") != null);
+    try std.testing.expect(std.mem.find(u8, hung.stderr, "; it runs ") != null);
     try std.testing.expect(std.mem.find(u8, hung.stderr, spun) != null);
     try std.testing.expect(std.mem.find(u8, hung.stderr, last) != null);
     // Ended at its bound, not the test's watchdog's.
@@ -1515,10 +1515,10 @@ test "the watchdog fails a stalled test by name and phase" {
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = bounded });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"stalls\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);\n}\n" });
     const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (std.mem.find(u8, stalled.stderr, "stalls exceeded 300 ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
+    if (std.mem.find(u8, stalled.stderr, "stalls exceeded 300ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "preflight: watchdog: ") != null);
-    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls exceeded 300 ms; phase body") != null);
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls exceeded 300ms; phase body") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test \"quick\" {}\n" });
     const quick = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(quick)) std.debug.print("{s}\n", .{quick.stderr});
@@ -1544,9 +1544,9 @@ test "the watchdog names a stalled test that holds the stderr lock, as a hung cr
         \\
     });
     const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300 ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
+    if (std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
-    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300 ms; phase body") != null);
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300ms; phase body") != null);
 }
 
 test "the watchdog names the Io teardown of a test that leaves a task running" {
@@ -1575,9 +1575,9 @@ test "the watchdog names the Io teardown of a test that leaves a task running" {
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = leaving });
     const stuck = try gate(a, tmp.dir, &.{});
-    if (std.mem.find(u8, stuck.stderr, "lingers exceeded 300 ms; phase io_teardown") == null) std.debug.print("{s}", .{stuck.stderr});
+    if (std.mem.find(u8, stuck.stderr, "lingers exceeded 300ms; phase io_teardown") == null) std.debug.print("{s}", .{stuck.stderr});
     try std.testing.expect(!command.succeeded(stuck));
-    try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers exceeded 300 ms; phase io_teardown") != null);
+    try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers exceeded 300ms; phase io_teardown") != null);
 }
 
 test "a process a test leaves holding the tests' output is named at once, and a crash's report still reaches the build" {
@@ -1649,7 +1649,7 @@ test "a test the watchdog ends leaves no process it started running" {
     });
     const stalled = try gate(a, tmp.dir, &.{});
     try std.testing.expect(!command.succeeded(stalled));
-    try std.testing.expect(std.mem.find(u8, stalled.stderr, "starts processes, then stalls exceeded 300 ms") != null);
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "starts processes, then stalls exceeded 300ms") != null);
     var buffer: [64]u8 = undefined;
     var pids = std.mem.tokenizeScalar(u8, try tmp.dir.readFile(io, "started.pids", &buffer), ' ');
     while (pids.next()) |text| try expectEnded(try std.fmt.parseInt(std.posix.pid_t, text, 10));

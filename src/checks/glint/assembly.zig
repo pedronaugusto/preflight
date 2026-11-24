@@ -3,6 +3,7 @@
 //! the build's own configuration, so that a name means what the compiler
 //! will take it to mean.
 const std = @import("std");
+const aegis = @import("aegis");
 const builtin = @import("builtin");
 const glint = @import("glint");
 const configure = @import("../../configure.zig");
@@ -552,7 +553,7 @@ pub fn assemble(c: *src.Context, gpa: std.mem.Allocator, policy: Policy, paths: 
 }
 
 fn budget(c: *src.Context) ?Assembly {
-    c.fail("glint: the files this project reads exceed {d} files or {d} MiB: select fewer in `glint_paths`", .{ max_files, max_bytes >> 20 });
+    c.fail("glint: the files this project reads exceed {d} files or {f}: select fewer in `glint_paths`", .{ max_files, aegis.units.Bytes(u64).fromRaw(max_bytes) });
     return null;
 }
 

@@ -14,18 +14,21 @@ permissions:
 jobs:
   boot:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
           use-cache: false
+      # apt's own deadlines end a stalled download and retry it; the step's is a backstop with
+      # room for a slow mirror, as zig.yml's machine steps have.
       - name: Install QEMU's x86_64 system emulation and open KVM to the runner
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends qemu-system-x86
+          apt='-q -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60'
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends qemu-system-x86
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm

@@ -299,6 +299,9 @@ const Steps = struct {
         objects.add(b, package, config.tests, steps.sdk, .{ .objects = steps.objects, .bench_objects = steps.bench_objects, .links = steps.links, .bench = bench_build, .targets = targets, .check = own_check });
         // After the projection read `check`, so it never reads its own objects back.
         check.dependOn(steps.objects);
+        // After the projection too: the machines' programs are built for their own targets, in
+        // their own mode, never projected.
+        vm.addCheck(b, pkg, check);
         if (config.portable_tests) portable.add(b, package, config.tests, executable, counted.names);
         addCommandSteps(b, package, executable, config);
         // The steps CI runs tests under, whose runs make a file a test root: `ci` holds the

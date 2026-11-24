@@ -21,6 +21,7 @@ const cpio = @import("cpio.zig");
 const seam = @import("input.zig");
 const identity = @import("identity.zig");
 const freebsd = @import("freebsd.zig");
+const Ending = @import("ending.zig").Ending;
 
 const usage =
     \\usage: preflight-vm image <alpine> <rootfs> <init> <kernel-out> <initrd-out>
@@ -590,14 +591,9 @@ fn frame(out: *Io.Writer, bytes: []const u8) Io.Writer.Error!void {
     try out.flush();
 }
 
-pub const Ending = union(enum) { exited: u8, signal: u32 };
-
 /// What the machine's first process wrote: `exited N` or `signal N`.
 pub fn parseStatus(text: []const u8) ?Ending {
-    const line = std.mem.trimEnd(u8, text, "\n");
-    if (std.mem.startsWith(u8, line, "exited ")) return .{ .exited = std.fmt.parseInt(u8, line["exited ".len..], 10) catch return null };
-    if (std.mem.startsWith(u8, line, "signal ")) return .{ .signal = std.fmt.parseInt(u32, line["signal ".len..], 10) catch return null };
-    return null;
+    return .parse(std.mem.trimEnd(u8, text, "\n"));
 }
 
 /// Ends this process by the signal that ended the program, so that the build sees

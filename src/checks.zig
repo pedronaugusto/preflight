@@ -43,6 +43,7 @@ test {
     _ = @import("vm/cpio.zig");
     _ = @import("vm/host.zig");
     _ = @import("vm/freebsd.zig");
+    _ = @import("vm/ending.zig");
     _ = @import("vm/freebsd/probe_test.zig");
     _ = @import("vm/iso9660.zig");
     _ = @import("vm/ustar.zig");

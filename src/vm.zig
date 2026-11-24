@@ -142,9 +142,21 @@ fn guestPath(b: *std.Build, path: std.Build.Step.Run.DecoratedLazyPath, zig: std
 /// The machine a run's target needs.
 pub const Kind = enum { riscv64_linux, x86_64_freebsd };
 
+/// Compiles under `check`, running nothing, what only a `-Dci-vm` build would otherwise build:
+/// preflight-vm, the machines' host side, for x86_64 Linux, the one host that runs both
+/// machines, and each machine's first process. Those builds run on the hosted x86_64 Linux
+/// runner alone, so code no Mac compiles broke first in a consumer's release run (preflight
+/// 4b63ed1's preflight-vm did not compile there); compiled here, a gate on any host builds it.
+/// Neither needs a machine's pins or an image.
+pub fn addCheck(b: *std.Build, pkg: *std.Build, check: *std.Build.Step) void {
+    const linux = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux });
+    check.dependOn(&b.addObject(.{ .name = "preflight-vm", .root_module = hostModule(b, pkg, linux) }).step);
+    for ([_]Kind{ .riscv64_linux, .x86_64_freebsd }) |kind| check.dependOn(&b.addObject(.{ .name = "preflight-vm-init", .root_module = guestModule(b, pkg, kind) }).step);
+}
+
 /// A machine's first process, preflight's own (vm/guest.zig, vm/freebsd/guest.zig), for that
-/// machine's target. It needs no image to compile: preflight's `check` compiles both, so the
-/// code a machine boots is built, and linted, on every host, not only under `-Dci-vm`.
+/// machine's target. It needs no image to compile: `addCheck` compiles both, so the code a
+/// machine boots is built, and linted, on every host, not only under `-Dci-vm`.
 pub fn guestModule(b: *std.Build, pkg: *std.Build, kind: Kind) *std.Build.Module {
     const target = switch (kind) {
         .riscv64_linux => b.resolveTargetQuery(.{ .cpu_arch = .riscv64, .os_tag = .linux, .abi = .none }),
@@ -166,12 +178,17 @@ pub fn guestModule(b: *std.Build, pkg: *std.Build, kind: Kind) *std.Build.Module
 const Runs = std.EnumArray(Kind, std.ArrayList(*std.Build.Step.Run));
 
 fn runner(b: *std.Build, pkg: *std.Build, host: std.Build.ResolvedTarget) *std.Build.Step.Compile {
-    return b.addExecutable(.{ .name = "preflight-vm", .root_module = b.createModule(.{
+    return b.addExecutable(.{ .name = "preflight-vm", .root_module = hostModule(b, pkg, host) });
+}
+
+/// preflight-vm's module, the machines' host side (vm/host.zig), for `target`.
+fn hostModule(b: *std.Build, pkg: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+    return b.createModule(.{
         .root_source_file = pkg.path("src/vm/host.zig"),
-        .target = host,
+        .target = target,
         .optimize = .safe,
-        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = host, .optimize = .safe }).module("aegis") }},
-    }) });
+        .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = target, .optimize = .safe }).module("aegis") }},
+    });
 }
 
 /// The riscv64 Linux machine: Alpine's kernel and root file system with preflight's

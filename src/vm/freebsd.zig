@@ -19,6 +19,7 @@ const Io = std.Io;
 const iso9660 = @import("iso9660.zig");
 const ustar = @import("ustar.zig");
 const seam = @import("input.zig");
+const Ending = @import("ending.zig").Ending;
 
 /// The machine's QEMU, found on PATH.
 const qemu = "qemu-system-x86_64";
@@ -151,8 +152,6 @@ pub fn hostRefusal(io: Io) ?[]const u8 {
 /// then reports under KVM at hypervisor leaf 0x40000010.
 const kvm_cpu = "host,+invtsc";
 
-pub const Ending = union(enum) { exited: u8, signal: u32 };
-
 /// How the machine's run ended, each with its name.
 pub const Outcome = union(enum) {
     /// The program's ending.
@@ -224,9 +223,9 @@ pub fn classify(status: []const u8, console: []const u8, deadline_fired: bool) O
     var lines = std.mem.tokenizeAny(u8, whole(status), "\r\n");
     while (lines.next()) |line| {
         // A number that does not parse, or is past its range, is no ending.
-        if (std.mem.startsWith(u8, line, "exited ")) if (std.fmt.parseInt(u8, line["exited ".len..], 10) catch null) |code| return .{ .ending = .{ .exited = code } };
-        if (std.mem.startsWith(u8, line, "signal ")) if (std.fmt.parseInt(u32, line["signal ".len..], 10) catch null) |sig| {
-            if (sig >= 1 and sig <= max_signal) return .{ .ending = .{ .signal = sig } };
+        if (Ending.parse(line)) |ending| switch (ending) {
+            .exited => return .{ .ending = ending },
+            .signal => |sig| if (sig >= 1 and sig <= max_signal) return .{ .ending = ending },
         };
         if (std.mem.startsWith(u8, line, "failed ")) return .{ .failed = line["failed ".len..] };
     }

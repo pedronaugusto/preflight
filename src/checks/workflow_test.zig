@@ -44,12 +44,14 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             // build's deadline then, never a setup's.
             try contains(step, if (attempt == 1) "        timeout-minutes: " ++ first_attempt ++ "\n" else "        timeout-minutes: 5\n");
             try contains(step, " prepare\n");
-            try std.testing.expectEqual(attempt < 3, std.mem.find(u8, step, "continue-on-error: true") != null);
+            // The last attempt's failure is the job's, but for Zig master's, which never fails.
+            const advisory = std.mem.eql(u8, name, "master");
+            try std.testing.expectEqual(attempt < 3 or advisory, std.mem.find(u8, step, "continue-on-error: true") != null);
             if (attempt > 1) {
                 try contains(step, try arena.allocator().print("if: ${{{{ !cancelled() && steps.tools{d}.outcome == 'failure' }}}}", .{attempt - 1}));
             } else if (std.mem.eql(u8, name, "gate") or std.mem.eql(u8, name, "compile") or std.mem.eql(u8, name, "execute")) {
                 try contains(step, "if: matrix.setup");
-            }
+            } else try contains(step, "if: steps.setup.outcome == 'success'");
         }
         try std.testing.expect(std.mem.find(u8, body, "id: tools4") == null);
         try contains(body, "      - uses: ./.preflight/.github/actions/setup\n        id: setup\n");
@@ -102,11 +104,40 @@ test "the Zig master leg has bay on the path before its setup fetches through it
     try std.testing.expect(bay < setup);
 }
 
+test "the Zig master job never fails: every step that can fail continues, a step needing another runs only where it passed, and the report warns" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "master");
+    // A job-level continue-on-error still concludes a called workflow's run "failure", which a
+    // release refuses: the job itself must end "success".
+    try std.testing.expect(std.mem.find(u8, body, "\n    continue-on-error:") == null);
+    var steps = std.mem.splitSequence(u8, body, "\n      - ");
+    _ = steps.next(); // the job's own keys
+    var count: usize = 0;
+    while (steps.next()) |step| {
+        count += 1;
+        contains(step, "\n        continue-on-error: true\n") catch |err| {
+            std.debug.print("a step of the Zig master job can fail it:\n{s}\n", .{step});
+            return err;
+        };
+    }
+    try std.testing.expect(count >= 10);
+    // A failing setup or tools attempt skips what needs it; the suite runs on tools that passed.
+    try contains(body, "        if: steps.package.outcome == 'success' && steps.preflight.outcome == 'success' && steps.bay.outcome == 'success'\n");
+    try contains(body, "        if: steps.setup.outcome == 'success'\n");
+    try contains(body, "        if: steps.tools1.outcome == 'success' || steps.tools2.outcome == 'success' || steps.tools3.outcome == 'success'\n");
+    // A failing suite, or one that never ran, is named in the summary and as a warning.
+    const report = body[std.mem.find(u8, body, "- name: Report") orelse return error.TestExpectedReport ..];
+    try contains(report, "        if: always()\n");
+    try contains(report, "OUTCOME: ${{ steps.suite.outcome }}");
+    try contains(report, ">> \"$GITHUB_STEP_SUMMARY\"");
+    try contains(report, "if [ \"$OUTCOME\" != success ]; then echo \"::warning title=Zig master::");
+}
+
 test "hosted advisory deadlines expire before the job can cancel the run" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "master");
-    try contains(body, "    continue-on-error: true\n");
     // A held git's build (30 minutes) raises the bound by as much, and only for a package
     // that names one.
     try contains(body, "    timeout-minutes: ${{ inputs.held-git != '' && 135 || 105 }}\n");

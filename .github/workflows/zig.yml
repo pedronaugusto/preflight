@@ -292,17 +292,24 @@ jobs:
     if: inputs.tier == 'release'
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
-    continue-on-error: true
-    # All step budgets total 102 minutes, 132 with the held git's build; a stalled step
-    # fails before this cancellation bound, so continue-on-error can keep the run advisory.
+    # An advisory job never fails: a job-level continue-on-error still concludes a called
+    # workflow's run "failure" (ensign's 45437116488, red on this job alone), and a release
+    # needs the run's "success". So every step that can fail continues, each step that needs
+    # an earlier one runs only where it passed, and the report names each outcome in the
+    # summary and as a warning. All step budgets total 102 minutes, 132 with the held git's
+    # build; a stalled step ends before this bound, which would cancel the job.
     timeout-minutes: ${{ inputs.held-git != '' && 135 || 105 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        id: package
         timeout-minutes: 2
+        continue-on-error: true
         with:
           fetch-depth: 0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        id: preflight
         timeout-minutes: 2
+        continue-on-error: true
         with:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
@@ -310,12 +317,17 @@ jobs:
       # bay is on the path before the setup, whose fetch configures the
       # package's build: `bay dev` for a package bay develops.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        id: toolchain
         timeout-minutes: 2
+        continue-on-error: true
         with:
           name: toolchain-${{ inputs.preflight-ref }}
           path: ${{ runner.temp }}/toolchain
       - name: Take bay from the toolchain, building with Zig master
+        id: bay
+        if: steps.toolchain.outcome == 'success'
         timeout-minutes: 1
+        continue-on-error: true
         run: |
           mkdir -p "$RUNNER_TEMP/bay-bin"
           cp "$RUNNER_TEMP/toolchain/linux/bay" "$RUNNER_TEMP/bay-bin/bay"
@@ -325,7 +337,9 @@ jobs:
       # preflight's checks with that Zig.
       - uses: ./.preflight/.github/actions/setup
         id: setup
+        if: steps.package.outcome == 'success' && steps.preflight.outcome == 'success' && steps.bay.outcome == 'success'
         timeout-minutes: 30
+        continue-on-error: true
         with:
           zig-version: master
           build-args: -Doptimize=debug -Dci-lint=false
@@ -338,16 +352,20 @@ jobs:
         if: inputs.held-git != ''
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         timeout-minutes: 2
+        continue-on-error: true
         with:
           path: ${{ runner.temp }}/preflight-git
           key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-none
       # Its own step, once: a build's deadline, where each tools attempt is a setup's.
       - name: Hold the package's git
-        if: inputs.held-git != ''
+        id: hold
+        if: inputs.held-git != '' && steps.setup.outcome == 'success'
         timeout-minutes: 30
+        continue-on-error: true
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare -- --held-git
       - name: Set up test tools (attempt 1/3)
         id: tools1
+        if: steps.setup.outcome == 'success'
         timeout-minutes: ${{ steps.setup.outputs.tools-hit == 'true' && 5 || 30 }}
         continue-on-error: true
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
@@ -361,10 +379,13 @@ jobs:
         id: tools3
         if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
         timeout-minutes: 5
+        continue-on-error: true
         run: zig build --build-file .preflight/build.zig -Drepo-root="${{ github.workspace }}/${{ inputs.working-directory }}" prepare
       - name: Run the Debug suite on Zig master
         id: suite
+        if: steps.tools1.outcome == 'success' || steps.tools2.outcome == 'success' || steps.tools3.outcome == 'success'
         timeout-minutes: 20
+        continue-on-error: true
         env:
           STEP: ci
           BUILD_ARGS: -Doptimize=debug -Dci-lint=false
@@ -375,19 +396,24 @@ jobs:
         if: always() && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         timeout-minutes: 2
+        continue-on-error: true
         with:
           path: ${{ runner.temp }}/preflight-git
           key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-none
+      # Each outcome is the step's own: `failure` where it failed, `skipped` where what it
+      # needs did not pass, empty where it never ran.
       - name: Report
         timeout-minutes: 1
         if: always()
+        continue-on-error: true
         env:
+          SETUP: ${{ steps.setup.outcome }}
           OUTCOME: ${{ steps.suite.outcome }}
-          TOOLS: ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome }}
+          TOOLS: ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome || steps.tools1.outcome }}
         run: |
           version=$(zig version 2>/dev/null || echo unknown)
-          echo "Zig master $version: tool setup $TOOLS; suite $OUTCOME (non-blocking)" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass; a note for the next port"; fi
+          echo "Zig master $version: setup ${SETUP:-not run}; tool setup ${TOOLS:-not run}; suite ${OUTCOME:-not run} (non-blocking)" >> "$GITHUB_STEP_SUMMARY" || true
+          if [ "$OUTCOME" != success ]; then echo "::warning title=Zig master::$version: the Debug suite did not pass (setup ${SETUP:-not run}, tool setup ${TOOLS:-not run}, suite ${OUTCOME:-not run}); a note for the next port"; fi
   compile:
     needs: toolchain
     # The native link jobs, planned exactly when the build's tests are portable (its ci-build).

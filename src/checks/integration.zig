@@ -2201,6 +2201,39 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     try std.testing.expect(!command.succeeded(broken));
 }
 
+test "a package with benchmarks configures on a branch git keeps packed, its directory pruned, and again once the branch has a loose ref" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.createDirPath(io, "bench");
+    try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "const sample = @import(\"preflight_sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
+    const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = &imports_hook, .target = target, .optimize = optimize }";
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
+    try fixtureGit(a, tmp.dir, &.{ "init", "--quiet", "--initial-branch=main" });
+    try fixtureGit(a, tmp.dir, &.{ "add", "." });
+    try fixtureGit(a, tmp.dir, &.{ "commit", "--quiet", "-m", "Sample" });
+    // On `wip/x`, packing its refs leaves no `refs/heads/wip/`: the branch is in packed-refs alone.
+    try fixtureGit(a, tmp.dir, &.{ "switch", "--quiet", "-c", "wip/x" });
+    try fixtureGit(a, tmp.dir, &.{ "pack-refs", "--all" });
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, ".git/refs/heads/wip", .{}));
+    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(listed)) std.debug.print("{s}\n", .{listed.stderr});
+    try std.testing.expect(command.succeeded(listed));
+    try std.testing.expect(std.mem.find(u8, listed.stdout, "bench-build") != null);
+    // A commit makes the loose ref again, under a directory that was not there: configured again.
+    try tmp.dir.writeFile(io, .{ .sub_path = "NOTES.md", .data = "notes\n" });
+    try fixtureGit(a, tmp.dir, &.{ "add", "NOTES.md" });
+    try fixtureGit(a, tmp.dir, &.{ "commit", "--quiet", "-m", "Notes" });
+    try tmp.dir.access(io, ".git/refs/heads/wip/x", .{});
+    const again = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l" }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(again)) std.debug.print("{s}\n", .{again.stderr});
+    try std.testing.expect(command.succeeded(again));
+}
+
 test "without shakedown a stranger's benchmarks are built, smoke-run and run, with nothing compared; the family's policy refuses them" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2553,44 +2586,13 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    try tmp.dir.createDir(io, "bench", .default_dir);
-    const sum = try std.Io.Dir.cwd().readFileAlloc(io, try std.Io.Dir.path.join(a, &.{ root, "sample", "bench", "sum.zig" }), a, .limited(1024 * 1024));
-    try tmp.dir.writeFile(io, .{ .sub_path = "bench/sum.zig", .data = sum });
-    // What it ships is `build`'s, with nothing but std; preflight and shakedown are
-    // dev dependencies, which `dev` wires and Zig never shows a consumer.
-    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data =
-        \\const std = @import("std");
-        \\
-        \\pub fn build(b: *std.Build) void {
-        \\    const target = b.standardTargetOptions(.{});
-        \\    const optimize = b.standardOptimizeOption(.{});
-        \\    _ = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
-        \\}
-        \\
-        \\pub fn dev(b: *std.Build, tools: type) void {
-        \\    const target = b.standardTargetOptions(.{});
-        \\    const optimize = b.standardOptimizeOption(.{});
-        \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
-        \\    const step = b.step("test", "Run the sample tests");
-        \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = package.module("preflight_sample") })).step);
-        \\    // The hook comes from the dev dependency, which only `dev` is given (`tools`); the
-        \\    // function it calls names nothing of preflight's, so it lives where the rest does.
-        \\    tools.preflight.addCi(b, package.builder, .{ .tests = step, .bench = .{ .programs = &.{.{ .name = "sum", .source = "bench/sum.zig" }}, .imports = tools.preflight.Bench.importsFrom(benchImports), .target = target, .optimize = optimize } });
-        \\    tools.preflight.addConsumerCheck(b, package.builder, .{ .package = "preflight_sample", .program = package.path("ci/consumer.zig") });
-        \\}
-        \\
-        \\fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
-        \\    const package = b.dependency("preflight_sample", .{ .target = target, .optimize = optimize });
-        \\    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "sample", .module = package.module("preflight_sample") }}) catch @panic("OOM");
-        \\}
-        \\
-    });
-    const fixture_root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    // The package is the suite's warm run's (src/testing/developed.zig): what it ships is
+    // `build`'s, with nothing but std, and preflight and shakedown are dev dependencies, which
+    // `dev` wires. The warm run wrote it at one place and built it there; here the same build
+    // must succeed again, with every compile of it done.
+    var developed = try std.Io.Dir.cwd().openDir(io, @import("test_options").developed, .{});
+    defer developed.close(io);
     const package_root = try std.Io.Dir.cwd().realPathFileAlloc(io, root, a);
-    const relative = try std.Io.Dir.path.relativeAlloc(a, package_root, null, fixture_root, package_root);
-    const shakedown = try shakedownPin(a);
-    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{}}, .dev_dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\" }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) }) });
     // The fixture runs from its own directory, so bay is named by its absolute path.
     const bay = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("test_options").bay, a);
     // One development build runs the gate and the benchmarks, as a runner would: with the
@@ -2598,17 +2600,16 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try env.put("ZIG_LOCAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ package_root, ".zig-cache", "fixtures" }));
-    const developed = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "ci-test", "bench-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    if (!command.succeeded(developed)) std.debug.print("bay dev:\n{s}", .{developed.stderr});
-    try std.testing.expect(command.succeeded(developed));
+    const built = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "ci-test", "bench-build", "-Dci-lint=false" }, .cwd = .{ .dir = developed }, .environ_map = &env });
+    if (!command.succeeded(built)) std.debug.print("bay dev:\n{s}", .{built.stderr});
+    try std.testing.expect(command.succeeded(built));
     // The consumer check is wired from dev too; building one is its own test's work.
-    const steps = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "-l" }, .cwd = .{ .dir = tmp.dir } });
+    const steps = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "-l" }, .cwd = .{ .dir = developed }, .environ_map = &env });
     try std.testing.expect(command.succeeded(steps));
     try std.testing.expect(std.mem.find(u8, steps.stdout, "\n  check-consumer ") != null);
     // The package's own build knows nothing of the gate, and builds with nothing fetched.
-    try tmp.dir.createDir(io, "none", .default_dir);
-    const none = try tmp.dir.realPathFileAlloc(io, "none", a);
-    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l", "--system", none }, .cwd = .{ .dir = tmp.dir } });
+    const none = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l", "--system", none }, .cwd = .{ .dir = developed } });
     try std.testing.expect(command.succeeded(listed));
     try std.testing.expect(std.mem.find(u8, listed.stdout, "\n  ci ") == null);
 }

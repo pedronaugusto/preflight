@@ -120,13 +120,17 @@ fn provenance(b: *std.Build) []const u8 {
     // and packed refs are configuration inputs, rather than cached git guesses.
     if (std.mem.startsWith(u8, head, "ref: ")) {
         const ref = b.fmt("{s}/{s}", .{ common, std.mem.trim(u8, head[5..], "\r\n") });
-        b.dependOnDirectoryMetadata(.{ .cwd_relative = std.Io.Dir.path.dirname(ref).? });
         if (std.Io.Dir.cwd().access(b.graph.io, ref, .{})) |_| b.dependOnFileContents(.{ .cwd_relative = ref }) else |err| switch (err) {
             // A ref git keeps packed has no file of its own: packed-refs, below, holds it.
             error.FileNotFound => {},
             // A ref the build cannot declare could change unseen, and the commit with it.
             else => return "source-archive",
         }
+        // Where a loose ref of the branch would be made: the nearest directory on its way that
+        // exists, since packing prunes the empty ones (`refs/heads/wip/` of `wip/x`), and a
+        // missing path is no input Zig can watch.
+        const made = nearestDirectory(b.graph.io, std.Io.Dir.path.dirname(ref).?, common) catch return "source-archive";
+        b.dependOnDirectoryMetadata(.{ .cwd_relative = made });
     }
     b.dependOnDirectoryMetadata(.{ .cwd_relative = directory });
     const packed_path = b.fmt("{s}/packed-refs", .{common});
@@ -138,6 +142,19 @@ fn provenance(b: *std.Build) []const u8 {
     const result = input.run(b.allocator, b.graph.io, .{ .argv = &.{ "git", "rev-parse", "HEAD" }, .cwd = .{ .path = cwd } }, .line) catch return "source-archive";
     if (result.term != .exited or result.term.exited != 0) return "source-archive";
     return std.mem.trim(u8, result.stdout, "\r\n");
+}
+
+/// `path`, or the nearest directory above it that exists, no higher than `top`.
+fn nearestDirectory(io: std.Io, path: []const u8, top: []const u8) ![]const u8 {
+    var at = path;
+    while (true) {
+        if (std.Io.Dir.cwd().access(io, at, .{})) |_| return at else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+        if (at.len <= top.len) return error.FileNotFound;
+        at = std.Io.Dir.path.dirname(at) orelse return error.FileNotFound;
+    }
 }
 
 fn executable(b: *std.Build, package: *std.Build, bench: Bench, program: Bench.Program, optimize: std.lang.Optimize, commit: []const u8, measured: bool) *std.Build.Step.Compile {

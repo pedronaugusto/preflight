@@ -196,6 +196,38 @@ test "a local action the workflows use is checked wherever it lives, its own use
     try std.testing.expect(result.term == .exited and result.term.exited == 1);
 }
 
+test "a use of preflight's checkout names preflight's own action: at the top in preflight's repository, the run's preflight-ref elsewhere" {
+    const p = try Package.init();
+    defer p.deinit();
+    // zig.yml as preflight's: its actions named where it checks preflight out.
+    try p.write(".github/workflows/zig.yml", "name: Zig\non: workflow_call\njobs:\n  one:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.preflight/.github/actions/setup\n      - uses: ./.preflight/ci/actions/setup\n      - uses: ./.preflight/ci/actions/missing\n");
+    try p.write(".github/actions/setup/action.yml", "name: Setup\nruns:\n  using: composite\n  steps:\n    - run: true\n      shell: bash\n");
+    try p.write("ci/actions/setup/action.yml", "name: Setup\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n");
+    try p.git(&.{ "add", "-A" });
+    try p.git(&.{ "commit", "-q", "-m", "Uses of preflight's checkout, in a repository not preflight's" });
+    const elsewhere = try p.gate();
+    if (std.mem.find(u8, elsewhere.stderr, "names no action") != null or std.mem.find(u8, elsewhere.stderr, "ci/actions/setup/action.yml") != null) {
+        std.debug.print("a repository not preflight's followed preflight's checkout:\n{s}\n", .{elsewhere.stderr});
+        return error.TestUnexpectedResult;
+    }
+    // Preflight's own caller runs its own commit: the same uses are its actions at the top.
+    try p.write(".github/workflows/own.yml", "name: Own\non: push\njobs:\n  ci:\n    uses: ./.github/workflows/zig.yml\n    with:\n      preflight-ref: ${{ github.sha }}\n");
+    try p.git(&.{ "add", "-A" });
+    try p.git(&.{ "commit", "-q", "-m", "Preflight's own caller" });
+    const own = try p.gate();
+    for ([_][]const u8{ "gate: ci/actions/setup/action.yml:5: `uses: actions/checkout@v4` names no commit", "gate: `uses: ./ci/actions/missing` names no action" }) |said| {
+        if (std.mem.find(u8, own.stderr, said) == null) {
+            std.debug.print("expected:\n{s}\nstderr:\n{s}\n", .{ said, own.stderr });
+            return error.TestUnexpectedResult;
+        }
+    }
+    if (std.mem.find(u8, own.stderr, "./.github/actions/setup") != null) {
+        std.debug.print("preflight's action at the top was refused:\n{s}\n", .{own.stderr});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expect(own.term == .exited and own.term.exited == 1);
+}
+
 test "a package without bay is told to run `zig build generate`, the command it has" {
     const p = try Package.start(.zig);
     defer p.deinit();

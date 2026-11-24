@@ -86,7 +86,9 @@ fn findCaller(c: *src.Context, working_directory: ?[]const u8) !?Caller {
 /// path in this repository (`./`), or `owner/repo[/path]@<commit>`. A tag or a branch is the
 /// other repository's to move, and a run would take what it moved to unseen; the caller pins
 /// preflight's workflow by commit, which pins nothing that workflow takes in turn unless it
-/// pins it so too.
+/// pins it so too. zig.yml checks preflight out at `.preflight`, so a `./.preflight/` use names
+/// one of preflight's own actions: in preflight's repository, whose caller runs its own commit,
+/// that action is at the top; in any other, the run's `preflight-ref` pins it.
 fn pinnedActions(c: *src.Context, top: []const u8) !void {
     var root = std.Io.Dir.cwd().openDir(c.io, top, .{}) catch |err| switch (err) {
         error.FileNotFound => return,
@@ -94,8 +96,10 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
     };
     defer root.close(c.io);
     const before = c.errors;
-    // The local actions the files checked use, by their path from the top, to follow.
+    // The local actions the files checked use, by their path from the top, to follow, and
+    // whether a workflow is preflight's own caller.
     var local: std.array_hash_map.String(void) = .empty;
+    var own = false;
     if (root.openDir(c.io, ".github", .{ .iterate = true })) |opened| {
         var dir = opened;
         defer dir.close(c.io);
@@ -103,7 +107,7 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
         defer walker.deinit();
         while (try walker.next(c.io)) |entry| {
             if (entry.kind != .file or !(std.mem.endsWith(u8, entry.basename, ".yml") or std.mem.endsWith(u8, entry.basename, ".yaml"))) continue;
-            try checkUses(c, root, try c.a.print(".github/{s}", .{try repositoryPath(c.a, entry.path)}), &local);
+            try checkUses(c, root, try c.a.print(".github/{s}", .{try repositoryPath(c.a, entry.path)}), &local, &own);
         }
     } else |err| switch (err) {
         error.FileNotFound => {},
@@ -113,6 +117,10 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
     var next: usize = 0;
     while (next < local.count()) : (next += 1) {
         const action = local.keys()[next];
+        if (std.mem.startsWith(u8, action, preflight_checkout)) {
+            if (own) try local.put(c.a, action[preflight_checkout.len..], {});
+            continue;
+        }
         if (action.len == 0 or std.mem.eql(u8, action, ".github") or std.mem.startsWith(u8, action, ".github/")) continue;
         const file = for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
             const candidate = try c.a.print("{s}/{s}", .{ action, name });
@@ -124,7 +132,7 @@ fn pinnedActions(c: *src.Context, top: []const u8) !void {
             c.fail("gate: `uses: ./{s}` names no action: {s} holds no action.yml", .{ action, action });
             continue;
         };
-        try checkUses(c, root, file, &local);
+        try checkUses(c, root, file, &local, &own);
     }
     if (c.errors != before) return error.CallerRefused;
 }
@@ -137,10 +145,14 @@ fn repositoryPath(a: std.mem.Allocator, path: []const u8) ![]const u8 {
     return copy;
 }
 
+/// Where zig.yml checks preflight out, from the caller's top.
+const preflight_checkout = ".preflight/";
+
 /// Checks each `uses:` of the YAML at `path` (from the repository's top), adding the local
-/// actions it names to `local`.
-fn checkUses(c: *src.Context, root: std.Io.Dir, path: []const u8, local: *std.array_hash_map.String(void)) !void {
+/// actions it names to `local`, and setting `own` where it is preflight's own caller.
+fn checkUses(c: *src.Context, root: std.Io.Dir, path: []const u8, local: *std.array_hash_map.String(void), own: *bool) !void {
     const text = try seam.document(c.io, root, path, c.a, .source);
+    if (std.mem.find(u8, text, own_ref) != null) own.* = true;
     var problem: actions.Problem = .{ .line = 0, .what = "" };
     const used = actions.uses(c.a, text, &problem) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

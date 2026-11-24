@@ -226,28 +226,67 @@ fn runs(b: *std.Build, artifact: *std.Build.Step.Compile) Named {
 /// A path argument as the replaying runner names its own copy of it: from the run's working
 /// directory `cwd` (from the package root; null for a fresh temporary one) where it is in the
 /// package or a dependency the package fetches into it, from Zig's library, or the Zig
-/// executable itself. Any other path is the building runner's own.
+/// executable itself. Any other path is the building runner's own. A fetched dependency's
+/// path is named where every replaying runner fetches it, `zig-pkg/<its hash>`, whatever
+/// directory this build found it in: a workspace hands Zig a member's own tree for that
+/// hash (`--fork`), outside the package.
 fn portablePath(b: *std.Build, package: *std.Build, path: std.Build.LazyPath, cwd: ?[]const u8) union(enum) { relative: []const u8, zig_lib: []const u8, zig_exe } {
-    const absolute = switch (path) {
+    const Where = union(enum) { absolute: []const u8, fetched: []const u8 };
+    const where: Where = switch (path) {
         .relative => |relative| {
             if (relative.base == .zig_lib) return .{ .zig_lib = relative.sub_path };
             if (relative.base == .zig_exe) return .zig_exe;
             @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library");
         },
-        .src_path => |source| source.owner.root.joinString(b.allocator, source.sub_path) catch @panic("OOM"),
-        .dependency => |dependency| dependency.dependency.builder.root.joinString(b.allocator, dependency.sub_path) catch @panic("OOM"),
+        .src_path => |source| .{ .absolute = source.owner.root.joinString(b.allocator, source.sub_path) catch @panic("OOM") },
+        .dependency => |dependency| if (fetched(dependency.dependency.builder.pkg_hash))
+            .{ .fetched = std.Io.Dir.path.join(b.allocator, &.{ "zig-pkg", dependency.dependency.builder.pkg_hash, dependency.sub_path }) catch @panic("OOM") }
+        else
+            .{ .absolute = dependency.dependency.builder.root.joinString(b.allocator, dependency.sub_path) catch @panic("OOM") },
         else => @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library"),
     };
     const from = cwd orelse @panic("portable tests in a fresh temporary directory must not name a path in the package");
     const io = b.graph.io;
     const base = std.Io.Dir.cwd().realPathFileAlloc(io, package.root.joinString(b.allocator, from) catch @panic("OOM"), b.allocator) catch |err| std.debug.panic("portable tests: the run's directory: {t}", .{err});
-    const target = std.Io.Dir.cwd().realPathFileAlloc(io, absolute, b.allocator) catch |err| std.debug.panic("portable tests: {s}: {t}", .{ absolute, err });
     const root = std.Io.Dir.cwd().realPathFileAlloc(io, package.root.joinString(b.allocator, ".") catch @panic("OOM"), b.allocator) catch |err| std.debug.panic("portable tests: the package root: {t}", .{err});
-    const inside = std.Io.Dir.path.relativeAlloc(b.allocator, root, null, root, target) catch @panic("OOM");
-    if (std.mem.startsWith(u8, inside, "..") or std.Io.Dir.path.isAbsolute(inside))
-        @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library");
+    const target = switch (where) {
+        // Named, not read: the replaying runner's copy, which this build need not have made.
+        .fetched => |inside| std.Io.Dir.path.join(b.allocator, &.{ root, inside }) catch @panic("OOM"),
+        .absolute => |absolute| target: {
+            const target = std.Io.Dir.cwd().realPathFileAlloc(io, absolute, b.allocator) catch |err| std.debug.panic("portable tests: {s}: {t}", .{ absolute, err });
+            const inside = std.Io.Dir.path.relativeAlloc(b.allocator, root, null, root, target) catch @panic("OOM");
+            if (std.mem.startsWith(u8, inside, "..") or std.Io.Dir.path.isAbsolute(inside))
+                @panic("portable tests must not name a path the building runner has alone: one in the package, a dependency in it, or Zig's library");
+            break :target target;
+        },
+    };
     const relative = std.Io.Dir.path.relativeAlloc(b.allocator, base, null, base, target) catch @panic("OOM");
     return .{ .relative = if (relative.len == 0) "." else relative };
+}
+
+/// Whether `hash` names a package Zig fetches, `name-version-<44 base64url characters>` (the
+/// fingerprint's id, the size and the digest), which every runner fetches into
+/// `zig-pkg/<hash>`; not a path dependency, whose hash is its path or that path's hex digest,
+/// nor the root package's, which is empty.
+fn fetched(hash: []const u8) bool {
+    const digest_len = 44;
+    if (hash.len <= digest_len + 1 or hash[hash.len - digest_len - 1] != '-') return false;
+    if (std.mem.findAny(u8, hash, "/\\") != null) return false;
+    var decoded: [33]u8 = undefined;
+    std.base64.url_safe_no_pad.Decoder.decode(&decoded, hash[hash.len - digest_len ..]) catch return false;
+    // A name before the version, and the version before the digest.
+    return std.mem.countScalar(u8, hash[0 .. hash.len - digest_len - 1], '-') >= 1;
+}
+
+test "a fetched package's hash is named under zig-pkg; a path dependency's and the root's are not" {
+    try std.testing.expect(fetched("shakedown-0.6.0-BR8U4-SXHABXCZHRi3IOVSI6f_OA0qhTnviVDKPtwTje"));
+    // url-safe base64 may hold '-' itself.
+    try std.testing.expect(fetched("dvui-0.4.0-dev-AQFJmayi2gAKE7FeJoF61v5U1IV9-SupoEcFutIZYpkC"));
+    try std.testing.expect(!fetched(""));
+    try std.testing.expect(!fetched("../aegis"));
+    try std.testing.expect(!fetched("vendor/aegis"));
+    try std.testing.expect(!fetched("0f3a9c0b1d2e3f405162738495a6b7c8d9eaf0b1c2d3e4f5061728394a5b6c7d"));
+    try std.testing.expect(!fetched("../aegis-0.4.0-rsxouv1KDgCdGc-mhY-qBfyE70ar4OQiGGKHKndirWnQ"));
 }
 
 /// Whether `step` makes a fresh temporary directory, as `b.tmpPath()` does.

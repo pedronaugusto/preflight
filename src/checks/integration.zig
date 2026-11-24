@@ -727,6 +727,44 @@ test "a test given a path in its package, one in Zig's library and Zig itself re
     try std.testing.expect(std.mem.find(u8, refused.stderr, "must not name a path the building runner has alone") != null);
 }
 
+test "a fetched dependency's path is named under zig-pkg by its hash, wherever this build found it: a workspace's fork outside the package" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // The shakedown the fixture pins, as preflight's own build fetched it: a directory outside
+    // the fixture, handed to Zig for that hash as a workspace hands it a member's tree.
+    const shakedown = try shakedownPin(a);
+    const outside = std.Io.Dir.cwd().realPathFileAlloc(io, try std.Io.Dir.path.join(a, &.{ root, "zig-pkg", shakedown.hash }), a) catch |err| {
+        std.debug.print("preflight's own build fetches its shakedown into zig-pkg/{s}: {t}\n", .{ shakedown.hash, err });
+        return err;
+    };
+    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
+        \\    step.dependOn(&b.addRunArtifact(tests).step);
+        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
+        \\    const reads = b.addRunArtifact(tool);
+        \\    if (b.lazyDependency("shakedown", .{})) |fetched| reads.addFileArg(fetched.path("build.zig.zon"));
+        \\    step.dependOn(&reads.step);
+        \\
+    );
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data = "pub fn main() void {}\n" });
+    const fork = try a.print("--fork={s}", .{outside});
+    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false", fork }, .cwd = .{ .dir = tmp.dir } });
+    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
+    try std.testing.expect(command.succeeded(compiled));
+    // Named where every replaying runner fetches it, in the host's form, never by the
+    // directory outside the package this build read it from.
+    const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
+    const named = try std.Io.Dir.path.join(a, &.{ "zig-pkg", shakedown.hash, "build.zig.zon" });
+    const quoted = try a.print("\"{s}\"", .{try std.mem.replaceOwned(u8, a, named, "\\", "\\\\")});
+    if (std.mem.find(u8, manifest, quoted) == null) std.debug.print("{s}\n", .{manifest});
+    try std.testing.expect(std.mem.find(u8, manifest, quoted) != null);
+    try std.testing.expect(std.mem.find(u8, manifest, outside) == null);
+}
+
 test "a test reads Zig's library through addTestZigLib, here and where it replays: the replaying runner writes the file for its own Zig" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

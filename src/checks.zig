@@ -49,6 +49,7 @@ test {
     _ = @import("vm/ustar.zig");
     _ = @import("record_test.zig");
     _ = @import("configure.zig");
+    _ = @import("portable.zig");
     _ = @import("facts.zig");
     _ = @import("facts_test.zig");
     _ = @import("facts/revisions.zig");

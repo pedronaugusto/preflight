@@ -77,6 +77,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `preflight-vm` compiles: the program's ending was declared twice, once for each machine, and one was passed where the other was taken, so a `-Dci-vm` job failed to build it. The ending is declared once, in `vm/ending.zig`, with the status line's parse. `check`, preflight's own and every package's, compiles `preflight-vm` for x86_64 Linux and both machines' first processes, which only a `-Dci-vm` job on the hosted x86_64 Linux runner built: a gate on any host now fails where that job would.
+- The FreeBSD probe's QEMU install (`freebsd-boot.yml`) has the shared workflow's bound, apt's deadlines and three retries under 15 minutes, where 5 ended an install still downloading from a slow mirror.
 - `check-consumer` names a pin whose `zig fetch` fails, with how the fetch ended and what it printed, where it failed with a bare `error.FetchFailed` (glint's gate, glint 66915ae0, named neither the pin nor the cause).
 - The consumer check takes a package whose manifest names no name (a tarball with no `build.zig.zon`: a grammar, a C library's release) for itself alone: Zig hashes every such package `N-V-<digest>`, and the check read the `N` as their one name, so ztreesitter, which pins its 309 grammars that way, was refused as holding package `N` at 309 revisions.
 - The fuzz report reads the fuzz targets of a test root the source checks do not walk (an integration suite under `tests/`, against the module a consumer gets), where it read only `sources`: under the family's policy ztreesitter's `parseSlice` failed as reached by no target, though `tests/tests.zig` fuzzes it. A parser declared there is no parser of the package's.

@@ -483,8 +483,7 @@ step, and a cancelled result is no job's red: the profile skips, and the run cou
 a platform's tests never run and nothing failing by name. `runners` reads the run attempt's
 jobs with the token's `actions: read` (`preflight runners --jobs`) and fails on each, with
 the minutes it was queued; a non-blocking job (Zig master's, an advisory declared job's) is
-reported and fails nothing. It names each non-blocking job that failed too, in the log and
-the run's summary, and fails nothing: their failure is no job's red, and is shown there.
+reported and fails nothing. A non-blocking job's own failure is its report's to name.
 Nothing is retried: the run is dispatched again by whoever reads why.
 The shared runner shuffles test order using the test seed in every tier and in local
 runs. A direct run prints the seed; under `zig build` a passing run prints

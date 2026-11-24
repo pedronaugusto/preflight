@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Durations and sizes print through their units (`{f}`): a phase's length and memory, the cache's size and cap, glint's read budget, a cross target's compile time and its job's room, and the watchdog's limit (`exceeded 300ms`).
+
+### Fixed
+
+- Only a missing file reads as absent: the build's `exists`, the held git's kept build and the guest's network marker took any `access` error, cancellation among them, as no file; a denied, failed or cancelled access now stops the build, naming the path, or returns its error. The watchdog's scan of a process's descriptors returns a cancellation instead of ending the scan.
+- The workflow reader measures a block scalar (`run: |`) from its entry's indentation, as YAML does, not from its key's column: an anchor before the key (`- &name run: |`) put the script's end past the anchor's name, and a `uses:` line inside the script read as a key.
+- A declared job marked `advisory` never fails the run, as Zig master's does not, by the same means: each of its steps continues on error and has a budget, a step needing an earlier one runs only where it passed, and the report both jobs share (`.github/actions/advisory-report`) names each outcome in the run's summary and warns on the run when the suite did not pass. Its job-level `continue-on-error` still concluded a called workflow's run "failure", which `bay release` refuses. Its `timeout` is its run step's, at most 240 minutes, and its job has 120 more for its other steps, so a stalled step ends before the job's bound; in the release tier it runs on a macOS runner of its own, where it was a leg of the blocking macOS job, whose result its failure became. The `runners` job no longer names non-blocking jobs that failed: none concludes "failure" now, and the report's warning names it.
+
 ## [0.19.0] - 2026-11-25
 
 ### Breaking
@@ -74,7 +84,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The riscv64 suite under QEMU is sized by its record, as cross targets are by theirs: as few jobs as hold `riscv64_seconds` of its tests each, by `ci/durations.json` (which the planner now reads beside `ci/costs.json`), where it was one job unless `shards.riscv64` said otherwise, and a 20-minute job ran out of time with most of a suite unstarted (xenoglyph and strand among them on the 2026-10-30 nightly); `shards.riscv64` still fixes the count. A test with no record in its column, there or on any shard, weighs its Linux Debug record times the ratio of the two columns over the tests both recorded, and only failing that the mean of the column's own: a suite measured on Linux is weighed under emulation before its first full run there. The planner and the runner weigh through one function, `order.estimate`.
 - Internal, no consumer's: the checks' `alignNested`, which nothing has called since `land` left preflight, is gone, and so is the escape on the runner's pipe `file`, which glint 0.7.5 reads as handing over no owner (a literal naming the handle it is given).
 - Internal, no consumer's: glint 0.8's findings on preflight's own code. The test runner's watchdog waits on std's `Io.Event`, its buffers read by std calls start zeroed, the fuzz header is taken whole from its reader, and the configuration decoder asserts at compile time that each field's flags come before it.
-- Durations and sizes print through their units (`{f}`): a phase's length and memory, the cache's size and cap, glint's read budget, a cross target's compile time and its job's room, and the watchdog's limit (`exceeded 300ms`).
 
 ### Fixed
 
@@ -130,9 +139,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A C library of several sources and no Zig root (a grammar's parser and scanner) keeps its first source as its own object's on a COFF target, its other sources each an object beside it: moving all of them out left its object nothing to compile ("the linker needs one or more objects to link", ztreesitter's grammars on x86_64-windows-gnu).
 - The VM host's input forwarding ends at once on a cancel; it read a cancel as the end of the input and sent the program an end-of-input frame first.
 - A package developed with bay balances its shards by its own `ci/durations.json`, read from its repository; it was looked for in the development build's root, which holds none. The development build's configuration no longer depends on that root, so it configures with the cache outside the package (a hosted job's `ZIG_LOCAL_CACHE_DIR`), where Zig 0.17 failed it with `configuration failed: FileSystemFailure`.
-- Only a missing file reads as absent: the build's `exists`, the held git's kept build and the guest's network marker took any `access` error, cancellation among them, as no file; a denied, failed or cancelled access now stops the build, naming the path, or returns its error. The watchdog's scan of a process's descriptors returns a cancellation instead of ending the scan.
-- The workflow reader measures a block scalar (`run: |`) from its entry's indentation, as YAML does, not from its key's column: an anchor before the key (`- &name run: |`) put the script's end past the anchor's name, and a `uses:` line inside the script read as a key.
-- A declared job marked `advisory` never fails the run, as Zig master's does not, by the same means: each of its steps continues on error and has a budget, a step needing an earlier one runs only where it passed, and the report both jobs share (`.github/actions/advisory-report`) names each outcome in the run's summary and warns on the run when the suite did not pass. Its job-level `continue-on-error` still concluded a called workflow's run "failure", which `bay release` refuses. Its `timeout` is its run step's, at most 240 minutes, and its job has 120 more for its other steps, so a stalled step ends before the job's bound; in the release tier it runs on a macOS runner of its own, where it was a leg of the blocking macOS job, whose result its failure became.
 
 ## [0.18.6] - 2026-10-31
 

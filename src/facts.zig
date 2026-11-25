@@ -1,6 +1,5 @@
 //! Zig's build-system protocol and the actual configured artifact graph, on the Zig versions `zig_version.zig` lists.
 const std = @import("std");
-const aegis = @import("aegis");
 const builtin = @import("builtin");
 const src = @import("checks/source.zig");
 const seam = @import("checks/input.zig");
@@ -11,8 +10,6 @@ pub const revisions = @import("facts/revisions.zig");
 const C = std.Build.Configuration;
 const Io = std.Io;
 const limit = 64 * 1024 * 1024;
-/// A wait on a program the reader runs, in whole seconds.
-const Seconds = aegis.units.Duration(.second, u32);
 
 /// A configured build, and the package checked in it: the root package, or,
 /// under bay, the root's dependency at the package's own directory, since the
@@ -45,7 +42,7 @@ pub fn read(c: src.Context, zig: []const u8, options: []const []const u8) !Snaps
         c.report("preflight: the configured-build reader supports {s}; this one was built with Zig {s}\n", .{ zig_version.supported, builtin.zig_version_string });
         return error.UnsupportedConfigurationVersion;
     };
-    const version = try seam.run(c.a, c.io, .{ .argv = &.{ zig, "version" }, .timeout = .{ .duration = .{ .clock = .awake, .raw = Seconds.literal("30s").toIoDuration() } } }, .line);
+    const version = try seam.run(c.a, c.io, .{ .argv = &.{ zig, "version" } }, .line);
     try successful(version.term);
     if (!std.mem.eql(u8, std.mem.trim(u8, version.stdout, "\r\n"), builtin.zig_version_string)) return error.UnsupportedCompilerVersion;
     var argv: std.ArrayList([]const u8) = .empty;
@@ -140,21 +137,23 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
     var protocol: Io.Writer.Allocating = .init(c.a);
     var frame_count: usize = 0;
     while (true) {
-        // The first frame comes once Zig has compiled the build runner and the build script,
-        // a compile whose time is its own (cold, minutes): no wait for it is bounded. Each
-        // frame after it comes from a running build, within `protocol_timeout`.
-        try available(c, &multi, 8, if (frame_count == 0) .none else protocol_timeout);
+        // No wait here is timed: each ends when the build writes or ends. Zig's build sends its
+        // handshake before it compiles the configurer, the build script with it (Maker.zig), so
+        // the frame after the handshake comes after a compile whose time is its own, minutes
+        // cold or on a loaded machine. A build that hangs is the bound's that runs preflight
+        // (`bounded.zig`): the job's deadline, or a run's, ends its tree and names it.
+        try available(c, &multi, 8);
         const header = try multi.reader(0).takeStruct(std.zig.Server.Message.Header, .little);
         frame_count += 1;
         if (frame_count > 64 or header.bytes_len > 8 * 1024 * 1024) return error.ProtocolFrameTooLong;
-        try available(c, &multi, header.bytes_len, protocol_timeout);
+        try available(c, &multi, header.bytes_len);
         const body = try multi.reader(0).take(header.bytes_len);
         if (protocol.written().len > limit - 8 - body.len) return error.ProtocolOutputTooLong;
         try protocol.writer.writeStruct(header, .little);
         try protocol.writer.writeAll(body);
         if (header.tag == .bsp_configuration_failed) {
             // What the build wrote to stderr says why; it ends after saying so.
-            while (multi.fill(4096, protocol_timeout)) |_| {
+            while (multi.fill(4096, .none)) |_| {
                 if (multi.reader(1).bufferedLen() > limit) break;
             } else |err| switch (err) {
                 // The build ended: what it wrote is all there.
@@ -176,7 +175,7 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         var writer = child.stdin.?.writerStreaming(c.io, &buffer);
         try writer.interface.writeStruct(std.zig.Client.Message.Header{ .tag = .exit, .bytes_len = 0 }, .little);
         try writer.interface.flush();
-        while (multi.fill(4096, protocol_timeout)) |_| {
+        while (multi.fill(4096, .none)) |_| {
             if (multi.reader(0).bufferedLen() > limit or multi.reader(1).bufferedLen() > limit) return error.ProtocolOutputTooLong;
         } else |err| switch (err) {
             error.EndOfStream => {},
@@ -188,13 +187,12 @@ fn capture(c: src.Context, argv: []const []const u8) !Snapshot {
         return .{ .config = config, .path = config_path, .bytes = bytes };
     }
 }
-const protocol_timeout: Io.Timeout = .{ .duration = .{ .raw = Seconds.literal("120s").toIoDuration(), .clock = .awake } };
 /// Reads until `count` bytes of the protocol are there. A build that ends
 /// before it has said what it configured has failed, and what it wrote to
 /// stderr is why: that is what `c` reports.
-fn available(c: src.Context, multi: *Io.File.MultiReader, count: usize, timeout: Io.Timeout) !void {
+fn available(c: src.Context, multi: *Io.File.MultiReader, count: usize) !void {
     while (multi.reader(0).bufferedLen() < count) {
-        multi.fill(4096, timeout) catch |err| switch (err) {
+        multi.fill(4096, .none) catch |err| switch (err) {
             error.EndOfStream => {
                 c.report("preflight: the build ended before it sent its configuration:\n{s}\n", .{multi.reader(1).buffered()});
                 return error.TruncatedProtocolFrame;
@@ -879,6 +877,49 @@ test "build protocol chunked transport cancellation child status and output faul
     const seed = try fixture.seed(a);
     const loaded = try configuration.load(a, seed);
     try std.testing.expectError(error.WriteFailed, write(a, .{ .config = loaded, .path = "path" }, &writer));
+}
+
+test "the configured build is waited for by what it writes, not by time: a configure past any clock still reads" {
+    // The stand-in build is a shell script.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    const Clock = @import("shakedown").Clock;
+    const FaultIo = @import("shakedown").FaultIo;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var frames: Io.Writer.Allocating = .init(a);
+    try frames.writer.writeStruct(std.zig.Server.Message.Header{ .tag = .bsp_handshake, .bytes_len = @sizeOf(std.zig.Server.Message.Handshake) }, .little);
+    try frames.writer.writeStruct(std.zig.Server.Message.Handshake{ .version = std.zig.Server.build_system_version, .flags = .{ .file_system_watch_supported = false } }, .little);
+    try tmp.dir.writeFile(io, .{ .sub_path = "handshake", .data = frames.written() });
+    frames.clearRetainingCapacity();
+    try frames.writer.writeStruct(std.zig.Server.Message.Header{ .tag = .bsp_configuration_failed, .bytes_len = 0 }, .little);
+    try tmp.dir.writeFile(io, .{ .sub_path = "failed", .data = frames.written() });
+    // As Zig's build does: the handshake, then a configure as long as the test makes it.
+    const build = "cat handshake; while [ ! -e configured ]; do sleep 0.01; done; cat failed; echo 'the build script does not compile' >&2";
+    // Every timer fires the moment it is armed: a timed wait anywhere in the read ends it.
+    var clock: Clock = .init(io, .{ .advance = .{ .auto = .{} } });
+    // Counts the reader's waits, each as it begins.
+    const counted = try FaultIo.init(std.testing.allocator, clock.io(), .{});
+    defer counted.deinit();
+    var held: Io.Writer.Allocating = .init(a);
+    const c: src.Context = .{ .a = a, .io = counted.io(), .dir = .of(tmp.dir), .held = &held };
+    const Reading = struct {
+        result: anyerror!Snapshot = error.Unread,
+        fn run(context: src.Context, argv: []const []const u8, into: *@This()) void {
+            into.result = capture(context, argv);
+        }
+    };
+    var reading: Reading = .{};
+    const thread = try std.Thread.spawn(.{}, Reading.run, .{ c, &[_][]const u8{ "sh", "-c", build }, &reading });
+    // The first wait took the handshake; the second waits for the configure.
+    while (counted.count(.batchAwaitConcurrent) < 2) std.Thread.yield() catch {};
+    try tmp.dir.writeFile(io, .{ .sub_path = "configured", .data = "" });
+    thread.join();
+    try std.testing.expectError(error.BuildConfigurationFailed, reading.result);
+    try std.testing.expect(std.mem.find(u8, held.written(), "the build script does not compile") != null);
 }
 
 test "the modules of several targets' builds are one list: a module by its root once, each name every build binds" {

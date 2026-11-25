@@ -99,7 +99,11 @@ package that needs another bound says why: `.test_timeout = .{ .bound = .{ .limi
 .fromSeconds(30), .reason = "..." } }`, or `.{ .off = "..." }` for a test runner of its
 own or a single-threaded build, which otherwise fail the build by name. preflight
 passes the build runner no `--test-timeout`; one given by hand bounds each test there
-too. Every other child process preflight starts runs under one bound with its whole
+too. The shared runner also gives each test build std.debug's `Io` with every
+operation under the calling task's cancel protection blocked, so a stack capture (one
+`std.testing.allocator` makes) never takes a test's pending cancel: on macOS std's unwinder
+takes a cancelable lock, and a cancel it took was lost. A test runner of its own keeps
+std's, and with it that loss. Every other child process preflight starts runs under one bound with its whole
 process tree: the runs of its steps that are no test, and the builds the gate runs (a
 cross-compile job's targets among them). Past its bound, or at the hosted job's deadline, the
 tree is ended and the run fails naming its step or target, its command and the last line it

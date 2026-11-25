@@ -14,6 +14,8 @@ const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
 pub const std_options: std.Options = .{ .logFn = log };
+/// std.debug's, whose stack captures are no cancelation point (`runner/debug_io.zig`).
+pub const std_options_debug_io: std.Io = @import("runner/debug_io.zig").of(std.Io.Threaded.global_single_threaded.io());
 /// The options module carries its own copy of the enum.
 const log_level = @field(std.log.Level, @tagName(options.test_log_level));
 var errors: std.atomic.Value(usize) = .init(0);

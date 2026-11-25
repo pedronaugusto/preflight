@@ -1610,6 +1610,85 @@ test "a test runner of its own runs with the watchdog off, and fails by name whe
     try std.testing.expect(std.mem.find(u8, sharded.stderr, "test: a test runner of its own runs every shard's tests") != null);
 }
 
+/// A test whose cancel is pending when it allocates through `std.testing.allocator` while
+/// std.debug's lock is contended: the allocator captures a stack, whose unwinder takes that lock
+/// (`SelfInfo/MachO.findModule`), and the test's next wait must still end in the cancel.
+const cancel_through_capture =
+    \\const std = @import("std");
+    \\const Io = std.Io;
+    \\var never: u32 = 0;
+    \\var held: std.atomic.Value(bool) = .init(false);
+    \\const Outcome = error{ Canceled, CancelLost, OutOfMemory }!void;
+    \\fn holder(io: Io) Outcome {
+    \\    // The cancel is pending: taken by a cancelation point and armed again.
+    \\    while (true) {
+    \\        io.checkCancel() catch {
+    \\            io.recancel();
+    \\            break;
+    \\        };
+    \\        std.Thread.yield() catch {};
+    \\    }
+    \\    while (!held.load(.acquire)) std.Thread.yield() catch {};
+    \\    std.testing.allocator.free(try std.testing.allocator.alloc(u8, 16));
+    \\    // Bounds only a lost cancel's failure.
+    \\    io.futexWaitTimeout(u32, &never, 0, .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } }) catch |err| switch (err) {
+    \\        error.Canceled => return error.Canceled,
+    \\    };
+    \\    return error.CancelLost;
+    \\}
+    \\fn cancel(future: *Io.Future(Outcome), io: Io, outcome: *Outcome) void {
+    \\    outcome.* = future.cancel(io);
+    \\}
+    \\test "a pending cancel survives a stack capture whose debug lock is contended" {
+    \\    const io = std.testing.io;
+    \\    const debug_io = std.Options.debug_io;
+    \\    // The modules are loaded, so the capture takes only the lock.
+    \\    std.testing.allocator.free(try std.testing.allocator.alloc(u8, 1));
+    \\    const si = try std.debug.getSelfDebugInfo();
+    \\    // Started first: starting a task allocates, and so captures a stack, which takes the lock.
+    \\    var future = try io.concurrent(holder, .{io});
+    \\    var outcome: Outcome = undefined;
+    \\    const canceller = try std.Thread.spawn(.{}, cancel, .{ &future, io, &outcome });
+    \\    try si.mutex.lock(debug_io);
+    \\    held.store(true, .release);
+    \\    // The holder waits for the lock: release it.
+    \\    while (si.mutex.state.load(.acquire) != .contended) std.Thread.yield() catch {};
+    \\    si.mutex.unlock(debug_io);
+    \\    canceller.join();
+    \\    try std.testing.expectError(error.Canceled, outcome);
+    \\}
+    \\
+;
+
+test "a test's pending cancel survives a stack capture under preflight's runner, and is lost under std's" {
+    // Only macOS's unwinder takes a cancelable lock; ELF's and Windows' take theirs uncancelably.
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = cancel_through_capture });
+    try bareConsumer(tmp.dir);
+    const ours = try gate(a, tmp.dir, &.{});
+    if (!command.succeeded(ours)) std.debug.print("{s}\n", .{ours.stderr});
+    try std.testing.expect(command.succeeded(ours));
+    // The canary: std's runner takes std's debug Io, and the cancel is lost. Once std's unwinder
+    // takes its lock uncancelably this passes, and `runner/debug_io.zig` goes.
+    var own = std.testing.tmpDir(.{});
+    defer own.cleanup();
+    try ownRunner(a, own.dir);
+    try edit(a, own.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .off = \"the upstream runner\" }");
+    try own.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = cancel_through_capture });
+    try bareConsumer(own.dir);
+    const upstream = try gate(a, own.dir, &.{});
+    if (std.mem.find(u8, upstream.stderr, "expected error.Canceled, found error.CancelLost") == null) std.debug.print("{s}\n", .{upstream.stderr});
+    try std.testing.expect(!command.succeeded(upstream));
+    try std.testing.expect(std.mem.find(u8, upstream.stderr, "expected error.Canceled, found error.CancelLost") != null);
+}
+
 test "a single-threaded build fails by name while the watchdog is on" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

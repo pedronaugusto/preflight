@@ -924,8 +924,11 @@ host's count where a package means one (keys `linux`, `macos`, `windows`, `linux
 that leaves a job more than it holds is refused. Every job compiles the whole suite once, and the test runner picks its share of the test cases: longest
 first onto the least-loaded shard, by the seconds recorded for that target in
 `ci/durations.json`, a column per system, architecture and mode, and one more for a
-ThreadSanitizer build (`linux-debug-tsan`), which a declared job records with
-`-Dci-timings=true` in its `args`. A test with no record in its column weighs its Linux
+ThreadSanitizer build (`linux-debug-tsan`). Every hosted job's tests record their seconds, a
+declared job's as a planned one's: the job asks the runner through its environment
+(`PREFLIGHT_TIMINGS=true`, as it names the shard with `PREFLIGHT_SHARD`), and a local run sets
+it to record them too. A shard whose tests ran and recorded no seconds is refused by the
+profile as a recording error. A test with no record in its column weighs its Linux
 Debug record (`linux-debug`) times the ratio of the two columns over the tests both
 recorded, and failing that the mean of those with one; without records the split is by
 count. Every shard computes the same split, so

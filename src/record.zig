@@ -10,7 +10,6 @@ const family = @import("family.zig");
 const Tool = @import("tool.zig").Tool;
 
 pub const Options = struct {
-    timing: bool,
     /// The watchdog's bound on one test; 0 turns it off.
     test_timeout: std.Io.Duration,
     test_log_level: std.log.Level,
@@ -155,7 +154,8 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         const name = recordName(b, artifact, &state.names);
         state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");
-        runner.addOption(?[]const u8, "timings", if (options.timing) b.fmt(".zig-cache/preflight-timings/{s}", .{name}) else null);
+        // The runner records where the run asks (`PREFLIGHT_TIMINGS`), here.
+        runner.addOption([]const u8, "timings", b.fmt(".zig-cache/preflight-timings/{s}", .{name}));
         runner.addOption([]const u8, "counts", b.fmt("{s}/{s}", .{ records_dir, name }));
         // The root as the package names it: its own file, or one a development build takes
         // from the package as a dependency (`package.path`); a generated one by its artifact.

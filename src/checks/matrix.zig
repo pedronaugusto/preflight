@@ -789,7 +789,7 @@ fn hostLegs(a: std.mem.Allocator, config: src.Value, legs: *std.ArrayList(Leg), 
         const base: Job = .{
             .os = host,
             .name = name,
-            .args = try a.print("-Doptimize={t} -Dci-lint=false -Dci-timings=true{s}", .{ mode, try buildArgs(a, src.get(config, "build_args")) }),
+            .args = try a.print("-Doptimize={t} -Dci-lint=false{s}", .{ mode, try buildArgs(a, src.get(config, "build_args")) }),
             .setup = true,
         };
         try suiteLegs(a, legs, tier, base, name, try sizing(a, config, tier, name, host_name, try columnsOf(a, stemOf(host_name), &.{mode}), .native));
@@ -806,7 +806,7 @@ fn emulatedLegs(a: std.mem.Allocator, config: src.Value, legs: *std.ArrayList(Le
     const base: Job = .{
         .os = hosts[0],
         .name = name,
-        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dtarget=riscv64-linux-musl -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
         .setup = true,
         .machine = .riscv64,
     };
@@ -917,7 +917,7 @@ fn freebsdLegs(a: std.mem.Allocator, config: src.Value, legs: *std.ArrayList(Leg
     const base: Job = .{
         .os = hosts[0],
         .name = name,
-        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
+        .args = try a.print("-Doptimize=debug -Dci-lint=false -Dtarget=x86_64-freebsd -Dci-vm{s}", .{try buildArgs(a, src.get(config, "build_args"))}),
         .setup = true,
         .machine = .freebsd,
     };
@@ -955,7 +955,7 @@ fn ownTargetLegs(a: std.mem.Allocator, config: src.Value, legs: *std.ArrayList(L
         const base: Job = .{
             .os = runner.host,
             .name = suite,
-            .args = try a.print("-Doptimize=debug -Dci-timings=true{s}", .{options.written()}),
+            .args = try a.print("-Doptimize=debug{s}", .{options.written()}),
             .setup = true,
             .target = name,
         };
@@ -1244,6 +1244,10 @@ fn validatedArgs(a: std.mem.Allocator, value: src.Value) ![]const []const u8 {
     if (value != .array) return error.InvalidBuildArgs;
     const args = try src.strings(a, value);
     for (args) |arg| {
+        if (std.mem.eql(u8, arg, "-Dci-timings") or std.mem.startsWith(u8, arg, "-Dci-timings=")) {
+            problem = "-Dci-timings: preflight 0.20.0 removed it (CHANGELOG): a hosted job asks its tests' timings itself (`PREFLIGHT_TIMINGS`), and a build that is passed it refuses it; drop it";
+            return error.InvalidBuildArgs;
+        }
         if (!std.mem.startsWith(u8, arg, "-D") or std.mem.startsWith(u8, arg, "-Dtarget=") or std.mem.startsWith(u8, arg, "-Dcpu=")) return error.InvalidBuildArgs;
         for (arg) |byte| if (std.ascii.isWhitespace(byte) or byte < 32) return error.InvalidBuildArgs;
     }
@@ -1387,7 +1391,7 @@ test "the ci tier is the source checks, the Debug suite on Linux, macOS and Wind
     for (jobs) |job| {
         if (std.mem.startsWith(u8, job.name, "test (")) {
             try std.testing.expectEqualStrings("ci-test", job.step);
-            try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false -Dci-timings=true", job.args);
+            try std.testing.expectEqualStrings("-Doptimize=debug -Dci-lint=false", job.args);
             try std.testing.expect(job.operation == .execute);
         }
         if (std.mem.eql(u8, job.name, "Cross compile")) {
@@ -1428,7 +1432,6 @@ test "the full tier is every mode on every runner, the targets' suites, links an
     });
     for (jobs) |job| {
         try std.testing.expect(job.machine == .none);
-        if (std.mem.eql(u8, job.step, "ci-test")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true") != null);
     }
     try std.testing.expect(std.mem.find(u8, (for (jobs) |job| {
         if (std.mem.eql(u8, job.step, "preflight-cross-bench")) break job;
@@ -1444,10 +1447,10 @@ test "the nightly tier is the heavy legs: riscv64 and FreeBSD on their kernels, 
     try expectRecords(a, jobs, &.{ "test (riscv64-linux on its kernel under QEMU, Debug)", "test (x86_64-freebsd on its kernel under KVM, Debug)", "hardened-tsan", "hardened-fuzz", "fuzz" });
     for (jobs) |job| switch (job.machine) {
         .none => try std.testing.expectEqualStrings(hosts[0], job.os),
-        .riscv64 => try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true -Dtarget=riscv64-linux-musl -Dci-vm") != null),
+        .riscv64 => try std.testing.expect(std.mem.find(u8, job.args, "-Doptimize=debug -Dci-lint=false -Dtarget=riscv64-linux-musl -Dci-vm") != null),
         .freebsd => {
             try std.testing.expectEqualStrings(hosts[0], job.os);
-            try std.testing.expect(std.mem.find(u8, job.args, "-Dci-timings=true -Dtarget=x86_64-freebsd -Dci-vm") != null);
+            try std.testing.expect(std.mem.find(u8, job.args, "-Doptimize=debug -Dci-lint=false -Dtarget=x86_64-freebsd -Dci-vm") != null);
         },
     };
     // The fuzz runs share no job: their corpora are their jobs'.
@@ -1846,7 +1849,7 @@ test "a configured target a runner executes, on an ABI not its own, runs its Deb
         try std.testing.expectEqualStrings("ci-test", job.step);
         try std.testing.expect(job.setup);
         try std.testing.expect(std.mem.find(u8, job.args, try a.print("-Dtarget={s}", .{target})) != null);
-        try std.testing.expect(std.mem.startsWith(u8, job.args, "-Doptimize=debug -Dci-timings=true -Dci-lint=false"));
+        try std.testing.expect(std.mem.startsWith(u8, job.args, "-Doptimize=debug -Dci-lint=false"));
         try std.testing.expect(std.mem.find(u8, job.args, "-Dfeature=true") != null);
     };
     try std.testing.expectEqual(@as(usize, 2), jobsNamed(jobs, "test (x86_64-windows-msvc on windows-latest, Debug)"));
@@ -1888,6 +1891,8 @@ test "owner SDK link jobs retain configured targets CPUs and feature arguments" 
     };
     try std.testing.expectEqual(@as(usize, 3), linked);
     try std.testing.expectError(error.InvalidBuildArgs, plan(a, try parseJson(a, "{\"build_args\":[\"-Dtarget=x86_64-macos\"]}"), .ci));
+    try std.testing.expectError(error.InvalidBuildArgs, plan(a, try parseJson(a, "{\"jobs\":[{\"name\":\"tsan\",\"step\":\"test\",\"args\":[\"-Dci-tsan=true\",\"-Dci-timings=true\"],\"tiers\":[\"full\"]}]}"), .full));
+    try std.testing.expect(std.mem.find(u8, problem, "-Dci-timings: preflight 0.20.0 removed it") != null);
 }
 
 test "a macOS link that needs no framework runs on Linux; one that links a framework keeps the Mac" {

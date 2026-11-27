@@ -20,7 +20,6 @@ pub const Config = struct {
     config: []const u8 = "ci/preflight.json",
     /// Recorded per-test durations that balance the hosted shards.
     durations: []const u8 = "ci/durations.json",
-    timings_enabled: ?bool = null,
     /// The watchdog: one test, its Io teardown included, fails by name,
     /// phase and seed once it runs this long, in local runs too.
     test_timeout: TestTimeout = .default,
@@ -153,7 +152,7 @@ pub fn addCheck(b: *std.Build, package: *std.Build, name: []const u8, source: []
 
 /// Declare the same CI controls when a root script must return early to
 /// discover its own lazy dependencies, before it can construct test steps.
-pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
+pub fn declareCiOptions(b: *std.Build) CiOptions {
     return .{
         .profile_options = hardened.declare(b),
         .smoke = b.option(bool, "ci-bench-smoke", "Smoke benchmark rows in local tests (hosted CI compiles only)") orelse true,
@@ -161,7 +160,6 @@ pub fn declareCiOptions(b: *std.Build, timing_override: ?bool) CiOptions {
         .lint_enabled = b.option(bool, "ci-lint", "Run glint's lint beside the tests; false leaves it out, and only it: the other source checks run either way") orelse true,
         .release = b.option(bool, "ci-release", "The release tier's source checks: every shipped ban's finding fails, the reported ones included") orelse false,
         .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
-        .timing = timing_override orelse (b.option(bool, "ci-timings", "Record per-test durations for the next shard balance") orelse false),
         .bound = b.option(bool, run_bound.option, "Run every run of preflight's steps under its bound; false only for reading the configured graph, which then holds each run as the build wrote it") orelse true,
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on an x86_64 Linux host, on PATH)") orelse false,
     };
@@ -173,7 +171,6 @@ pub const CiOptions = struct {
     sdk: ?[]const u8,
     lint_enabled: bool,
     release: bool,
-    timing: bool,
     checks: ?[]const u8,
     vm: bool,
     /// Whether the runs of preflight's steps run under their bound (`runs.zig`).
@@ -191,7 +188,6 @@ const Steps = struct {
     links: *std.Build.Step,
     lint_enabled: bool,
     release: bool,
-    timing: bool,
     sdk: ?[]const u8,
     checks: ?[]const u8,
     smoke: bool,
@@ -200,7 +196,7 @@ const Steps = struct {
     profile_options: hardened.Options,
 
     fn create(b: *std.Build, config: Config) Steps {
-        const controls = declareCiOptions(b, config.timings_enabled);
+        const controls = declareCiOptions(b);
         const lint = configure.claim(b, "lint", "Check format, structure, Zig policy and test imports");
         const ci = configure.claim(b, "ci", "Run source checks, then the tests");
         const tests_only = configure.claim(b, "ci-test", "Run the tests alone, as the hosted test jobs do: the source checks are the source checks job's");
@@ -209,7 +205,7 @@ const Steps = struct {
         const objects_step = configure.claim(b, "ci-check", "Compile root, test, benchmark (Debug) and helper objects without linking or executing");
         const bench_objects_step = configure.claim(b, "ci-check-bench", "Compile the benchmarks as they are built to run (ReleaseFast) without linking or executing");
         const links_step = configure.claim(b, "ci-link", "Link tests, benchmarks and helpers on a runner with its native SDK");
-        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .timing = controls.timing, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .bound = controls.bound, .profile_options = controls.profile_options };
+        return .{ .lint = lint, .tests_only = tests_only, .ci = ci, .objects = objects_step, .bench_objects = bench_objects_step, .links = links_step, .lint_enabled = controls.lint_enabled, .release = controls.release, .sdk = controls.sdk, .checks = controls.checks, .smoke = controls.smoke, .vm = controls.vm, .bound = controls.bound, .profile_options = controls.profile_options };
     }
 
     /// The program that runs the checks: the binary the runner holds, or the
@@ -256,7 +252,7 @@ const Steps = struct {
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
-        const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy, .unsharded = config.unsharded });
+        const counted = record.add(b, package, roots, pkg, executable, .{ .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy, .unsharded = config.unsharded });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         if (steps.profile_options.fuzzing) hardened.fuzzing(b, roots);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null, executable);

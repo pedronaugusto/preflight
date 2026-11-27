@@ -220,7 +220,7 @@ fn program(b: *std.Build, package: *std.Build, target: std.Build.ResolvedTarget)
 /// Ends a configure pass that waits for a lazy dependency, with the CI options
 /// declared, so the pass on an empty package cache accepts them.
 fn pending(b: *std.Build) void {
-    _ = ci.declareCiOptions(b, null);
+    _ = ci.declareCiOptions(b);
 }
 
 fn pendingNull(b: *std.Build) ?*std.Build.Step.Compile {
@@ -245,13 +245,13 @@ fn addToolchain(b: *std.Build) bool {
     for (runners) |runner| {
         const target = b.resolveTargetQuery(runner.query);
         const executable = b.addExecutable(.{ .name = "preflight", .root_module = ci.programModule(b, b, target) orelse {
-            _ = ci.declareCiOptions(b, null);
+            _ = ci.declareCiOptions(b);
             return false;
         } });
         step.dependOn(&b.addInstallArtifact(executable, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
         // bay sits beside the checks: the runner runs a package developed with it through it.
         const bay = b.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch {
-            _ = ci.declareCiOptions(b, null);
+            _ = ci.declareCiOptions(b);
             return false;
         };
         step.dependOn(&b.addInstallArtifact(bay.artifact("bay"), .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);

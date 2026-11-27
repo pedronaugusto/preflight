@@ -401,8 +401,8 @@ test "plan and generate as the build's steps call them" {
 test "facts and lint take the build's configuration, the options keeping their dashes" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const facts = (try parsed(arena.allocator(), &.{ "facts", "--zig-exe", "/z/zig", "--build-option", "-Dci-timings=true", "--build-option", "-Dx", "-Dtarget=x86_64-linux" })).command.facts;
-    try std.testing.expectEqualStrings("-Dci-timings=true", facts.build_option[0]);
+    const facts = (try parsed(arena.allocator(), &.{ "facts", "--zig-exe", "/z/zig", "--build-option", "-Dci-lint=false", "--build-option", "-Dx", "-Dtarget=x86_64-linux" })).command.facts;
+    try std.testing.expectEqualStrings("-Dci-lint=false", facts.build_option[0]);
     try std.testing.expectEqualStrings("-Dx", facts.build_option[1]);
     try std.testing.expectEqualStrings("-Dtarget=x86_64-linux", facts.options[0]);
     const lint = (try parsed(arena.allocator(), &.{ "lint", "--config", "ci/preflight.json", "--zig-exe", "/z/zig", "--zig-std", "/z/lib/std", "--test-step", "ci", "--test-step", "profile-tests", "--build-option", "-Doptimize=Debug" })).command.lint;

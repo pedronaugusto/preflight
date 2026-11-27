@@ -36,9 +36,10 @@ pub const Leg = struct { overhead: f64, tests: f64, shards: usize, finished: boo
 /// `tests` the seconds of the tests it ran.
 const LegShard = struct { shard: []const u8, seconds: f64, tests: f64, finished: bool };
 
-/// The record a job's run writes of itself, one line, beside its tests' and phases' records.
-pub fn legRecord(a: std.mem.Allocator, name: []const u8, shard: []const u8, seconds: f64, tests: f64, finished: bool) ![]const u8 {
-    return std.json.Stringify.valueAlloc(a, .{ .leg = name, .shard = shard, .seconds = seconds, .tests = tests, .finished = finished }, .{});
+/// The record a job's run writes of itself, one line, beside its tests' and phases' records:
+/// `ran` is how many tests it ran, which a profile refuses with no seconds recorded of them.
+pub fn legRecord(a: std.mem.Allocator, name: []const u8, shard: []const u8, seconds: f64, tests: f64, ran: usize, finished: bool) ![]const u8 {
+    return std.json.Stringify.valueAlloc(a, .{ .leg = name, .shard = shard, .seconds = seconds, .tests = tests, .ran = ran, .finished = finished }, .{});
 }
 
 /// The seconds of tests the records under `root` hold: what a job's tests took, beside the rest
@@ -94,13 +95,23 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial:
             const seconds = try records.seconds(value);
             if (src.get(value, "leg") != .null) {
                 const finished = src.get(value, "finished");
-                if (finished != .bool) return error.InvalidLegRecord;
-                const held = try legs.getOrPut(c.a, try c.a.dupe(u8, try src.string(src.get(value, "leg"), "")));
+                const ran = src.get(value, "ran");
+                if (finished != .bool or ran != .integer or ran.integer < 0) return error.InvalidLegRecord;
+                const leg_name = try src.string(src.get(value, "leg"), "");
+                const tested = try number(src.get(value, "tests"));
+                // Tests that ran and recorded no second of themselves are a recording that
+                // failed, not a measurement: sized by it, the next plan would read the shard's
+                // whole run as its setup.
+                if (tested == 0 and ran.integer > 0) {
+                    c.report("profile: {s}/{s}:{d}: {s} (shard {s}) ran {d} tests and recorded no seconds of them: a recording error, not a measurement\n", .{ records.root, records.path, records.line, leg_name, try src.string(src.get(value, "shard"), ""), ran.integer });
+                    return error.LegTestsUnrecorded;
+                }
+                const held = try legs.getOrPut(c.a, try c.a.dupe(u8, leg_name));
                 if (!held.found_existing) held.value_ptr.* = .empty;
                 try held.value_ptr.append(c.a, .{
                     .shard = try c.a.dupe(u8, try src.string(src.get(value, "shard"), "")),
                     .seconds = seconds,
-                    .tests = try number(src.get(value, "tests")),
+                    .tests = tested,
                     .finished = finished.bool,
                 });
                 continue;
@@ -305,9 +316,9 @@ test "each job's record folds its shards into what the next plan sizes it by, an
     const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .of(tmp.dir) };
     // Two of a suite's three shards recorded themselves: 100 s and 140 s of runs, 60 s and 80 s of
     // tests. The most either spent on the rest is 60 s; the three shards' tests are 210 s.
-    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-a.ndjson", .data = try legRecord(a, "test (ubuntu-latest, Debug)", "1/3", 100, 60, true) });
-    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-b.ndjson", .data = try legRecord(a, "test (ubuntu-latest, Debug)", "2/3", 140, 80, true) });
-    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-c.ndjson", .data = try legRecord(a, "source checks", "", 30, 0, false) });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-a.ndjson", .data = try legRecord(a, "test (ubuntu-latest, Debug)", "1/3", 100, 60, 4, true) });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-b.ndjson", .data = try legRecord(a, "test (ubuntu-latest, Debug)", "2/3", 140, 80, 5, true) });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-c.ndjson", .data = try legRecord(a, "source checks", "", 30, 0, 0, false) });
     // A job's record of itself is no test, and its tests' seconds are what the tests recorded.
     try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-1of3.ndjson", .data = "{\"name\":\"first\",\"seconds\":60,\"key\":\"linux-debug\",\"shard\":\"1/3\"}\n" });
     try std.testing.expectEqual(@as(f64, 60), try testSeconds(c, "."));
@@ -331,6 +342,14 @@ test "each job's record folds its shards into what the next plan sizes it by, an
     const again = try summarize(c, "none", (try std.json.parseFromSlice(src.Value, a, rendered, .{})).value, false);
     try std.testing.expectEqual(@as(usize, 3), again.legs.count());
     try std.testing.expectEqualStrings(rendered, try render(a, again));
+    // A shard whose tests ran and recorded no second of them is refused, named.
+    try tmp.dir.createDir(c.io, "unrecorded", .default_dir);
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "unrecorded/leg-d.ndjson", .data = try legRecord(a, "preflight's own suite (ubuntu-latest)", "4/4", 557, 0, 104, true) });
+    var held: std.Io.Writer.Allocating = .init(a);
+    var reporting = c;
+    reporting.held = &held;
+    try std.testing.expectError(error.LegTestsUnrecorded, summarize(reporting, "unrecorded", previous, false));
+    try std.testing.expect(std.mem.find(u8, held.written(), "preflight's own suite (ubuntu-latest) (shard 4/4) ran 104 tests and recorded no seconds of them: a recording error") != null);
 }
 
 test "a refresh replaces the columns it measured, keeps the rest, and takes the longest record" {

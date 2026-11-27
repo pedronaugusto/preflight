@@ -17,16 +17,18 @@ pub const Recorder = struct {
     /// What `record` fails with: encoding, sizing or writing the record.
     pub const RecordError = std.Io.File.StatError || std.Io.Writer.Error || std.mem.Allocator.Error;
 
-    /// `stem` names the records without their shard, or is null for none:
-    /// the file ends `-2of5.ndjson` for the shard `PREFLIGHT_SHARD` names,
-    /// or `-all.ndjson`. The file keeps what it holds until `begin`: a
-    /// process the build starts again after a test crashed continues its run's
-    /// record. Close it with `deinit(io)`.
-    pub fn init(io: std.Io, environ: std.process.Environ, stem: ?[]const u8, key: []const u8) InitError!Recorder {
-        const prefix = stem orelse return .{ .key = key };
+    /// Records where the run asks for it, `PREFLIGHT_TIMINGS=true` in its environment (a
+    /// hosted job's always does), and nothing otherwise. `stem` names the records without
+    /// their shard: the file ends `-2of5.ndjson` for the shard `PREFLIGHT_SHARD` names, or
+    /// `-all.ndjson`. The file keeps what it holds until `begin`: a process the build starts
+    /// again after a test crashed continues its run's record. Close it with `deinit(io)`.
+    pub fn init(io: std.Io, environ: std.process.Environ, stem: []const u8, key: []const u8) InitError!Recorder {
         const a = std.heap.page_allocator;
-        const shard = try Shard.read(a, environ);
-        const path = try a.print("{s}-{s}.ndjson", .{ prefix, shard.part });
+        var env = try environ.createMap(a);
+        defer env.deinit();
+        if (!asked(&env)) return .{ .key = key };
+        const shard = try Shard.of(a, env.get("PREFLIGHT_SHARD") orelse "");
+        const path = try a.print("{s}-{s}.ndjson", .{ stem, shard.part });
         if (std.Io.Dir.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(io, parent);
         return .{
             .file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = false }),
@@ -67,6 +69,12 @@ pub const Recorder = struct {
         try writer.interface.flush();
     }
 };
+
+/// Whether the run asks for its tests' timings: `PREFLIGHT_TIMINGS=true`, which a hosted job
+/// sets and a local run sets to record them.
+pub fn asked(env: *const std.process.Environ.Map) bool {
+    return std.mem.eql(u8, env.get("PREFLIGHT_TIMINGS") orelse "", "true");
+}
 
 /// The shard a run's tests are, `PREFLIGHT_SHARD`: its name, `2/5` or empty for all of the
 /// tests, and the part of a record's name it gives, `2of5` or `all`.

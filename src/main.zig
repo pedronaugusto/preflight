@@ -574,7 +574,7 @@ const JobEnd = aegis.units.Instant(std.Io.Clock.real, .second, i64);
 
 /// The record a hosted job keeps of itself, where its upload takes its tests' records
 /// (`profile.legRecord`): its name less its shard, its shard, the seconds its run took, those
-/// its tests took, and whether it ended before its job's deadline. The profile folds the
+/// its tests took, how many tests ran, and whether it ended before its job's deadline. The profile folds the
 /// shards' records into `legs` in `ci/durations.json`, by which the next plan deals its tier's
 /// work into jobs. A run outside a hosted job (`PREFLIGHT_NAME` unset) keeps none.
 fn recordLeg(c: src.Context, env: *std.process.Environ.Map, started: std.Io.Clock.Timestamp) !void {
@@ -584,9 +584,21 @@ fn recordLeg(c: src.Context, env: *std.process.Environ.Map, started: std.Io.Cloc
     const seconds = Elapsed.fromIoDuration(started.durationTo(.now(c.io, .awake)).raw, .exact).toSeconds(f64);
     const tests = try checks.profile.testSeconds(c, checks.phases.Log.directory);
     const finished = if (try watchdog.jobDeadline(env)) |deadline| (try Now.fromIoTimestamp(.now(c.io, .real), .exact)).compare(JobEnd.fromRaw(deadline).convert(.nanosecond, i96, .exact)) == .lt else true;
-    const line = try checks.profile.legRecord(c.a, checks.matrix.recordName(name), env.get("PREFLIGHT_SHARD") orelse "", seconds, tests, finished);
+    const line = try checks.profile.legRecord(c.a, checks.matrix.recordName(name), env.get("PREFLIGHT_SHARD") orelse "", seconds, tests, try ranTests(c), finished);
     try c.directory().createDirPath(c.io, checks.phases.Log.directory);
     try c.directory().writeFile(c.io, .{ .sub_path = try c.a.print("{s}/leg-{s}.ndjson", .{ checks.phases.Log.directory, job }), .data = try c.a.print("{s}\n", .{line}) });
+}
+
+/// Where a job's build writes the tests it counted per root, in the package's directory.
+const counts_summary = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
+
+/// The tests the job's build counted as run, every root's together, or 0 where it ran none.
+fn ranTests(c: src.Context) !usize {
+    const text = c.read(counts_summary ++ checks.counts.ran_suffix) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
+    return std.fmt.parseUnsigned(usize, std.mem.trim(u8, text, " \n"), 10);
 }
 
 /// Runs the job `env` describes.
@@ -595,6 +607,9 @@ fn runJob(context: src.Context, env: *std.process.Environ.Map) !void {
     // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
     // (`targets`). A test's environment holds none of preflight's controls, this one either.
     try env.put("PREFLIGHT_PLANNED", "true");
+    // Every job's tests record their seconds, a declared job's as a planned one's: the record
+    // sizes them all, and the runner asks nothing of the build for it.
+    try env.put("PREFLIGHT_TIMINGS", "true");
     c.environ_map = env;
     // The test runners end a test that runs when the job's time is up, named,
     // before the host cancels the job and says nothing of what ran.
@@ -719,6 +734,9 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(c.a, c.buildCommand());
     try argv.append(c.a, step);
+    // A hosted job's log shows each step's time and peak memory, every compile and every run
+    // beside the tests: what a shard spends before its tests, which its record holds as one.
+    if (env.get("PREFLIGHT_JOB")) |job| if (job.len != 0) try argv.appendSlice(c.a, &.{ "--summary", "all" });
     const first_option = argv.items.len;
     var tokens = std.mem.tokenizeAny(u8, build_args, " \t\r\n");
     while (tokens.next()) |token| {
@@ -760,8 +778,8 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     // The tests the step runs, counted per root by the build after its runs: this run's,
     // so an earlier run's count is gone first. The count is told where to write them, in
     // the package's directory: the build's cache, where its records are, can be anywhere.
-    const counted = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
-    c.directory().deleteFile(c.io, counted) catch |err| switch (err) {
+    const counted = counts_summary;
+    for ([_][]const u8{ counted, counted ++ checks.counts.ran_suffix }) |stale| c.directory().deleteFile(c.io, stale) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };

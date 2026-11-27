@@ -660,9 +660,9 @@ test "the sample's tests shuffle reproducibly with an explicit seed" {
     var text: std.Io.Writer.Allocating = .init(a);
     for (0..16) |i| try text.writer.print("test \"order-{d}\" {{}}\n", .{i});
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try std.testing.environ.createMap(a);
+    var env = try timingsAsked(a);
     defer env.deinit();
-    const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" };
+    const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" };
     var orders: [3][]const u8 = undefined;
     for (&orders, [_][]const u8{ "42", "42", "43" }) |*order, seed| {
         try env.put("PREFLIGHT_TEST_SEED", seed);
@@ -1199,10 +1199,10 @@ test "shards split the tests once between them by recorded duration" {
     var text: std.Io.Writer.Allocating = .init(a);
     for (0..12) |i| try text.writer.print("test \"case-{d}\" {{}}\n", .{i});
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try std.testing.environ.createMap(a);
+    var env = try timingsAsked(a);
     defer env.deinit();
     _ = env.swapRemove("PREFLIGHT_SHARD");
-    const whole = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const whole = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(whole)) std.debug.print("{s}\n", .{whole.stderr});
     try std.testing.expect(command.succeeded(whole));
     const all = try recordedNames(a, tmp.dir, "-all.ndjson");
@@ -1221,7 +1221,7 @@ test "shards split the tests once between them by recorded duration" {
     var shards: [3][]const []const u8 = undefined;
     for (&shards, 1..) |*names, shard| {
         try env.put("PREFLIGHT_SHARD", try a.print("{d}/3", .{shard}));
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
         if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
         try std.testing.expect(command.succeeded(result));
         names.* = try recordedNames(a, tmp.dir, try a.print("-{d}of3.ndjson", .{shard}));
@@ -1249,14 +1249,14 @@ test "a crash keeps the records of the tests before it, and a fresh run starts t
     try text.writer.writeAll("test \"case-0\" { @panic(\"case-0 crashes\"); }\n");
     for (1..8) |i| try text.writer.print("test \"case-{d}\" {{}}\n", .{i});
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try std.testing.environ.createMap(a);
+    var env = try timingsAsked(a);
     defer env.deinit();
     _ = env.swapRemove("PREFLIGHT_SHARD");
     // An order that runs the crash after other tests, which the process the
     // build starts again after it must not drop.
     try env.put("PREFLIGHT_TEST_SEED", "1");
     for (0..2) |_| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
         try std.testing.expect(!command.succeeded(result));
         try std.testing.expect(std.mem.find(u8, result.stderr, "case-0 crashes") != null);
         const names = try recordedNames(a, tmp.dir, "-all.ndjson");
@@ -1556,6 +1556,14 @@ fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u
     try dir.writeFile(io, .{ .sub_path = path, .data = changed });
 }
 
+/// The test's environment with its runs' timings asked for, as a hosted job asks
+/// (`PREFLIGHT_TIMINGS`).
+fn timingsAsked(a: std.mem.Allocator) !std.process.Environ.Map {
+    var env = try std.testing.environ.createMap(a);
+    try env.put("PREFLIGHT_TIMINGS", "true");
+    return env;
+}
+
 fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.process.RunResult {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" });
@@ -1659,10 +1667,10 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     try text.writer.writeAll("const std = @import(\"std\");\ntest \"logs an error\" {\n    std.log.err(\"preflight-error-marker\", .{});\n}\n");
     for (0..4) |i| try text.writer.print("test \"fuzzes {d}\" {{\n    try std.testing.fuzz({{}}, struct {{\n        fn one(_: void, smith: *std.testing.Smith) anyerror!void {{\n            _ = smith;\n        }}\n    }}.one, .{{}});\n}}\n", .{i});
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try std.testing.environ.createMap(a);
+    var env = try timingsAsked(a);
     defer env.deinit();
     try env.put("PREFLIGHT_TEST_SEED", "42");
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "preflight-error-marker") != null);
@@ -1900,7 +1908,9 @@ test "timing records of two test runs with one name stay apart" {
     const second = "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(\"src/sample.zig\"), .target = target, .optimize = optimize }) })).step);\n";
     const shared = "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);\n";
     try edit(a, tmp.dir, "build.zig", run_line, run_line ++ second ++ shared);
-    const result = try gate(a, tmp.dir, &.{"-Dci-timings=true"});
+    var env = try timingsAsked(a);
+    defer env.deinit();
+    const result = try seam.build(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     var dir = try tmp.dir.openDir(io, ".zig-cache/preflight-timings", .{ .iterate = true });
@@ -2487,9 +2497,11 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
     // A sanitized run records its durations in a column of its own.
-    const timed = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-tsan=true", "-Dci-timings=true", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(timed)) std.debug.print("{s}", .{timed.stderr});
-    try std.testing.expect(command.succeeded(timed));
+    var asked = try timingsAsked(a);
+    defer asked.deinit();
+    const sanitized = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-tsan=true", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &asked });
+    if (!command.succeeded(sanitized)) std.debug.print("{s}", .{sanitized.stderr});
+    try std.testing.expect(command.succeeded(sanitized));
     try std.testing.expect(std.mem.endsWith(u8, try recordedKey(a, tmp.dir, "-all.ndjson"), "-debug-tsan"));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
         \\const std = @import("std");
@@ -2902,24 +2914,6 @@ test "toolchain cold root declares CI controls before lazy discovery returns" {
     if (std.mem.find(u8, result.stderr, "invalid option:") != null) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(std.mem.find(u8, result.stderr, "invalid option:") == null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "fetching lazy dependency gantry-") != null);
-}
-
-test "toolchain caller-owned timing option retains its config override" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const io = std.testing.io;
-    try fixture(a, tmp.dir);
-    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
-    const declared = try std.mem.replaceOwned(u8, a, build, "preflight.addCi(b, b, .{", "const timing = b.option(bool, \"ci-timings\", \"Caller-owned recording\") orelse false;\n    preflight.addCi(b, b, .{ .timings_enabled = timing,");
-    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = declared });
-    for ([_][]const u8{ "false", "true" }) |enabled| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--list-steps", try a.print("-Dci-timings={s}", .{enabled}) }, .cwd = .{ .dir = tmp.dir } });
-        if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
-        try std.testing.expect(command.succeeded(result));
-    }
 }
 
 test "owner cross objects preserve expected compile failure diagnostics without an emitted binary" {

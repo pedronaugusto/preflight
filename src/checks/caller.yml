@@ -4,19 +4,19 @@ on:
   push:
     branches: [main]
     # A commit that changes documentation alone runs nothing: the next commit's run, a pull
-    # request and the release tier check it.
+    # request and the full tier check it.
     paths-ignore: ['docs/**', '*.md']
   pull_request:
   schedule:
-    # The release tier, weekly, at this package's own time: the account's runners
-    # are never asked for every package's full matrix at once.
-    - cron: '@WEEKLY@'
+    # The nightly tier, the heavy legs, daily at this package's own minute: the account's
+    # runners are never asked for every package's at once.
+    - cron: '@NIGHTLY@'
   workflow_dispatch:
     inputs:
       tier:
-        description: ci (what every push and pull request runs), release (the full matrix, which a tag requires) or fuzz (the fuzz job alone)
+        description: ci (what every push and pull request runs), full (the full matrix) or nightly (the heavy legs), both of which a tag requires on its commit, or fuzz (the fuzz job alone)
         type: choice
-        options: [ci, release, fuzz]
+        options: [ci, full, nightly, fuzz]
         default: ci
       fuzz-minutes:
         description: The fuzz job's minutes, when not ci/workflow.json's fuzz_minutes (at most 330)
@@ -26,7 +26,7 @@ concurrency:
   # Every push to main runs on its own commit, so each commit gets its status; a newer
   # update of a pull request replaces the run of the older; a dispatched or scheduled
   # run queues per ref and tier.
-  group: ci-${{ github.event_name == 'push' && format('push-{0}', github.sha) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}-{2}', github.event_name, github.ref, github.event_name == 'schedule' && 'release' || inputs.tier) }}
+  group: ci-${{ github.event_name == 'push' && format('push-{0}', github.sha) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}-{2}', github.event_name, github.ref, github.event_name == 'schedule' && 'nightly' || inputs.tier) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
@@ -34,8 +34,13 @@ permissions:
 jobs:
   gate:
     uses: @GATE@
+    # A full or nightly run on main writes what it measured to the preflight-durations branch,
+    # by its profile job alone; every other job of the gate reads (zig.yml's own permissions).
+    permissions:
+      contents: write
+      actions: read
     with:
-      tier: ${{ github.event_name == 'schedule' && 'release' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci' }}
+      tier: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci' }}
       working-directory: @DIRECTORY@
       preflight-ref: @PIN@
 @MATRICES@      fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}

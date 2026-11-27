@@ -1,6 +1,6 @@
 //! Continuous fuzzing, off the landing path: the `fuzz` step runs
 //! shakedown's runner over the package's `check` properties, and `ci-fuzz`,
-//! the release tier's fuzz job, runs it for a budget of minutes (`budget.zig`).
+//! the nightly tier's fuzz job and the dispatched fuzz tier's, runs it for a budget of minutes (`budget.zig`).
 //! The fuzzing, the corpora kept outside the package and the shrinking of what
 //! it finds are shakedown's; this wires the steps, as `bench` wires measuring.
 const std = @import("std");

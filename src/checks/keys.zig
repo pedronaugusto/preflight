@@ -21,21 +21,27 @@ pub const workflow = written ++ planned;
 
 /// The options a package writes in `ci/workflow.json`.
 const written = [_][]const u8{
-    "jobs",             "targets",             "build_args",         "shards",
-    "cross_jobs",       "cross_seconds",       "portable_hosts",     "hardened",
-    "compile_step",     "setup_step",          "before_tests_step",  "git",
-    "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout",
-    "riscv64_seconds",  "fuzz_minutes",        "configurations",
+    "jobs",           "targets",           "build_args", "shards",
+    "cross_jobs",     "cross_seconds",     "hardened",   "compile_step",
+    "setup_step",     "before_tests_step", "git",        "fuzz_minutes",
+    "configurations",
 };
 
 /// Added as the planner reads the file, never written in it.
-const planned = [_][]const u8{ "measured", "durations", "sdk_targets", "policy", "fuzzed", "portable_tests" };
+const planned = [_][]const u8{ "measured", "durations", "sdk_targets", "policy", "fuzzed" };
+
+/// The options 0.20.0 removed from `ci/workflow.json`, each refused by name with what replaced
+/// it: a job's limit is its tier's, and its work is sized to it from the record.
+const removed = [_][]const u8{ "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout", "riscv64_seconds", "portable_hosts" };
 
 pub const File = enum { preflight, workflow };
 
 /// What to say of `key`, unknown to `file`: the file it belongs in, or the nearest key of
 /// this one, or nothing.
 pub fn hint(a: std.mem.Allocator, file: File, key: []const u8) ![]const u8 {
+    if (file == .workflow) for (removed) |name| if (std.mem.eql(u8, name, key)) {
+        return ": preflight 0.20.0 removed it (CHANGELOG): a job's limit is its tier's, 10 minutes in ci and 15 in full and nightly, and the plan sizes each job's work to it from ci/durations.json";
+    };
     const other: []const []const u8 = switch (file) {
         .preflight => &workflow,
         .workflow => &preflight,

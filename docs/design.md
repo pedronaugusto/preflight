@@ -18,7 +18,7 @@ Exceptions are glint's inline `glint-ignore` with a reason, one site each. A key
 
 ## Configured builds and target projection
 
-`addCi` consumes the caller's actual `std.Build` graph. Foreign target checks project configured artifacts to objects, including test, helper, benchmark and transitive native-source modules. Native `ci-link` and portable test-build steps retain the original artifacts and their SDK libraries/frameworks. Object compilation certifies compilation; only native linking and execution certify those operations. Benchmark modules include the selected ordinary graph, which `ci-check` compiles in Debug, and the separate ReleaseFast graph, which `ci-check-bench` compiles: a benchmark's optimizing compile outweighs every other object of its target, so it is the release tier's.
+`addCi` consumes the caller's actual `std.Build` graph. Foreign target checks project configured artifacts to objects, including test, helper, benchmark and transitive native-source modules. Native `ci-link` retains the original artifacts and their SDK libraries/frameworks. Object compilation certifies compilation; only native linking and execution certify those operations. Benchmark modules include the selected ordinary graph, which `ci-check` compiles in Debug, and the separate ReleaseFast graph, which `ci-check-bench` compiles: a benchmark's optimizing compile outweighs every other object of its target, so it is the full tier's.
 
 The checks are one binary per runner kind, built once per commit by `zig build toolchain` and passed to every job and to the build as `-Dci-checks`; a build without the option compiles them from source (`tool.zig`). One job per run owns the build, so the only compile of the checks in a run is the one a commit has not had yet.
 
@@ -44,9 +44,9 @@ Every package runs it (aegis's design §7); `Config.hardened` chooses its steps,
 
 ## Canonical orchestration and costs
 
-One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. A macOS target's link runs on a Mac only when the build configured for that target links a framework, which only Apple's SDK holds; `plan` and `gate` read that from the build (`sdk_targets` beside the configuration, as `measured` is), and Zig links any other macOS program on Linux with the libSystem it ships. CI controls have one declaration owner, including early root lazy-discovery returns. A caller-provided `Config.timings_enabled` retains its existing option ownership: preflight uses that value without declaring a second `ci-timings` option. Declarative repository facts stay with the caller. The hardened profile adds three native jobs to every package's release tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
+One Zig planner owns every workflow tier and matrix; callers regenerate through `zig build plan`. A macOS target's link runs on a Mac only when the build configured for that target links a framework, which only Apple's SDK holds; `plan` and `gate` read that from the build (`sdk_targets` beside the configuration, as `measured` is), and Zig links any other macOS program on Linux with the libSystem it ships. CI controls have one declaration owner, including early root lazy-discovery returns. A caller-provided `Config.timings_enabled` retains its existing option ownership: preflight uses that value without declaring a second `ci-timings` option. Declarative repository facts stay with the caller. The hardened profile adds a native safety-on run to every package's full tier and two, ThreadSanitizer and a fuzz campaign, to its nightly tier; ordinary planning adds one option lookup. The hosted runner queries compiler-derived available options before injecting benchmark smoke control, preserving older custom steps that never declare it. That costs one configure-only request per execution. Serialized validation scales with configured storage and references, outside package runtime hot paths. Matched measurements belong in private trials beside their driver; correctness and required safety checks are retained regardless of their cost.
 
-Runner protocol, timeout, test ordering, allocation ownership and portable shard records remain separate from benchmark measurement. The runtime build dependency closure remains unchanged; shakedown is lazy test/benchmark support. Configuration and driver fault tests use deterministic child/input/output failures, rather than timing thresholds.
+Runner protocol, timeout, test ordering, allocation ownership and shard records remain separate from benchmark measurement. The runtime build dependency closure remains unchanged; shakedown is lazy test/benchmark support. Configuration and driver fault tests use deterministic child/input/output failures, rather than timing thresholds.
 
 
 Cross projections retain each compile step's expected-error union and diagnostic limit. Zig's build runner owns matching (`contains`, `exact`, `starts_with`, `stderr_contains`) and failure outcomes. Deliberate failures do not request emitted binaries, since Zig returns after matching rather than producing a file. Positive projections still emit objects; original native artifacts retain their diagnostic and SDK-link contracts. The integration fixture exercises expected failures, wrong diagnostics and unexpected success across Linux, both macOS architectures and both Windows architectures, with a positive object beside each rejection.
@@ -98,14 +98,58 @@ not linked into bay: the preflight that judges a package is the one its manifest
 
 ## Where a release is proven
 
-A release is proven by the hosted release tier on the commit it tags: `bay release` tags only
-once a release run on that commit is green (`attest` finds its proof artifact). `gate` runs no
-job: it checks in seconds what a release needs beside that run (the caller `generate` makes,
-the version the CHANGELOG's newest release, the public API's changes named there). Every push
-to main and every pull request runs the ci tier, and `bay ci` runs its checks on the machine at
-hand. The release tier runs weekly at the package's own minute of the week, and by dispatch.
+A release is proven by the hosted full and nightly tiers on the commit it tags: `bay release`
+dispatches both on a release batch's head and tags only once each run on that commit is green
+(`attest` finds each proof artifact). `gate` runs no job: it checks in seconds what a release
+needs beside those runs (the caller `generate` makes, the version the CHANGELOG's newest
+release, the public API's changes named there). Every push to main and every pull request runs
+the ci tier, and `bay ci` runs its checks on the machine at hand. The nightly tier also runs
+daily at the package's own minute of the day.
 
-The VM legs are the release tier's, on GitHub's Linux runners: riscv64 Linux on its own kernel
+## Tiers, bounds and the record
+
+The owner's model (2026-11-25): a landing never waits on GitHub. It pushes after the Mac's fast
+checks, and its run is read after. So every push runs the ci tier, a handful of jobs of at most
+ten minutes; the full matrix runs once per release batch, on the head the batch is cut from;
+and the heavy legs (emulated architectures, VM kernels, sanitizers, fuzz campaigns) run nightly
+and on that head. No job of the full or nightly tier passes fifteen minutes, so a run's wall
+time is a job's.
+
+The account runs 20 jobs at once and 5 on macOS (GitHub Free). A run asks for at most 20 and 3
+on macOS, which leaves a second run's macOS room; bay paces a batch's runs within the account's
+20. A run that asked for more than the account gives queued until GitHub cancelled jobs it
+never gave a runner (almanac 44324896023, strand 44137916154), so a plan past either bound is
+refused by name, at `generate`, never queued. To fit, the planner deals each runner's measured
+work into as few jobs as hold it, a job of several running them as legs in sequence; each leg
+keeps its own build, shard and records, and its failure is named.
+
+The plan is sized by what the runs measured, by no hand: each job records what it spent beside
+its tests' seconds, and the next plan holds a job's work to four fifths of its tier's minutes. A
+suite no run has measured is seeded from the minutes the plan before the tiers gave it, scaled by
+its kind's slowdown, in jobs of its own that the bounds do not count: nothing says what they
+hold, and their run records them.
+
+The record lives on a branch of the package's repository, `preflight-durations`, which holds
+no code: `ci/durations.json` and `ci/costs.json` at their paths, one commit per full or nightly
+run of main that measured something. A run folds onto the newest record there, so the full and
+nightly runs keep each other's columns; a push that loses to another run's folds onto that one
+and pushes again, and none is forced. Only the profile job of main's full and nightly runs
+writes it, with the one `contents: write` the caller grants (zig.yml gives every other job
+read); a pull request never does, and a push by the run's own token starts no run. A landing
+takes the record with `git fetch` (over SSH; nothing reads it over the web) and makes the caller
+again, and the lint refuses a caller stale against the files it took. The branch is kept: a
+sweep of merged or stale branches leaves it.
+
+Since a landing reads its run after it pushes, a refusal the hosted run makes before it runs
+anything has a counterpart on the machine. A job's refusals are the build's, read from its
+configured graph: the lint configures the build with each planned job's options and walks the
+job's step for the `Fail` steps it reaches, a step it builds again under `--step` included, as
+the fuzz job builds the properties (ladar's `ci-fuzz`, refused for properties not written with
+shakedown, was red first on its hosted run). A refusal the configuring machine decides is named
+apart (`configure.hostRefusal`): the planner runs that job on a host where it holds, and the
+lint counts it only for a job on a machine of its own system.
+
+The VM legs are the nightly tier's, on GitHub's Linux runners: riscv64 Linux on its own kernel
 under QEMU's system emulation, and x86_64 FreeBSD on its own kernel under KVM. No machine that
 gates a release runs a VM (the owner's rule since 2026-10-25), and preflight reads no machine's
 configuration to decide it, so a release cannot pass or fail on what a machine happens to have
@@ -122,7 +166,8 @@ the package's declared jobs among them, the triggers and the concurrency groups.
 job is a build step with hosts, tiers, a directory and a setup step, run by the gate's job with
 its setup and caches, so its refs, inputs and `needs` cannot go stale and a change waits for it
 like any job of the gate. The generator refuses to replace a caller holding a job the
-configuration does not declare. Nothing in a caller writes: it asks for read alone.
+configuration does not declare. A caller lands, tags and releases nothing: its one write is the
+record (above), which only the gate's profile job makes.
 
 ## The runner's streams
 
@@ -178,7 +223,7 @@ seed, and lint prints all it held when it fails.
 ## The FreeBSD test machine
 
 A program built for x86_64 FreeBSD runs on FreeBSD's own kernel under QEMU with KVM, on
-an x86_64 Linux host only (vm/freebsd.zig refuses any other by name); it is the release tier's,
+an x86_64 Linux host only (vm/freebsd.zig refuses any other by name); it is the nightly tier's,
 for what no hosted runner is and a cross-compile cannot show: FreeBSD's kernel TLS and
 its sockets. The machine is FreeBSD's own release files, pinned by hash in preflight's
 manifest and fetched only by a build that asks for it, as the riscv64 machine's Alpine

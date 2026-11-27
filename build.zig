@@ -13,12 +13,6 @@ pub const Hardened = ci.Hardened;
 pub const TestTimeout = ci.TestTimeout;
 /// Builds, tests and runs a repository check program as one step.
 pub const addCheck = ci.addCheck;
-/// A program the tests run, named to them by its path from the package root,
-/// which holds where portable tests replay.
-pub const addTestProgram = ci.addTestProgram;
-/// Zig's library as the runner running the tests has it, named to them by the path
-/// from the package root of a file holding it, which holds where portable tests replay.
-pub const addTestZigLib = ci.addTestZigLib;
 /// Adds `check-consumer`: a project that depends on the package with nothing fetched.
 pub const addConsumerCheck = ci.consumer.add;
 /// What `addConsumerCheck` builds.
@@ -153,8 +147,7 @@ pub fn dev(b: *std.Build, _: type) void {
     const watch_run = &b.addRunArtifact(watch).step;
     test_step.dependOn(watch_run);
     // A run whose arguments are the build's Zig and its library, which runs that Zig: under
-    // -Dci-vm, the machine's own Zig (vm.zig's guestZig), as a portable replay's is the
-    // replaying runner's.
+    // -Dci-vm, the machine's own Zig (vm.zig's guestZig).
     const zig_argument = b.addRunArtifact(b.addExecutable(.{ .name = "preflight-zig-argument", .root_module = b.createModule(.{
         .root_source_file = package.path("src/vm/zig_argument.zig"),
         .target = target,

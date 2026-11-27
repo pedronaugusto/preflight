@@ -1,7 +1,6 @@
 //! Build-only CI checks. Consumers never acquire the checker's dependencies.
 const std = @import("std");
 const configure = @import("configure.zig");
-const portable = @import("portable.zig");
 const objects = @import("objects.zig");
 const record = @import("record.zig");
 const run_bound = @import("runs.zig");
@@ -21,7 +20,6 @@ pub const Config = struct {
     config: []const u8 = "ci/preflight.json",
     /// Recorded per-test durations that balance the hosted shards.
     durations: []const u8 = "ci/durations.json",
-    portable_tests: bool = false,
     timings_enabled: ?bool = null,
     /// The watchdog: one test, its Io teardown included, fails by name,
     /// phase and seed once it runs this long, in local runs too.
@@ -132,25 +130,6 @@ pub fn addCi(b: *std.Build, package: *std.Build, config: Config) void {
     if (config.tests.owner != b) config.tests.dependOn(&b.addFail("addCi .tests: the tests the gate runs are a step of the build that calls addCi; with bay, define them in dev").step);
     const tools = configure.lazy(b, "preflight", .{}) orelse return;
     steps.install(b, package, tools.builder, config);
-}
-
-/// A program the tests run (a fixture server, a helper child), named to them as
-/// `name` in `options`: installed under `zig-out/preflight/programs/` before
-/// they compile, and named by its path from the package root, the working
-/// directory of every test run, here and where portable tests replay. A path
-/// from `addOptionPath` is the building runner's cache, which a runner
-/// replaying the tests does not have: portable tests refuse one.
-pub fn addTestProgram(b: *std.Build, options: *std.Build.Step.Options, name: []const u8, program: *std.Build.Step.Compile) void {
-    portable.addProgram(b, options, name, program);
-}
-
-/// Zig's library, which the tests read through `name` in `options`: the path, from
-/// the package root, of a file that holds the library's absolute path, written before
-/// they compile with this build's Zig's, and where portable tests replay with the
-/// replaying runner's. Zig's test runner takes no argument a test reads, and a path
-/// from `addOptionPath` is the building runner's own: portable tests refuse one.
-pub fn addTestZigLib(b: *std.Build, options: *std.Build.Step.Options, name: []const u8) void {
-    portable.addZigLib(b, options, name);
 }
 
 /// Builds and runs a repository check program of `package` and its tests as one
@@ -302,7 +281,6 @@ const Steps = struct {
         // After the projection too: the machines' programs are built for their own targets, in
         // their own mode, never projected.
         vm.addCheck(b, pkg, check);
-        if (config.portable_tests) portable.add(b, package, config.tests, executable, counted.names);
         addCommandSteps(b, package, executable, config);
         // The steps CI runs tests under, whose runs make a file a test root: `ci` holds the
         // tests, and the fuzzer and the hardened profile run the steps they name.
@@ -377,7 +355,6 @@ const Steps = struct {
         checks.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         if (steps.release) checks.addArg("--release");
         for (test_steps) |name| checks.addArgs(&.{ "--test-step", name });
-        if (config.portable_tests) checks.addArg("--portable-tests");
         // What the CHANGELOG must name of the public API since the last tag.
         exported(b, package, checks);
         buildScripts(b, package, checks);
@@ -391,7 +368,6 @@ const Steps = struct {
         source.addArgs(&.{ "lint", "--skip-glint", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         source.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| source.addArgs(&.{ "--test-step", name });
-        if (config.portable_tests) source.addArg("--portable-tests");
         exported(b, package, source);
         buildScripts(b, package, source);
         configurationOptions(b, source);
@@ -402,7 +378,6 @@ const Steps = struct {
         fixing.addArgs(&.{ "lint", "--fix", "--config", config.config, "--zig-exe", b.graph.zig_exe, "--zig-std" });
         fixing.addDirectoryArg2(b.graph.path(.zig_lib, "std"), .{});
         for (test_steps) |name| fixing.addArgs(&.{ "--test-step", name });
-        if (config.portable_tests) fixing.addArg("--portable-tests");
         buildScripts(b, package, fixing);
         configurationOptions(b, fixing);
         fixing.setCwd(package.path("."));
@@ -422,20 +397,16 @@ const Steps = struct {
 /// The steps that run one of the checks program's commands over `package`: the caller's plan
 /// and its regeneration, the build's facts and public surface, the release gate, the cache's
 /// pruning, the documentation regions and the deprecation codemod.
-/// The planner reads the build's own facts: `plan`, `generate` and `gate` are told whether
-/// the tests are portable (`.portable_tests`), as the native link jobs need its `ci-build`.
 fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config: Config) void {
     const plan = executable.run(b);
     plan.addArg("plan");
     plan.addArgs(&.{ "--zig-exe", b.graph.zig_exe });
-    if (config.portable_tests) plan.addArg("--portable-tests");
     plan.addPassthruArgs();
     plan.setCwd(package.path("."));
     configure.claim(b, "plan", "Plan a tier's matrices for the hosted caller").dependOn(&plan.step);
     // The caller made again for the pins: bay runs it after a train moves them.
     const generate = executable.run(b);
     generate.addArgs(&.{ "generate", "--zig-exe", b.graph.zig_exe });
-    if (config.portable_tests) generate.addArg("--portable-tests");
     generate.addPassthruArgs();
     generate.setCwd(package.path("."));
     generate.has_side_effects = true;
@@ -459,7 +430,6 @@ fn addCommandSteps(b: *std.Build, package: *std.Build, executable: Tool, config:
     // release run, in seconds. Releasing is bay's; preflight verifies.
     const gate = executable.run(b);
     gate.addArgs(&.{ "gate", "--zig-exe", b.graph.zig_exe });
-    if (config.portable_tests) gate.addArg("--portable-tests");
     exported(b, package, gate);
     gate.addPassthruArgs();
     gate.setCwd(package.path("."));

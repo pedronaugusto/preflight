@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const src = @import("checks/source.zig");
 const seam = @import("checks/input.zig");
 const zig_version = @import("zig_version.zig");
+const configure = @import("configure.zig");
 pub const configuration = @import("facts/configuration.zig");
 pub const revisions = @import("facts/revisions.zig");
 const C = std.Build.Configuration;
@@ -636,10 +637,6 @@ test "a module of the checked package reached through a second package is named 
     try std.testing.expectEqualStrings("/work/zig-pkg/dep/src/root.zig", try packagePath(a, "/work/pkg", "/work/zig-pkg/dep", "src/root.zig"));
 }
 
-/// The test artifacts a run under the top-level step `step_name` runs without preflight's
-/// runner: ones a build gave its tests after `addCi` read them, which then run with no
-/// watchdog, shard, timing record or riscv64 machine. Empty for a build that gives no test
-/// preflight's runner (one without `addCi`, as a declared job's nested build).
 /// Whether the configured build has a top-level step `name` of its own (a dependency's steps
 /// are not the build's).
 pub fn hasStep(snapshot: Snapshot, name: []const u8) bool {
@@ -651,6 +648,63 @@ pub fn hasStep(snapshot: Snapshot, name: []const u8) bool {
     return false;
 }
 
+/// What a run of the top-level step `step_name` is refused before it runs anything: the
+/// messages of the `Fail` steps it reaches, the build's refusals by name (those the
+/// configuring machine decides, `configure.hostRefusal`, apart), and the steps of this same
+/// build that a run it reaches builds again, named `--step NAME` with the options each
+/// `--build-arg` gives, as the fuzz job builds the properties it fuzzes. Nothing for a step
+/// the build has none of.
+pub const Refusals = struct {
+    build: []const []const u8,
+    host: []const []const u8,
+    nested: []const Nested,
+
+    pub const Nested = struct { step: []const u8, options: []const []const u8 };
+};
+
+pub fn refusals(a: std.mem.Allocator, snapshot: Snapshot, step_name: []const u8) !Refusals {
+    const c = &snapshot.config;
+    var pending: std.ArrayList(C.Step.Index) = .empty;
+    for (c.steps, 0..) |step, index| {
+        if (step.owner != .root or step.extended.cast(c, C.Step.TopLevel) == null) continue;
+        if (std.mem.eql(u8, step.name.slice(c), step_name)) try pending.append(a, @fromBackingInt(@intCast(index)));
+    }
+    var seen: std.AutoHashMapUnmanaged(C.Step.Index, void) = .empty;
+    var build: std.array_hash_map.String(void) = .empty;
+    var host: std.array_hash_map.String(void) = .empty;
+    var nested: std.ArrayList(Refusals.Nested) = .empty;
+    while (pending.pop()) |index| {
+        if ((try seen.getOrPut(a, index)).found_existing) continue;
+        const step = index.ptr(c);
+        try pending.appendSlice(a, step.deps.slice(c));
+        if (step.extended.cast(c, C.Step.Fail)) |fail| {
+            const into = if (std.mem.eql(u8, step.name.slice(c), configure.host_refusal)) &host else &build;
+            try into.put(a, fail.msg.slice(c), {});
+            continue;
+        }
+        const run = step.extended.cast(c, C.Step.Run) orelse continue;
+        var words: std.ArrayList(?[]const u8) = .empty;
+        for (run.args.slice) |arg_index| {
+            const arg = arg_index.get(c);
+            try words.append(a, if (arg.flags.tag == .string) if (arg.prefix.value) |prefix| prefix.slice(c) else null else null);
+        }
+        var built: ?[]const u8 = null;
+        var options: std.ArrayList([]const u8) = .empty;
+        for (1..words.items.len) |at| {
+            const flag = words.items[at - 1] orelse continue;
+            const value = words.items[at] orelse continue;
+            if (std.mem.eql(u8, flag, "--step")) built = value;
+            if (std.mem.eql(u8, flag, "--build-arg")) try options.append(a, value);
+        }
+        if (built) |name| try nested.append(a, .{ .step = name, .options = try options.toOwnedSlice(a) });
+    }
+    return .{ .build = try a.dupe([]const u8, build.keys()), .host = try a.dupe([]const u8, host.keys()), .nested = try nested.toOwnedSlice(a) };
+}
+
+/// The test artifacts a run under the top-level step `step_name` runs without preflight's
+/// runner: ones a build gave its tests after `addCi` read them, which then run with no
+/// watchdog, shard, timing record or riscv64 machine. Empty for a build that gives no test
+/// preflight's runner (one without `addCi`, as a declared job's nested build).
 pub fn testsOutsideRunner(a: std.mem.Allocator, snapshot: Snapshot, step_name: []const u8) ![]const []const u8 {
     const c = &snapshot.config;
     var instrumented_any = false;

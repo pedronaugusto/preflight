@@ -9,6 +9,7 @@
 //! by hash in preflight's manifest and fetched only by a build that runs on it.
 const std = @import("std");
 const builtin = @import("builtin");
+const configure = @import("configure.zig");
 const held = @import("held.zig");
 const Tool = @import("tool.zig").Tool;
 
@@ -43,7 +44,7 @@ pub fn add(b: *std.Build, tests: *std.Build.Step, package: *std.Build, pkg: *std
     }
     if (runs.get(.x86_64_freebsd).items.len > 0) {
         if (host.result.os.tag != .linux or host.result.cpu.arch != .x86_64) {
-            tests.dependOn(&b.addFail("ci-vm=freebsd: the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; it runs on the release tier's x86_64 Linux runner").step);
+            tests.dependOn(configure.hostRefusal(b, "ci-vm=freebsd: the FreeBSD machine is x86_64 under KVM, which only an x86_64 Linux host runs; it runs on the nightly tier's x86_64 Linux runner"));
             return;
         }
         const machine = freebsdMachine(b, pkg, host) orelse return;
@@ -60,7 +61,7 @@ pub const guest_zig_version = "0.17.0";
 
 /// The machine's own Zig, a directory holding `zig` and `lib`, where one of `runs` names the
 /// build's Zig: an argument that is the build's Zig is the machine's Zig, for the machine's
-/// target, as a portable replay names the replaying runner's. glint's soundness suite takes
+/// target. glint's soundness suite takes
 /// `.zig_exe` and compiles every case with it, and the host's x86_64 Linux Zig ended
 /// InvalidExe on both machines.
 const GuestZig = union(enum) {

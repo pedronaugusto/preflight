@@ -130,6 +130,18 @@ threadlocal var taken: std.ArrayList([]const u8) = .empty;
 /// either: bay runs a step of the package's build before one of its development build.
 threadlocal var claimed: std.ArrayList([]const u8) = .empty;
 
+/// The name of a refusal the configuring machine decides (`hostRefusal`).
+pub const host_refusal = "preflight: refused on this host";
+
+/// A step that fails with `message` because of the machine that configures the build, not
+/// the build: the lint, configuring on a developer's machine, reports it only for a job that
+/// runs on a machine of the same system, as the planner places the rest where it holds.
+pub fn hostRefusal(b: *std.Build, message: []const u8) *std.Build.Step {
+    const fail = b.addFail(message);
+    fail.step.name = host_refusal;
+    return &fail.step;
+}
+
 /// A top-level step of preflight's, `name`, or, when the package already has a step
 /// by that name, one under no name: the package's own step keeps the name, nothing
 /// is overwritten and the build does not crash, and `refuseTaken` says what to do.

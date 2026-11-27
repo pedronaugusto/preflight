@@ -244,7 +244,7 @@ test "a package carrying what a release needs passes the gate, which runs no job
         std.debug.print("stdout:\n{s}\nstderr:\n{s}\n", .{ result.stdout, result.stderr });
         return error.TestUnexpectedResult;
     }
-    try std.testing.expect(std.mem.find(u8, result.stdout, "a tag needs a green release run on its commit") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "a tag needs green full and nightly runs on its commit") != null);
 }
 
 test "the documented snippets are checked on their own, a broken one named where the lint refuses its configuration" {

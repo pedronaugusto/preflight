@@ -80,8 +80,10 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     const fuzz_step = configure.claim(b, "hardened-fuzz", "Execute a bounded native Zig fuzzer campaign; Zig retains cache corpus and coverage");
     if (given.fuzz_step == null) {
         // Nothing to fuzz, as the package's profile says: the campaign has nothing to run.
-    } else if (given.fuzz_iterations == 0 or b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
-        fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support").step);
+    } else if (given.fuzz_iterations == 0) {
+        fuzz_step.dependOn(&b.addFail("hardened-fuzz: needs a positive campaign limit").step);
+    } else if (b.graph.host.result.os.tag == .windows or @bitSizeOf(usize) != 64) {
+        fuzz_step.dependOn(configure.hostRefusal(b, "hardened-fuzz: needs native 64-bit non-Windows Zig fuzzer support"));
     } else fuzz_step.dependOn(&fuzz.step);
     const tsan = again(b, package, &.{ testsAlone(b, tests, given.tsan_step), "-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false", "-Dci-bench-smoke=false" });
     forward(b, tsan);
@@ -89,7 +91,7 @@ pub fn add(b: *std.Build, package: *std.Build, tests: *std.Build.Step, profile: 
     tsan.has_side_effects = true;
     const tsan_step = configure.claim(b, "hardened-tsan", "Execute native x86_64 or aarch64 Linux or macOS tests with LLVM ThreadSanitizer");
     if (!sanitized(b.graph.host.result)) {
-        tsan_step.dependOn(&b.addFail("hardened-tsan: unsupported target; requires native x86_64 or aarch64 Linux or macOS").step);
+        tsan_step.dependOn(configure.hostRefusal(b, "hardened-tsan: unsupported target; requires native x86_64 or aarch64 Linux or macOS"));
     } else tsan_step.dependOn(&tsan.step);
 }
 

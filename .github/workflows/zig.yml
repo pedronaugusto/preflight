@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       tier:
-        description: ci (every push and pull request), release (weekly, by dispatch, and before a tag) or fuzz (the fuzz job alone, by dispatch)
+        description: ci (every push and pull request), full (the full matrix, by dispatch on a release batch's head), nightly (the heavy legs, nightly and on a release batch's head) or fuzz (the fuzz job alone, by dispatch)
         type: string
         default: ci
       working-directory:
@@ -16,14 +16,12 @@ on:
         description: Static ci-tier matrix, zig build plan -- --tier ci
         type: string
         default: '{"include":[]}'
-      release-matrix:
-        description: Static native release-tier matrix, zig build plan -- --tier release
+      full-matrix:
+        description: Static full-tier matrix, zig build plan -- --tier full
         type: string
         default: '{"include":[]}'
-      release-compile-matrix:
-        type: string
-        default: '{"include":[]}'
-      release-run-matrix:
+      nightly-matrix:
+        description: Static nightly-tier matrix, zig build plan -- --tier nightly
         type: string
         default: '{"include":[]}'
       fuzz-matrix:
@@ -38,26 +36,29 @@ on:
         description: The package's held git (`git` in ci/workflow.json), by its release and its tarball's hash, which names its build's cache; empty for none
         type: string
         default: ''
-permissions:
-  contents: read
-  actions: read
+# Each job names its own token's permissions: every one reads, and the profile job alone writes,
+# to the preflight-durations branch, what a full or nightly run on main measured.
+permissions: {}
 jobs:
   tier:
     if: >-
-      !contains(fromJSON('["ci","release","fuzz"]'), inputs.tier) || inputs.tier == 'fuzz' && inputs.fuzz-matrix == '{"include":[]}'
+      !contains(fromJSON('["ci","full","nightly","fuzz"]'), inputs.tier) || inputs.tier == 'fuzz' && inputs.fuzz-matrix == '{"include":[]}'
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - env:
           TIER: ${{ inputs.tier }}
         run: |
           if [ "$TIER" = fuzz ]; then echo "fuzz: this package has no fuzz job: it declares no shakedown, or ci/workflow.json's fuzz_minutes is 0"; exit 1; fi
-          echo "tier must be ci, release or fuzz, not '$TIER'" && exit 1
+          echo "tier must be ci, full, nightly or fuzz, not '$TIER'" && exit 1
   # The checks are built once, for every runner, and every job takes them: no
   # job compiles the toolchain. The same job tells a dispatched ci run whether its
   # branch changes documentation alone, which needs none of the gate.
   toolchain:
-    if: contains(fromJSON('["ci","release","fuzz"]'), inputs.tier)
+    if: contains(fromJSON('["ci","full","nightly","fuzz"]'), inputs.tier)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       docs-only: ${{ steps.paths.outputs.docs_only }}
     steps:
@@ -92,7 +93,7 @@ jobs:
         with:
           version: 0.17.0
           use-cache: false
-      # A dispatched ci run compares its branch with main; a push to main, a pull request and a release run keep the whole gate.
+      # A dispatched ci run compares its branch with main; a push to main, a pull request, a full and a nightly run keep the whole gate.
       - name: Filter paths and check documentation when it is the only change
         id: paths
         if: github.event_name == 'workflow_dispatch' && inputs.tier == 'ci'
@@ -102,9 +103,11 @@ jobs:
         run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight skip
   gate:
     needs: toolchain
-    if: needs.toolchain.outputs.docs-only != 'true' && contains(fromJSON('["ci","release","fuzz"]'), inputs.tier)
+    if: needs.toolchain.outputs.docs-only != 'true' && contains(fromJSON('["ci","full","nightly","fuzz"]'), inputs.tier)
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     # A dispatched fuzz run's minutes are its own, which the plan never saw: its job has
     # GitHub's whole limit, and the budget (at most 330 minutes) ends it first.
     timeout-minutes: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
@@ -116,7 +119,7 @@ jobs:
     # steps' budgets (`matrix.zig`'s advisory_overhead_minutes), so no advisory job meets its bound.
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}
+      matrix: ${{ fromJSON(inputs.tier == 'full' && inputs.full-matrix || inputs.tier == 'nightly' && inputs.nightly-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         id: package
@@ -249,12 +252,14 @@ jobs:
           # The compiles a cross job runs at once, as its runner's memory holds them (`build_jobs`).
           PREFLIGHT_JOBS: ${{ matrix.build_jobs }}
           PREFLIGHT_JOB: ${{ matrix.cache_key }}
+          # The job's name, by which its record of what it spent is kept (`legs` in ci/durations.json).
+          PREFLIGHT_NAME: ${{ matrix.name }}
           # With the job's start, its deadline: a test running then ends named.
           PREFLIGHT_JOB_TIMEOUT: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes != '' && 360 || matrix.job_timeout }}
           PREFLIGHT_SETUP_STEP: ${{ matrix.prepare }}
           PREFLIGHT_FUZZ_MINUTES: ${{ inputs.tier == 'fuzz' && inputs.fuzz-minutes || '' }}
-          # The release tier's macOS jobs, run in sequence on this one runner: GitHub drops a job
-          # it cannot give a runner, and the account's macOS runners are few.
+          # The work the plan dealt into this job, run in sequence on its one runner: a run asks
+          # for at most 20 jobs, 3 of them on macOS, of the account's 20 and 5.
           PREFLIGHT_LEGS: ${{ matrix.legs }}
         run: preflight run
       - name: Save the held git
@@ -335,12 +340,14 @@ jobs:
     # `zig build`, and `ZIG`, which the setup sets to the Zig it installed, makes
     # that Zig master for a package bay develops.
     needs: toolchain
-    if: inputs.tier == 'release'
+    if: inputs.tier == 'nightly'
     name: Zig master (Linux Debug, non-blocking)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # An advisory job never fails: a job-level continue-on-error still concludes a called
     # workflow's run "failure" (ensign's 45437116488, red on this job alone), and a release
-    # needs the run's "success". So every step that can fail continues, each step that needs
+    # needs the nightly run's "success". So every step that can fail continues, each step that needs
     # an earlier one runs only where it passed, and the report names each outcome in the
     # summary and as a warning. All step budgets total 102 minutes, 132 with the held git's
     # build; a stalled step ends before this bound, which would cancel the job.
@@ -459,176 +466,27 @@ jobs:
           outcome: ${{ steps.suite.outcome }}
           steps: setup ${{ steps.setup.outcome || 'not run' }}, tool setup ${{ steps.tools1.outcome == 'success' && 'success' || steps.tools2.outcome == 'success' && 'success' || steps.tools3.outcome || steps.tools1.outcome || 'not run' }}
           note: a note for the next port
-  compile:
-    needs: toolchain
-    # The native link jobs, planned exactly when the build's tests are portable (its ci-build).
-    if: inputs.tier == 'release' && inputs.release-compile-matrix != '{"include":[]}'
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.job_timeout }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.release-compile-matrix) }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: ./.preflight/.github/actions/setup
-        id: setup
-        with:
-          working-directory: ${{ inputs.working-directory }}
-          build-args: ${{ matrix.args }}
-          build-key: ${{ matrix.step }}
-          toolchain: toolchain-${{ inputs.preflight-ref }}
-      - name: Set up test tools (attempt 1/3)
-        id: tools1
-        if: matrix.setup
-        timeout-minutes: ${{ steps.setup.outputs.tools-hit == 'true' && 5 || 30 }}
-        continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
-      - name: Set up test tools (attempt 2/3)
-        id: tools2
-        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
-        timeout-minutes: 5
-        continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
-      - name: Set up test tools (attempt 3/3)
-        id: tools3
-        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
-        timeout-minutes: 5
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
-      - name: Link test executables with the native SDK
-        working-directory: ${{ inputs.working-directory }}
-        env:
-          PREFLIGHT_PREPARED: 'true'
-          PREFLIGHT_SETUP: 'true'
-          STEP: ${{ matrix.step }}
-          BUILD_ARGS: ${{ matrix.args }}
-          PREFLIGHT_JOB: ${{ matrix.cache_key }}
-          # With the job's start, its deadline: a test running then ends named.
-          PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
-        run: preflight run
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ inputs.working-directory }}/zig-out/preflight
-          retention-days: 1
-  execute:
-    needs: [toolchain, compile]
-    if: always() && inputs.tier == 'release' && needs.compile.result == 'success'
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.job_timeout }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(inputs.release-run-matrix) }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: pedronaugusto/preflight
-          ref: ${{ inputs.preflight-ref }}
-          path: .preflight
-      - uses: ./.preflight/.github/actions/setup
-        id: setup
-        with:
-          working-directory: ${{ inputs.working-directory }}
-          build-args: ${{ matrix.args }}
-          build-key: ${{ matrix.step }}
-          toolchain: toolchain-${{ inputs.preflight-ref }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ inputs.working-directory }}/zig-out/preflight
-      # The package's held git: its build, kept from run to run by its release, preflight's
-      # recipe and the machine (the riscv64 machine's own builds in its tests' step).
-      - name: Restore the held git
-        id: held_git
-        if: matrix.setup && inputs.held-git != ''
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        timeout-minutes: 2
-        with:
-          path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
-      # Its own step, once: a build's deadline, where each tools attempt is a setup's.
-      - name: Hold the package's git
-        if: matrix.setup && inputs.held-git != ''
-        timeout-minutes: 30
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare --held-git
-      - name: Set up test tools (attempt 1/3)
-        id: tools1
-        if: matrix.setup
-        timeout-minutes: ${{ steps.setup.outputs.tools-hit == 'true' && 5 || 30 }}
-        continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
-      - name: Set up test tools (attempt 2/3)
-        id: tools2
-        if: ${{ !cancelled() && steps.tools1.outcome == 'failure' }}
-        timeout-minutes: 5
-        continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
-      - name: Set up test tools (attempt 3/3)
-        id: tools3
-        if: ${{ !cancelled() && steps.tools2.outcome == 'failure' }}
-        timeout-minutes: 5
-        working-directory: ${{ inputs.working-directory }}
-        run: preflight prepare
-      - name: Run test executables
-        working-directory: ${{ inputs.working-directory }}
-        env:
-          STEP: ${{ matrix.step }}
-          BUILD_ARGS: ${{ matrix.args }}
-          PREFLIGHT_SHARD: ${{ matrix.shard }}
-          PREFLIGHT_PREPARED: 'true'
-          PREFLIGHT_SETUP: ${{ matrix.setup }}
-          PREFLIGHT_JOB: ${{ matrix.cache_key }}
-          # With the job's start, its deadline: a test running then ends named.
-          PREFLIGHT_JOB_TIMEOUT: ${{ matrix.job_timeout }}
-        run: preflight run
-      - name: Save the held git
-        if: always() && matrix.setup && inputs.held-git != '' && steps.held_git.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        timeout-minutes: 2
-        with:
-          path: ${{ runner.temp }}/preflight-git
-          key: preflight-git-${{ inputs.held-git }}-r3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.machine }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && matrix.step == 'hardened-fuzz'
-        with:
-          name: fuzz-${{ inputs.tier }}-${{ matrix.cache_key }}
-          path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: timings-${{ matrix.cache_key }}
-          path: ${{ inputs.working-directory }}/.zig-cache/preflight-timings
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 7
-  # A run that went red is profiled too, its records folded as a run that did not
-  # finish: a job that ran out of time leaves the record that sizes the next plan's
-  # shards. Only a green run's fold is the proof artifact.
+  # A run that went red is profiled too, its records folded as a run that did not finish: a
+  # job that ran out of time leaves the record that sizes the next plan. Only a green run's
+  # fold is the proof artifact. A full or nightly run of main writes its fold to the
+  # preflight-durations branch, which a landing takes (`git fetch`) and generates the caller
+  # from: the plan follows what the runs measured, by no hand. Its commits append; a run whose
+  # push loses to another's folds onto that one and pushes again. A push by the run's own token
+  # starts no run.
   profile:
-    needs: [toolchain, gate, compile, execute]
-    # The fuzz job runs no tests to time. A red gate is folded too (`--partial`): its test
-    # jobs are the gate's, and one that ran out of time leaves the record that sizes its
-    # shards next time; only a run that went green throughout is the proof.
+    needs: [toolchain, gate]
+    # The fuzz job runs no tests to time. A red gate is folded too (`--partial`).
     if: always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') && inputs.tier != 'fuzz'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     env:
-      FINISHED: ${{ needs.gate.result == 'success' && (needs.compile.result == 'success' || needs.compile.result == 'skipped') && (needs.execute.result == 'success' || needs.execute.result == 'skipped') }}
+      FINISHED: ${{ needs.gate.result == 'success' }}
+      # Only main's full and nightly runs write the record; never a pull request's.
+      RECORD: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.tier == 'full' || inputs.tier == 'nightly') }}
+      DIRECTORY: ${{ inputs.working-directory }}
+      TIER: ${{ inputs.tier }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -642,10 +500,42 @@ jobs:
         with:
           pattern: timings-*
           path: .preflight-timings
-      - name: Refresh the per-test durations the shards balance by
+      - name: Refresh what the next plan is sized by
         run: |
           chmod +x .preflight-bin/linux/preflight
-          .preflight-bin/linux/preflight profile ${{ env.FINISHED != 'true' && '--partial' || '' }} --durations "${{ inputs.working-directory }}/ci/durations.json" --output .preflight-timings/durations.json --costs "${{ inputs.working-directory }}/ci/costs.json" --costs-output .preflight-timings/costs.json
+          partial=$([ "$FINISHED" = true ] || echo --partial)
+          # Folds the run's records onto the record so far in $1/ci.
+          fold() {
+            .preflight-bin/linux/preflight profile $partial --durations "$1/ci/durations.json" --output .preflight-timings/durations.json --costs "$1/ci/costs.json" --costs-output .preflight-timings/costs.json
+          }
+          if [ "$RECORD" != true ]; then fold "$DIRECTORY"; exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          record="$RUNNER_TEMP/preflight-durations"
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$record"
+            git worktree prune
+            if git fetch -q --depth=1 origin preflight-durations; then
+              git worktree add -q --detach "$record" FETCH_HEAD
+            else
+              git worktree add -q --detach "$record"
+              git -C "$record" switch -q --orphan preflight-durations
+            fi
+            # The newest record, else the repository's copy: a nightly run keeps what the full
+            # run measured, and the full run what the nightly one did.
+            base="$record/$DIRECTORY"
+            [ -f "$base/ci/durations.json" ] || base="$DIRECTORY"
+            fold "$base"
+            mkdir -p "$record/$DIRECTORY/ci"
+            cp .preflight-timings/durations.json .preflight-timings/costs.json "$record/$DIRECTORY/ci/"
+            git -C "$record" add -- "$DIRECTORY/ci/durations.json" "$DIRECTORY/ci/costs.json"
+            if git -C "$record" diff --cached --quiet; then exit 0; fi
+            git -C "$record" commit -q -m "What the $TIER run $GITHUB_RUN_ID measured of $GITHUB_SHA"
+            if git -C "$record" push -q origin HEAD:refs/heads/preflight-durations; then exit 0; fi
+            echo "preflight-durations moved since this run read it: folding onto it again (attempt $attempt of 5)"
+          done
+          echo "::error title=preflight-durations::the record was not written: the branch moved under each of five attempts"
+          exit 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ env.FINISHED == 'true' && 'preflight' || 'records' }}-${{ inputs.tier }}-${{ github.sha }}
@@ -660,10 +550,12 @@ jobs:
   # This job names each, with its minutes queued, and fails; nothing is retried. It reads the
   # jobs with the token's actions: read.
   runners:
-    needs: [toolchain, gate, compile, execute, profile]
+    needs: [toolchain, gate, profile]
     if: always() && needs.toolchain.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: read
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

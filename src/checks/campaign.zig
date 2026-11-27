@@ -101,7 +101,7 @@ pub fn run(c: *src.Context, cache_path: []const u8, cwd: []const u8, argv: []con
         .ran => if (expired) c.report("fuzz campaign: ended at the job's deadline after {d} runs with no crash saved: it passes on what it fuzzed\n", .{after.runs - before.runs}),
         .crashed => c.fail("fuzz campaign: the fuzzer found a failing input, saved to {s}/f/crash", .{absolute}),
         .idle => if (expired)
-            c.fail("fuzz campaign: the job's deadline came before the fuzzer ran an input, its build having taken the job's time: raise test_job_timeout", .{})
+            c.fail("fuzz campaign: the job's deadline came before the fuzzer ran an input, its build having taken the job's time: the record of this run refuses the next plan by name until the build fits its tier's minutes", .{})
         else
             c.fail("fuzz campaign: the fuzzer ran no input; a fuzz test that never starts fails as one that crashes", .{}),
     }

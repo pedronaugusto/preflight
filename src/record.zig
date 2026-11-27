@@ -111,8 +111,8 @@ fn visit(b: *std.Build, step: *std.Build.Step, state: *State, tests: bool) void 
 /// record is missing never reached preflight's runner, and a binary that holds no test,
 /// unfiltered, has its tests in modules it imports, which Zig never runs, or none. The counts
 /// go where the gate prints them. The count is preflight's program, no test: it joins the
-/// tests step after every walk of that step (the compile checks, the hardened profile,
-/// portable tests) has read it.
+/// tests step after every walk of that step (the compile checks, the hardened profile) has
+/// read it.
 pub fn counts(b: *std.Build, holder: *std.Build.Step, checker: Tool, counted: Counted) void {
     if (counted.names.len == 0) return;
     const count = checker.run(b);

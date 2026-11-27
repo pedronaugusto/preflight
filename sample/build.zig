@@ -23,7 +23,6 @@ pub fn build(b: *std.Build) void {
     profile_step.dependOn(&b.addRunArtifact(profile).step);
     preflight.addCi(b, b, .{
         .tests = step,
-        .portable_tests = true,
         .bench = sampleBench(target, optimize),
         .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 },
         .vm_packages = &.{"tree"},

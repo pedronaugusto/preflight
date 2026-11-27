@@ -232,7 +232,7 @@ test "lint maps an options module whose options name paths, and a module rooted 
     try fixture(a, tmp.dir);
     try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
         \\    const options = b.addOptions();
-        \\    preflight.addTestZigLib(b, options, "data");
+        \\    options.addOptionPath("data", b.path("README.md"));
         \\    options.addOption(u32, "count", 3);
         \\    module.addOptions("options", options);
         \\    module.addImport("listing", b.createModule(.{ .root_source_file = b.addWriteFiles().add("listing.zig", "pub const names = [_][]const u8{\"a\"};\n") }));
@@ -517,72 +517,6 @@ test "the namespace layout leaves out a file the build roots a module at: a dire
     try std.testing.expect(std.mem.find(u8, members.stderr, "src/kernels: namespace has 2 files; give it one adjacent kernels.zig entry") != null);
 }
 
-test "portable replay records timings and still rejects failed tests and leaked memory" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test \"failure\" { return error.DeliberateFailure; }\ntest \"leak\" { _ = try @import(\"std\").testing.allocator.alloc(u8, 1); }\n" });
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir } });
-    if (compiled.term != .exited or compiled.term.exited != 0) std.debug.print("{s}", .{compiled.stderr});
-    try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
-    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir } });
-    if (command.succeeded(executed) or std.mem.find(u8, executed.stderr, "leaked") == null) std.debug.print("{s}", .{executed.stderr});
-    try std.testing.expect(executed.term == .exited and executed.term.exited != 0);
-    try std.testing.expect(std.mem.find(u8, executed.stderr, "DeliberateFailure") != null);
-    try std.testing.expect(std.mem.find(u8, executed.stderr, "leaked") != null);
-    try std.testing.expect(std.mem.find(u8, executed.stderr, "seed") != null);
-    try tmp.dir.access(io, ".zig-cache/preflight-timings", .{});
-}
-
-test "a program the build makes for the host replays on another CPU: it is built for the baseline" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    // The tool and a module it imports both ask for the host; the tests step runs the tool, as a
-    // table check runs its generator. Built for this machine's own CPU, it fails.
-    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
-        \\    step.dependOn(&b.addRunArtifact(tests).step);
-        \\    const probe = b.createModule(.{ .root_source_file = b.path("src/probe.zig"), .target = b.graph.host });
-        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = b.graph.host, .imports = &.{.{ .name = "probe", .module = probe }} }) });
-        \\    step.dependOn(&b.addRunArtifact(tool).step);
-        \\
-    );
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/probe.zig", .data =
-        \\const std = @import("std");
-        \\const builtin = @import("builtin");
-        \\pub fn baseline() bool {
-        \\    const cpu = std.Target.Cpu.baseline(builtin.cpu.arch, builtin.os);
-        \\    return builtin.cpu.model == cpu.model and builtin.cpu.features.eql(cpu.features);
-        \\}
-        \\
-    });
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data =
-        \\const std = @import("std");
-        \\const builtin = @import("builtin");
-        \\const probe = @import("probe");
-        \\pub fn main() !void {
-        \\    const cpu = std.Target.Cpu.baseline(builtin.cpu.arch, builtin.os);
-        \\    if (builtin.cpu.model != cpu.model or !builtin.cpu.features.eql(cpu.features)) return error.ToolNotBaseline;
-        \\    if (!probe.baseline()) return error.ModuleNotBaseline;
-        \\}
-        \\
-    });
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
-    try std.testing.expect(command.succeeded(compiled));
-    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
-    try std.testing.expect(command.succeeded(executed));
-}
-
 test "a run of the tests that is no test and never ends is ended at its bound, failing by its step and command; a bound naming no run is refused" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -672,144 +606,6 @@ test "lint reads the configured graph as the build wrote it: identical to the gr
     try std.testing.expect(std.mem.find(u8, read[2], "preflight-bound") != null);
 }
 
-test "a test given a path in its package, one in Zig's library and Zig itself replays with the replaying runner's own; any other path is refused" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    // A program the tests run reads a file of the package and std and runs Zig, as a checker of
-    // sources that compiles them does.
-    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
-        \\    step.dependOn(&b.addRunArtifact(tests).step);
-        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
-        \\    const reads = b.addRunArtifact(tool);
-        \\    reads.addFileArg(b.path("src/data.txt"));
-        \\    reads.addDirectoryArg(b.graph.path(.zig_lib, "std"));
-        \\    reads.addFileArg(.zig_exe);
-        \\    step.dependOn(&reads.step);
-        \\
-    );
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/data.txt", .data = "replayed\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data =
-        \\const std = @import("std");
-        \\pub fn main(init: std.process.Init) !void {
-        \\    const args = try init.minimal.args.toSlice(init.arena.allocator());
-        \\    const data = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], init.arena.allocator(), .limited(64));
-        \\    if (!std.mem.eql(u8, data, "replayed\n")) return error.WrongFile;
-        \\    var lib = try std.Io.Dir.cwd().openDir(init.io, args[2], .{});
-        \\    defer lib.close(init.io);
-        \\    try lib.access(init.io, "std.zig", .{});
-        \\    const version = try std.process.run(init.arena.allocator(), init.io, .{ .argv = &.{ args[3], "version" } });
-        \\    if (version.term != .exited or version.term.exited != 0) return error.NoZig;
-        \\}
-        \\
-    });
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
-    try std.testing.expect(command.succeeded(compiled));
-    // The manifest names the package's file from the package root, in the host's form, as the
-    // run that replays it on that host reads it, and std from Zig's library.
-    const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
-    const data_path = if (builtin.os.tag == .windows) "\"src\\\\data.txt\"" else "\"src/data.txt\"";
-    try std.testing.expect(std.mem.find(u8, manifest, data_path) != null);
-    try std.testing.expect(std.mem.find(u8, manifest, "\"zig_lib\":[{\"index\":2,\"directory\":true}]") != null);
-    try std.testing.expect(std.mem.find(u8, manifest, "\"zig_exe\":[3]") != null);
-    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
-    try std.testing.expect(command.succeeded(executed));
-    // A path outside the package and Zig's library is the building runner's own.
-    try edit(a, tmp.dir, "build.zig", "reads.addFileArg(b.path(\"src/data.txt\"));", "reads.addFileArg(.{ .cwd_relative = \"/\" });");
-    const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    try std.testing.expect(!command.succeeded(refused));
-    try std.testing.expect(std.mem.find(u8, refused.stderr, "must not name a path the building runner has alone") != null);
-}
-
-test "a fetched dependency's path is named under zig-pkg by its hash, wherever this build found it: a workspace's fork outside the package" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    // The shakedown the fixture pins, as preflight's own build fetched it: a directory outside
-    // the fixture, handed to Zig for that hash as a workspace hands it a member's tree.
-    const shakedown = try shakedownPin(a);
-    const outside = std.Io.Dir.cwd().realPathFileAlloc(io, try std.Io.Dir.path.join(a, &.{ root, "zig-pkg", shakedown.hash }), a) catch |err| {
-        std.debug.print("preflight's own build fetches its shakedown into zig-pkg/{s}: {t}\n", .{ shakedown.hash, err });
-        return err;
-    };
-    try edit(a, tmp.dir, "build.zig", "    step.dependOn(&b.addRunArtifact(tests).step);\n",
-        \\    step.dependOn(&b.addRunArtifact(tests).step);
-        \\    const tool = b.addExecutable(.{ .name = "tool", .root_module = b.createModule(.{ .root_source_file = b.path("src/tool.zig"), .target = target }) });
-        \\    const reads = b.addRunArtifact(tool);
-        \\    if (b.lazyDependency("shakedown", .{})) |fetched| reads.addFileArg(fetched.path("build.zig.zon"));
-        \\    step.dependOn(&reads.step);
-        \\
-    );
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data = "pub fn main() void {}\n" });
-    const fork = try a.print("--fork={s}", .{outside});
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false", fork }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
-    try std.testing.expect(command.succeeded(compiled));
-    // Named where every replaying runner fetches it, in the host's form, never by the
-    // directory outside the package this build read it from.
-    const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
-    const named = try std.Io.Dir.path.join(a, &.{ "zig-pkg", shakedown.hash, "build.zig.zon" });
-    const quoted = try a.print("\"{s}\"", .{try std.mem.replaceOwned(u8, a, named, "\\", "\\\\")});
-    if (std.mem.find(u8, manifest, quoted) == null) std.debug.print("{s}\n", .{manifest});
-    try std.testing.expect(std.mem.find(u8, manifest, quoted) != null);
-    try std.testing.expect(std.mem.find(u8, manifest, outside) == null);
-}
-
-test "a test reads Zig's library through addTestZigLib, here and where it replays: the replaying runner writes the file for its own Zig" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    // The tests read std where this Zig has it, as a checker of sources reads std's.
-    try edit(a, tmp.dir, "build.zig", "    const tests = b.addTest(.{ .root_module = module });\n",
-        \\    const library = b.addOptions();
-        \\    preflight.addTestZigLib(b, library, "zig_lib");
-        \\    module.addOptions("library", library);
-        \\    const tests = b.addTest(.{ .root_module = module });
-        \\
-    );
-    const source = try aegis.own.readFile(io, tmp.dir, "src/sample.zig", a, .fromRaw(1024 * 1024));
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{
-        source,
-        \\
-        \\test "std, where Zig's library is" {
-        \\    var buffer: [4096]u8 = undefined;
-        \\    const lib = try std.Io.Dir.cwd().readFile(std.testing.io, @import("library").zig_lib, &buffer);
-        \\    var dir = try std.Io.Dir.openDirAbsolute(std.testing.io, lib, .{});
-        \\    defer dir.close(std.testing.io);
-        \\    try dir.access(std.testing.io, "std/std.zig", .{});
-        \\}
-        \\
-    }) });
-    const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(tested)) std.debug.print("{s}", .{tested.stderr});
-    try std.testing.expect(command.succeeded(tested));
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(compiled)) std.debug.print("{s}", .{compiled.stderr});
-    try std.testing.expect(command.succeeded(compiled));
-    const manifest = try aegis.own.readFile(io, tmp.dir, "zig-out/preflight/tests.json", a, .fromRaw(1024 * 1024));
-    try std.testing.expect(std.mem.find(u8, manifest, "\"zig_lib_place\":\"preflight/zig-lib\"") != null);
-    // A replaying runner downloads the tests, not the building runner's file.
-    try tmp.dir.deleteFile(io, "zig-out/preflight/zig-lib");
-    const executed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(executed)) std.debug.print("{s}", .{executed.stderr});
-    try std.testing.expect(command.succeeded(executed));
-    try tmp.dir.access(io, "zig-out/preflight/zig-lib", .{});
-}
-
 /// The one Zig cache every fixture's build shares: each fixture is a fresh directory, and a
 /// cache of its own would build preflight's checks, its runner and its tools from cold, about
 /// a minute each time. Zig's cache is content-addressed and safe to share; what a fixture
@@ -854,7 +650,7 @@ fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
     return names.items;
 }
 
-test "sample test protocol and portable replay shuffle reproducibly with an explicit seed" {
+test "the sample's tests shuffle reproducibly with an explicit seed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -866,41 +662,17 @@ test "sample test protocol and portable replay shuffle reproducibly with an expl
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text.written() });
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
-    const commands = [_][]const []const u8{
-        &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" },
-        &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-timings=true" },
-        &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-timings=true" },
-    };
-    try env.put("PREFLIGHT_TEST_SEED", "42");
-    const native = try std.process.run(a, std.testing.io, .{ .argv = commands[0], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    if (!command.succeeded(native)) std.debug.print("{s}\n", .{native.stderr});
-    try std.testing.expect(command.succeeded(native));
-    const first = try recordedOrder(a, tmp.dir);
-    const compile = try std.process.run(a, std.testing.io, .{ .argv = commands[1], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    try std.testing.expect(command.succeeded(compile));
-    try dropExecutable(tmp.dir);
-    const replay = try std.process.run(a, std.testing.io, .{ .argv = commands[2], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    try std.testing.expect(command.succeeded(replay));
-    try std.testing.expectEqualStrings(first, try recordedOrder(a, tmp.dir));
-    try env.put("PREFLIGHT_TEST_SEED", "43");
-    const other = try std.process.run(a, std.testing.io, .{ .argv = commands[2], .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    try std.testing.expect(command.succeeded(other));
-    try std.testing.expect(!std.mem.eql(u8, first, try recordedOrder(a, tmp.dir)));
-}
-
-/// Takes the permission to run from the compiled test executables, as an
-/// artifact download does.
-fn dropExecutable(dir: std.Io.Dir) !void {
-    if (!std.Io.File.Permissions.has_executable_bit) return;
-    const io = std.testing.io;
-    var bin = try dir.openDir(io, "zig-out/preflight/bin", .{ .iterate = true });
-    defer bin.close(io);
-    var entries = bin.iterate();
-    while (try entries.next(io)) |entry| {
-        const file = try bin.openFile(io, entry.name, .{});
-        defer file.close(io);
-        try file.setPermissions(io, .fromMode(0o644));
+    const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" };
+    var orders: [3][]const u8 = undefined;
+    for (&orders, [_][]const u8{ "42", "42", "43" }) |*order, seed| {
+        try env.put("PREFLIGHT_TEST_SEED", seed);
+        const result = try std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+        if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+        try std.testing.expect(command.succeeded(result));
+        order.* = try recordedOrder(a, tmp.dir);
     }
+    try std.testing.expectEqualStrings(orders[0], orders[1]);
+    try std.testing.expect(!std.mem.eql(u8, orders[0], orders[2]));
 }
 
 /// Keeps the user's and the system's git configuration out of a test's
@@ -1052,6 +824,32 @@ test "an extra check beside the lint runs and passes" {
     const beside = try lintFixture(a, tmp.dir);
     if (!command.succeeded(beside)) std.debug.print("{s}\n", .{beside.stderr});
     try std.testing.expect(command.succeeded(beside));
+}
+
+test "the lint refuses what a tier's hosted job would refuse: a step the build fails by name, and a step it has none of" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    // As ladar's ci-fuzz was refused on its hosted run, and on no machine before it.
+    const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1 << 20));
+    try std.testing.expect(std.mem.find(u8, build, "    preflight.addCi(b, b, .{") != null);
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, build, "    preflight.addCi(b, b, .{", "    b.step(\"refused\", \"A step the build refuses\").dependOn(&b.addFail(\"refused: the properties are not written with shakedown\").step);\n    preflight.addCi(b, b, .{") });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"jobs\": [{\"name\": \"refusing\", \"step\": \"refused\", \"os\": [\"ubuntu-latest\"], \"tiers\": [\"ci\"]}, {\"name\": \"stepless\", \"step\": \"gone\", \"os\": [\"ubuntu-latest\"], \"tiers\": [\"nightly\"]}]}\n" });
+    const result = try lintFixture(a, tmp.dir);
+    try std.testing.expect(!command.succeeded(result));
+    for ([_][]const u8{
+        "builds `refused`, which the build refuses: refused: the properties are not written with shakedown",
+        "lint: the ci tier's job `refusing",
+        "lint: the nightly tier's job `stepless",
+        "runs the step `gone`, which the build",
+    }) |said| if (std.mem.find(u8, result.stderr, said) == null) {
+        std.debug.print("expected the lint to say:\n{s}\nstderr:\n{s}\n", .{ said, result.stderr });
+        return error.TestUnexpectedResult;
+    };
 }
 
 test "a manifest whose version is not the changelog's newest release fails the lint by name" {
@@ -1390,7 +1188,7 @@ fn recordedKey(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]con
     return error.NoTimingRecord;
 }
 
-test "shards split the tests once between them by recorded duration, natively and in portable replay" {
+test "shards split the tests once between them by recorded duration" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1420,8 +1218,8 @@ test "shards split the tests once between them by recorded duration, natively an
     try durations.writer.writeAll("}}");
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/durations.json", .data = durations.written() });
     var seen: std.ArrayList([]const u8) = .empty;
-    var native: [3][]const []const u8 = undefined;
-    for (&native, 1..) |*names, shard| {
+    var shards: [3][]const []const u8 = undefined;
+    for (&shards, 1..) |*names, shard| {
         try env.put("PREFLIGHT_SHARD", try a.print("{d}/3", .{shard}));
         const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
         if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
@@ -1437,16 +1235,6 @@ test "shards split the tests once between them by recorded duration, natively an
     }.less);
     try std.testing.expectEqual(all.len, seen.items.len);
     for (all, seen.items) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
-    _ = env.swapRemove("PREFLIGHT_SHARD");
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    try std.testing.expect(command.succeeded(compiled));
-    try env.put("PREFLIGHT_SHARD", "2/3");
-    const replay = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-timings=true" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    if (!command.succeeded(replay)) std.debug.print("{s}\n", .{replay.stderr});
-    try std.testing.expect(command.succeeded(replay));
-    const replayed = try recordedNames(a, tmp.dir, "-2of3.ndjson");
-    try std.testing.expectEqual(native[1].len, replayed.len);
-    for (native[1], replayed) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
 }
 
 test "a crash keeps the records of the tests before it, and a fresh run starts the record again" {
@@ -1510,7 +1298,7 @@ test "the watchdog fails a stalled test by name and phase" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     const script = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1024 * 1024));
-    const bounded = try std.mem.replaceOwned(u8, a, script, ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a stall test\" } }");
+    const bounded = try std.mem.replaceOwned(u8, a, script, ".tests = step", ".tests = step, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a stall test\" } }");
     try std.testing.expect(!std.mem.eql(u8, script, bounded));
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = bounded });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"stalls\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);\n}\n" });
@@ -1533,7 +1321,7 @@ test "the watchdog names a stalled test that holds the stderr lock, as a hung cr
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a stall test\" } }");
+    try edit(a, tmp.dir, "build.zig", ".tests = step", ".tests = step, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a stall test\" } }");
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
         \\const std = @import("std");
         \\test "stalls holding stderr" {
@@ -1557,7 +1345,7 @@ test "the watchdog names the Io teardown of a test that leaves a task running" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a teardown test\" } }");
+    try edit(a, tmp.dir, "build.zig", ".tests = step", ".tests = step, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a teardown test\" } }");
     // The task outlives the test body and ignores cancelation, so the backend's
     // teardown, which waits for it, is what stalls.
     const leaving =
@@ -1633,7 +1421,7 @@ test "a test the watchdog ends leaves no process it started running" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a tree test\" } }");
+    try edit(a, tmp.dir, "build.zig", ".tests = step", ".tests = step, .test_timeout = .{ .bound = .{ .limit = .fromMilliseconds(300), .reason = \"a tree test\" } }");
     // One process holds the tests' output and one does not: neither outlives
     // the run, as an integration test's `zig build` once outlived its test.
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
@@ -1801,7 +1589,7 @@ test "a test runner of its own runs with the watchdog off, and fails by name whe
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try ownRunner(a, tmp.dir);
-    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .off = \"the upstream runner\" }");
+    try edit(a, tmp.dir, "build.zig", ".tests = step", ".tests = step, .test_timeout = .{ .off = \"the upstream runner\" }");
     const off = try gate(a, tmp.dir, &.{});
     if (!command.succeeded(off)) std.debug.print("{s}\n", .{off.stderr});
     try std.testing.expect(command.succeeded(off));
@@ -1853,7 +1641,7 @@ test "the test log level is a preflight option" {
     const quiet = try gate(a, tmp.dir, &.{});
     try std.testing.expect(command.succeeded(quiet));
     try std.testing.expect(std.mem.find(u8, quiet.stderr, "preflight-log-marker") == null);
-    try edit(a, tmp.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_log_level = .info");
+    try edit(a, tmp.dir, "build.zig", ".tests = step", ".tests = step, .test_log_level = .info");
     const loud = try gate(a, tmp.dir, &.{});
     if (std.mem.find(u8, loud.stderr, "preflight-log-marker") == null) std.debug.print("{s}", .{loud.stderr});
     try std.testing.expect(command.succeeded(loud));
@@ -1894,7 +1682,7 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
 fn fuzzerRan(result: std.process.RunResult) !bool {
     if (builtin.target.os.tag != .windows and @bitSizeOf(usize) == 64) return true;
     try std.testing.expect(!command.succeeded(result));
-    try std.testing.expect(std.mem.find(u8, result.stderr, "hardened-fuzz: needs a positive campaign limit and native 64-bit non-Windows Zig fuzzer support") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "hardened-fuzz: needs native 64-bit non-Windows Zig fuzzer support") != null);
     return false;
 }
 
@@ -2029,7 +1817,7 @@ test "a test that breaks only under a configuration's option fails the package's
     const planner = @import("matrix.zig");
     for ([_][]const u8{ "default", "no-feature" }) |name| {
         const job = for (try planner.plan(a, config, .ci)) |each| {
-            if (std.mem.eql(u8, each.name, try a.print("check ({s})", .{name}))) break each;
+            if (std.mem.eql(u8, planner.recordName(each.name), try a.print("check ({s})", .{name}))) break each;
         } else return error.TestUnexpectedResult;
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), job.step });
@@ -2188,7 +1976,7 @@ const bench_build =
     \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
     \\    const step = b.step("test", "Run the sample tests");
     \\    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);
-    \\    preflight.addCi(b, b, .{ .tests = step, .portable_tests = true, .bench = BENCH });
+    \\    preflight.addCi(b, b, .{ .tests = step, .bench = BENCH });
     \\}
     \\
     \\const imports_hook: preflight.Bench.Imports = .{ .make = imports };
@@ -2224,15 +2012,6 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     if (!command.succeeded(timed)) std.debug.print("{s}\n", .{timed.stderr});
     try std.testing.expect(command.succeeded(timed));
     try tmp.dir.access(io, if (builtin.target.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
-    // Compiled once and run elsewhere, the smoke run gets a fresh directory there too.
-    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(built)) std.debug.print("{s}\n", .{built.stderr});
-    try std.testing.expect(command.succeeded(built));
-    const manifest = try tmp.dir.readFileAlloc(io, "zig-out/preflight/tests.json", a, .limited(1 << 20));
-    try std.testing.expect(std.mem.find(u8, manifest, "\"scratch\":true") != null);
-    const replayed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(replayed)) std.debug.print("{s}\n", .{replayed.stderr});
-    try std.testing.expect(command.succeeded(replayed));
     // The tests run the program: one that fails fails them.
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "pub fn main() !void {\n    return error.Broken;\n}\n" });
     const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
@@ -2423,61 +2202,6 @@ test "a helper program a test names by path is compiled to an object, not linked
     }
 }
 
-test "a program a test runs replays with it, named from the package root; a path from addOptionPath is refused" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    const script =
-        \\const std = @import("std");
-        \\const preflight = @import("preflight");
-        \\pub fn build(b: *std.Build) void {
-        \\    const target = b.standardTargetOptions(.{});
-        \\    const optimize = b.standardOptimizeOption(.{});
-        \\    const helper = b.addExecutable(.{ .name = "helper", .root_module = b.createModule(.{ .root_source_file = b.path("src/helper.zig"), .target = target, .optimize = optimize }) });
-        \\    const options = b.addOptions();
-        \\    NAME
-        \\    const module = b.addModule("preflight_sample", .{ .root_source_file = b.path("src/sample.zig"), .target = target, .optimize = optimize });
-        \\    module.addOptions("options", options);
-        \\    const tests = b.addTest(.{ .root_module = module });
-        \\    const test_step = b.step("test", "tests");
-        \\    test_step.dependOn(&b.addRunArtifact(tests).step);
-        \\    preflight.addCi(b, b, .{ .tests = test_step, .portable_tests = true });
-        \\}
-        \\
-    ;
-    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, script, "NAME", "preflight.addTestProgram(b, options, \"helper\", helper);") });
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/helper.zig", .data = "pub fn main() !void { return error.HelperRan; }\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
-        \\const std = @import("std");
-        \\const options = @import("options");
-        \\test "runs its helper by the path it was given" {
-        \\    try std.testing.expect(!std.Io.Dir.path.isAbsolute(options.helper));
-        \\    const ran = try std.process.run(std.testing.allocator, std.testing.io, .{ .argv = &.{options.helper} });
-        \\    defer std.testing.allocator.free(ran.stdout);
-        \\    defer std.testing.allocator.free(ran.stderr);
-        \\    try std.testing.expect(std.mem.find(u8, ran.stderr, "HelperRan") != null);
-        \\}
-        \\
-    });
-    const compiled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (compiled.term != .exited or compiled.term.exited != 0) std.debug.print("{s}", .{compiled.stderr});
-    try std.testing.expect(compiled.term == .exited and compiled.term.exited == 0);
-    const manifest = try tmp.dir.readFileAlloc(io, "zig-out/preflight/tests.json", a, .limited(1024 * 1024));
-    try std.testing.expect(std.mem.find(u8, manifest, "\"programs\":[\"zig-out/preflight/programs/helper") != null);
-    const replayed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-run", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (replayed.term != .exited or replayed.term.exited != 0) std.debug.print("{s}", .{replayed.stderr});
-    try std.testing.expect(replayed.term == .exited and replayed.term.exited == 0);
-
-    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, script, "NAME", "options.addOptionPath(\"helper\", helper.getEmittedBin());") });
-    const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-build", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    try std.testing.expect(refused.term != .exited or refused.term.exited != 0);
-    try std.testing.expect(std.mem.find(u8, refused.stderr, "portable tests must not be given a path by addOptionPath") != null);
-}
-
 test "owner caller regeneration replaces stale pin without a consumer planner" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2487,7 +2211,7 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try tmp.dir.createDirPath(io, ".github/workflows");
-    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"portable_tests\":true,\"shards\":{\"macos\":{\"min\":2}},\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"shards\":{\"macos\":{\"min\":2}},\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     // The fixture's build uses the local dependency. The generator independently
     // reads the declared publication pin, as it does after a consumer's repin.
@@ -2524,11 +2248,11 @@ test "the plan links a macOS target on Linux unless its build links a framework"
     // A hosted run sets GITHUB_OUTPUT, where the plan would write in place of stdout.
     var env = try std.testing.environ.createMap(a);
     _ = env.swapRemove("GITHUB_OUTPUT");
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "plan", "--", "--tier", "release" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "plan", "--", "--tier", "full" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;
-    // The release tier's macOS jobs are legs of one job: each leg counts as the job it is.
+    // A job of legs runs several: each leg counts as the job it is.
     var planned: std.ArrayList(src.Value) = .empty;
     for (try src.items(src.get(matrix, "include"))) |job| {
         const legs = src.get(job, "legs");
@@ -2540,10 +2264,10 @@ test "the plan links a macOS target on Linux unless its build links a framework"
     for (planned.items) |job| {
         const name = try src.string(src.get(job, "name"), "");
         const os = try src.string(src.get(job, "os"), "");
-        if (std.mem.eql(u8, name, "SDK link (x86_64-macos)")) {
+        if (std.mem.startsWith(u8, name, "SDK link (x86_64-macos)")) {
             try std.testing.expectEqualStrings("macos-latest", os);
             seen += 1;
-        } else if (std.mem.eql(u8, name, "link (aarch64-macos)")) {
+        } else if (std.mem.startsWith(u8, name, "link (aarch64-macos)")) {
             try std.testing.expectEqualStrings("ubuntu-latest", os);
             seen += 1;
         }
@@ -2570,7 +2294,7 @@ test "toolchain measuring builds without executing and injects shakedown for a c
         \\}
     });
     const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
-    const changed = try std.mem.replaceOwned(u8, a, build, ".portable_tests = true", ".portable_tests = true, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize, .imports = &probe_hook }");
+    const changed = try std.mem.replaceOwned(u8, a, build, ".tests = step", ".tests = step, .bench = .{ .programs = &.{.{ .name = \"probe\", .source = \"bench/probe.zig\" }}, .target = target, .optimize = optimize, .imports = &probe_hook }");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = try std.mem.concat(a, u8, &.{
         changed,
         \\const probe_hook: preflight.Bench.Imports = .{ .make = probeImports };
@@ -2659,8 +2383,7 @@ test "toolchain hardened preserves test allocator ownership and detects write af
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
-    const changed = try std.mem.replaceOwned(u8, a, build, ".portable_tests = true", ".portable_tests = true");
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = changed });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = build });
     const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));

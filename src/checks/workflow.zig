@@ -90,7 +90,7 @@ const Manifest = struct {
     fingerprint: u64 = 0,
 };
 
-/// The manifest's fingerprint, which seeds the package's weekly release time; 0 for a manifest without one.
+/// The manifest's fingerprint, which seeds the package's nightly time; 0 for a manifest without one.
 pub fn fingerprint(c: src.Context, manifest_path: []const u8) !u64 {
     var diagnostics: std.zon.parse.Diagnostics = .{ .errors = &.{} };
     const manifest = try std.zon.parse.fromSlice(Manifest, .{
@@ -152,7 +152,7 @@ pub fn checkPin(c: *src.Context, manifest_path: []const u8, ref: []const u8) !vo
     return error.StaleCaller;
 }
 
-/// The configuration at `path`, with what the last merge or release run measured
+/// The configuration at `path`, with what the last full and nightly runs measured
 /// beside it: the phases' costs (`costs.json`) as `measured`, and each test's
 /// seconds (`durations.json`) as `durations`.
 pub fn configuration(c: src.Context, path: []const u8) !src.Value {
@@ -241,16 +241,16 @@ fn jobKey(line: []const u8) ?[]const u8 {
     return line[2..colon];
 }
 
-/// The release tier's weekly time for the package whose manifest fingerprint is `seed`: a minute
-/// of the week of its own, so the packages' full matrices start apart rather than all at once on
-/// the account's shared runners.
-pub fn weekly(a: std.mem.Allocator, seed: u64) ![]const u8 {
-    const minute_of_week = std.hash.Wyhash.hash(0x7765656b6c79, std.mem.asBytes(&seed)) % (7 * 24 * 60);
-    return a.print("{d} {d} * * {d}", .{ minute_of_week % 60, (minute_of_week / 60) % 24, minute_of_week / (24 * 60) });
+/// The nightly tier's time for the package whose manifest fingerprint is `seed`: a minute of the
+/// day of its own, so the packages' heavy legs start apart rather than all at once on the
+/// account's shared runners.
+pub fn nightly(a: std.mem.Allocator, seed: u64) ![]const u8 {
+    const minute_of_day = std.hash.Wyhash.hash(0x6e696768746c79, std.mem.asBytes(&seed)) % (24 * 60);
+    return a.print("{d} {d} * * *", .{ minute_of_day % 60, minute_of_day / 60 });
 }
 
 /// The caller of `config`, pinned to `pin` (to the commit under test with `own`), gated in
-/// `directory`, its release tier weekly at the time `seed` (the manifest's fingerprint) gives.
+/// `directory`, its nightly tier at the time `seed` (the manifest's fingerprint) gives.
 pub fn render(a: std.mem.Allocator, config: src.Value, pin: []const u8, directory: []const u8, own: bool, workflow: []const u8, seed: u64) ![]const u8 {
     // Every writer in renderAllocating is memory-backed. Its only write
     // failure is allocation exhaustion; preserve the allocator error contract.
@@ -269,17 +269,12 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     try relative(directory, true);
     var matrices: std.Io.Writer.Allocating = .init(a);
     defer matrices.deinit();
-    for ([_]matrix.Tier{ .ci, .release, .fuzz }) |tier| {
-        const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
-        for ([_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run }, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            // The ci tier builds where it runs, as the fuzz job does: no link is shared between their jobs.
-            if (tier != .release and suffix.len != 0) continue;
-            try matrices.writer.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try matrix.include(a, group) });
-        }
+    for (std.enums.values(matrix.Tier)) |tier| {
+        try matrices.writer.print("      {t}-matrix: >-\n        {s}\n", .{ tier, try matrix.include(a, try matrix.plan(a, config, tier)) });
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
-    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@WEEKLY@", "@MATRICES@", "@HELD_GIT@" };
-    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), try weekly(a, seed), matrices.written(), try heldGit(a, config) };
+    const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@NIGHTLY@", "@MATRICES@", "@HELD_GIT@" };
+    const values = [_][]const u8{ workflow, gate, if (own) "${{ github.sha }}" else pin, try std.json.Stringify.valueAlloc(a, directory, .{}), try nightly(a, seed), matrices.written(), try heldGit(a, config) };
     var text: std.Io.Writer.Allocating = .init(a);
     defer text.deinit();
     var offset: usize = 0;
@@ -369,7 +364,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":{\"min\":3}}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":{\"min\":3}}}", .{})).value;
     const first_pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const next_pin = "76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9";
     const first = try render(a, config, first_pin, ".", false, "ci.yml", 0);
@@ -377,13 +372,9 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     const second = try render(a, config, next_pin, ".", false, "ci.yml", 0);
     try std.testing.expect(std.mem.find(u8, second, first_pin) == null);
     try std.testing.expect(std.mem.find(u8, second, next_pin) != null);
-    for ([_]matrix.Tier{ .ci, .release, .fuzz }) |tier| {
-        const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
-        for ([_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run }, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            if (tier != .release and suffix.len != 0) continue;
-            const block = try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{ tier, suffix, try matrix.include(a, group) });
-            try std.testing.expect(std.mem.find(u8, second, block) != null);
-        }
+    for (std.enums.values(matrix.Tier)) |tier| {
+        const block = try a.print("      {t}-matrix: >-\n        {s}\n", .{ tier, try matrix.include(a, try matrix.plan(a, config, tier)) });
+        try std.testing.expect(std.mem.find(u8, second, block) != null);
     }
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -414,8 +405,10 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     try std.testing.expectError(error.StaleCaller, checkPin(&checked, "build.zig.zon", next_pin));
     try tmp.dir.writeFile(c.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{ .preflight = .{ .path = \"..\" } } }" });
     try checkPin(&checked, "build.zig.zon", next_pin);
-    const malformed = (try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":\"true\"}", .{})).value;
-    try std.testing.expectError(error.InvalidWorkflowBoolean, render(a, malformed, first_pin, ".", false, "ci.yml", 0));
+    // A key 0.20.0 removed is refused by name, never read as nothing.
+    const removed = (try std.json.parseFromSlice(src.Value, a, "{\"test_job_timeout\":30}", .{})).value;
+    try std.testing.expectError(error.UnknownWorkflowOption, render(a, removed, first_pin, ".", false, "ci.yml", 0));
+    try std.testing.expect(std.mem.find(u8, matrix.problem, "0.20.0 removed it") != null);
 }
 
 test "caller output refuses symlink files and directories and propagates write failures" {
@@ -444,14 +437,14 @@ test "caller output refuses symlink files and directories and propagates write f
 }
 
 fn allocationRender(a: std.mem.Allocator) !void {
-    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"portable_tests\":true,\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":{\"min\":2}}}", .{});
+    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":{\"min\":2}}}", .{});
     defer parsed.deinit();
     // Rendering uses an arena by contract. Exercise each allocation in the
     // arena's growth, and verify its error cleanup against the leak checker.
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const output = try render(arena.allocator(), parsed.value, "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d", ".", false, "ci.yml", 0);
-    try std.testing.expect(std.mem.find(u8, output, "release-compile-matrix") != null);
+    try std.testing.expect(std.mem.find(u8, output, "nightly-matrix") != null);
 }
 
 test "caller generation survives every allocation failure without resizing its backing storage" {
@@ -481,49 +474,50 @@ test "regeneration refuses to drop a job the configuration does not declare, and
     try keepsEveryJob(declared, declared, &.{});
 }
 
-test "every caller runs the ci tier on each push to main and pull request, and the release tier weekly at its own time" {
+test "every caller runs the ci tier on each push to main and pull request, and the nightly tier daily at its own minute" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, pin, ".", false, "ci.yml", 0x1234);
     try std.testing.expect(std.mem.find(u8, plain, "  push:\n    branches: [main]\n") != null);
-    // A push of documentation alone runs nothing; the release tier and a dispatch are unchanged.
+    // A push of documentation alone runs nothing; the full tier and a dispatch are unchanged.
     try std.testing.expect(std.mem.find(u8, plain, "    paths-ignore: ['docs/**', '*.md']\n  pull_request:\n") != null);
     try std.testing.expect(std.mem.find(u8, plain, "  pull_request:\n") != null);
-    try std.testing.expect(std.mem.find(u8, plain, try a.print("    - cron: '{s}'\n", .{try weekly(a, 0x1234)})) != null);
-    try std.testing.expect(std.mem.find(u8, plain, "github.event_name == 'schedule' && 'release' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci'") != null);
-    try std.testing.expect(std.mem.find(u8, plain, "options: [ci, release, fuzz]") != null);
-    // Each push runs on its own commit; nothing confirms another run's, and the release tier runs weekly.
+    try std.testing.expect(std.mem.find(u8, plain, try a.print("    - cron: '{s}'\n", .{try nightly(a, 0x1234)})) != null);
+    try std.testing.expect(std.mem.find(u8, plain, "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci'") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "options: [ci, full, nightly, fuzz]") != null);
+    // Each push runs on its own commit; nothing confirms another run's.
     try std.testing.expect(std.mem.find(u8, plain, "format('push-{0}', github.sha)") != null);
-    try std.testing.expect(std.mem.find(u8, plain, "      ci-matrix: >-\n") != null);
-    // Releasing is bay's: no caller lands, tags or writes.
+    for ([_][]const u8{ "ci", "full", "nightly", "fuzz" }) |tier| try std.testing.expect(std.mem.find(u8, plain, try a.print("      {s}-matrix: >-\n", .{tier})) != null);
+    // Releasing is bay's: no caller lands or tags. Its one write is the gate's, whose profile job
+    // alone records what a full or nightly run of main measured (zig.yml).
     try std.testing.expect(std.mem.find(u8, plain, "land") == null);
-    try std.testing.expect(std.mem.find(u8, plain, "contents: write") == null);
+    try std.testing.expectEqual(1, std.mem.count(u8, plain, "contents: write"));
+    try std.testing.expect(std.mem.find(u8, plain, "  gate:\n    uses: pedronaugusto/preflight/.github/workflows/zig.yml@" ++ pin ++ "\n") != null);
 }
 
-test "the weekly release time is a minute of the week of the package's own, spread over the week" {
+test "the nightly time is a minute of the day of the package's own, spread over the day" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try std.testing.expectEqualStrings(try weekly(a, 42), try weekly(a, 42));
+    try std.testing.expectEqualStrings(try nightly(a, 42), try nightly(a, 42));
     var seen: std.StringHashMapUnmanaged(void) = .empty;
-    var days: [7]bool = @splat(false);
+    var hours: [24]bool = @splat(false);
     for (0..32) |i| {
-        const cron = try weekly(a, std.hash.Wyhash.hash(i, "fingerprint"));
+        const cron = try nightly(a, std.hash.Wyhash.hash(i, "fingerprint"));
         var fields = std.mem.tokenizeScalar(u8, cron, ' ');
         const minute = try std.fmt.parseInt(u8, fields.next().?, 10);
         const hour = try std.fmt.parseInt(u8, fields.next().?, 10);
-        try std.testing.expectEqualStrings("*", fields.next().?);
-        try std.testing.expectEqualStrings("*", fields.next().?);
-        const day = try std.fmt.parseInt(u8, fields.next().?, 10);
-        try std.testing.expect(minute < 60 and hour < 24 and day < 7);
-        days[day] = true;
+        for (0..3) |_| try std.testing.expectEqualStrings("*", fields.next().?);
+        try std.testing.expect(fields.next() == null);
+        try std.testing.expect(minute < 60 and hour < 24);
+        hours[hour] = true;
         try seen.put(a, cron, {});
     }
-    // Thirty-two packages land on thirty-odd distinct minutes and on most days of the week.
+    // Thirty-two packages land on thirty-odd distinct minutes, over most of the day.
     try std.testing.expect(seen.count() >= 30);
     var spread: usize = 0;
-    for (days) |d| spread += @intFromBool(d);
-    try std.testing.expect(spread >= 5);
+    for (hours) |h| spread += @intFromBool(h);
+    try std.testing.expect(spread >= 14);
 }

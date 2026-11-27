@@ -1,4 +1,5 @@
-//! A merge or release run's per-test records refresh the durations the next shards balance by.
+//! A run's records refresh what the next plan is sized by: each test's seconds, by which the
+//! shards balance, and each job's (`legs`), by which the plan deals a tier's work into its jobs.
 const std = @import("std");
 const src = @import("source.zig");
 const seam = @import("input.zig");
@@ -12,6 +13,8 @@ pub const Durations = struct {
     /// test one lacks is not run there (an end-to-end suite the emulated build leaves out),
     /// where a column only cut runs measured may lack a test they never reached.
     complete: std.array_hash_map.String(void) = .empty,
+    /// What each job spent, by its record name (`matrix.recordName`): what the plan sizes it by.
+    legs: std.array_hash_map.String(Leg) = .empty,
     records: usize = 0,
 
     fn put(d: *Durations, a: std.mem.Allocator, name: []const u8, column: []const u8, seconds: f64) !void {
@@ -22,6 +25,43 @@ pub const Durations = struct {
         cell.value_ptr.* = if (cell.found_existing) @max(cell.value_ptr.*, seconds) else seconds;
     }
 };
+
+/// What a job's shards spent, together: the most any spent besides its tests (its setup,
+/// configuring and building), the seconds of tests they ran, scaled to every shard where the
+/// run recorded only some, how many shards it ran in, and whether each recorded shard finished
+/// within its job's minutes.
+pub const Leg = struct { overhead: f64, tests: f64, shards: usize, finished: bool };
+
+/// One shard's record of a job (`legRecord`): `leg` is its record name, `seconds` its whole run,
+/// `tests` the seconds of the tests it ran.
+const LegShard = struct { shard: []const u8, seconds: f64, tests: f64, finished: bool };
+
+/// The record a job's run writes of itself, one line, beside its tests' and phases' records.
+pub fn legRecord(a: std.mem.Allocator, name: []const u8, shard: []const u8, seconds: f64, tests: f64, finished: bool) ![]const u8 {
+    return std.json.Stringify.valueAlloc(a, .{ .leg = name, .shard = shard, .seconds = seconds, .tests = tests, .finished = finished }, .{});
+}
+
+/// The seconds of tests the records under `root` hold: what a job's tests took, beside the rest
+/// of its run.
+pub fn testSeconds(c: src.Context, root: []const u8) !f64 {
+    var dir = c.directory().openDir(c.io, root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => return err,
+    };
+    defer dir.close(c.io);
+    var walker = try dir.walk(c.a);
+    defer walker.deinit();
+    var total: f64 = 0;
+    while (try walker.next(c.io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ndjson")) continue;
+        var records = try Records.open(c, dir, root, entry.path);
+        while (try records.next()) |value| {
+            if (src.get(value, "key") == .null or src.get(value, "name") == .null) continue;
+            total += try records.seconds(value);
+        }
+    }
+    return total;
+}
 
 pub fn reset(c: src.Context, root: []const u8) !void {
     try c.directory().deleteTree(c.io, root);
@@ -40,6 +80,7 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial:
     // The shard that recorded each test, by name and column.
     var shards: std.StringHashMapUnmanaged([]const u8) = .empty;
     var split = true;
+    var legs: std.array_hash_map.String(std.ArrayList(LegShard)) = .empty;
     var dir = try c.directory().openDir(c.io, root, .{ .iterate = true });
     defer dir.close(c.io);
     var walker = try dir.walk(c.a);
@@ -51,6 +92,19 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial:
             // A phase of a job is not a test.
             if (src.get(value, "phase") != .null) continue;
             const seconds = try records.seconds(value);
+            if (src.get(value, "leg") != .null) {
+                const finished = src.get(value, "finished");
+                if (finished != .bool) return error.InvalidLegRecord;
+                const held = try legs.getOrPut(c.a, try c.a.dupe(u8, try src.string(src.get(value, "leg"), "")));
+                if (!held.found_existing) held.value_ptr.* = .empty;
+                try held.value_ptr.append(c.a, .{
+                    .shard = try c.a.dupe(u8, try src.string(src.get(value, "shard"), "")),
+                    .seconds = seconds,
+                    .tests = try number(src.get(value, "tests")),
+                    .finished = finished.bool,
+                });
+                continue;
+            }
             result.records += 1;
             const column = try src.string(src.get(value, "key"), "");
             if (column.len == 0) continue;
@@ -67,6 +121,22 @@ pub fn summarize(c: src.Context, root: []const u8, previous: src.Value, partial:
         }
     }
     if (!split) return error.TestOnTwoShards;
+    for (legs.keys(), legs.values()) |name, recorded| try result.legs.put(c.a, name, try foldLeg(recorded.items));
+    const kept = src.get(previous, "legs");
+    if (kept == .object) {
+        for (kept.object.keys(), kept.object.values()) |name, entry| {
+            if (result.legs.contains(name)) continue;
+            const finished = src.get(entry, "finished");
+            const count = src.get(entry, "shards");
+            if (finished != .bool or count != .integer or count.integer < 1) return error.InvalidDurations;
+            try result.legs.put(c.a, name, .{
+                .overhead = try number(src.get(entry, "overhead")),
+                .tests = try number(src.get(entry, "tests")),
+                .shards = std.math.cast(usize, count.integer) orelse return error.InvalidDurations,
+                .finished = finished.bool,
+            });
+        }
+    } else if (kept != .null) return error.InvalidDurations;
     const measured = try result.keys.clone(c.a);
     for (try src.items(src.get(previous, "complete"))) |column| {
         if (column != .string) return error.InvalidDurations;
@@ -160,6 +230,22 @@ fn number(value: src.Value) !f64 {
     return seconds;
 }
 
+/// A job's shards' records as one: `i/n` names the count, and the tests of the shards the run
+/// did not record are those it did, scaled.
+fn foldLeg(shards: []const LegShard) !Leg {
+    var count: usize = 1;
+    if (std.mem.findScalar(u8, shards[0].shard, '/')) |slash| count = std.fmt.parseUnsigned(usize, shards[0].shard[slash + 1 ..], 10) catch return error.InvalidLegRecord;
+    if (count == 0) return error.InvalidLegRecord;
+    var leg: Leg = .{ .overhead = 0, .tests = 0, .shards = count, .finished = true };
+    for (shards) |shard| {
+        leg.overhead = @max(leg.overhead, shard.seconds - @min(shard.tests, shard.seconds));
+        leg.tests += shard.tests;
+        leg.finished = leg.finished and shard.finished;
+    }
+    leg.tests *= @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(@min(shards.len, count)));
+    return leg;
+}
+
 /// One line per test, names and columns sorted, so a refresh diffs by test.
 pub fn render(a: std.mem.Allocator, d: Durations) ![]const u8 {
     const columns = try a.dupe([]const u8, d.keys.keys());
@@ -189,12 +275,62 @@ pub fn render(a: std.mem.Allocator, d: Durations) ![]const u8 {
         }
         try w.writeByte(']');
     }
-    try w.writeAll("\n  }\n}\n");
+    try w.writeAll("\n  }");
+    if (d.legs.count() != 0) {
+        const jobs = try a.dupe([]const u8, d.legs.keys());
+        std.mem.sort([]const u8, jobs, {}, lessThan);
+        try w.writeAll(",\n  \"legs\": {");
+        for (jobs, 0..) |name, i| {
+            const leg = d.legs.get(name).?;
+            try w.writeAll(if (i == 0) "\n    " else ",\n    ");
+            try std.json.Stringify.value(name, .{}, w);
+            try w.print(": {{\"overhead\": {d:.2}, \"tests\": {d:.2}, \"shards\": {d}, \"finished\": {}}}", .{ leg.overhead, leg.tests, leg.shards, leg.finished });
+        }
+        try w.writeAll("\n  }");
+    }
+    try w.writeAll("\n}\n");
     return out.written();
 }
 
 fn lessThan(_: void, x: []const u8, y: []const u8) bool {
     return std.mem.lessThan(u8, x, y);
+}
+
+test "each job's record folds its shards into what the next plan sizes it by, and keeps the jobs the run did not run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const c: src.Context = .{ .a = a, .io = std.testing.io, .dir = .of(tmp.dir) };
+    // Two of a suite's three shards recorded themselves: 100 s and 140 s of runs, 60 s and 80 s of
+    // tests. The most either spent on the rest is 60 s; the three shards' tests are 210 s.
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-a.ndjson", .data = try legRecord(a, "test (ubuntu-latest, Debug)", "1/3", 100, 60, true) });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-b.ndjson", .data = try legRecord(a, "test (ubuntu-latest, Debug)", "2/3", 140, 80, true) });
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "leg-c.ndjson", .data = try legRecord(a, "source checks", "", 30, 0, false) });
+    // A job's record of itself is no test, and its tests' seconds are what the tests recorded.
+    try tmp.dir.writeFile(c.io, .{ .sub_path = "tests-linux-debug-1of3.ndjson", .data = "{\"name\":\"first\",\"seconds\":60,\"key\":\"linux-debug\",\"shard\":\"1/3\"}\n" });
+    try std.testing.expectEqual(@as(f64, 60), try testSeconds(c, "."));
+    const previous = (try std.json.parseFromSlice(src.Value, a,
+        \\{"keys":[],"tests":{},"legs":{"source checks":{"overhead":10,"tests":0,"shards":1,"finished":true},"hardened":{"overhead":50,"tests":200,"shards":2,"finished":true}}}
+    , .{})).value;
+    const durations = try summarize(c, ".", previous, false);
+    try std.testing.expectEqual(@as(usize, 1), durations.records);
+    const suite = durations.legs.get("test (ubuntu-latest, Debug)").?;
+    try std.testing.expectEqual(@as(f64, 60), suite.overhead);
+    try std.testing.expectEqual(@as(f64, 210), suite.tests);
+    try std.testing.expectEqual(@as(usize, 3), suite.shards);
+    try std.testing.expect(suite.finished);
+    // What the run measured replaces the record; what it did not run keeps its own.
+    try std.testing.expect(!durations.legs.get("source checks").?.finished);
+    try std.testing.expectEqual(@as(f64, 200), durations.legs.get("hardened").?.tests);
+    const rendered = try render(a, durations);
+    try std.testing.expect(std.mem.find(u8, rendered, "\"test (ubuntu-latest, Debug)\": {\"overhead\": 60.00, \"tests\": 210.00, \"shards\": 3, \"finished\": true}") != null);
+    // What renders reads back as it was: a run that measured nothing keeps every job's record.
+    try tmp.dir.createDir(c.io, "none", .default_dir);
+    const again = try summarize(c, "none", (try std.json.parseFromSlice(src.Value, a, rendered, .{})).value, false);
+    try std.testing.expectEqual(@as(usize, 3), again.legs.count());
+    try std.testing.expectEqualStrings(rendered, try render(a, again));
 }
 
 test "a refresh replaces the columns it measured, keeps the rest, and takes the longest record" {

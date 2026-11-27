@@ -31,7 +31,6 @@ pub const Cli = struct {
         unsharded: Unsharded,
         test_arguments: TestArguments,
         counts: Counts,
-        executable: Executable,
         cache: Cache,
         docs: Docs,
         snippets: Snippets,
@@ -46,7 +45,7 @@ pub const Cli = struct {
             .setup = .{ .help = "A hosted job's setup: the macOS SDK and Zig's global cache, written to the job's environment" },
             .fetch = .{ .help = "Fetch the package's dependencies, retried, for the build arguments in BUILD_ARGS" },
             .run = .{ .help = "Run a hosted job: STEP with BUILD_ARGS, its setup first, timed" },
-            .attest = .{ .help = "Whether the commit has a green release run, by its proof artifact: bay release asks it before it tags" },
+            .attest = .{ .help = "Whether the commit has green full and nightly runs, by their proof artifacts: bay release asks it before it tags" },
         },
     };
 };
@@ -57,8 +56,6 @@ const zig_exe: ensign.Option = .{ .value_name = "PATH", .hint = .command, .help 
 const module: ensign.Option = .{ .value_name = "NAME=ROOT", .help = "A module the package exports and its root file, repeated: the public surface a release must not break unannounced" };
 const working_directory: ensign.Option = .{ .value_name = "DIR", .hint = .directory, .help = "Where the planned jobs run, when not the repository's root (preflight's own gate runs its sample there)" };
 const workflow_config: ensign.Option = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json of the working directory by default" };
-/// The build's own fact, which its steps pass: whether its tests are portable.
-const portable_tests: ensign.Option = .{ .negatable = false, .help = "The build's tests are portable (addCi's .portable_tests, its ci-build step), as the build's own steps say: the native link jobs are planned exactly then. A working directory of another build is asked itself" };
 const build_option: ensign.Option = .{ .value_name = "-DNAME=VALUE", .help = "An option the build was configured with, repeated, so the configured graph is the build's" };
 
 pub const Prepare = struct {
@@ -76,12 +73,10 @@ pub const Plan = struct {
     config: ?[]const u8 = null,
     tier: matrix.Tier = .ci,
     output: ?[]const u8 = null,
-    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The jobs of a tier as the hosted caller's matrices",
         .options = .{
             .zig_exe = zig_exe,
-            .portable_tests = portable_tests,
             .config = .{ .value_name = "FILE", .hint = .file, .help = "The workflow configuration; ci/workflow.json by default" },
             .tier = .{ .help = "The tier whose jobs are planned" },
             .output = .{ .value_name = "FILE", .hint = .file, .help = "Append the matrices to this file; GITHUB_OUTPUT, else standard output, by default" },
@@ -96,7 +91,6 @@ pub const Generate = struct {
     working_directory: ?[]const u8 = null,
     self: bool = false,
     drop: []const []const u8 = &.{},
-    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The caller workflow made again for the package's pins and configuration, where it is; .github/workflows/ci.yml when there is none",
         .options = .{
@@ -105,7 +99,6 @@ pub const Generate = struct {
             .manifest = .{ .value_name = "FILE", .hint = .file, .help = "The manifest whose preflight pin the caller names" },
             .working_directory = working_directory,
             .self = .{ .negatable = false, .help = "preflight's own caller: pinned to the commit under test" },
-            .portable_tests = portable_tests,
             .drop = .{ .value_name = "JOB", .help = "A job of the old caller to let go, repeated" },
         },
     };
@@ -136,7 +129,6 @@ pub const Lint = struct {
     skip_glint: bool = false,
     module: []const []const u8 = &.{},
     build_scripts: ?[]const u8 = null,
-    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
         .about = "The caller workflow as generate makes it, the source checks over the repository's files, then the check on the configured build's revisions",
         .options = .{
@@ -148,9 +140,8 @@ pub const Lint = struct {
             .build_scripts = .{ .value_name = "FILE", .hint = .file, .help = "The build scripts the package's build.zig reaches and the dependency scripts each imports by name, as JSON: the build passes it, so lint reads a build script's imports as Zig binds them" },
             .test_step = .{ .value_name = "STEP", .help = "A top-level step CI runs tests under, repeated: a test root is a root file a run under one of them runs; ci by default" },
             .fix = .{ .negatable = false, .help = "Apply glint's deterministic fixes to the sources first (zig build fix): the report is the run before them" },
-            .release = .{ .negatable = false, .help = "The release tier's bar: every shipped ban's finding fails (P007, P008, P009 and the rules the packages declare), those the default policy reports included" },
+            .release = .{ .negatable = false, .help = "The full tier's bar: every shipped ban's finding fails (P007, P008, P009 and the rules the packages declare), those the default policy reports included" },
             .skip_glint = .{ .negatable = false, .help = "Every source check but glint's lint: what a build with -Dci-lint=false runs beside its tests" },
-            .portable_tests = portable_tests,
         },
     };
 };
@@ -174,10 +165,9 @@ pub const Gate = struct {
     config: ?[]const u8 = null,
     working_directory: ?[]const u8 = null,
     module: []const []const u8 = &.{},
-    portable_tests: bool = false,
     pub const spec: ensign.Spec(@This()) = .{
-        .about = "What a release needs beside its hosted release run: the caller plan generates, the version the CHANGELOG's newest release, and the public API's changes named there",
-        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module, .portable_tests = portable_tests },
+        .about = "What a release needs beside its hosted full and nightly runs: the caller plan generates, the version the CHANGELOG's newest release, and the public API's changes named there",
+        .options = .{ .zig_exe = zig_exe, .config = workflow_config, .working_directory = working_directory, .module = module },
     };
 };
 
@@ -345,14 +335,6 @@ pub const Counts = struct {
     };
 };
 
-pub const Executable = struct {
-    paths: []const []const u8 = &.{},
-    pub const spec: ensign.Spec(@This()) = .{
-        .about = "Give downloaded test executables back the permission to run that an artifact upload drops",
-        .options = .{ .paths = .{ .positional = true, .value_name = "FILE", .hint = .file } },
-    };
-};
-
 pub const Cache = struct {
     path: []const u8 = ".zig-cache",
     cap: usize = 1 << 20,
@@ -410,11 +392,8 @@ test "plan and generate as the build's steps call them" {
     try std.testing.expect(generate.self);
     try std.testing.expectEqualStrings("sample", generate.working_directory.?);
     try std.testing.expectEqual(2, generate.drop.len);
-    try std.testing.expect(!generate.portable_tests);
-    const plan = (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "release", "--portable-tests" })).command.plan;
-    try std.testing.expectEqual(.release, plan.tier);
-    try std.testing.expect(plan.portable_tests);
-    try std.testing.expect((try parsed(arena.allocator(), &.{ "gate", "--zig-exe", "/z/zig", "--portable-tests" })).command.gate.portable_tests);
+    const plan = (try parsed(arena.allocator(), &.{ "plan", "--zig-exe", "/z/zig", "--tier", "nightly" })).command.plan;
+    try std.testing.expectEqual(.nightly, plan.tier);
     // The caller is generate's alone.
     try std.testing.expectError(error.UnknownOption, parsed(arena.allocator(), &.{ "plan", "--workflow", ".github/workflows/ci.yml" }));
 }
@@ -482,7 +461,6 @@ test "the build's helper commands" {
     const counts = (try parsed(a, &.{ "counts", "--records=.zig-cache/preflight-counts", "--expect", "test-macos-Debug", "--expect", "test-macos-Debug-2" })).command.counts;
     try std.testing.expectEqualStrings(".zig-cache/preflight-counts", counts.records);
     try std.testing.expectEqualStrings("test-macos-Debug-2", counts.expect[1]);
-    try std.testing.expectEqual(2, (try parsed(a, &.{ "executable", "zig-out/a", "zig-out/b" })).command.executable.paths.len);
     try std.testing.expectEqual(1 << 20, (try parsed(a, &.{ "cache", "--path", ".zig-cache" })).command.cache.cap);
     try std.testing.expectEqualStrings("api", (try parsed(a, &.{ "docs", "--config", "ci/preflight.json", "--zig-exe", "/z/zig", "api" })).command.docs.region);
     try std.testing.expectEqualStrings("usage", (try parsed(a, &.{ "docs", "--config", "ci/preflight.json", "--zig-exe", "/z/zig" })).command.docs.region);

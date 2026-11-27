@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ensign = @import("ensign");
 const aegis = @import("aegis");
+const ensign = @import("ensign");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
 const src = checks.source;
@@ -27,7 +27,6 @@ pub fn main(init: std.process.Init) !void {
         .gate => |args| try gateCommand(&c, args),
         .targets => |args| try targetsCommand(c, init.environ_map, args),
         .cache => |args| try checks.cache.trim(c, args.path, args.cap),
-        .executable => |args| for (args.paths) |path| try executable(c, path),
         .counts => |args| try checks.counts.check(&c, args.records, args.expect, environment(init.environ_map, "PREFLIGHT_SHARD") orelse "", environment(init.environ_map, checks.counts.summary_variable)),
         .unsharded => |args| if (environment(init.environ_map, "PREFLIGHT_SHARD") != null) {
             c.fail("{s}: a test runner of its own runs every shard's tests; drop the shards or the runner", .{args.name});
@@ -136,11 +135,7 @@ fn skipCommand(c: *src.Context, env: *std.process.Environ.Map, args: @FieldType(
 /// Mac, with Apple's SDK; Zig links any other macOS target on Linux), each read from the build
 /// configured for that target, so a framework linked for macOS alone counts; and whether the
 /// build has the fuzz job's step, as `fuzzed`: it has when its manifest declares shakedown,
-/// read there without configuring the build; and whether its tests are portable, as
-/// `portable_tests` (`addCi`'s `.portable_tests`, its `ci-build` step, which the native link
-/// jobs run, so they are planned exactly when it has it): the build's steps pass their own
-/// (`--portable-tests`), and a working directory of another build (preflight's sample) is
-/// configured and asked whether it has the step.
+/// read there without configuring the build.
 fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerror!void {
     if (config.* != .object) return;
     var gate = c.*;
@@ -160,24 +155,19 @@ fn sdkTargets(c: *src.Context, config: *src.Value, directory: []const u8) anyerr
     }
     try config.object.put(c.a, "sdk_targets", .{ .array = linking });
     try config.object.put(c.a, "fuzzed", .{ .bool = try checks.manifest.declares(&gate, "shakedown") });
-    // The build that runs the gate is the package's own, else another one, which is asked.
-    const here = try c.directory().realPathFileAlloc(c.io, ".", c.a);
-    const elsewhere = !std.mem.eql(u8, here, try c.directory().realPathFileAlloc(c.io, directory, c.a));
-    try config.object.put(c.a, "portable_tests", .{ .bool = if (elsewhere) facts.hasStep(try facts.read(gate, c.zig, &.{}), "ci-build") else c.portable_tests });
 }
 
-/// `gate`: what a release needs beside its hosted release run, before `bay release` asks
+/// `gate`: what a release needs beside its hosted full and nightly runs, before `bay release` asks
 /// for that run: the caller as `plan` generates it, the manifest's version as the
 /// CHANGELOG's newest release, and the CHANGELOG naming what the public API changed since
 /// the last tag. Each refusal names its fix. The jobs are the hosted tiers': a push runs the
-/// ci tier, and a tag needs a green release run on its commit (`attest`); `bay ci` is the
+/// ci tier, and a tag needs green full and nightly runs on its commit (`attest`); `bay ci` is the
 /// ci tier's checks here (the source checks and this machine's tests).
 ///
 /// `--working-directory <dir>` reads the caller of a package whose planned jobs run in
 /// `dir` (preflight's own runs its sample there); `--config` defaults to `dir`'s.
 fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
     if (args.zig_exe) |zig| c.zig = zig;
-    c.portable_tests = args.portable_tests;
     // A caller other than plan generates would have the hosted runs check another release
     // than the one gated here.
     _ = checks.caller.currentCaller(c, args.working_directory, args.config, sdkTargets) catch |err| switch (err) {
@@ -191,7 +181,7 @@ fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
         try checks.release.changelogNamesChanges(c, try modules(c.a, args.module), &builds);
     }
     if (c.errors != 0) return error.CheckFailed;
-    try stdout(c.*, "gate: the caller, the version and the CHANGELOG hold; a tag needs a green release run on its commit\n");
+    try stdout(c.*, "gate: the caller, the version and the CHANGELOG hold; a tag needs green full and nightly runs on its commit\n");
 }
 
 /// `generate`: the caller made again for the package's pins and configuration, where it
@@ -199,7 +189,6 @@ fn gateCommand(c: *src.Context, args: @FieldType(Command, "gate")) !void {
 fn generateCommand(c: *src.Context, args: @FieldType(Command, "generate")) !void {
     errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
     if (args.zig_exe) |zig| c.zig = zig;
-    c.portable_tests = args.portable_tests;
     const path = checks.caller.generate(c, .{ .working_directory = args.working_directory, .config = args.config, .own = args.self, .manifest = args.manifest, .drops = args.drop }, sdkTargets) catch |err| switch (err) {
         error.CallerRefused => return error.CheckFailed,
         else => return err,
@@ -212,20 +201,12 @@ fn planCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const a = c.a;
     errdefer if (checks.matrix.problem.len != 0) c.report("ci/workflow.json: refused: {s}\n", .{checks.matrix.problem});
     if (args.zig_exe) |zig| c.zig = zig;
-    c.portable_tests = args.portable_tests;
     var config = try checks.workflow.configuration(c.*, args.config orelse "ci/workflow.json");
     try sdkTargets(c, &config, ".");
-    const jobs = try checks.matrix.plan(a, config, args.tier);
-    const tiers = try checks.matrix.split(a, config, jobs, args.tier);
-    const value = try checks.matrix.include(a, tiers.native);
+    const value = try checks.matrix.include(a, try checks.matrix.plan(a, config, args.tier));
     const output = args.output orelse init.environ_map.get("GITHUB_OUTPUT");
     if (output) |path| {
         try append(c.*, path, try a.print("matrix={s}\n", .{value}));
-        try append(c.*, path, try a.print("compile_matrix={s}\nrun_matrix={s}\nportable={s}\n", .{
-            try checks.matrix.include(a, tiers.compile),
-            try checks.matrix.include(a, tiers.run),
-            if (tiers.compile.len > 0) "true" else "false",
-        }));
     } else try stdout(c.*, value);
 }
 
@@ -236,11 +217,11 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     // The file as written, before the lint adds what it reads beside it.
     try checks.keys.refuseUnknown(c, args.config, config, .preflight);
     if (args.zig_exe) |zig| c.zig = zig;
-    c.portable_tests = args.portable_tests;
     // A caller other than generate makes would have the hosted runs check other jobs than
     // ci/workflow.json declares: refused here, before a push, not first at a release's gate.
     try checks.caller.lintCaller(c, sdkTargets);
     const snapshot = try facts.read(c.*, c.zig, args.build_option);
+    try hostedRefusals(c, snapshot, args.build_option);
     const steps = try testSteps(c, config, args.test_step);
     const roots = try facts.testRoots(a, snapshot, steps);
     var root_values: std.ArrayList(src.Value) = .empty;
@@ -304,18 +285,112 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     try checks.lazy_import.check(c);
 }
 
+/// What a hosted run would refuse of each tier's jobs before they ran, met before the push: the
+/// step each job runs of the package's build, configured with the job's options, is the
+/// build's, gives preflight's runner every test it runs, and reaches no refusal the build makes
+/// by name, nor does a step of the same build it builds again (the fuzz job's properties:
+/// ladar's ci-fuzz was refused on its hosted run for properties not written with shakedown,
+/// which no check on the machine had asked). A refusal the configuring machine decides counts
+/// only for a job that runs on a machine of this one's system.
+fn hostedRefusals(c: *src.Context, base: facts.Snapshot, build_option: []const []const u8) !void {
+    const workflow = try checks.workflow.configuration(c.*, "ci/workflow.json");
+    var refusing: Refusing = .{ .c = c };
+    try refusing.snapshots.put(c.a, try std.mem.join(c.a, " ", build_option), base);
+    for (std.enums.values(checks.matrix.Tier)) |tier| for (try checks.matrix.planned(c.a, workflow, tier)) |job| {
+        // A job in a directory of its own runs another build; `preflight-` steps are preflight's commands.
+        if (job.directory.len != 0 or std.mem.startsWith(u8, job.step, "preflight-")) continue;
+        // The job's options alone, as its runner configures the build.
+        var declared: std.ArrayList([]const u8) = .empty;
+        var tokens = std.mem.tokenizeAny(u8, job.args, " \t\r\n");
+        while (tokens.next()) |token| if (declares(base, token)) try declared.append(c.a, token);
+        try refusing.step(.{ .tier = tier, .name = job.name, .here = runsHere(job.os) }, try merged(c.a, &.{}, declared.items), job.step);
+    };
+}
+
+/// Whether `token` is an option `-Dname[=value]` the configured build declares: one it does not
+/// is the development build's to take (bay's `-Doptimize`), and the configuring would refuse it.
+fn declares(snapshot: facts.Snapshot, token: []const u8) bool {
+    if (!std.mem.startsWith(u8, token, "-D")) return false;
+    for (snapshot.config.available_options) |available| {
+        if (std.mem.eql(u8, available.name.slice(&snapshot.config), optionName(token))) return true;
+    }
+    return false;
+}
+
+/// `options` and then `later`, each option named once, its last value kept: Zig reads an option
+/// given twice as a list, which a boolean refuses.
+fn merged(a: std.mem.Allocator, options: []const []const u8, later: []const []const u8) ![]const []const u8 {
+    var all: std.ArrayList([]const u8) = .empty;
+    for ([_][]const []const u8{ options, later }) |list| for (list) |token| {
+        for (all.items) |*given| {
+            if (std.mem.eql(u8, optionName(given.*), optionName(token))) {
+                given.* = token;
+                break;
+            }
+        } else try all.append(a, token);
+    };
+    return all.toOwnedSlice(a);
+}
+
+/// The name of an option `-Dname[=value]`.
+fn optionName(token: []const u8) []const u8 {
+    return token[2 .. std.mem.findScalar(u8, token, '=') orelse token.len];
+}
+
+/// Whether a hosted runner, `os`, is a machine of this one's system.
+fn runsHere(os: []const u8) bool {
+    const prefix = switch (builtin.os.tag) {
+        .macos => "macos",
+        .windows => "windows",
+        .linux => "ubuntu",
+        else => return false,
+    };
+    return std.mem.startsWith(u8, os, prefix);
+}
+
+const Refusing = struct {
+    c: *src.Context,
+    /// The build configured with each set of options, by the options joined.
+    snapshots: std.array_hash_map.String(facts.Snapshot) = .empty,
+    /// The steps checked, by their options and name: a step the tiers share is reported once.
+    checked: std.array_hash_map.String(void) = .empty,
+
+    const Job = struct { tier: checks.matrix.Tier, name: []const u8, here: bool };
+
+    fn step(refusing: *Refusing, job: Job, options: []const []const u8, name: []const u8) !void {
+        const c = refusing.c;
+        const key = try std.mem.join(c.a, " ", options);
+        if ((try refusing.checked.getOrPut(c.a, try c.a.print("{s}\x00{s}", .{ key, name }))).found_existing) return;
+        const held = try refusing.snapshots.getOrPut(c.a, key);
+        if (!held.found_existing) held.value_ptr.* = try facts.read(c.*, c.zig, options);
+        const snapshot = held.value_ptr.*;
+        if (!facts.hasStep(snapshot, name)) {
+            c.fail("lint: the {t} tier's job `{s}` runs the step `{s}`, which the build ({s}) has none of", .{ job.tier, job.name, name, key });
+            return;
+        }
+        // As the job checks it: `ci-test` is the tests as `addCi` read them, `ci` all of them.
+        const inspected = if (std.mem.eql(u8, name, "ci-test")) "ci" else name;
+        for (try facts.testsOutsideRunner(c.a, snapshot, inspected)) |outside| c.fail("lint: {s}: the {t} tier's job `{s}` runs it under `{s}` without preflight's runner, which the hosted job refuses: it joined the tests after addCi read them; add it to them before addCi", .{ outside, job.tier, job.name, inspected });
+        const found = try facts.refusals(c.a, snapshot, name);
+        for (found.build) |message| c.fail("lint: the {t} tier's job `{s}` builds `{s}`, which the build refuses: {s}", .{ job.tier, job.name, name, message });
+        if (job.here) for (found.host) |message| c.fail("lint: the {t} tier's job `{s}` builds `{s}`, which this machine's build refuses: {s}", .{ job.tier, job.name, name, message });
+        for (found.nested) |nested| try refusing.step(job, try merged(c.a, options, nested.options), nested.step);
+    }
+};
+
 /// The top-level steps CI runs tests under, whose runs make a file a test root: `ci`, which
 /// holds the tests step; those the build names (the steps the fuzzer and the hardened profile
-/// run); the steps of the package's own build that its release tier's jobs run; and the
-/// steps the lint's `extra_checks` run.
+/// run); the steps of the package's own build that its full and nightly tiers' jobs run; and
+/// the steps the lint's `extra_checks` run.
 fn testSteps(c: *src.Context, config: src.Value, named: []const []const u8) ![]const []const u8 {
     var steps: std.array_hash_map.String(void) = .empty;
     try steps.put(c.a, "ci", {});
     for (named) |name| try steps.put(c.a, name, {});
-    for (try checks.matrix.plan(c.a, try checks.workflow.configuration(c.*, "ci/workflow.json"), .release)) |job| {
+    const workflow = try checks.workflow.configuration(c.*, "ci/workflow.json");
+    for ([_]checks.matrix.Tier{ .full, .nightly }) |tier| for (try checks.matrix.planned(c.a, workflow, tier)) |job| {
         // A job in a directory of its own runs another build's steps.
         if (job.directory.len == 0) try steps.put(c.a, job.step, {});
-    }
+    };
     for (try src.items(src.get(config, "extra_checks"))) |command| {
         var building = false;
         for (try src.items(command)) |word| {
@@ -376,16 +451,6 @@ fn surfaceCommand(c: *src.Context, args: @FieldType(Command, "surface")) !void {
 
 /// Gives a downloaded test executable back the permission to run that an
 /// artifact upload drops.
-fn executable(c: src.Context, path: []const u8) !void {
-    if (std.Io.File.Permissions.has_executable_bit) {
-        const file = try std.Io.Dir.cwd().openFile(c.io, path, .{});
-        defer file.close(c.io);
-        // Whoever may read it may run it, as `chmod +x` gives.
-        const mode = (try file.stat(c.io)).permissions.toMode();
-        try file.setPermissions(c.io, .fromMode(mode | ((mode & 0o444) >> 2)));
-    }
-}
-
 fn lint(c: *src.Context, gpa: std.mem.Allocator, config: src.Value, sources: []const src.Source, code: []const src.Source, tests: []const src.Source, build: checks.glint.assembly.Build, exported: []const checks.surface.Module, mode: struct { fix: bool, release: bool, skip_glint: bool = false }, log: checks.phases.Log) !void {
     for (sources) |s| if (s.tree.errors.len > 0) {
         c.fail("{s}: invalid Zig source", .{s.path});
@@ -491,9 +556,41 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
     return if (step == .string) step.string else null;
 }
 
-/// Runs the job `env` describes, as the hosted job runs it.
+/// Runs the job `env` describes, as the hosted job runs it, and records what it spent
+/// (`recordLeg`), whatever its outcome.
 fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
     if (env.get("PREFLIGHT_LEGS")) |legs| if (legs.len != 0) return runLegs(context, env, legs);
+    const started: std.Io.Clock.Timestamp = .now(context.io, .awake);
+    defer recordLeg(context, env, started) catch |err| context.report("preflight: the job's record of what it spent is not written ({t}): the next plan sizes it by the last one\n", .{err});
+    try runJob(context, env);
+}
+
+/// How long a job's run took, in nanoseconds as std keeps it.
+const Elapsed = aegis.units.Duration(.nanosecond, i96);
+/// An instant of the real clock, in nanoseconds as std keeps it.
+const Now = aegis.units.Instant(std.Io.Clock.real, .nanosecond, i96);
+/// A hosted job's deadline: whole seconds of the real clock.
+const JobEnd = aegis.units.Instant(std.Io.Clock.real, .second, i64);
+
+/// The record a hosted job keeps of itself, where its upload takes its tests' records
+/// (`profile.legRecord`): its name less its shard, its shard, the seconds its run took, those
+/// its tests took, and whether it ended before its job's deadline. The profile folds the
+/// shards' records into `legs` in `ci/durations.json`, by which the next plan deals its tier's
+/// work into jobs. A run outside a hosted job (`PREFLIGHT_NAME` unset) keeps none.
+fn recordLeg(c: src.Context, env: *std.process.Environ.Map, started: std.Io.Clock.Timestamp) !void {
+    const name = env.get("PREFLIGHT_NAME") orelse return;
+    const job = env.get("PREFLIGHT_JOB") orelse return;
+    if (name.len == 0 or job.len == 0) return;
+    const seconds = Elapsed.fromIoDuration(started.durationTo(.now(c.io, .awake)).raw, .exact).toSeconds(f64);
+    const tests = try checks.profile.testSeconds(c, checks.phases.Log.directory);
+    const finished = if (try watchdog.jobDeadline(env)) |deadline| (try Now.fromIoTimestamp(.now(c.io, .real), .exact)).compare(JobEnd.fromRaw(deadline).convert(.nanosecond, i96, .exact)) == .lt else true;
+    const line = try checks.profile.legRecord(c.a, checks.matrix.recordName(name), env.get("PREFLIGHT_SHARD") orelse "", seconds, tests, finished);
+    try c.directory().createDirPath(c.io, checks.phases.Log.directory);
+    try c.directory().writeFile(c.io, .{ .sub_path = try c.a.print("{s}/leg-{s}.ndjson", .{ checks.phases.Log.directory, job }), .data = try c.a.print("{s}\n", .{line}) });
+}
+
+/// Runs the job `env` describes.
+fn runJob(context: src.Context, env: *std.process.Environ.Map) !void {
     var c = context;
     // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
     // (`targets`). A test's environment holds none of preflight's controls, this one either.
@@ -527,15 +624,13 @@ fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
     try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
 }
 
-/// When a leg starts, in the real clock's whole seconds, as `PREFLIGHT_STARTED` holds it.
-const LegStart = aegis.units.Instant(std.Io.Clock.real, .second, i64);
-
-/// Runs each of a job's legs (the release tier's macOS jobs on its one runner, `matrix.macosLegs`)
-/// in sequence, as its own job would run: its fetch, then `preflight run` in its directory with its
-/// step, arguments, shard, setup and limit, the limit counted from the leg's start. Every leg runs
-/// whatever another's outcome; each that fails is named, and the job fails after the last. Each
-/// leg's timing records are kept apart, under the package's `.zig-cache/preflight-timings/<leg>`,
-/// where the job's upload takes them and the profile reads every record below.
+/// Runs each of a job's legs (the work `matrix.pack` dealt into it, on its one runner) in
+/// sequence, as its own job would run: its fetch, then `preflight run` in its directory with its
+/// step, arguments, shard, targets, build jobs and setup, every leg within the job's deadline.
+/// Every leg runs whatever another's outcome; each that fails is named, and the job fails after
+/// the last. Each leg's records, its record of itself among them, are kept apart, under the
+/// package's `.zig-cache/preflight-timings/<leg>`, where the job's upload takes them and the
+/// profile reads every record below.
 /// The legs are the plan preflight made, read as it wrote them.
 fn runLegs(c: src.Context, env: *std.process.Environ.Map, text: []const u8) !void {
     const legs = std.json.parseFromSliceLeaky([]const checks.matrix.Job, c.a, text, .{}) catch return error.InvalidLegs;
@@ -555,8 +650,8 @@ fn runLegs(c: src.Context, env: *std.process.Environ.Map, text: []const u8) !voi
         try leg_env.put("PREFLIGHT_SETUP", if (leg.setup) "true" else "false");
         try leg_env.put("PREFLIGHT_TARGETS", leg.targets);
         try leg_env.put("PREFLIGHT_JOB", leg.cache_key);
-        try leg_env.put("PREFLIGHT_JOB_TIMEOUT", try c.a.print("{d}", .{leg.job_timeout}));
-        try leg_env.put("PREFLIGHT_STARTED", try c.a.print("{d}", .{(try LegStart.fromIoTimestamp(.now(c.io, .real), .down)).raw()}));
+        try leg_env.put("PREFLIGHT_NAME", leg.name);
+        try leg_env.put("PREFLIGHT_JOBS", if (leg.build_jobs) |count| try c.a.print("{d}", .{count}) else "");
         // The job set up the package's own tools; a leg with a step or a directory of its own
         // sets up its tools.
         try leg_env.put("PREFLIGHT_SETUP_STEP", leg.prepare);
@@ -580,7 +675,7 @@ fn runLegs(c: src.Context, env: *std.process.Environ.Map, text: []const u8) !voi
     try std.Io.Dir.rename(.cwd(), kept, .cwd(), timings, c.io);
     if (env.get("GITHUB_STEP_SUMMARY")) |summary| {
         var table: std.Io.Writer.Allocating = .init(c.a);
-        try table.writer.print("\n| macOS leg | Outcome |\n|---|---|\n", .{});
+        try table.writer.print("\n| Leg | Outcome |\n|---|---|\n", .{});
         for (legs) |leg| {
             var lost = false;
             for (failed.items) |name| lost = lost or std.mem.eql(u8, name, leg.name);

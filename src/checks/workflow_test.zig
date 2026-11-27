@@ -34,7 +34,7 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const text = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "gate", "master", "compile", "execute" }) |name| {
+    for ([_][]const u8{ "gate", "master" }) |name| {
         const body = try job(text, name);
         for (1..4) |attempt| {
             const marker = try arena.allocator().print("        id: tools{d}\n", .{attempt});
@@ -50,7 +50,7 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
             try std.testing.expectEqual(attempt < 3 or advisory, std.mem.find(u8, step, "continue-on-error: true") != null);
             if (attempt > 1) {
                 try contains(step, try arena.allocator().print("if: ${{{{ !cancelled() && steps.tools{d}.outcome == 'failure' }}}}", .{attempt - 1}));
-            } else if (std.mem.eql(u8, name, "gate") or std.mem.eql(u8, name, "compile") or std.mem.eql(u8, name, "execute")) {
+            } else if (std.mem.eql(u8, name, "gate")) {
                 try contains(step, "if: matrix.setup");
             } else try contains(step, "if: steps.setup.outcome == 'success'");
         }
@@ -58,10 +58,8 @@ test "hosted tool setup retries failures and step timeouts at most three times" 
         try contains(body, "      - uses: ./.preflight/.github/actions/setup\n        id: setup\n");
         try contains(body, "PREFLIGHT_PREPARED: 'true'");
         // A cold build of the held git takes longer than tools alone: it has a step and a
-        // deadline of its own, once, before the attempts; a compile job holds none.
-        const held = std.mem.find(u8, body, "      - name: Hold the package's git\n");
-        try std.testing.expectEqual(!std.mem.eql(u8, name, "compile"), held != null);
-        if (held) |start| {
+        // deadline of its own, once, before the attempts.
+        if (std.mem.find(u8, body, "      - name: Hold the package's git\n")) |start| {
             const step = body[start .. std.mem.findPos(u8, body, start + 1, "      - ") orelse body.len];
             try contains(step, "        timeout-minutes: 30\n");
             try contains(step, " --held-git\n");
@@ -235,14 +233,14 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "toolchain", "compile", "execute" }) |name| {
+    for ([_][]const u8{ "toolchain", "profile", "runners" }) |name| {
         try std.testing.expect(std.mem.find(u8, try job(workflow, name), "\n    continue-on-error:") == null);
     }
     // The gate's jobs carry no job-level continue-on-error: a declared advisory job's steps
     // continue instead (`nonBlocking`).
     try std.testing.expect(std.mem.find(u8, try job(workflow, "gate"), "\n    continue-on-error:") == null);
     // Publishing the blocking gate's proof never depends on master.
-    try contains(try job(workflow, "profile"), "needs: [toolchain, gate, compile, execute]");
+    try contains(try job(workflow, "profile"), "needs: [toolchain, gate]");
 }
 
 test "generated caller uses the shared gate and exactly the planned matrices" {
@@ -258,21 +256,15 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     // does), and whether it has the fuzz job's step: it has, as it declares shakedown.
     try config.object.put(a, "sdk_targets", .{ .array = .init(a) });
     try config.object.put(a, "fuzzed", .{ .bool = true });
-    // And whether its tests are portable: they are, as it has ci-build.
-    try config.object.put(a, "portable_tests", .{ .bool = true });
-    // The cross jobs are packed by what the sample's last release run measured, as the
-    // caller was made (`configuration` reads `costs.json` beside it as `measured`).
+    // The plan is sized by what the sample's last runs measured, as the caller was made
+    // (`configuration` reads `costs.json` and `durations.json` beside it).
     try config.object.put(a, "measured", (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/costs.json"), .{})).value);
+    if (read(a, "sample/ci/durations.json")) |text| {
+        try config.object.put(a, "durations", (try std.json.parseFromSlice(std.json.Value, a, text, .{})).value);
+    } else |err| if (err != error.FileNotFound) return err;
     try std.testing.expectEqual(@as(usize, 1), (try matrix.plan(a, config, .fuzz)).len);
-    for ([_]matrix.Tier{ .ci, .release, .fuzz }) |tier| {
-        const tiers = try matrix.split(a, config, try matrix.plan(a, config, tier), tier);
-        const groups = [_][]const matrix.Job{ tiers.native, tiers.compile, tiers.run };
-        for (groups, [_][]const u8{ "", "-compile", "-run" }) |group, suffix| {
-            if (tier != .release and suffix.len != 0) continue;
-            try contains(caller, try a.print("      {t}{s}-matrix: >-\n        {s}\n", .{
-                tier, suffix, try matrix.include(a, group),
-            }));
-        }
+    for (std.enums.values(matrix.Tier)) |tier| {
+        try contains(caller, try a.print("      {t}-matrix: >-\n        {s}\n", .{ tier, try matrix.include(a, try matrix.plan(a, config, tier)) }));
     }
 }
 
@@ -344,19 +336,6 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     try std.testing.expectEqualStrings("xb", try tmp.dir.readFileAlloc(io, "attempts", a, .limited(32)));
 }
 
-test "SDK artifacts link on their matrix runner before native replay" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const workflow = try read(a, ".github/workflows/zig.yml");
-    const compile = try job(workflow, "compile");
-    try contains(compile, "runs-on: ${{ matrix.os }}");
-    try contains(compile, "Link test executables with the native SDK");
-    try contains(compile, "PREFLIGHT_PREPARED: 'true'");
-    try contains(compile, "PREFLIGHT_SETUP: 'true'");
-    try contains(try job(workflow, "execute"), "needs: [toolchain, compile]");
-}
-
 test "the gate runs the step each planned job names, on the targets it names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -364,7 +343,9 @@ test "the gate runs the step each planned job names, on the targets it names" {
     try contains(body, "STEP: ${{ matrix.step }}");
     try contains(body, "PREFLIGHT_TARGETS: ${{ matrix.targets }}");
     try contains(body, "hardened-fuzz");
-    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}");
+    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'full' && inputs.full-matrix || inputs.tier == 'nightly' && inputs.nightly-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}");
+    // Each job keeps its record of what it spent by its name, which the next plan is sized by.
+    try contains(body, "PREFLIGHT_NAME: ${{ matrix.name }}");
 }
 
 test "one job builds the checks, and the others take them" {
@@ -376,12 +357,10 @@ test "one job builds the checks, and the others take them" {
     try contains(built, "name: toolchain-${{ inputs.preflight-ref }}");
     // The documentation-only filter runs on what that job built.
     try contains(built, "preflight skip");
-    for ([_][]const u8{ "gate", "compile", "execute" }) |name| {
-        const body = try job(workflow, name);
-        try contains(body, "toolchain: toolchain-${{ inputs.preflight-ref }}");
-        try contains(body, "needs:");
-        try std.testing.expect(std.mem.find(u8, body, "build.zig") == null);
-    }
+    const gate = try job(workflow, "gate");
+    try contains(gate, "toolchain: toolchain-${{ inputs.preflight-ref }}");
+    try contains(gate, "needs:");
+    try std.testing.expect(std.mem.find(u8, gate, "build.zig") == null);
     // Zig master builds its own, by the Zig that the checks read.
     try contains(try job(workflow, "master"), "--build-file .preflight/build.zig");
     try std.testing.expect(std.mem.find(u8, try job(workflow, "master"), "toolchain: ") == null);
@@ -391,24 +370,22 @@ test "toolchain fuzz artifacts follow the configured shared local cache" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "gate", "execute" }) |name| {
-        const body = try job(workflow, name);
-        try contains(body, "path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v");
-        try contains(body, "if-no-files-found: error");
-    }
+    const body = try job(workflow, "gate");
+    try contains(body, "path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/v");
+    try contains(body, "if-no-files-found: error");
 }
 
-test "the fuzz job: dispatched alone or in the release tier, its corpora cached, its findings and corpora kept, red on a finding" {
+test "the fuzz job: dispatched alone or in the nightly tier, its corpora cached, its findings and corpora kept, red on a finding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const caller = try read(a, "src/checks/caller.yml");
-    try contains(caller, "options: [ci, release, fuzz]");
+    try contains(caller, "options: [ci, full, nightly, fuzz]");
     try contains(caller, "fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}");
     const workflow = try read(a, ".github/workflows/zig.yml");
     // A fuzz dispatch for a package with no fuzz job fails at once, saying why.
     try contains(try job(workflow, "tier"), "inputs.tier == 'fuzz' && inputs.fuzz-matrix == '{\"include\":[]}'");
-    try contains(try job(workflow, "toolchain"), "contains(fromJSON('[\"ci\",\"release\",\"fuzz\"]'), inputs.tier)");
+    try contains(try job(workflow, "toolchain"), "contains(fromJSON('[\"ci\",\"full\",\"nightly\",\"fuzz\"]'), inputs.tier)");
     const gate = try job(workflow, "gate");
     try contains(gate, "inputs.tier == 'fuzz' && inputs.fuzz-matrix ||");
     // A dispatch's own minutes: the job holds GitHub's whole limit and the budget ends it.
@@ -430,7 +407,7 @@ test "the fuzz job: dispatched alone or in the release tier, its corpora cached,
     // name needs the gate's success with the rest (relic's run 43621719158 left no records).
     const profile = try job(workflow, "profile");
     try contains(profile, "if: always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') && inputs.tier != 'fuzz'\n");
-    try contains(profile, "FINISHED: ${{ needs.gate.result == 'success' && ");
+    try contains(profile, "FINISHED: ${{ needs.gate.result == 'success' }}");
     try contains(profile, "name: ${{ env.FINISHED == 'true' && 'preflight' || 'records' }}-");
 }
 
@@ -440,7 +417,7 @@ test "the held git's build is cached by its release, the recipe and the machine,
     const a = arena.allocator();
     const text = try read(a, ".github/workflows/zig.yml");
     const key = try a.print("key: preflight-git-${{{{ inputs.held-git }}}}-r{d}-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-", .{heldgit.recipe});
-    for ([_][]const u8{ "gate", "master", "execute" }) |name| {
+    for ([_][]const u8{ "gate", "master" }) |name| {
         const body = try job(text, name);
         const restore = std.mem.find(u8, body, "- name: Restore the held git") orelse return error.MissingRestore;
         const tools = std.mem.find(u8, body, "id: tools1") orelse return error.MissingSetupAttempt;
@@ -449,8 +426,27 @@ test "the held git's build is cached by its release, the recipe and the machine,
         try std.testing.expectEqual(2, std.mem.count(u8, body, key));
         try std.testing.expect(std.mem.find(u8, body[save..], "steps.held_git.outputs.cache-hit != 'true'") != null);
     }
-    try std.testing.expect(std.mem.find(u8, try job(text, "compile"), "held git") == null);
     const setup = try read(a, ".github/actions/setup/action.yml");
     try contains(setup, "PREFLIGHT_GIT_STORE=${RUNNER_TEMP}/preflight-git");
     try std.testing.expect(std.mem.find(u8, setup, "choco") == null);
+}
+
+test "each job of the gate names its token's permissions: every one reads, and the profile job alone writes the record" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const workflow = try read(a, ".github/workflows/zig.yml");
+    try contains(workflow, "\npermissions: {}\njobs:\n");
+    for ([_][]const u8{ "tier", "toolchain", "gate", "master", "profile", "runners" }) |name| try contains(try job(workflow, name), "\n    permissions:");
+    try std.testing.expectEqual(1, std.mem.count(u8, workflow, "contents: write"));
+    const profile = try job(workflow, "profile");
+    try contains(profile, "    permissions:\n      contents: write\n");
+    // Only main's full and nightly runs write it; never a pull request's.
+    try contains(profile, "RECORD: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.tier == 'full' || inputs.tier == 'nightly') }}");
+    // It folds onto the newest record and appends: never a force push, and a lost race folds again.
+    try contains(profile, "git fetch -q --depth=1 origin preflight-durations");
+    try contains(profile, "git -C \"$record\" push -q origin HEAD:refs/heads/preflight-durations");
+    try std.testing.expect(std.mem.find(u8, profile, "--force") == null and std.mem.find(u8, profile, "push -f") == null);
+    // The heavy legs' Zig master is the nightly tier's.
+    try contains(try job(workflow, "master"), "if: inputs.tier == 'nightly'");
 }

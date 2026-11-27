@@ -55,8 +55,8 @@ pub fn minutes(c: *src.Context, given: ?u32, config: src.Value) !usize {
 }
 
 fn checked(c: *src.Context, value: u32) !usize {
-    if (value > matrix.max_fuzz_minutes) {
-        c.fail("ci-fuzz: {d} minutes is more than a hosted job holds; at most {d}", .{ value, matrix.max_fuzz_minutes });
+    if (value > matrix.max_dispatched_fuzz_minutes) {
+        c.fail("ci-fuzz: {d} minutes is more than a hosted job holds; at most {d}", .{ value, matrix.max_dispatched_fuzz_minutes });
         return error.CheckFailed;
     }
     return value;

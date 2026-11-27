@@ -64,8 +64,11 @@ pub const WeighError = error{ InvalidDurations, OutOfMemory };
 /// the package's `ci/durations.json` or empty, balances the split. With
 /// `announce`, the seed and the shard's share go to stderr. A runner serving
 /// the build runner passes false: Zig 0.17 shows any stderr of a passing run
-/// step under a "failed command:" line, and each failure names its seed.
-pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.lang.TestFn, durations: []const u8, announce: bool) InitError![]usize {
+/// step under a "failed command:" line, and each failure names its seed. An
+/// `unsharded` binary (`Config.unsharded`) runs whole on shard 1/n and not at all
+/// on the others: its tests answer each other or the host, and a split leaves one
+/// side waiting on the other.
+pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const u8, tests: []const std.lang.TestFn, durations: []const u8, announce: bool, unsharded: bool) InitError![]usize {
     const gpa = std.heap.page_allocator;
     var bytes: [4]u8 = undefined;
     std.Io.random(io, &bytes);
@@ -77,7 +80,7 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     defer env.deinit();
     if (env.get("PREFLIGHT_TEST_SEED")) |value| seed = std.fmt.parseUnsigned(u32, value, 0) catch return error.InvalidSeed;
     std.testing.random_seed = seed;
-    const shard: Shard = try Shard.parse(env.get("PREFLIGHT_SHARD") orelse "");
+    const shard = share(try Shard.parse(env.get("PREFLIGHT_SHARD") orelse ""), unsharded) orelse return gpa.alloc(usize, 0);
     const names = try gpa.alloc([]const u8, tests.len);
     defer gpa.free(names);
     for (tests, names) |test_fn, *name| name.* = test_fn.name;
@@ -95,6 +98,13 @@ pub fn init(io: std.Io, process: std.process.Init.Minimal, args: []const []const
     }
     try stderr.interface.flush();
     return selected;
+}
+
+/// The share of a binary's tests the job's shard `parsed` runs: an unsharded binary's are all of
+/// them on shard 1/n, and none (null) on the others.
+pub fn share(parsed: Shard, unsharded: bool) ?Shard {
+    if (!unsharded) return parsed;
+    return if (parsed.index == 0) .all else null;
 }
 
 /// Each test's seconds in `column`, as `estimate` reads them from the text

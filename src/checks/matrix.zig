@@ -597,11 +597,12 @@ fn legJob(a: std.mem.Allocator, tier: Tier, legs: []const Job) !Job {
 ///      "os": ["ubuntu-latest", "macos-latest"], "tiers": ["ci", "full"],
 ///      "args": ["-Dsuite=full"], "setup": true, "timeout": 10, "shards": 2}
 ///
-/// `shards` splits a test step over that many jobs per host, as the hosts' own test
+/// `shards` splits a test step over at least that many jobs per host, as the hosts' own test
 /// jobs are split: each runs the share `PREFLIGHT_SHARD` names, balanced by the durations
-/// the package records. `timeout` is at most the minutes of each tier it runs in (its own,
-/// when shorter); what the record measures of a shard must fit a job of each, or the plan is
-/// refused by name: raise its shards.
+/// the package records. The record raises the count: twice its shards where one ran out of its
+/// minutes, as many as hold its tests' seconds where they were recorded, and never fewer than
+/// it ran where they were not. `timeout` is at most the minutes of each tier it runs in (its
+/// own, when shorter); a shard whose setup and build alone pass a job of its tier is refused.
 fn declaredLegs(a: std.mem.Allocator, config: src.Value, tier: Tier, legs: *std.ArrayList(Leg)) !void {
     const declared = src.get(config, "jobs");
     if (declared == .null) return;
@@ -650,7 +651,7 @@ fn declaredLegs(a: std.mem.Allocator, config: src.Value, tier: Tier, legs: *std.
         for (tiers_named.items) |each| wanted = wanted or each == tier;
         const setup = src.get(entry, "setup");
         if (setup != .null and setup != .bool and setup != .string) return error.InvalidDeclaredJob;
-        const count = shardCount(src.get(entry, "shards")) catch return error.InvalidDeclaredJob;
+        const declared_count = shardCount(src.get(entry, "shards")) catch return error.InvalidDeclaredJob;
         const given = src.get(entry, "timeout");
         if (given != .null and (given != .integer or given.integer < 1 or given.integer > 360)) return error.InvalidJobTimeout;
         const declared_timeout: ?usize = if (given == .integer) @intCast(given.integer) else null;
@@ -673,20 +674,27 @@ fn declaredLegs(a: std.mem.Allocator, config: src.Value, tier: Tier, legs: *std.
             } else return error.InvalidDeclaredJob;
             if (!wanted) continue;
             const hosted_name = if (systems.len > 1) try a.print("{s} ({s})", .{ name, os }) else name;
+            // `shards` is the job's floor; the record raises it, so the plan follows what the runs
+            // measured. A shard that ran out of its minutes is a lower bound: twice its shards.
+            // A run whose tests recorded no seconds (a step without preflight's timings) holds
+            // its tests in what each shard spent, so its shards stay at least as many: fewer
+            // would run out again.
+            var count = declared_count;
             var seconds: ?f64 = null;
             if (!advisory) if (try recordOf(config, hosted_name)) |record| {
-                const each = record.overhead + record.tests / @as(f64, @floatFromInt(count));
-                if (!record.finished or each > capacity(tier)) {
-                    problem = try a.print("jobs: {s}: {s} in the last run, more than the {f} of work a {t} job of {d} minutes holds: raise its shards", .{
-                        hosted_name,
-                        if (record.finished) try a.print("a shard of {d} takes {f}", .{ count, wholeSeconds(each) }) else "a shard ran out of its minutes",
-                        wholeSeconds(capacity(tier)),
-                        tier,
-                        jobMinutes(tier),
-                    });
-                    return error.JobPastTierLimit;
+                const room = capacity(tier);
+                if (!record.finished) {
+                    count = @max(count, record.shards *| 2);
+                    seconds = room;
+                } else {
+                    if (record.overhead >= room) {
+                        problem = try a.print("jobs: {s}: a shard spent {f} besides its tests in the last run, more than the {f} of work a {t} job of {d} minutes holds", .{ hosted_name, wholeSeconds(record.overhead), wholeSeconds(room), tier, jobMinutes(tier) });
+                        return error.JobPastTierLimit;
+                    }
+                    const needed = if (record.tests > 0) std.math.lossyCast(usize, @ceil(record.tests / (room - record.overhead))) else record.shards;
+                    count = @max(count, needed);
+                    seconds = record.overhead + record.tests / @as(f64, @floatFromInt(count));
                 }
-                seconds = each;
             };
             for (0..count) |i| {
                 const shard = try shardName(a, i, count);
@@ -1995,10 +2003,23 @@ test "a package's own jobs join the tiers they name, on the hosts they name, wit
     try std.testing.expectError(error.InvalidDeclaredJob, plan(a, try parseJson(a, "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"tiers\":[\"release\"]}]}"), .full));
     try std.testing.expectEqualStrings("jobs: x: `release` is no tier a job of the package's own runs in: ci, full or nightly", problem);
     try std.testing.expectError(error.InvalidDeclaredJob, plan(a, try parseJson(a, "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"tiers\":[\"fuzz\"]}]}"), .full));
-    // What the record measures of a shard must fit a job of its tier.
-    const heavy = try parseJson(a, "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"shards\":2}],\"durations\":{\"legs\":{\"x\":{\"overhead\":100,\"tests\":1600,\"shards\":2,\"finished\":true}}}}");
+    // `shards` is a floor the record raises: as many as hold the tests' seconds beside what a
+    // shard spent on the rest (1600 s over 720 - 100), twice its shards where one ran out of
+    // its minutes, and never fewer than it ran where its tests recorded no seconds.
+    for ([_]struct { []const u8, usize }{
+        .{ "{\"overhead\":100,\"tests\":1600,\"shards\":2,\"finished\":true}", 3 },
+        .{ "{\"overhead\":700,\"tests\":0,\"shards\":2,\"finished\":false}", 4 },
+        .{ "{\"overhead\":400,\"tests\":0,\"shards\":4,\"finished\":true}", 4 },
+        .{ "{\"overhead\":100,\"tests\":100,\"shards\":4,\"finished\":true}", 2 },
+    }) |case| {
+        const leg, const want = case;
+        const measured = try parseJson(a, try a.print("{{\"jobs\":[{{\"name\":\"x\",\"step\":\"t\",\"shards\":2}}],\"durations\":{{\"legs\":{{\"x\":{s}}}}}}}", .{leg}));
+        try std.testing.expectEqual(want, jobsNamed(try planned(a, measured, .full), "x"));
+    }
+    // A shard whose setup and build alone pass its tier's work is refused by name.
+    const heavy = try parseJson(a, "{\"jobs\":[{\"name\":\"x\",\"step\":\"t\",\"shards\":2}],\"durations\":{\"legs\":{\"x\":{\"overhead\":800,\"tests\":100,\"shards\":2,\"finished\":true}}}}");
     try std.testing.expectError(error.JobPastTierLimit, plan(a, heavy, .full));
-    try std.testing.expect(std.mem.find(u8, problem, "jobs: x: a shard of 2 takes 15m") != null);
+    try std.testing.expect(std.mem.find(u8, problem, "jobs: x: a shard spent 13m") != null);
     for ([_][]const u8{
         "{\"jobs\":{}}",
         "{\"jobs\":[{\"step\":\"test\"}]}",

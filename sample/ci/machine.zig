@@ -3,6 +3,7 @@
 //! changes the share's directory under the scratch once a test says its file is made, as the
 //! host's build does throughout a run; `check`, after the tests, reads what a test made beside
 //! the scratch, which the machine carries to the host when the tests end, then removes it.
+//! Each acts only where the tests run: shard 1/n of a sharded job, the tests being unsharded.
 const std = @import("std");
 const machine = @import("machine");
 
@@ -15,6 +16,10 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.Usage;
+    // The tests are unsharded (build.zig's `addCi`): they run whole on shard 1/n, and on no
+    // other, where the host's side has no test to answer.
+    const shard = init.environ_map.get("PREFLIGHT_SHARD") orelse "";
+    if (shard.len != 0 and !std.mem.startsWith(u8, shard, "1/")) return;
     const cwd = std.Io.Dir.cwd();
     if (std.mem.eql(u8, args[1], "prepare")) {
         try cwd.createDirPath(io, machine.channel);

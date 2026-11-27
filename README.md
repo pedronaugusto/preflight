@@ -700,9 +700,10 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   run's summary and warns on the run when its suite did not pass (a package's tests against a
   dependency's unreleased head, such as relic's against git's). Its `timeout` is its run's,
   at most 240 minutes; its job has that and 120 more for its other steps, and it runs on a
-  runner of its own, never as a leg of another job, counted among the run's jobs. What the
-  record measures of a blocking job's shard must fit a job of its tier, or the plan is refused
-  by name: raise its shards. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
+  runner of its own, never as a leg of another job, counted among the run's jobs. A blocking job's `shards` is a
+  floor the record raises: twice its shards where one ran out of its minutes, as many as hold
+  its tests' seconds where they were recorded, and never fewer than it ran where they were not;
+  a shard whose setup and build alone pass a job of its tier is refused by name. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
 - `targets`, `build_args`, `shards`, `cross_jobs`, `cross_seconds`, `hardened`: what the
   tiers build and run, described below.
@@ -928,7 +929,11 @@ ThreadSanitizer build (`linux-debug-tsan`), which a declared job records with
 Debug record (`linux-debug`) times the ratio of the two columns over the tests both
 recorded, and failing that the mean of those with one; without records the split is by
 count. Every shard computes the same split, so
-each test runs exactly once. A package's own jobs are declared in `ci/workflow.json`
+each test runs exactly once. A test binary whose tests answer each other, or a step of the
+host's beside the run, is named in `Config.unsharded` and runs whole on shard 1/n and not at
+all on the others: split, one side waits on a side another shard holds (the sample's FreeBSD
+machine tests, whose host's side waits for a test's word and reads what it made). Its host
+steps act where the tests do, on shard 1/n or where `PREFLIGHT_SHARD` is unset. A package's own jobs are declared in `ci/workflow.json`
 `jobs` and run in the tiers they name (see the options below).
 Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) of
 compiling each, longest target first onto the job with the least, each target keeping

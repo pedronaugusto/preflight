@@ -26,6 +26,8 @@ pub fn build(b: *std.Build) void {
         .bench = sampleBench(target, optimize),
         .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 },
         .vm_packages = &.{"tree"},
+        // The machine's tests answer the host's side through the channel: one run holds both.
+        .unsharded = if (handshake) |sides| b.allocator.dupe(*std.Build.Step.Compile, &.{sides.tests}) catch @panic("OOM") else &.{},
     });
     preflight.addConsumerCheck(b, b, .{ .package = "preflight_sample", .program = b.path("ci/consumer.zig") });
     if (handshake) |sides| sides.afterMachine();
@@ -34,6 +36,7 @@ pub fn build(b: *std.Build) void {
 /// The FreeBSD run's two sides: the tests' run and the host's `change`, which waits for a
 /// test with a bound.
 const Handshake = struct {
+    tests: *std.Build.Step.Compile,
     run_tests: *std.Build.Step.Run,
     change: *std.Build.Step.Run,
 
@@ -54,6 +57,11 @@ const Handshake = struct {
 /// own, which skip off the machine, and their host's side (ci/machine.zig), which the tests
 /// step compiles on any target and, on FreeBSD, runs: the channel made before the tests, the
 /// share changed while they run, and what they made beside their scratch read after them.
+///
+/// One run holds the tests and their host's side, which answer each other through the channel:
+/// the tests are `unsharded`, run whole on shard 1/n, and the host's side acts there alone
+/// (ci/machine.zig). Split, a shard without the tests left `change` waiting on a test that never
+/// ran and `check` reading what none made (nightly run 46034286893).
 fn machineSide(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) ?Handshake {
     const tests = b.addTest(.{ .name = "machine-tests", .root_module = b.createModule(.{
         .root_source_file = b.path("src/testing/machine.zig"),
@@ -81,7 +89,7 @@ fn machineSide(b: *std.Build, step: *std.Build.Step, target: std.Build.ResolvedT
     reads.addArg("check");
     reads.step.dependOn(&run_tests.step);
     step.dependOn(&reads.step);
-    return .{ .run_tests = run_tests, .change = change };
+    return .{ .tests = tests, .run_tests = run_tests, .change = change };
 }
 
 fn sampleBench(target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) preflight.Bench {

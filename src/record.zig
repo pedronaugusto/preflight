@@ -22,6 +22,8 @@ pub const Options = struct {
     quarantine: bool = false,
     /// The family's policy refuses a hardened run without shakedown's quarantine.
     policy: family.Policy,
+    /// Test binaries that run whole, on shard 1/n (`Config.unsharded`).
+    unsharded: []const *std.Build.Step.Compile = &.{},
 };
 
 /// A package keeps the default bound unless it says why not.
@@ -167,6 +169,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         runner.addOption([]const u8, "durations", context.durations);
         const quarantined = options.quarantine and quarantine(b, run, artifact, options.policy);
         runner.addOption(bool, "quarantine", quarantined);
+        runner.addOption(bool, "unsharded", std.mem.findScalar(*std.Build.Step.Compile, options.unsharded, artifact) != null);
         artifact.root_module.addOptions("preflight_runner_options", runner);
     }
     if (state.ours.contains(artifact)) {

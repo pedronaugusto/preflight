@@ -64,6 +64,11 @@ pub const Config = struct {
     /// git (`git` in ci/workflow.json) is on the machine already, built from git's
     /// own release, and `git` beside it is refused.
     vm_packages: []const []const u8 = &.{},
+    /// Test binaries that run whole, on shard 1/n of a sharded job, and not at all on the others:
+    /// tests that answer each other or a step of the host's beside the run, which a split would
+    /// leave waiting on a side that never ran. A host step of such a binary runs where its
+    /// tests do: on shard 1/n, or where `PREFLIGHT_SHARD` is unset.
+    unsharded: []const *std.Build.Step.Compile = &.{},
 };
 
 pub const Bench = bench.Bench;
@@ -251,7 +256,7 @@ const Steps = struct {
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
-        const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy });
+        const counted = record.add(b, package, roots, pkg, executable, .{ .timing = steps.timing, .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy, .unsharded = config.unsharded });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         if (steps.profile_options.fuzzing) hardened.fuzzing(b, roots);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null, executable);

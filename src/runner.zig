@@ -340,7 +340,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     }
     if (Supervisor.possible) if (lifeline) |handle| Supervisor.follow(handle) catch |err| std.debug.panic("preflight test runner: the supervisor's lifeline: {t}", .{err});
     if (listen and lifeline == null and Supervisor.possible) Supervisor.run(init, args);
-    order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
+    order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen, options.unsharded) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     job_deadline = readDeadline(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_DEADLINE: {t}", .{err});
     FuzzNames.read(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_FUZZ_NAMES: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});

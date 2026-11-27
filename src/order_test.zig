@@ -127,3 +127,11 @@ test "shard boundaries reject zero escaped indices and impossible load storage" 
     defer a.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
 }
+
+test "an unsharded binary runs whole on shard 1/n and not at all on the others" {
+    try std.testing.expectEqual(Shard.all, order.share(try Shard.init(0, 4), true).?);
+    for (1..4) |index| try std.testing.expectEqual(null, order.share(try Shard.init(index, 4), true));
+    // Unsharded and unsplit, or sharded as usual, a binary runs the share its shard names.
+    try std.testing.expectEqual(Shard.all, order.share(.all, true).?);
+    try std.testing.expectEqual(try Shard.init(2, 4), order.share(try Shard.init(2, 4), false).?);
+}

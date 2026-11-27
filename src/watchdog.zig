@@ -1,5 +1,10 @@
-//! The bound on one test: the wait a watchdog thread makes, on any `Io`'s
-//! awake clock, until the test is done or its time is up.
+//! The bound on one test, and on each run `bounded.zig` bounds: a watch, on any `Io`'s awake
+//! clock, that ends the run once its process tree has made no progress for its limit, or once
+//! the hosted job's deadline comes. Progress is the tree's CPU time (`runner/cputime.zig`): a
+//! tree that hangs (a deadlock, a wait nothing completes) uses none, and a slow machine's still
+//! uses some, so a busy host never fails a live run, where a bound on its wall time did (three of
+//! preflight's own integration tests at a load average of 70). A tree that spins uses CPU time
+//! without end: only the job's deadline, the host's own limit, ends it.
 const std = @import("std");
 // Compiled into every package's test binaries: std alone, as order.zig.
 
@@ -20,39 +25,89 @@ pub fn expired(io: std.Io, done: *std.Io.Event, limit: std.Io.Duration) bool {
     return false;
 }
 
-/// The wait one test is given: `limit`, or what is left of its job when the
-/// job's deadline comes sooner, so a job running out of time ends in the
-/// test it was in, named, before the host cancels it unnamed.
+/// Less CPU time than this over a whole limit is no progress: what a hung tree's reading moves
+/// by, the systems counting a process's time in clock ticks (Linux's 10 ms, Windows' 15.6 ms).
+pub const progress_floor: std.Io.Duration = .fromMilliseconds(50);
+
+/// What one run is given: how long its tree may make no progress, and what is left of its job
+/// when the job's deadline comes sooner, so a job running out of time ends in the run it was
+/// in, named, before the host cancels it unnamed.
 pub const Bound = struct {
-    limit: std.Io.Duration,
-    /// Whether the job's deadline, not the test's limit, sets the wait.
-    job: bool,
+    /// How long the tree may make no progress; null bounds the run by the job's deadline alone.
+    limit: ?std.Io.Duration,
+    /// What is left of the job's time when the bound is taken; null outside a hosted job.
+    job: ?std.Io.Duration,
 };
 
-/// What an expired wait says of its test.
-pub const Ending = enum {
-    /// It outlasted its own limit.
-    over_limit,
+/// `job_deadline` is the job's, in seconds of `io`'s real clock, or null for a
+/// job with none.
+pub fn bound(io: std.Io, limit: ?std.Io.Duration, job_deadline: ?i64) Bound {
+    const seconds = job_deadline orelse return .{ .limit = limit, .job = null };
+    const now = std.Io.Clock.real.now(io).nanoseconds;
+    const left = @as(i96, seconds) * std.time.ns_per_s - now;
+    return .{ .limit = limit, .job = .fromNanoseconds(@max(left, 0)) };
+}
+
+/// How a watch ended.
+pub const Ending = union(enum) {
+    /// The run ended first.
+    done,
+    /// Its tree made no progress for the whole limit.
+    stalled,
     /// It was running when the job's time ran out.
     job_ran_out,
     /// The job's time had run out before its turn: it never ran.
     not_started,
+    /// Its tree's CPU time could not be read: a run whose progress is unknown is not let run on
+    /// as if it made some.
+    unread: anyerror,
 };
 
-/// The ending of a test whose wait `b` expired.
-pub fn ending(b: Bound) Ending {
-    if (!b.job) return .over_limit;
-    return if (b.limit.nanoseconds == 0) .not_started else .job_ran_out;
+/// Watches a run until `done` is set, its tree makes no progress for `b.limit`, or the job's
+/// time in `b` runs out. `reading.cpu()` is the tree's CPU time in nanoseconds, any count that
+/// grows as the tree works; the count falling (a process left the tree with its time) is no
+/// progress, and what it grows by from there is.
+pub fn watch(io: std.Io, done: *std.Io.Event, b: Bound, reading: anytype) Ending {
+    if (b.job) |left| if (left.nanoseconds == 0) return .not_started;
+    const start: std.Io.Clock.Timestamp = .now(io, .awake);
+    const job_end: ?std.Io.Clock.Timestamp = if (b.job) |left| start.addDuration(.{ .raw = left, .clock = .awake }) else null;
+    const limit = b.limit orelse {
+        const left = b.job orelse unreachable; // a run with neither bound is not watched
+        return if (expired(io, done, left)) .job_ran_out else .done;
+    };
+    var mark = reading.cpu() catch |err| return .{ .unread = err };
+    var since = start;
+    const every = sampling(limit);
+    while (true) {
+        var next: std.Io.Clock.Timestamp = .fromNow(io, .{ .raw = every, .clock = .awake });
+        if (job_end) |end| if (std.Io.Clock.Timestamp.compare(end, .lt, next)) {
+            next = end;
+        };
+        done.waitTimeout(io, .{ .deadline = next }) catch |err| switch (err) {
+            // The sample's time, or a wake that left the run going: read either way.
+            error.Timeout => {},
+            // Nothing but the watched run may end the watch.
+            error.Canceled => return .done,
+        };
+        if (done.isSet()) return .done;
+        const now: std.Io.Clock.Timestamp = .now(io, .awake);
+        if (job_end) |end| if (std.Io.Clock.Timestamp.compare(now, .gte, end)) return .job_ran_out;
+        const cpu: u64 = reading.cpu() catch |err| return .{ .unread = err };
+        if (cpu < mark) {
+            mark = cpu;
+        } else if (cpu - mark >= progress_floor.nanoseconds) {
+            mark = cpu;
+            since = now;
+            continue;
+        }
+        if (since.durationTo(now).raw.nanoseconds >= limit.nanoseconds) return .stalled;
+    }
 }
 
-/// `job_deadline` is the job's, in seconds of `io`'s real clock, or null for a
-/// job with none.
-pub fn bound(io: std.Io, limit: std.Io.Duration, job_deadline: ?i64) Bound {
-    const seconds = job_deadline orelse return .{ .limit = limit, .job = false };
-    const now = std.Io.Clock.real.now(io).nanoseconds;
-    const left = @as(i96, seconds) * std.time.ns_per_s - now;
-    if (left >= limit.nanoseconds) return .{ .limit = limit, .job = false };
-    return .{ .limit = .fromNanoseconds(@max(left, 0)), .job = true };
+/// How often a watch reads its tree: an eighth of the limit, so a stall is ended within an
+/// eighth of it past the limit, and at most once a second.
+fn sampling(limit: std.Io.Duration) std.Io.Duration {
+    return .fromNanoseconds(std.math.clamp(@divTrunc(limit.nanoseconds, 8), std.time.ns_per_ms, std.time.ns_per_s));
 }
 
 /// The job's deadline, as `PREFLIGHT_DEADLINE` holds it: whole seconds since

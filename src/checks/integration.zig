@@ -547,7 +547,7 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     const hung = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     const took = started.untilNow(io).raw;
     // 2000 ms, or that times a sanitizer's or an emulator's slowdown, as the tests' bound.
-    const named = "preflight: watchdog: `run exe hang` exceeded ";
+    const named = "preflight: watchdog: `run exe hang` made no progress for ";
     // The command as it ran: the program by its file's name, which on Windows ends in `.exe`.
     const spun = if (builtin.os.tag == .windows) "hang.exe --spin" else "hang --spin";
     const last = "its last line: spinning on the example's last step";
@@ -1303,10 +1303,10 @@ test "the watchdog fails a stalled test by name and phase" {
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = bounded });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"stalls\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);\n}\n" });
     const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (std.mem.find(u8, stalled.stderr, "stalls exceeded 300ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
+    if (std.mem.find(u8, stalled.stderr, "stalls made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "preflight: watchdog: ") != null);
-    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls exceeded 300ms; phase body") != null);
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test \"quick\" {}\n" });
     const quick = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(quick)) std.debug.print("{s}\n", .{quick.stderr});
@@ -1332,9 +1332,9 @@ test "the watchdog names a stalled test that holds the stderr lock, as a hung cr
         \\
     });
     const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
-    if (std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300ms; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
+    if (std.mem.find(u8, stalled.stderr, "stalls holding stderr made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
-    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr exceeded 300ms; phase body") != null);
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") != null);
 }
 
 test "the watchdog names the Io teardown of a test that leaves a task running" {
@@ -1363,9 +1363,9 @@ test "the watchdog names the Io teardown of a test that leaves a task running" {
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = leaving });
     const stuck = try gate(a, tmp.dir, &.{});
-    if (std.mem.find(u8, stuck.stderr, "lingers exceeded 300ms; phase io_teardown") == null) std.debug.print("{s}", .{stuck.stderr});
+    if (std.mem.find(u8, stuck.stderr, "lingers made no progress for 300ms: its processes used under 50ms of CPU time in it; phase io_teardown") == null) std.debug.print("{s}", .{stuck.stderr});
     try std.testing.expect(!command.succeeded(stuck));
-    try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers exceeded 300ms; phase io_teardown") != null);
+    try std.testing.expect(std.mem.find(u8, stuck.stderr, "lingers made no progress for 300ms: its processes used under 50ms of CPU time in it; phase io_teardown") != null);
 }
 
 test "a process a test leaves holding the tests' output is named at once, and a crash's report still reaches the build" {
@@ -1437,10 +1437,83 @@ test "a test the watchdog ends leaves no process it started running" {
     });
     const stalled = try gate(a, tmp.dir, &.{});
     try std.testing.expect(!command.succeeded(stalled));
-    try std.testing.expect(std.mem.find(u8, stalled.stderr, "starts processes, then stalls exceeded 300ms") != null);
+    try std.testing.expect(std.mem.find(u8, stalled.stderr, "starts processes, then stalls made no progress for 300ms") != null);
     var buffer: [64]u8 = undefined;
     var pids = std.mem.tokenizeScalar(u8, try tmp.dir.readFile(io, "started.pids", &buffer), ' ');
     while (pids.next()) |text| try expectEnded(try std.fmt.parseInt(std.posix.pid_t, text, 10));
+}
+
+test "the watchdog ends a test that deadlocks, by name, and lets a test a throttle slows run on far past its limit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try edit(a, tmp.dir, "build.zig", "preflight.addCi(b, b, .{", "preflight.addCi(b, b, .{ .test_timeout = .{ .bound = .{ .limit = .fromSeconds(2), .reason = \"a progress test\" } },");
+    // A deadlock uses no CPU time: ended at the limit, by name.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\test "deadlocks" {
+        \\    var mutex: std.Io.Mutex = .init;
+        \\    mutex.lockUncancelable(std.testing.io);
+        \\    mutex.lockUncancelable(std.testing.io);
+        \\}
+        \\
+    });
+    const deadlocked = try gate(a, tmp.dir, &.{});
+    const named = "preflight: watchdog: sample.test.deadlocks made no progress for 2s: its processes used under 50ms of CPU time in it; phase body";
+    if (command.succeeded(deadlocked) or std.mem.find(u8, deadlocked.stderr, named) == null) std.debug.print("{s}", .{deadlocked.stderr});
+    try std.testing.expect(!command.succeeded(deadlocked));
+    try std.testing.expect(std.mem.find(u8, deadlocked.stderr, named) != null);
+    // Slow work still uses CPU time. One test works in its own process, 20 ms of CPU time in
+    // each 100 ms, for three limits; the other waits, using none itself, on a child held to a
+    // quarter of the time by a throttle that stops and continues it, until the child has used 2 s
+    // of CPU time (`ulimit -t`), some 8 s of wall time. A wall-clock bound of 2 s ended both.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data =
+        \\const std = @import("std");
+        \\const builtin = @import("builtin");
+        \\test "works slowly in its own process" {
+        \\    const io = std.testing.io;
+        \\    const start: std.Io.Clock.Timestamp = .now(io, .awake);
+        \\    while (start.untilNow(io).raw.toMilliseconds() < 6_000) {
+        \\        const from = std.Io.Clock.cpu_thread.now(io).nanoseconds;
+        \\        while (std.Io.Clock.cpu_thread.now(io).nanoseconds - from < 20 * std.time.ns_per_ms) {}
+        \\        try io.sleep(.fromMilliseconds(80), .awake);
+        \\    }
+        \\}
+        \\const Throttle = struct {
+        \\    pid: std.posix.pid_t,
+        \\    done: std.atomic.Value(bool) = .init(false),
+        \\    fn run(t: *Throttle) void {
+        \\        const io = std.testing.io;
+        \\        while (!t.done.load(.acquire)) {
+        \\            std.posix.kill(t.pid, .STOP) catch return;
+        \\            io.sleep(.fromMilliseconds(300), .awake) catch {};
+        \\            std.posix.kill(t.pid, .CONT) catch return;
+        \\            io.sleep(.fromMilliseconds(100), .awake) catch {};
+        \\        }
+        \\    }
+        \\};
+        \\test "waits on a child a throttle slows" {
+        \\    if (builtin.os.tag == .windows) return error.SkipZigTest;
+        \\    const io = std.testing.io;
+        \\    var child = try std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", "ulimit -t 2; while :; do :; done" } });
+        \\    var throttle: Throttle = .{ .pid = child.id.? };
+        \\    const thread = try std.Thread.spawn(.{}, Throttle.run, .{&throttle});
+        \\    const start: std.Io.Clock.Timestamp = .now(io, .awake);
+        \\    const term = try child.wait(io);
+        \\    throttle.done.store(true, .release);
+        \\    thread.join();
+        \\    try std.testing.expectEqual(std.process.Child.Term{ .signal = .XCPU }, term);
+        \\    try std.testing.expect(start.untilNow(io).raw.toMilliseconds() >= 6_000);
+        \\}
+        \\
+    });
+    const slowed = try gate(a, tmp.dir, &.{});
+    if (!command.succeeded(slowed)) std.debug.print("{s}", .{slowed.stderr});
+    try std.testing.expect(command.succeeded(slowed));
 }
 
 /// Waits a moment for `pid` to be gone: ended and waited for, by the system
@@ -1680,7 +1753,7 @@ test "a test's pending cancel survives a stack capture under preflight's runner,
     var own = std.testing.tmpDir(.{});
     defer own.cleanup();
     try ownRunner(a, own.dir);
-    try edit(a, own.dir, "build.zig", ".portable_tests = true", ".portable_tests = true, .test_timeout = .{ .off = \"the upstream runner\" }");
+    try edit(a, own.dir, "build.zig", "preflight.addCi(b, b, .{", "preflight.addCi(b, b, .{ .test_timeout = .{ .off = \"the upstream runner\" },");
     try own.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = cancel_through_capture });
     try bareConsumer(own.dir);
     const upstream = try gate(a, own.dir, &.{});

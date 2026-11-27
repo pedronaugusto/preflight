@@ -1,6 +1,6 @@
 //! The bound on every run preflight's steps make that is no test, under preflight's bound program
-//! (`bound.zig`, `bounded.zig`): past its bound, or when the hosted job's deadline comes sooner,
-//! the run and every process it started are ended, and it fails naming its step, its command and
+//! (`bound.zig`, `bounded.zig`): once it makes no progress for its bound (its tree uses no CPU
+//! time), or when the hosted job's deadline comes, the run and every process it started are ended, and it fails naming its step, its command and
 //! the last line it printed. Zig bounds unit tests alone (`--test-timeout`), and preflight's runner
 //! bounds each test it runs; any other run had no bound but the host's, which keeps no log of it
 //! (blackbox's example ran 45 hours locally; strand's cross-compile jobs and a consumer build hung
@@ -15,7 +15,8 @@
 const std = @import("std");
 const Tool = @import("tool.zig").Tool;
 
-/// A run's own bound, where the default is too short for it, and why. `step` is the run's
+/// A run's own bound, how long it may make no progress, where the default is too short for it,
+/// and why. `step` is the run's
 /// step's name, as the build names it (`run exe example`).
 pub const RunBound = struct { step: []const u8, limit: std.Io.Duration, reason: []const u8 };
 

@@ -93,8 +93,12 @@ since Zig reads `-j` after the build script has made its steps. A planned job le
 plan's own cross-compile jobs.
 
 `zig build lint` runs source checks, among them that a function of `build.zig` that calls `lazyImport` calls `@setEvalBranchQuota` first: std compares every package of the tree there at comptime, and a large tree passes the default 1000 branches. It also meets on the machine what a hosted run would refuse of each tier's jobs: the step each job runs, configured with the job's options, must be the build's, give preflight's runner every test it runs, and reach no step the build fails by name, nor may a step of the same build that it builds again, as the fuzz job builds the properties it fuzzes. `zig build ci` checks sources before running
-tests. A watchdog in the shared test runner fails a test that runs longer than
-120 s, its Io teardown included, by name, phase and seed, in local runs too. A
+tests. A watchdog in the shared test runner fails a test that makes no progress for
+120 s, its Io teardown included, by name, phase and seed, in local runs too: progress is
+the CPU time of the test's process tree, every process it started included, so a deadlock
+or a wait nothing completes fails, and a test a busy machine slows still uses CPU time and
+runs on. A test that spins uses CPU time without end: a hosted job's deadline ends it, named,
+and locally nothing does. A
 package that needs another bound says why: `.test_timeout = .{ .bound = .{ .limit =
 .fromSeconds(30), .reason = "..." } }`, or `.{ .off = "..." }` for a test runner of its
 own or a single-threaded build, which otherwise fail the build by name. preflight
@@ -105,10 +109,10 @@ operation under the calling task's cancel protection blocked, so a stack capture
 takes a cancelable lock, and a cancel it took was lost. A test runner of its own keeps
 std's, and with it that loss. Every other child process preflight starts runs under one bound with its whole
 process tree: the runs of its steps that are no test, and the builds the gate runs (a
-cross-compile job's targets among them). Past its bound, or at the hosted job's deadline, the
-tree is ended and the run fails naming its step or target, its command and the last line it
-printed. A package's runs of the tests step (an example, a generator, a benchmark's smoke run)
-have 300 s, locally too; a run that needs longer names its bound by its step's name, with its
+cross-compile job's targets among them). Once the tree makes no progress (uses no CPU time)
+for its bound, or at the hosted job's deadline, the tree is ended and the run fails naming its
+step or target, its command and the last line it printed. A package's runs of the tests step
+(an example, a generator, a benchmark's smoke run) may go 300 s without progress, locally too; a run that needs longer names its bound by its step's name, with its
 reason: `.run_bounds = &.{.{ .step = "run exe example", .limit = .fromSeconds(900), .reason =
 "..." }}`, and one naming no such run is refused. The rest have the job's deadline. A program
 the host runs only through an emulator (`-fqemu`, `-fwine`) keeps the job's bound alone, since

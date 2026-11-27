@@ -81,7 +81,6 @@ test {
     _ = @import("checks/gate_test.zig");
     _ = @import("checks/bound_test.zig");
     _ = @import("checks/fetch_test.zig");
-    _ = @import("proc_stat.zig");
     _ = lazy_import;
     _ = command;
     _ = paths;

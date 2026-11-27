@@ -160,6 +160,10 @@ pub fn dev(b: *std.Build, _: type) void {
     const order_run = b.addRunArtifact(order);
     test_step.dependOn(suite);
     test_step.dependOn(&order_run.step);
+    // The process tree's CPU time, by the module name the gate gives every test: a file the
+    // runner imports is the runner module's, and a test root naming it by path would hold it twice.
+    const cputime = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = package.path("src/cputime_test.zig"), .target = target, .optimize = .debug }), .filters = test_filters });
+    test_step.dependOn(&b.addRunArtifact(cputime).step);
     const watch = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/watchdog_test.zig"),
         .target = target,

@@ -38,10 +38,10 @@ fn Blocking(comptime inner: Io) type {
             const p = @typeInfo(F).@"fn".param_types;
             const R = @typeInfo(F).@"fn".return_type.?;
             const T = struct {
-                fn t(comptime i: usize) type {
+                fn Param(comptime i: usize) type {
                     return p[i].?;
                 }
-            }.t;
+            }.Param;
             return switch (p.len) {
                 1 => struct {
                     fn call(u: ?*anyopaque) R {

@@ -2,17 +2,19 @@
 //! step that is no test (`bound.zig`, which the build puts before the run's command), and each
 //! nested build the gate runs (`checks.command.execute`, a cross-compile's targets among them).
 //! The program and every process it starts are one tree (`runner/tree.zig`); its output reaches
-//! this process's own streams, and the last of it is kept. Past its bound, or when the hosted
-//! job's deadline (`PREFLIGHT_DEADLINE`) comes sooner, the tree is killed and the run named: its
-//! step or target, its command, and the last line it printed (two strand cross-compile jobs
-//! hung to the job's limit, and the host kept no log). Zig's `--test-timeout` bounds unit tests
+//! this process's own streams, and the last of it is kept. Once its tree makes no progress for
+//! its bound (it uses no CPU time: `watchdog.watch`), or when the hosted job's deadline
+//! (`PREFLIGHT_DEADLINE`) comes, the tree is killed and the run named: its step or target, its
+//! command, and the last line it printed (two strand cross-compile jobs hung to the job's limit,
+//! and the host kept no log). A run a busy machine slows still makes progress, and runs on. Zig's `--test-timeout` bounds unit tests
 //! alone, so an example that never ended ran 45 hours. Std alone.
 const std = @import("std");
 const builtin = @import("builtin");
 const watchdog = @import("watchdog.zig");
 const process_tree = @import("runner/tree.zig");
+const cpu_time = @import("runner/cputime.zig");
 const inbound = @import("runner/input.zig");
-const proc_stat = @import("proc_stat.zig");
+const proc_stat = @import("runner/proc_stat.zig");
 
 /// What to run, and the name its timeout gives it.
 pub const Command = struct {
@@ -21,7 +23,8 @@ pub const Command = struct {
     argv: []const []const u8,
     cwd: std.process.Child.Cwd = .inherit,
     environ_map: ?*const std.process.Environ.Map = null,
-    /// The run's own bound; null bounds it by the job's deadline alone.
+    /// The run's own bound: how long its tree may make no progress; null bounds it by the job's
+    /// deadline alone.
     limit: ?std.Io.Duration,
     /// The hosted job's deadline, whole seconds of the real clock; null outside a hosted job.
     deadline: ?i64,
@@ -58,12 +61,12 @@ const release: std.Io.Duration = .fromSeconds(2);
 /// process outside the tree (one that made a session of its own) still holds that output past
 /// `release`, the forwarding is left to end with this process, and what it holds with it.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
-    const wait = watchdog.bound(io, command.limit orelse .max, command.deadline);
+    const wait = watchdog.bound(io, command.limit, command.deadline);
     const bounded = command.limit != null or command.deadline != null;
-    if (bounded and wait.job and wait.limit.nanoseconds == 0) {
-        try say(command, wait, "");
+    if (wait.job) |left| if (left.nanoseconds == 0) {
+        try say(command, .not_started, wait, "");
         return .expired;
-    }
+    };
     var child = try std.process.spawn(io, .{
         .argv = command.argv,
         .cwd = command.cwd,
@@ -82,7 +85,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
     child.stderr = null;
     var forwarders: [2]std.Thread = undefined;
     for (streams, [2]std.Io.File{ .stdout(), .stderr() }, &forwarders) |from, to, *thread| thread.* = try std.Thread.spawn(.{}, Output.forward, .{ output, from, to });
-    var watch: Watch = .{ .limit = wait.limit, .tree = tree };
+    var watch: Watch = .{ .bound = wait, .tree = tree };
     const watcher: ?std.Thread = if (bounded) try std.Thread.spawn(.{}, Watch.run, .{ &watch, io }) else null;
     var measure: Measure = .{ .tree = tree };
     const measurer: ?std.Thread = if (command.measure) try std.Thread.spawn(.{}, Measure.run, .{ &measure, io }) else null;
@@ -107,7 +110,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, command: Command) !Ended {
     }
     defer if (!held) gpa.destroy(output);
     if (watch.expired.load(.acquire)) {
-        try say(command, wait, output.lastLine());
+        try say(command, watch.ending, wait, output.lastLine());
         return .expired;
     }
     return .{ .exited = .{ .term = term, .status = status, .peak = measure.peak } };
@@ -172,18 +175,35 @@ fn groupResident(io: std.Io, group: std.posix.pid_t) ?process_tree.Usage {
     return .{ .tree = pages *| std.heap.pageSize(), .single = single };
 }
 
-/// The thread that ends the run's tree once its wait is up.
+/// The thread that ends the run's tree once it makes no progress for its bound, or the job's
+/// time runs out.
 const Watch = struct {
-    limit: std.Io.Duration,
+    bound: watchdog.Bound,
     tree: process_tree.Tree,
     done: std.Io.Event = .unset,
     expired: std.atomic.Value(bool) = .init(false),
+    /// How the watch ended, once `expired` is set.
+    ending: watchdog.Ending = .done,
 
     fn run(watch: *Watch, io: std.Io) void {
-        if (!watchdog.expired(io, &watch.done, watch.limit)) return;
+        const ending = watchdog.watch(io, &watch.done, watch.bound, Progress{ .io = io, .tree = watch.tree });
+        if (ending == .done) return;
+        watch.ending = ending;
         watch.expired.store(true, .release);
         watch.tree.kill();
     }
+
+    /// The run's progress: its tree's CPU time. The watching thread is this process's, outside
+    /// the tree; it reads with an allocator of its own, the caller's being the caller's thread's.
+    const Progress = struct {
+        io: std.Io,
+        tree: process_tree.Tree,
+
+        pub fn cpu(progress: Progress) !u64 {
+            const root = if (builtin.target.os.tag == .windows) progress.tree.job else progress.tree.group;
+            return cpu_time.tree(progress.io, std.heap.page_allocator, root);
+        }
+    };
 };
 
 /// The run's output on its way to this process's streams, and the last of it.
@@ -246,20 +266,22 @@ fn last(text: []const u8) []const u8 {
 
 /// Names the run whose wait is up, on stderr, where a failed run is read; a stderr that takes
 /// none of it is the caller's error, the run failed either way.
-fn say(command: Command, wait: watchdog.Bound, line: []const u8) std.Io.Writer.Error!void {
+fn say(command: Command, ending: watchdog.Ending, wait: watchdog.Bound, line: []const u8) std.Io.Writer.Error!void {
     var buffer: [256]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer);
     defer std.debug.unlockStderr();
     const w = &stderr.file_writer.interface;
     try w.print("\npreflight: watchdog: `{s}` ", .{command.name});
-    switch (watchdog.ending(wait)) {
+    switch (ending) {
+        .done => unreachable, // a run that ended of itself is not named
         .not_started => try w.writeAll("did not start: the job's time had run out before its turn"),
-        .job_ran_out => try w.print("was running when the job's time ran out, {f} into it", .{wait.limit}),
-        .over_limit => try w.print("exceeded {f}", .{wait.limit}),
+        .job_ran_out => try w.print("was running when the job's time ran out, {f} into it", .{wait.job.?}),
+        .stalled => try w.print("made no progress for {f}: its processes used under {f} of CPU time in it", .{ wait.limit.?, watchdog.progress_floor }),
+        .unread => |err| try w.print("was ended: its processes' CPU time is unread ({t}), so its progress is unknown", .{err}),
     }
     try w.writeAll("; it runs");
     for (command.argv) |arg| try w.print(" {s}", .{arg});
-    if (watchdog.ending(wait) != .not_started) {
+    if (ending != .not_started) {
         if (line.len == 0) try w.writeAll("; it printed nothing") else try w.print("; its last line: {s}", .{line});
     }
     try w.print("{s}\n", .{command.hint});

@@ -21,12 +21,13 @@ pub const Config = struct {
     /// Recorded per-test durations that balance the hosted shards.
     durations: []const u8 = "ci/durations.json",
     /// The watchdog: one test, its Io teardown included, fails by name,
-    /// phase and seed once it runs this long, in local runs too.
+    /// phase and seed once it makes no progress this long (its process tree
+    /// uses no CPU time), in local runs too.
     test_timeout: TestTimeout = .default,
     /// The watchdog on each run of `tests` that is no test (an example, a generator, a
-    /// benchmark's smoke run): past 300 seconds (`runs.default_limit`), or its
-    /// own bound named here with its reason, the run is ended and fails naming its step and
-    /// its command, in local runs too. A run is named by its step's name (`run exe example`).
+    /// benchmark's smoke run): once its tree makes no progress (uses no CPU time) for 300
+    /// seconds (`runs.default_limit`), or its own bound named here with its reason, the run is
+    /// ended and fails naming its step and its command, in local runs too. A run is named by its step's name (`run exe example`).
     run_bounds: []const RunBound = &.{},
     /// The `std.log` level a test prints at. Zig's runner prints `.warn`
     /// and above; a library that logs what it does can ask for `.info`.

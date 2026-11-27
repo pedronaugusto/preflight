@@ -22,6 +22,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The watchdogs judge progress, not wall time: a test's bound (120 s by default) and every bounded run's (300 s, or its own) end a process tree that used no CPU time for that long, every process it started counted (Linux's `/proc`, macOS's `proc_pid_rusage`, FreeBSD's, NetBSD's, OpenBSD's and DragonFly's `kinfo_proc`, Windows' job object). A deadlock, or a wait nothing completes, fails by name as before; a test a loaded machine or a throttle slows still uses CPU time and runs on, where the wall-clock bound ended it. A test that spins uses CPU time without end: a hosted job's deadline ends it, named.
 - A job's record of itself holds how many tests it ran (from the build's count per root), and the profile refuses a shard whose tests ran and recorded no seconds of them, named, as a recording error rather than a measurement.
 - A hosted job's build prints its whole summary (`--summary all`): each compile's and each run's time and peak memory, what a shard spends besides its tests.
 - `Config.unsharded`: test binaries that run whole, on shard 1/n of a sharded job, and not at all on the others: tests that answer each other or a step of the host's beside the run, which a split left waiting on a side another shard held (the sample's FreeBSD machine tests: a shard without them left the host's side waiting 600 s for a test that never ran, nightly run 46034286893). Their host steps act on shard 1/n alone, or where `PREFLIGHT_SHARD` is unset.

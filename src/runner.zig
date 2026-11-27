@@ -10,6 +10,7 @@ const options = @import("preflight_runner_options");
 const bound = @import("preflight_watchdog");
 const inbound = @import("runner/input.zig");
 const process_tree = @import("runner/tree.zig");
+const cpu_time = @import("preflight_cputime");
 const test_timeout: std.Io.Duration = .fromNanoseconds(options.test_timeout_ns);
 const testing = std.testing;
 const io = std.Io.Threaded.global_single_threaded.io();
@@ -22,6 +23,8 @@ var errors: std.atomic.Value(usize) = .init(0);
 var order: []usize = &.{};
 /// The job's deadline, `PREFLIGHT_DEADLINE`, which a hosted job's runner sets.
 var job_deadline: ?i64 = null;
+/// The tests' process tree, whose CPU time the watchdog reads as a test's progress.
+var tests_tree: cpu_time.Root = undefined;
 /// As upstream's runner sets up `std.testing.allocator` for each test.
 const allocator_options: std.heap.SafeAllocator.Options = .{ .canary = 0xc3a701ba, .check_write_after_free = true };
 
@@ -272,9 +275,10 @@ fn report(comptime format: []const u8, args: anytype) void {
     };
 }
 
-/// Ends the process when one test, its Io teardown included, outlasts the
-/// package's `test_timeout`, or runs when the job's deadline comes, and says
-/// which test and phase it was in.
+/// Ends the process when one test, its Io teardown included, makes no progress for the
+/// package's `test_timeout` (its process tree uses no CPU time: a deadlock, a wait nothing
+/// completes), or runs when the job's deadline comes, and says which test and phase it was in.
+/// A test on a busy machine still uses CPU time, however slowly, and runs on.
 const Watchdog = struct {
     name: []const u8,
     phase: std.atomic.Value(Phase) = .init(.body),
@@ -298,7 +302,8 @@ const Watchdog = struct {
     fn watch(watchdog: *Watchdog) void {
         const wait = bound.bound(io, test_timeout, job_deadline);
         // The global single-threaded Io never cancels a wait.
-        if (!bound.expired(io, &watchdog.done, wait.limit)) return;
+        const ending = bound.watch(io, &watchdog.done, wait, Progress{});
+        if (ending == .done) return;
         // Not through the stderr lock: a test stalled in a crash handler
         // that hangs holds it, and the watchdog must still say what ran
         // out and end the process.
@@ -307,16 +312,29 @@ const Watchdog = struct {
         const name = watchdog.name;
         const phase = watchdog.phase.load(.acquire);
         // A line longer than the buffer is written as far as it fits, and ends marked cut.
-        switch (bound.ending(wait)) {
+        switch (ending) {
+            .done => unreachable,
             .not_started => text.print("\npreflight: watchdog: {s} did not start: the job's time had run out before its turn; seed {d}\n", .{ name, testing.random_seed }) catch cut(&text),
-            .job_ran_out => text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {f} into it; phase {t}; seed {d}\n", .{ name, wait.limit, phase, testing.random_seed }) catch cut(&text),
-            .over_limit => text.print("\npreflight: watchdog: {s} exceeded {f}; phase {t}; seed {d}\n", .{ name, wait.limit, phase, testing.random_seed }) catch cut(&text),
+            .job_ran_out => text.print("\npreflight: watchdog: {s} was running when the job's time ran out, {f} into it; phase {t}; seed {d}\n", .{ name, wait.job.?, phase, testing.random_seed }) catch cut(&text),
+            .stalled => text.print("\npreflight: watchdog: {s} made no progress for {f}: its processes used under {f} of CPU time in it; phase {t}; seed {d}\n", .{ name, test_timeout, bound.progress_floor, phase, testing.random_seed }) catch cut(&text),
+            .unread => |err| text.print("\npreflight: watchdog: {s}: its processes' CPU time is unread ({t}), so its progress is unknown; phase {t}; seed {d}\n", .{ name, err, phase, testing.random_seed }) catch cut(&text),
         }
         var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         // The process ends next either way: a line lost on stderr has nowhere else to go.
         stderr.interface.writeAll(text.buffered()) catch std.process.exit(1);
         std.process.exit(1);
     }
+
+    /// A test's progress: the CPU time of the tests' process tree, less the watchdog thread's
+    /// own, whose reading is no work of the test's. Read before this thread's, so the reading's
+    /// own cost is taken off whole.
+    const Progress = struct {
+        pub fn cpu(_: Progress) !u64 {
+            const used = try cpu_time.tree(io, std.heap.page_allocator, tests_tree);
+            const watching = std.Io.Clock.cpu_thread.now(io).nanoseconds;
+            return used -| (std.math.cast(u64, watching) orelse 0);
+        }
+    };
 
     /// Ends a line that filled `text`, a fixed buffer, with a mark that it was cut.
     fn cut(text: *std.Io.Writer) void {
@@ -342,6 +360,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     }
     if (Supervisor.possible) if (lifeline) |handle| Supervisor.follow(handle) catch |err| std.debug.panic("preflight test runner: the supervisor's lifeline: {t}", .{err});
     if (listen and lifeline == null and Supervisor.possible) Supervisor.run(init, args);
+    if (!builtin.single_threaded and options.test_timeout_ns != 0) tests_tree = cpu_time.own() catch |err| std.debug.panic("preflight test runner: the tests' process tree, for the watchdog to read: {t}", .{err});
     order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen, options.unsharded) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     job_deadline = readDeadline(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_DEADLINE: {t}", .{err});
     FuzzNames.read(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_FUZZ_NAMES: {t}", .{err});

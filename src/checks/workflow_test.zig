@@ -2,6 +2,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const root = @import("test_options").root;
+/// The preflight a hosted run of these tests holds (`-Dci-checks`), which a run of preflight's
+/// own build here takes in place of compiling it from cold; null at hand.
+const held_checks = @import("test_options").checks;
 const matrix = @import("matrix.zig");
 const heldgit = @import("heldgit.zig");
 
@@ -322,14 +325,17 @@ test "hosted prepare makes one attempt and a prepared gate keeps before-tests wi
     try env.put("BUILD_ARGS", "");
     try env.put("PREFLIGHT_SETUP", "true");
     try env.put("PREFLIGHT_PREPARED", "true");
-    const failed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--build-file", build_file, repo_arg, "prepare" }, .environ_map = &env });
+    // preflight's build runs the held checks, as a hosted job's does: compiling them from cold
+    // in the fixtures' cache was a minute of the shard that ran this.
+    const held: []const []const u8 = if (held_checks) |path| &.{try a.print("-Dci-checks={s}", .{path})} else &.{};
+    const failed = try std.process.run(a, io, .{ .argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--build-file", build_file, repo_arg }, held, &.{"prepare"} }), .environ_map = &env });
     try std.testing.expect(failed.term == .exited and failed.term.exited != 0);
     const attempts = tmp.dir.readFileAlloc(io, "attempts", a, .limited(32)) catch |err| {
         std.debug.print("{s}", .{failed.stderr});
         return err;
     };
     try std.testing.expectEqualStrings("x", attempts);
-    const prepared = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--build-file", build_file, repo_arg, "run" }, .environ_map = &env });
+    const prepared = try std.process.run(a, io, .{ .argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--build-file", build_file, repo_arg }, held, &.{"run"} }), .environ_map = &env });
     if (prepared.term != .exited or prepared.term.exited != 0) std.debug.print("{s}", .{prepared.stderr});
     try std.testing.expect(prepared.term == .exited and prepared.term.exited == 0);
     try std.testing.expectEqualStrings("xb", try tmp.dir.readFileAlloc(io, "attempts", a, .limited(32)));

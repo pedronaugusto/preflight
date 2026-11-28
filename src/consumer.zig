@@ -8,6 +8,7 @@ const configure = @import("configure.zig");
 const run_bound = @import("runs.zig");
 const input = @import("build/input.zig");
 const plain = @import("plain.zig");
+const builtin = @import("builtin");
 const nested = @import("nested.zig");
 const zon_text = @import("zon.zig");
 const OwnedDir = @import("owned.zig").OwnedDir;
@@ -124,17 +125,19 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         .optimize = .debug,
         .imports = &.{.{ .name = "aegis", .module = pkg.dependency("aegis", .{ .target = b.graph.host, .optimize = .debug }).module("aegis") }},
     }) });
-    const packages = b.addWriteFiles();
-    _ = packages.add("README", "No packages.\n");
     var closure: std.array_hash_map.String(void) = .empty;
     for (options.packages) |dependency| gather(b, &closure, dependency.builder.pkg_hash);
     // Without bay the package's own build holds preflight, so a consumer fetches preflight and
     // what it depends on.
     if (package == b) gather(b, &closure, pkg.pkg_hash);
+    // Each package by its hash and where it is, which the program gathers for the consumer's
+    // build. Not copied here: the build hashes every file it copies, every run, and preflight's
+    // own closure is a gigabyte (25 s of a check on the Mac).
+    var packages: std.ArrayList([]const u8) = .empty;
     for (closure.keys()) |hash| {
         if (!byHash(hash)) continue;
         const entry = std.Build.package_map.get(hash) orelse unreachable; // gather puts only hashes it found
-        _ = packages.addCopyDirectory(.{ .cwd_relative = entry.build_root }, hash, .{});
+        packages.append(b.allocator, b.fmt("{s}{s}={s}", .{ package_flag, hash, entry.build_root })) catch @panic("OOM");
     }
     const names = if (options.modules.len > 0) options.modules else &.{options.package};
     const step = configure.claim(b, "check-consumer", b.fmt("Build a project that depends on {s}, with only the packages it needs", .{options.package}));
@@ -156,7 +159,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
         build.addArg(b.graph.zig_exe);
         const project = if (single) "preflight-consumer" else b.fmt("preflight-consumer/{s}", .{configuration.name});
         build.addDirectoryArg2(b.graph.path(.local_cache, project), .{});
-        build.addDirectoryArg2(packages.getDirectory(), .{});
+        build.addDirectoryArg2(b.graph.path(.local_cache, b.fmt("{s}.packages", .{project})), .{});
         build.addDirectoryArg2(package.path("."), .{});
         build.addFileArg(options.program);
         build.addArg(options.package);
@@ -167,6 +170,7 @@ pub fn add(b: *std.Build, package: *std.Build, options: Options) void {
             .number => |number| b.fmt("-D{s}=i64:{d}", .{ option.name, number }),
             .text => |text| b.fmt("-D{s}=str:{s}", .{ option.name, text }),
         });
+        build.addArgs(packages.items);
         build.addArgs(configuration.modules orelse names);
         build.has_side_effects = true;
         // A consumer build that hangs is ended at the job's deadline, named.
@@ -237,9 +241,14 @@ fn byHash(key: []const u8) bool {
 /// consumer build), once for every configuration, not again in each.
 const consumers_cache = "preflight-consumer/.zig-global-cache";
 
+/// What names a package the consumer's build takes, by its hash and where it is:
+/// `--package=<hash>=<path>`.
+const package_flag = "--package=";
+
 /// Checks the graph plain `zig build` fetches for the package, then writes the
 /// project and builds it: `<zig> <project> <packages> <package root> <program>
-/// <package> <global cache> <consumers' global cache> <module>...`.
+/// <package> <global cache> <consumers' global cache> <option, package or module>...`. The
+/// consumer's build takes the packages from `<packages>`, which this gathers anew.
 pub fn main(init: std.process.Init) !void {
     var arena: std.heap.ArenaAllocator = .init(init.gpa);
     defer arena.deinit();
@@ -258,8 +267,15 @@ pub fn main(init: std.process.Init) !void {
     const text = try input.file(io, cwd, args[5], a, .program);
     var modules: std.ArrayList([]const u8) = .empty;
     var dependency_options: std.ArrayList(Option) = .empty;
+    var system = try gatherStart(io, cwd, args[3]);
+    defer system.close(io);
     for (args[9..]) |arg| {
-        if (std.mem.startsWith(u8, arg, "-D")) try dependency_options.append(a, try parseOption(arg[2..])) else try modules.append(a, arg);
+        if (std.mem.startsWith(u8, arg, "-D")) {
+            try dependency_options.append(a, try parseOption(arg[2..]));
+        } else if (std.mem.startsWith(u8, arg, package_flag)) {
+            const hash, const path = std.mem.cutScalar(u8, arg[package_flag.len..], '=') orelse return error.InvalidPackageArgument;
+            try place(io, a, system, hash, path);
+        } else try modules.append(a, arg);
     }
     const shape: Shape = .{ .package = args[6], .modules = modules.items, .options = dependency_options.items };
     // A consumer that builds without bay takes every pin as written: two packages that pin
@@ -309,6 +325,34 @@ pub fn main(init: std.process.Init) !void {
         try stderr.interface.flush();
         std.process.exit(1);
     }
+}
+
+/// The directory the consumer's build takes its packages from (`--system`), emptied: what an
+/// earlier check put there is a link or a copy, and the packages it names are elsewhere.
+fn gatherStart(io: std.Io, cwd: std.Io.Dir, path: []const u8) !std.Io.Dir {
+    try cwd.deleteTree(io, path);
+    return cwd.createDirPathOpen(io, path, .{});
+}
+
+/// The package `hash`, at `path`, as the consumer's build finds it among its packages: a link
+/// to it, or on Windows, or where links are refused, a copy. A link on Windows is not one
+/// `deleteTree` is known to leave unentered, and what it leads to is the package's own.
+fn place(io: std.Io, a: std.mem.Allocator, system: std.Io.Dir, hash: []const u8, path: []const u8) !void {
+    // The build names it from where it runs, as this program does; a link names it from where
+    // the link is, so it takes the whole path.
+    const whole = try std.Io.Dir.cwd().realPathFileAlloc(io, path, a);
+    if (builtin.target.os.tag != .windows) {
+        if (system.symLink(io, whole, hash, .{ .is_directory = true })) |_| return else |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied => {},
+            else => return err,
+        }
+    }
+    var from = try std.Io.Dir.cwd().openDir(io, whole, .{ .iterate = true });
+    defer from.close(io);
+    var to = try system.createDirPathOpen(io, hash, .{});
+    defer to.close(io);
+    var entries = from.iterate();
+    while (try entries.next(io)) |entry| try nested.copy(io, a, from, to, entry.name);
 }
 
 /// Where the project keeps the package as a fetch gives it.

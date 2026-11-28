@@ -474,24 +474,31 @@ test "a debug print, a deprecated call and, under the family's policy, a file's 
     const f = try Fixture.init();
     defer f.deinit();
     // The standard library of the Zig that builds these tests: the debug print, the deprecated
-    // calls and, under the family's policy, the durability door name its declarations.
+    // calls and, under the family's policy, the durability door name its declarations. Each
+    // run maps it whole, so the files share runs, and each finding is told by its file.
     const build: assembly.Build = .{ .std_dir = @import("test_options").zig_std };
     const paths = "{\"glint_paths\":[\"src\"]}";
+    var held: std.Io.Writer.Allocating = .init(f.c.a);
+    f.c.held = &held;
     try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{});\n}\n");
-    try std.testing.expect(try f.run(paths, build) != 0);
-    // Without the standard library the import names nothing the run maps: the run stops.
-    try std.testing.expect(try f.run(paths, .{}) != 0);
-    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{}); // glint-ignore: P005 -- the tool's one line of output\n}\n");
-    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
-    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOfScalar(u8, text, 'x');\n}\n");
-    try std.testing.expect(try f.run(paths, build) != 0);
+    try f.file("src/deprecated.zig", "const std = @import(\"std\");\npub fn run(text: []const u8) ?usize {\n    return std.mem.indexOfScalar(u8, text, 'x');\n}\n");
     // A file's own sync says nothing of what reached the disk: under the family's policy it is
     // airlock's, and a stranger's project is held to no such door.
-    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn flush(file: std.Io.File, io: std.Io) !void {\n    try file.sync(io);\n}\n");
+    try f.file("src/sync.zig", "const std = @import(\"std\");\npub fn flush(file: std.Io.File, io: std.Io) !void {\n    try file.sync(io);\n}\n");
+    try std.testing.expect(try f.run(paths, build) != 0);
+    try std.testing.expect(std.mem.find(u8, held.written(), "src/root.zig:") != null);
+    try std.testing.expect(std.mem.find(u8, held.written(), "src/deprecated.zig:") != null);
+    try std.testing.expect(std.mem.find(u8, held.written(), "src/sync.zig:") == null);
+    try f.tmp.dir.deleteFile(f.c.io, "src/root.zig");
+    try f.tmp.dir.deleteFile(f.c.io, "src/deprecated.zig");
+    held.clearRetainingCapacity();
     try std.testing.expect(try f.run("{\"policy\":\"family\",\"glint_paths\":[\"src\"]}", build) != 0);
-    try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
+    try std.testing.expect(std.mem.find(u8, held.written(), "src/sync.zig:") != null);
+    // Without the standard library the import names nothing the run maps: the run stops.
+    try std.testing.expect(try f.run(paths, .{}) != 0);
+    // A print its site allows, and a test's own print, are no findings.
+    try f.file("src/root.zig", "const std = @import(\"std\");\npub fn run() void {\n    std.debug.print(\"hi\", .{}); // glint-ignore: P005 -- the tool's one line of output\n}\n");
     try f.file("src/root_test.zig", "const std = @import(\"std\");\ntest {\n    std.debug.print(\"in a test\", .{});\n}\n");
-    try f.file("src/root.zig", "pub const x = 1;\n");
     try std.testing.expectEqual(@as(usize, 0), try f.run(paths, build));
 }
 

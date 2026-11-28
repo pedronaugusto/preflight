@@ -73,6 +73,16 @@ test "a fixture's cleanup removes its link to the packages and leaves the packag
     try linked.dir.access(io, "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .{});
     linked.cleanup();
     try owner.dir.access(io, "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .{});
+    // A fixture's own `zig-pkg`, each package a link, and a package the test writes there.
+    var own = std.testing.tmpDir(.{});
+    try linkPackages(a, own.dir, owner_root);
+    try ownPackages(a, own.dir, owner_root);
+    try own.dir.access(io, "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .{});
+    try own.dir.createDirPath(io, "zig-pkg/third-party");
+    try own.dir.writeFile(io, .{ .sub_path = "zig-pkg/third-party/value.zig", .data = "const value = 1;\n" });
+    own.cleanup();
+    try owner.dir.access(io, "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .{});
+    try std.testing.expectError(error.FileNotFound, owner.dir.access(io, "zig-pkg/third-party", .{}));
     // And preflight's own, behind every fixture's link: a fixture made and cleaned up leaves
     // each of its packages.
     const package_root = try std.Io.Dir.cwd().realPathFileAlloc(io, root, a);
@@ -97,14 +107,28 @@ fn entries(a: std.mem.Allocator, dir: std.Io.Dir) ![][]const u8 {
 }
 
 /// Gives the fixture a `zig-pkg` of its own in place of the link to preflight's, for a test
-/// that writes into it: what it writes stays the fixture's.
-fn ownPackages(dir: std.Io.Dir) !void {
+/// that writes into it: what it writes stays the fixture's. Each package in it is a link to the
+/// one under `package_root`, so Zig finds them all and copies none (1.1 GB: 25 s of the test on
+/// the Mac, more on a hosted runner); the cleanup unlinks each, as it does the whole link.
+fn ownPackages(a: std.mem.Allocator, dir: std.Io.Dir, package_root: []const u8) !void {
     const io = std.testing.io;
     dir.deleteFile(io, "zig-pkg") catch |err| switch (err) {
         // No link: the system refused one.
         error.FileNotFound => {},
         else => return err,
     };
+    try dir.createDir(io, "zig-pkg", .default_dir);
+    var held = try std.Io.Dir.cwd().openDir(io, try std.Io.Dir.path.join(a, &.{ package_root, "zig-pkg" }), .{ .iterate = true });
+    defer held.close(io);
+    var packages = held.iterate();
+    while (try packages.next(io)) |entry| {
+        const target = try std.Io.Dir.path.join(a, &.{ package_root, "zig-pkg", entry.name });
+        dir.symLink(io, target, try std.Io.Dir.path.join(a, &.{ "zig-pkg", entry.name }), .{ .is_directory = true }) catch |err| switch (err) {
+            // No links here: Zig copies the packages, as it would without any.
+            error.AccessDenied, error.PermissionDenied => return,
+            else => return err,
+        };
+    }
 }
 
 /// A consumer that names none of the sample's declarations, for a fixture whose test writes
@@ -264,7 +288,7 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try fixture(a, tmp.dir);
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    try ownPackages(tmp.dir);
+    try ownPackages(a, tmp.dir, try std.Io.Dir.cwd().realPathFileAlloc(io, root, a));
     try tmp.dir.createDirPath(io, "zig-pkg/third-party");
     try tmp.dir.writeFile(io, .{ .sub_path = "zig-pkg/third-party/value.zig", .data = "const value=1;\n" });
     // A build of its own under a checked directory, such as a conformance
@@ -1056,7 +1080,10 @@ test "hosted output appends to existing records" {
     defer env.deinit();
     try env.put("GITHUB_OUTPUT", output);
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "setup" }, .cwd = .{ .path = root }, .environ_map = &env });
+    // The held checks, as every fixture build takes them: the claim is the program's, and
+    // preflight's root build compiled it from cold in the fixtures' cache for it, two minutes
+    // of a hosted shard (nightly 46124664981).
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"setup"}), .cwd = .{ .path = root }, .environ_map = &env });
     if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
     const text = try tmp.dir.readFileAlloc(io, "output", a, .limited(1024 * 1024));
@@ -2348,7 +2375,9 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
     for ([_][]const u8{ "src/helper.zig", "bench/main.zig" }, [_][]const u8{ "helper", "bench" }) |path, kind| {
         try tmp.dir.writeFile(io, .{ .sub_path = path, .data = try a.print("const sample = @import(\"sample\");\npub fn main() void {{ _ = sample.value(\"{s}\"); }}\n", .{kind}) });
     }
-    for ([_][]const u8{ "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu" }) |target| {
+    // One macOS target holds the SDK's declarations as another does: aarch64-macos proved
+    // nothing x86_64-macos, built here and again below, does not.
+    for ([_][]const u8{ "x86_64-macos", "x86_64-windows-gnu" }) |target| {
         const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
@@ -2678,9 +2707,9 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    const good = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened-tsan"}), .cwd = .{ .dir = tmp.dir } });
-    if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
-    try std.testing.expect(command.succeeded(good));
+    // A race-free consumer passes its tests under TSan; the racing one below shows the step
+    // runs them there and fails on the race. A run of `hardened-tsan` on the race-free one
+    // showed neither again.
     const sanitized = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-tsan=true", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(sanitized)) std.debug.print("{s}", .{sanitized.stderr});
     try std.testing.expect(command.succeeded(sanitized));

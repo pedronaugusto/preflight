@@ -30,6 +30,10 @@ pub fn build(b: *std.Build) void {
     // Declared before the lazy gantry can end the script, so the first
     // pass on an empty package cache accepts it.
     const repo_root = b.option([]const u8, "repo-root", "Repository checked by the hosted runner");
+    // The runners `toolchain` builds for, which the planner lists beside the tier's matrix
+    // (`<tier>-runners` in the caller): declared here for the same reason, as the hosted
+    // toolchain job's first pass on an empty package cache ends before `addToolchain`.
+    const toolchain_runners = b.option([]const u8, "toolchain-runners", "The runners to build the checks and bay for, space-separated (linux linux-arm macos windows windows-arm); every one when not given") orelse "";
     // A package that depends on preflight builds nothing of it here: its gate
     // installs the tools through addCi.
     if (b.pkg_hash.len != 0) return;
@@ -49,12 +53,12 @@ pub fn build(b: *std.Build) void {
         vm.add(b, probe, b, b, .{ .compiled = machine_tool }, b.graph.host, &.{});
     }
     if (controls.checks) |path| {
-        if (!addToolchain(b)) return;
+        if (!addToolchain(b, toolchain_runners)) return;
         return addCommands(b, .{ .prebuilt = path }, repo_root orelse ".");
     }
     const executable = program(b, b, ci.ciTarget(b)) orelse return;
     b.installArtifact(executable);
-    if (!addToolchain(b)) return;
+    if (!addToolchain(b, toolchain_runners)) return;
     addCommands(b, .{ .compiled = executable }, repo_root orelse ".");
 }
 
@@ -266,12 +270,10 @@ const runners = [_]struct { name: []const u8, query: std.Target.Query }{
 /// Adds `toolchain`, which builds the checks for every hosted runner under
 /// `<prefix>/toolchain/<runner>/`, so that one job compiles them and the
 /// others take the result. False while a lazy dependency is still to be fetched.
-fn addToolchain(b: *std.Build) bool {
+fn addToolchain(b: *std.Build, wanted: []const u8) bool {
     const step = b.step("toolchain", "Build the checks and bay for the Linux, macOS and Windows runners, ARM ones included, under <prefix>/toolchain");
-    // A run builds the runners its jobs run on, which the planner lists beside its tier's matrix
-    // (`<tier>-runners` in the caller): the ci tier has no ARM job, and two ARM builds kept its
-    // toolchain past ten minutes.
-    const wanted = b.option([]const u8, "toolchain-runners", "The runners to build the checks and bay for, space-separated (linux linux-arm macos windows windows-arm); every one when not given") orelse "";
+    // A run builds the runners its jobs run on (`wanted`, every one when empty): the ci tier has
+    // no ARM job, and two ARM builds kept its toolchain past ten minutes.
     var names = std.mem.tokenizeScalar(u8, wanted, ' ');
     while (names.next()) |name| {
         for (runners) |runner| {

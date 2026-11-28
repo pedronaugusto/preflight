@@ -8,7 +8,6 @@ const configure = @import("configure.zig");
 const run_bound = @import("runs.zig");
 const input = @import("build/input.zig");
 const plain = @import("plain.zig");
-const builtin = @import("builtin");
 const nested = @import("nested.zig");
 const zon_text = @import("zon.zig");
 const OwnedDir = @import("owned.zig").OwnedDir;
@@ -335,17 +334,15 @@ fn gatherStart(io: std.Io, cwd: std.Io.Dir, path: []const u8) !std.Io.Dir {
 }
 
 /// The package `hash`, at `path`, as the consumer's build finds it among its packages: a link
-/// to it, or on Windows, or where links are refused, a copy. A link on Windows is not one
-/// `deleteTree` is known to leave unentered, and what it leads to is the package's own.
+/// to it, on every system, which the next check's `gatherStart` unlinks without entering. A
+/// system that refuses the link gets a copy, as Zig copies a fixture's packages without one.
 fn place(io: std.Io, a: std.mem.Allocator, system: std.Io.Dir, hash: []const u8, path: []const u8) !void {
     // The build names it from where it runs, as this program does; a link names it from where
     // the link is, so it takes the whole path.
     const whole = try std.Io.Dir.cwd().realPathFileAlloc(io, path, a);
-    if (builtin.target.os.tag != .windows) {
-        if (system.symLink(io, whole, hash, .{ .is_directory = true })) |_| return else |err| switch (err) {
-            error.AccessDenied, error.PermissionDenied => {},
-            else => return err,
-        }
+    if (system.symLink(io, whole, hash, .{ .is_directory = true })) |_| return else |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => {},
+        else => return err,
     }
     var from = try std.Io.Dir.cwd().openDir(io, whole, .{ .iterate = true });
     defer from.close(io);

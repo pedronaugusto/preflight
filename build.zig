@@ -124,10 +124,12 @@ pub fn dev(b: *std.Build, _: type) void {
     // consumer's tests: the order module's and the watchdog's tests import
     // them as the runner does, so they run under it too.
     const suite_run = b.addRunArtifact(tests);
-    // The warm runs below are the integration tests' fixtures: a run whose filters select none
-    // of them (the ci tier's smoke, its units by their files' names) leaves them out, where they
-    // took most of its ten minutes before any test ran (push run 46035883604).
-    const fixtures = b.option(bool, "fixtures", "Warm the integration tests' fixtures before the suite; false for a run whose filters select none of them") orelse true;
+    // The integration tests build fixture packages, a heavy leg the nightly tier runs, as it
+    // runs riscv64 and FreeBSD: a run without them (the release tier's, the ci tier's smoke)
+    // leaves out their tests and the warm runs below, which took most of a ci run's ten minutes
+    // before any test ran (push run 46035883604).
+    const fixtures = b.option(bool, "fixtures", "Run the integration tests, which build fixture packages, and warm their fixtures first; false leaves both out (the release tier's run)") orelse true;
+    options.addOption(bool, "fixture_tests", fixtures);
     // The fixtures' builds share one cache (integration.zig's fixtureCache), and the first lint
     // in it compiles preflight's checks, runner and tools from cold: here, before any test's
     // watchdog, by the sample's own lint, where it was the cost of whichever test met it first

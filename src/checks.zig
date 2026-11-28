@@ -69,7 +69,9 @@ test {
     _ = cache;
     _ = glint;
     _ = fuzz;
-    _ = integration;
+    // The fixture packages' tests, the nightly tier's heavy leg; a run without them leaves
+    // them out (`-Dfixtures=false`).
+    if (@import("test_options").fixture_tests) _ = integration;
     _ = runners;
     _ = attest;
     _ = manifest;

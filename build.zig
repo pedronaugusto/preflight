@@ -33,6 +33,9 @@ pub fn build(b: *std.Build) void {
     // A package that depends on preflight builds nothing of it here: its gate
     // installs the tools through addCi.
     if (b.pkg_hash.len != 0) return;
+    // The hosted runner's preflight of this commit (`-Dci-checks`), which the runner's commands
+    // run in place of the program compiled here; unset, as at hand, the build compiles it.
+    const controls = ci.declareCiOptions(b);
     // Fetched only by a build that asks for the machine.
     if (b.option(bool, "vm-freebsd-probe", "Add vm-freebsd-probe: run the FreeBSD test machine's own tests on it (qemu-system-x86_64 and KVM on a Linux host)") orelse false) {
         const probe = b.step("vm-freebsd-probe", "Run the FreeBSD test machine's own tests on it, through -Dci-vm's path");
@@ -45,10 +48,14 @@ pub fn build(b: *std.Build) void {
         const machine_tool = program(b, b, ci.ciTarget(b)) orelse return;
         vm.add(b, probe, b, b, .{ .compiled = machine_tool }, b.graph.host, &.{});
     }
+    if (controls.checks) |path| {
+        if (!addToolchain(b)) return;
+        return addCommands(b, .{ .prebuilt = path }, repo_root orelse ".");
+    }
     const executable = program(b, b, ci.ciTarget(b)) orelse return;
     b.installArtifact(executable);
     if (!addToolchain(b)) return;
-    addCommands(b, executable, repo_root orelse ".");
+    addCommands(b, .{ .compiled = executable }, repo_root orelse ".");
 }
 
 /// preflight's development: the regression suites, which take shakedown's test
@@ -73,6 +80,12 @@ pub fn dev(b: *std.Build, _: type) void {
     // The integration tests run fixture packages the way their authors do: through bay; and
     // the checks read CHANGELOG.md with bay's reader of it.
     const bay = package.dependencyLazy("bay", .{ .optimize = .safe }) catch return pending(b);
+    // The hosted runner's preflight and bay of this commit (`-Dci-checks`, `-Dci-bay`), which the
+    // tests, the warm runs and every fixture's build take in place of compiling them: then a
+    // shard spends its minutes on its tests. Unset, as at hand, the build compiles them.
+    const held_checks = ci.prebuilt(b, ci.prebuilt_checks);
+    const held_bay = ci.prebuilt(b, ci.prebuilt_bay);
+    const bay_program: std.Build.LazyPath = if (held_bay) |path| .{ .cwd_relative = path } else bay.artifact("bay").getEmittedBin();
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = package.path("src/checks.zig"),
         .target = target,
@@ -85,11 +98,13 @@ pub fn dev(b: *std.Build, _: type) void {
     // The run's global Zig cache, for a test whose `HOME` is a directory of its own: Zig finds its
     // global cache under `HOME`, which would leave the test's builds one that is empty.
     options.addOptionPathUntracked("zig_global_cache", b.graph.path(.global_cache, "."));
-    options.addOptionPath("bay", bay.artifact("bay").getEmittedBin());
+    options.addOptionPath("bay", bay_program);
     // The gate's tests run the preflight program as its user does, and the facts' tests a
     // stand-in for a bay that cannot locate the development build.
     const executable = program(b, package, target) orelse return;
-    options.addOptionPath("preflight", executable.getEmittedBin());
+    options.addOptionPath("preflight", if (held_checks) |path| .{ .cwd_relative = path } else executable.getEmittedBin());
+    // What a fixture's build is handed (`-Dci-checks`), where the run holds it.
+    options.addOption(?[]const u8, "checks", held_checks);
     const fake = b.addExecutable(.{ .name = "bay", .root_module = b.createModule(.{ .root_source_file = package.path("src/testing/bay.zig"), .target = target, .optimize = .debug }) });
     options.addOptionPath("fake_bay", fake.getEmittedBin());
     // The bound's tests run its program as the build puts it before a run: Debug, as there.
@@ -122,6 +137,7 @@ pub fn dev(b: *std.Build, _: type) void {
     // most of its time, by the sample's own consumer check: an integration test's consumer
     // builds then compile their own programs alone.
     warm.addArg("check-consumer");
+    if (held_checks) |path| warm.addArg(b.fmt("-D{s}={s}", .{ ci.prebuilt_checks, path }));
     warm.setCwd(package.path("sample"));
     warm.expectExitCode(0);
     if (fixtures) suite_run.step.dependOn(&warm.step);
@@ -139,7 +155,9 @@ pub fn dev(b: *std.Build, _: type) void {
     warm_program.addDirectoryArg2(package.path(".zig-cache/fixtures/program"), .{});
     warm_program.setCwd(package.path("sample"));
     warm_program.expectExitCode(0);
-    if (fixtures) suite_run.step.dependOn(&warm_program.step);
+    // A run that holds the program builds none: the tests that build the package take it.
+    const program_warmed = fixtures and held_checks == null;
+    if (program_warmed) suite_run.step.dependOn(&warm_program.step);
     // And a package developed with bay (`src/testing/developed.zig`), which its integration test
     // runs: a development build compiles from a root of its own, where Zig keys the packages
     // unpacked beside the package by their full paths, so the test's package, made afresh in a
@@ -150,8 +168,9 @@ pub fn dev(b: *std.Build, _: type) void {
     warm_developed.step.name = "warm the fixtures' cache with a package developed with bay";
     warm_developed.addDirectoryArg2(developed, .{});
     warm_developed.addDirectoryArg2(package.path("."), .{});
-    warm_developed.addArtifactArg2(bay.artifact("bay"), .{});
+    warm_developed.addFileArg2(bay_program, .{});
     warm_developed.addDirectoryArg2(package.path(".zig-cache/fixtures"), .{});
+    warm_developed.addArg(held_checks orelse "");
     warm_developed.has_side_effects = true;
     warm_developed.expectExitCode(0);
     if (fixtures) suite_run.step.dependOn(&warm_developed.step);
@@ -202,8 +221,8 @@ pub fn dev(b: *std.Build, _: type) void {
     // preflight gates its own sources with the checks it ships: the preflight
     // the gate finds among this build's dependencies is this package.
     // A warm run's bound, each named for its run, which only a run with the fixtures has.
-    const warm_bounds = [_]ci.RunBound{ .{ .step = "warm the fixtures' cache", .limit = .fromSeconds(1800), .reason = "the sample's whole lint and its consumer check, which compile preflight's checks, runner and tools and the consumers' global cache from cold" }, .{ .step = "warm the fixtures' cache with the program", .limit = .fromSeconds(1800), .reason = "the package build's preflight program, compiled from cold: 3.5 min at load 51" }, .{ .step = "warm the fixtures' cache with a package developed with bay", .limit = .fromSeconds(1800), .reason = "a development build's checks, build runner and benchmarks, compiled from cold: 200 to 290 s at rest" } };
-    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .run_bounds = if (fixtures) &warm_bounds else &.{}, .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
+    const warm_bounds = [_]ci.RunBound{ .{ .step = "warm the fixtures' cache", .limit = .fromSeconds(1800), .reason = "the sample's whole lint and its consumer check, which compile preflight's checks, runner and tools and the consumers' global cache from cold" }, .{ .step = "warm the fixtures' cache with a package developed with bay", .limit = .fromSeconds(1800), .reason = "a development build's checks, build runner and benchmarks, compiled from cold: 200 to 290 s at rest" }, .{ .step = "warm the fixtures' cache with the program", .limit = .fromSeconds(1800), .reason = "the package build's preflight program, compiled from cold: 3.5 min at load 51" } };
+    ci.addCi(b, package, .{ .tests = test_step, .test_timeout = .{ .bound = .{ .limit = .fromSeconds(300), .reason = "an integration test may compile the checks a fixture's gate runs from cold, before the shared fixture cache is warm" } }, .run_bounds = if (!fixtures) &.{} else if (program_warmed) &warm_bounds else warm_bounds[0..2], .hardened = .{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }, .bench = .{
         .programs = &.{ .{ .name = "source", .source = "bench/source.zig" }, .{ .name = "workflow", .source = "bench/workflow.zig" }, .{ .name = "configuration", .source = "bench/configuration.zig" } },
         .imports = &bench_imports,
         .target = target,
@@ -212,7 +231,8 @@ pub fn dev(b: *std.Build, _: type) void {
     const verify = b.step("verify", "Check format, sources, checker regressions and the hosted runner");
     verify.dependOn(&b.top_level_steps.get("ci").?.step);
     verify.dependOn(&b.addFmt(.{ .paths = package.pathList(&.{"."}), .check = true }).step);
-    verify.dependOn(&executable.step);
+    // The program the run holds was compiled from this commit by the toolchain job.
+    if (held_checks == null) verify.dependOn(&executable.step);
 }
 
 /// The preflight program of `package`, built in `b` (`ci.programModule`). Null
@@ -224,6 +244,8 @@ fn program(b: *std.Build, package: *std.Build, target: std.Build.ResolvedTarget)
 /// Ends a configure pass that waits for a lazy dependency, with the CI options
 /// declared, so the pass on an empty package cache accepts them.
 fn pending(b: *std.Build) void {
+    // `build` declares them first, and an option is declared once.
+    if (b.available_options_map.contains(ci.prebuilt_checks)) return;
     _ = ci.declareCiOptions(b);
 }
 
@@ -246,16 +268,32 @@ const runners = [_]struct { name: []const u8, query: std.Target.Query }{
 /// others take the result. False while a lazy dependency is still to be fetched.
 fn addToolchain(b: *std.Build) bool {
     const step = b.step("toolchain", "Build the checks and bay for the Linux, macOS and Windows runners, ARM ones included, under <prefix>/toolchain");
+    // A run builds the runners its jobs run on, which the planner lists beside its tier's matrix
+    // (`<tier>-runners` in the caller): the ci tier has no ARM job, and two ARM builds kept its
+    // toolchain past ten minutes.
+    const wanted = b.option([]const u8, "toolchain-runners", "The runners to build the checks and bay for, space-separated (linux linux-arm macos windows windows-arm); every one when not given") orelse "";
+    var names = std.mem.tokenizeScalar(u8, wanted, ' ');
+    while (names.next()) |name| {
+        for (runners) |runner| {
+            if (std.mem.eql(u8, runner.name, name)) break;
+        } else step.dependOn(&b.addFail(b.fmt("toolchain-runners: `{s}` is no runner: linux, linux-arm, macos, windows or windows-arm", .{name})).step);
+    }
     for (runners) |runner| {
+        if (std.mem.trim(u8, wanted, " ").len != 0) {
+            var each = std.mem.tokenizeScalar(u8, wanted, ' ');
+            while (each.next()) |name| {
+                if (std.mem.eql(u8, runner.name, name)) break;
+            } else continue;
+        }
         const target = b.resolveTargetQuery(runner.query);
         const executable = b.addExecutable(.{ .name = "preflight", .root_module = ci.programModule(b, b, target) orelse {
-            _ = ci.declareCiOptions(b);
+            pending(b);
             return false;
         } });
         step.dependOn(&b.addInstallArtifact(executable, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
         // bay sits beside the checks: the runner runs a package developed with it through it.
         const bay = b.dependencyLazy("bay", .{ .target = target, .optimize = .safe }) catch {
-            _ = ci.declareCiOptions(b);
+            pending(b);
             return false;
         };
         step.dependOn(&b.addInstallArtifact(bay.artifact("bay"), .{ .dest_dir = .{ .override = .{ .custom = b.fmt("toolchain/{s}", .{runner.name}) } } }).step);
@@ -263,11 +301,17 @@ fn addToolchain(b: *std.Build) bool {
     return true;
 }
 
-/// The steps that run one of the installed command's subcommands in `root`.
-fn addCommands(b: *std.Build, executable: *std.Build.Step.Compile, root: []const u8) void {
-    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "profile", "attest", "skip" }) |name| {
+/// The preflight program a build runs: compiled here, or the one the hosted runner holds.
+const Program = union(enum) { compiled: *std.Build.Step.Compile, prebuilt: []const u8 };
+
+/// The steps that run one of the program's subcommands in `root`.
+fn addCommands(b: *std.Build, executable: Program, root: []const u8) void {
+    for ([_][]const u8{ "plan", "setup", "prepare", "fetch", "run", "cache", "docs", "attest", "skip" }) |name| {
         if (b.top_level_steps.contains(name)) continue;
-        const command = b.addRunArtifact(executable);
+        const command = switch (executable) {
+            .compiled => |compiled| b.addRunArtifact(compiled),
+            .prebuilt => |path| b.addSystemCommand(&.{path}),
+        };
         command.addArg(name);
         command.setCwd(.{ .cwd_relative = root });
         command.addPassthruArgs();

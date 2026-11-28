@@ -2,6 +2,8 @@ const std = @import("std");
 const aegis = @import("aegis");
 const builtin = @import("builtin");
 const root = @import("test_options").root;
+/// The preflight the hosted job built of this commit (`-Dci-checks`), where the run holds it.
+const held_checks = @import("test_options").checks;
 const command = @import("command.zig");
 const src = @import("source.zig");
 const seam = @import("input.zig");
@@ -125,7 +127,7 @@ fn shakedownPin(a: std.mem.Allocator) !Pin {
 }
 
 fn run(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
-    return seam.build(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-imports" }, .cwd = .{ .dir = dir } });
+    return seam.build(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"check-imports"}), .cwd = .{ .dir = dir } });
 }
 
 test "structure runner rejects undeclared imports, production reaching tests and duplicate layer owners" {
@@ -177,7 +179,7 @@ test "an option the build passes a dependency that the dependency does not decla
     const build = try tmp.dir.readFileAlloc(io, "build.zig", a, .limited(1 << 20));
     try std.testing.expect(std.mem.find(u8, build, "    preflight.addCi(b, b, .{") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, build, "    preflight.addCi(b, b, .{", "    _ = b.dependency(\"dep\", .{ .declared = true, .gone = true });\n    preflight.addCi(b, b, .{") });
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     const said = "the build passes the dependency dep the option `gone`, which dep does not declare (Zig only logs it, and builds on): drop it";
     if (result.term != .exited or result.term.exited == 0 or std.mem.find(u8, result.stderr, said) == null) {
         std.debug.print("expected the tests' step to fail, saying:\n{s}\nstderr:\n{s}\n", .{ said, result.stderr });
@@ -200,7 +202,7 @@ test "-Dci-lint=false leaves out glint's lint alone: an import of the tests from
     // Formatted, so the formatting check passes and the structure check is the one to answer.
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(command.succeeded(formatted));
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(result.term == .exited and result.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, result.stderr, "production reaches tests: src/sample.zig -> src/testing/cases.zig") != null);
 }
@@ -214,7 +216,7 @@ test "arguments after `--` to the tests are refused by name, never a whole run i
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     for ([_][]const u8{ "test", "ci-test" }) |step| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), step, "-Dci-lint=false", "--", "--test-filter", "one" }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ step, "-Dci-lint=false", "--", "--test-filter", "one" }), .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         const refusal = "the tests take no arguments after `--` (given: --test-filter one): Zig filters tests as it compiles them; name them with -Dtest-filter=NAME";
         if (std.mem.find(u8, result.stderr, refusal) == null) std.debug.print("{s}\n", .{result.stderr});
@@ -273,23 +275,23 @@ test "format checks owned sources and ignores extracted dependency packages" {
         try tmp.dir.createDirPath(io, path);
         try tmp.dir.writeFile(io, .{ .sub_path = try std.Io.Dir.path.join(a, &.{ path, "value.zig" }), .data = foreign });
     }
-    const valid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const valid = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (valid.term != .exited or valid.term.exited != 0) std.debug.print("{s}", .{valid.stderr});
     try std.testing.expect(valid.term == .exited and valid.term.exited == 0);
     try bareConsumer(tmp.dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\nconst value=1;\n" });
-    const invalid = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const invalid = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(invalid.term == .exited and invalid.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, invalid.stderr, "non-conforming formatting") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test {}\n" });
     try tmp.dir.createDir(io, "examples", .default_dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "examples/value.zig", .data = "pub fn at(address: usize) *const u8 {\n    return @ptrFromInt(address);\n}\n" });
     // An example ships nowhere: the danger rules hold the sources.
-    const example = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const example = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(example.term == .exited and example.term.exited == 0);
     // In the sources a pointer conversion is P007's site: without a suppression it fails the gate.
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "pub fn at(address: usize) *const u8 {\n    return @ptrFromInt(address);\n}\ntest {}\n" });
-    const cast = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const cast = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(cast.term == .exited and cast.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, cast.stderr, "P007: src/sample.zig:2:") != null);
 }
@@ -321,7 +323,7 @@ test "lint maps an options module whose options name paths, and a module rooted 
     try edit(a, tmp.dir, "ci/layers.zig", ".except_targets = &.{ \"std\", \"builtin\" }", ".except_targets = &.{ \"std\", \"builtin\", \"options\", \"listing\" }");
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
@@ -351,7 +353,7 @@ test "lint reads a name two modules that both compile a file bind to two files a
     try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/first.zig\", \"src/second.zig\" } }");
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
@@ -378,10 +380,10 @@ test "lint reads a negative fixture the build compiles expecting its error, the 
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
     // The build holds the fixture's error.
-    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a) }, .cwd = .{ .dir = tmp.dir } });
+    const built = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{}), .cwd = .{ .dir = tmp.dir } });
     if (built.term != .exited or built.term.exited != 0) std.debug.print("{s}", .{built.stderr});
     try std.testing.expect(built.term == .exited and built.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "no module of this build compiles it"));
@@ -412,7 +414,7 @@ test "lint reads a module whose root the build copies, from a source directory o
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/reads_copy.zig", .data = "const copied = @import(\"copied\");\nconst single = @import(\"single\");\ncomptime {\n    _ = copied;\n    _ = single;\n}\n" });
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
@@ -440,7 +442,7 @@ test "lint reads a test runner of the package's own with the bindings of the tes
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/runner.zig", .data = "const builtin = @import(\"builtin\");\nconst harness = @import(\"harness\");\npub const std_runner = @import(\"std_runner\");\npub fn main() void {\n    for (0..harness.rounds) |_| {\n        for (builtin.test_functions) |test_fn| test_fn.func() catch |err| @panic(@errorName(err));\n    }\n}\n" });
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
@@ -474,7 +476,7 @@ test "lint reads a module a build step makes as an external module: translate-c'
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/reads_made.zig", .data = "const defs = @import(\"defs\");\nconst table = @import(\"table\");\ncomptime {\n    _ = defs.ANSWER;\n    _ = table.rows;\n}\n" });
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "names no module"));
@@ -501,7 +503,7 @@ test "a test compiled with a runner of the package's own and never run is a harn
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/harness_runner.zig", .data = "const builtin = @import(\"builtin\");\npub fn main() void {\n    for (builtin.test_functions) |test_fn| test_fn.func() catch |err| @panic(@errorName(err));\n}\n" });
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     if (linted.term != .exited or linted.term.exited != 0) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(linted.term == .exited and linted.term.exited == 0);
     try std.testing.expectEqual(null, std.mem.find(u8, linted.stderr, "never run"));
@@ -523,7 +525,7 @@ test "glint reads the public surface from the package's exported roots: a type r
     try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/helper.zig\" } }");
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     const leak = std.mem.find(u8, linted.stderr, "src/sample.zig") != null and std.mem.find(u8, linted.stderr, "private type 'Private'") != null;
     if (!leak or std.mem.find(u8, linted.stderr, "private type 'Hidden'") != null) std.debug.print("{s}", .{linted.stderr});
     try std.testing.expect(leak);
@@ -545,7 +547,7 @@ test "lint names once a selected file no module of the build compiles, where it 
     try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/elsewhere.zig\" } }");
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
-    const linted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, .cwd = .{ .dir = tmp.dir } });
+    const linted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"lint"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(linted.term == .exited and linted.term.exited != 0);
     const said = "src/elsewhere.zig: no module of this build compiles it, so `other` and every module it imports have no binding to read";
     if (std.mem.find(u8, linted.stderr, said) == null) std.debug.print("{s}", .{linted.stderr});
@@ -616,7 +618,7 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
         \\
     });
     const started: std.Io.Clock.Timestamp = .now(io, .awake);
-    const hung = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const hung = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     const took = started.untilNow(io).raw;
     // 2000 ms, or that times a sanitizer's or an emulator's slowdown, as the tests' bound.
     const named = "preflight: watchdog: `run exe hang` made no progress for ";
@@ -638,7 +640,7 @@ test "a run of the tests that is no test and never ends is ended at its bound, f
     // A bound that names no run would change nothing, silently: it is refused by name.
     try edit(a, tmp.dir, "build.zig", ".step = \"run exe hang\"", ".step = \"run exe gone\"");
     try edit(a, tmp.dir, "build.zig", "    step.dependOn(&spins.step);\n", "");
-    const stale = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const stale = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     const refused = "run_bounds: `run exe gone` names no run of the tests step that is no test";
     if (command.succeeded(stale) or std.mem.find(u8, stale.stderr, refused) == null) std.debug.print("{s}", .{stale.stderr});
     try std.testing.expect(!command.succeeded(stale));
@@ -663,7 +665,7 @@ test "lint reads the configured graph as the build wrote it: identical to the gr
     try tmp.dir.writeFile(io, .{ .sub_path = "src/tool.zig", .data = "pub fn main() void {}\n" });
     var read: [3][]const u8 = undefined;
     for ([_][]const []const u8{ &.{}, &.{"-Dci-bound=false"}, &.{"-Dci-bound=true"} }, &read) |options, *graph| {
-        const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "facts", "--" }, options });
+        const argv = try std.mem.concat(a, []const u8, &.{ try fixtureBuild(a, &.{ "facts", "--" }), options });
         const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir } });
         if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(command.succeeded(result));
@@ -686,6 +688,23 @@ fn fixtureCache(a: std.mem.Allocator) ![]const u8 {
     return std.Io.Dir.path.join(a, &.{ root, ".zig-cache", "fixtures" });
 }
 
+/// A fixture's build command: Zig's `build` in the fixtures' cache with `args`, handed the
+/// preflight the hosted job built of this commit where the run holds one (`-Dci-checks`), which
+/// the fixture's gate then runs in place of compiling its checks, as a package's hosted job
+/// does. At hand nothing is handed, and the gate compiles them. The option goes before a `--`,
+/// past which the arguments are the program's.
+fn fixtureBuild(a: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a) });
+    const end = for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--")) break i;
+    } else args.len;
+    try argv.appendSlice(a, args[0..end]);
+    if (held_checks) |path| try argv.append(a, try a.print("-Dci-checks={s}", .{path}));
+    try argv.appendSlice(a, args[end..]);
+    return argv.items;
+}
+
 fn lintFixture(a: std.mem.Allocator, dir: std.Io.Dir) !std.process.RunResult {
     return lintFixtureWith(a, dir, &.{});
 }
@@ -701,7 +720,7 @@ fn lintFixtureWith(a: std.mem.Allocator, dir: std.Io.Dir, options: []const []con
     // the fixtures' cache as the lint's own build does, so the build script and the tools it
     // compiled are found there, not compiled again from cold in the fixture's own cache.
     try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
-    const argv = try std.mem.concat(a, []const u8, &.{ &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "lint" }, options });
+    const argv = try std.mem.concat(a, []const u8, &.{ try fixtureBuild(a, &.{"lint"}), options });
     return seam.build(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
 
@@ -737,7 +756,7 @@ test "the sample's tests shuffle reproducibly with an explicit seed" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = try markedTests(a, "order", 0, 16) });
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
-    const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" };
+    const argv: []const []const u8 = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" });
     var orders: [3][]const u8 = undefined;
     for (&orders, [_][]const u8{ "42", "42", "43" }) |*order, seed| {
         try env.put("PREFLIGHT_TEST_SEED", seed);
@@ -813,7 +832,7 @@ test "a red lint and a failing unit test are each reported: the suite runs whate
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "test" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"test"}), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (std.mem.find(u8, result.stderr, "P005") == null or std.mem.find(u8, result.stderr, "the sample's own check") == null) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(result.term == .exited and result.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, result.stderr, "P005") != null);
@@ -1070,7 +1089,7 @@ test "compiled caches never skip a second CI execution" {
     const format = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(format.term == .exited and format.term.exited == 0);
     for (0..2) |_| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci" }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"ci"}), .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
         if (tmp.dir.access(io, "executions", .{})) |_| {} else |_| std.debug.print("{s}", .{result.stderr});
@@ -1086,7 +1105,7 @@ test "compile-only test graph builds foreign binaries without executing failing 
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = "test \"must not run\" { return error.ExecutedCompileOnlyTest; }\n" });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-windows-gnu" }), .cwd = .{ .dir = tmp.dir } });
     if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(result.term == .exited and result.term.exited == 0);
 }
@@ -1111,7 +1130,7 @@ test "the compile check reaches the code a consumer's libc build selects, where 
         \\}
         \\
     });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "use of undeclared identifier 'undefined_in_libc_builds'") != null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "-libc") != null);
@@ -1144,7 +1163,7 @@ test "the compile check compiles a module's assembly sources for COFF, each to a
         try tmp.dir.writeFile(io, .{ .sub_path = source[0], .data = try a.print("#include \"names.h\"\n    .data\n    .globl {s}\n{s}:\n    .long WINDOWS_ABI\n", .{ source[1], source[1] }) });
     }
     try tmp.dir.writeFile(io, .{ .sub_path = "src/user.zig", .data = "const sample = @import(\"sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -1170,7 +1189,7 @@ test "the compile check compiles a C library of several sources and no Zig root 
     try tmp.dir.createDirPath(io, "src/c");
     try tmp.dir.writeFile(io, .{ .sub_path = "src/c/parser.c", .data = "int grammar_parse(int x) { return x + 1; }\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/c/scanner.c", .data = "int grammar_scan(int x) { return x * 2; }\n" });
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -1196,7 +1215,7 @@ test "the compile check compiles an installed C library of several sources and n
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = sourced });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/one.c", .data = "int one(int x) { return x + 1; }\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/two.c", .data = "int two(int x) { return x * 2; }\n" });
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-windows-gnu", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -1221,7 +1240,7 @@ test "check compiles the tests for every target of the ci tier, where a test beh
         \\}
         \\
     });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "check", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "a body only Windows compiles") != null);
     try std.testing.expect(std.mem.find(u8, result.stderr, "x86_64-windows") != null);
@@ -1243,7 +1262,7 @@ test "shards split the tests once between them by name" {
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("PREFLIGHT_SHARD");
-    const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" };
+    const argv: []const []const u8 = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" });
     const whole = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(whole)) std.debug.print("{s}\n", .{whole.stderr});
     try std.testing.expect(command.succeeded(whole));
@@ -1286,7 +1305,7 @@ test "a crash fails its test alone, and the process the build starts again runs 
     // An order that runs the crash after other tests, which the process the
     // build starts again after it must not run twice or drop.
     try env.put("PREFLIGHT_TEST_SEED", "1");
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "case-0 crashes") != null);
     const names = try ranOrder(a, result.stderr);
@@ -1314,7 +1333,7 @@ test "a test's environment holds none of preflight's controls, so a build it sta
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try env.put("PREFLIGHT_SHARD", "1/1");
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -1332,13 +1351,13 @@ test "the watchdog fails a stalled test by name and phase" {
     try std.testing.expect(!std.mem.eql(u8, script, bounded));
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = bounded });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"stalls\" {\n    try std.Io.sleep(std.testing.io, .fromSeconds(30), .awake);\n}\n" });
-    const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const stalled = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (std.mem.find(u8, stalled.stderr, "stalls made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "preflight: watchdog: ") != null);
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "test \"quick\" {}\n" });
-    const quick = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const quick = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(quick)) std.debug.print("{s}\n", .{quick.stderr});
     try std.testing.expect(command.succeeded(quick));
 }
@@ -1361,7 +1380,7 @@ test "the watchdog names a stalled test that holds the stderr lock, as a hung cr
         \\}
         \\
     });
-    const stalled = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const stalled = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (std.mem.find(u8, stalled.stderr, "stalls holding stderr made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") == null) std.debug.print("{s}", .{stalled.stderr});
     try std.testing.expect(!command.succeeded(stalled));
     try std.testing.expect(std.mem.find(u8, stalled.stderr, "stalls holding stderr made no progress for 300ms: its processes used under 50ms of CPU time in it; phase body") != null);
@@ -1614,11 +1633,11 @@ test "the consumer check builds the package as a dependency with nothing fetched
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    const built = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"check-consumer"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(built)) std.debug.print("{s}\n", .{built.stderr});
     try std.testing.expect(command.succeeded(built));
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/consumer.zig", .data = "const sample = @import(\"preflight_sample\");\npub fn main() void {\n    _ = sample.missing;\n}\n" });
-    const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    const broken = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"check-consumer"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(broken));
     try std.testing.expect(std.mem.find(u8, broken.stderr, "no member named 'missing'") != null);
 }
@@ -1661,7 +1680,7 @@ fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u
 
 fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.process.RunResult {
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" });
+    try argv.appendSlice(a, try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }));
     try argv.appendSlice(a, extra);
     return seam.build(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = dir } });
 }
@@ -1700,7 +1719,7 @@ test "a test runner of its own runs with the watchdog off, and fails by name whe
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try env.put("PREFLIGHT_SHARD", "1/2");
-    const sharded = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const sharded = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(sharded));
     try std.testing.expect(std.mem.find(u8, sharded.stderr, "test: a test runner of its own runs every shard's tests") != null);
 }
@@ -1844,7 +1863,7 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try env.put("PREFLIGHT_TEST_SEED", "42");
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "preflight-error-marker") != null);
@@ -1888,7 +1907,7 @@ test "a fuzz test that skips in the fuzzing build fails the campaign by name ins
         \\
     ;
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data = fuzzes });
-    const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    const good = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened-fuzz"}), .cwd = .{ .dir = tmp.dir } });
     if (!try fuzzerRan(good)) return;
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
@@ -1905,7 +1924,7 @@ test "a fuzz test that skips in the fuzzing build fails the campaign by name ins
         \\}
         \\
     });
-    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened-fuzz"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(bad));
     if (std.mem.find(u8, bad.stderr, "preflight: fuzz test hardened.test.skips when fuzzing skipped without calling std.testing.fuzz in the fuzzing build") == null) std.debug.print("{s}", .{bad.stderr});
     try std.testing.expect(std.mem.find(u8, bad.stderr, "preflight: fuzz test hardened.test.skips when fuzzing skipped without calling std.testing.fuzz in the fuzzing build") != null);
@@ -1934,7 +1953,7 @@ test "a fuzz test two test runs of one campaign hold is named before the fuzzers
     });
     const run_line = "profile_step.dependOn(&b.addRunArtifact(profile).step);\n";
     try edit(a, tmp.dir, "build.zig", run_line, run_line ++ "    profile_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = profile.root_module, .name = \"again\" })).step);\n");
-    const twice = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-fuzz" }, .cwd = .{ .dir = tmp.dir } });
+    const twice = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened-fuzz"}), .cwd = .{ .dir = tmp.dir } });
     if (!try fuzzerRan(twice)) return;
     try std.testing.expect(!command.succeeded(twice));
     if (std.mem.find(u8, twice.stderr, "preflight: fuzz test hardened.test.fuzzes twice runs twice in this campaign") == null) std.debug.print("{s}", .{twice.stderr});
@@ -1966,7 +1985,7 @@ test "the fuzz job fails on an input the fuzzer finds failing, and keeps it" {
     });
     var env = try std.testing.environ.createMap(a);
     try env.put("PREFLIGHT_FUZZ_MINUTES", "1");
-    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-fuzz" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"ci-fuzz"}), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(bad));
     // shakedown-fuzz writes the failing input of a std.testing.fuzz test as a finding, as it
     // does a property's (since b168f3a), and the job prints it.
@@ -2002,7 +2021,7 @@ test "a test that breaks only under a configuration's option fails the package's
             if (std.mem.eql(u8, each.name, try a.print("check ({s})", .{name}))) break each;
         } else return error.TestUnexpectedResult;
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), job.step });
+        try argv.appendSlice(a, try fixtureBuild(a, &.{job.step}));
         var words = std.mem.tokenizeScalar(u8, job.args, ' ');
         while (words.next()) |word| try argv.append(a, word);
         const result = try std.process.run(a, std.testing.io, .{ .argv = argv.items, .cwd = .{ .dir = tmp.dir } });
@@ -2024,13 +2043,13 @@ test "a configuration naming an option the package does not declare fails its ch
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try featureFixture(a, tmp.dir, "{\"configurations\": [{\"name\": \"typo\", \"options\": {\"featur\": false}}]}");
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"check"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(result));
     if (std.mem.find(u8, result.stderr, "configuration typo: the package declares no option featur") == null) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(std.mem.find(u8, result.stderr, "configuration typo: the package declares no option featur") != null);
     // A value of another type than its option's, named likewise.
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"wrong\", \"options\": {\"feature\": \"no\"}}]}" });
-    const wrong = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check" }, .cwd = .{ .dir = tmp.dir } });
+    const wrong = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"check"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(wrong));
     try std.testing.expect(std.mem.find(u8, wrong.stderr, "configuration wrong: option feature is a bool") != null);
 }
@@ -2052,18 +2071,18 @@ test "a configuration's modules are its options' own: one the default build does
     try tmp.dir.writeFile(io, .{ .sub_path = "src/schema.zig", .data = "pub const fields: u32 = 3;\n" });
     try edit(a, tmp.dir, "ci/layers.zig", "&.{\"src/sample.zig\"} }", "&.{ \"src/sample.zig\", \"src/schema.zig\" } }");
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"plain\"}, {\"name\": \"schema\", \"options\": {\"schema\": true}, \"modules\": [\"preflight_sample\", \"sample_schema\"]}]}" });
-    const built = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    const built = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"check-consumer"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(built)) std.debug.print("{s}\n", .{built.stderr});
     try std.testing.expect(command.succeeded(built));
     // A module the configuration's own build lacks fails there, by name.
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"plain\"}, {\"name\": \"schema\", \"options\": {\"schema\": true}, \"modules\": [\"preflight_sample\", \"sample_shcema\"]}]}" });
-    const misspelt = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    const misspelt = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"check-consumer"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(misspelt));
     if (std.mem.find(u8, misspelt.stderr, "sample_shcema") == null) std.debug.print("{s}\n", .{misspelt.stderr});
     try std.testing.expect(std.mem.find(u8, misspelt.stderr, "sample_shcema") != null);
     // A configuration of no options is this build: a module it does not export fails as it configures.
     try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"configurations\": [{\"name\": \"plain\", \"modules\": [\"sample_schema\"]}]}" });
-    const plain = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
+    const plain = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"check-consumer"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(plain));
     try std.testing.expect(std.mem.find(u8, plain.stderr, "configuration plain: the package exports no module \"sample_schema\"") != null);
 }
@@ -2155,21 +2174,21 @@ test "the bench contract: ReleaseFast under zig-out/bench, and each program run 
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = program });
     // A bench/ directory the build gives no programs fails the tests by name.
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", "null") });
-    const missing = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const missing = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(missing));
     try std.testing.expect(std.mem.find(u8, missing.stderr, "bench/: give addCi its .bench") != null);
     const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = &imports_hook, .target = target, .optimize = optimize }";
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
-    const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const tested = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(tested)) std.debug.print("{s}\n", .{tested.stderr});
     try std.testing.expect(command.succeeded(tested));
-    const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench" }, .cwd = .{ .dir = tmp.dir } });
+    const timed = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"bench"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(timed)) std.debug.print("{s}\n", .{timed.stderr});
     try std.testing.expect(command.succeeded(timed));
     try tmp.dir.access(io, if (builtin.target.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
     // The tests run the program: one that fails fails them.
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "pub fn main() !void {\n    return error.Broken;\n}\n" });
-    const broken = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const broken = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(broken));
 }
 
@@ -2192,7 +2211,7 @@ test "a package with benchmarks configures on a branch git keeps packed, its dir
     try fixtureGit(a, tmp.dir, &.{ "switch", "--quiet", "-c", "wip/x" });
     try fixtureGit(a, tmp.dir, &.{ "pack-refs", "--all" });
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, ".git/refs/heads/wip", .{}));
-    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l" }, .cwd = .{ .dir = tmp.dir } });
+    const listed = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"-l"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(listed)) std.debug.print("{s}\n", .{listed.stderr});
     try std.testing.expect(command.succeeded(listed));
     try std.testing.expect(std.mem.find(u8, listed.stdout, "bench-build") != null);
@@ -2201,7 +2220,7 @@ test "a package with benchmarks configures on a branch git keeps packed, its dir
     try fixtureGit(a, tmp.dir, &.{ "add", "NOTES.md" });
     try fixtureGit(a, tmp.dir, &.{ "commit", "--quiet", "-m", "Notes" });
     try tmp.dir.access(io, ".git/refs/heads/wip/x", .{});
-    const again = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l" }, .cwd = .{ .dir = tmp.dir } });
+    const again = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"-l"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(again)) std.debug.print("{s}\n", .{again.stderr});
     try std.testing.expect(command.succeeded(again));
 }
@@ -2219,19 +2238,19 @@ test "without shakedown a stranger's benchmarks are built, smoke-run and run, wi
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/tick.zig", .data = "const sample = @import(\"preflight_sample\");\npub fn main() void {\n    _ = sample;\n}\n" });
     const given = ".{ .programs = &.{.{ .name = \"tick\", .source = \"bench/tick.zig\" }}, .imports = &imports_hook, .target = target, .optimize = optimize }";
     try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = try std.mem.replaceOwned(u8, a, bench_build, "BENCH", given) });
-    const refused = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const refused = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(refused));
     try std.testing.expect(std.mem.find(u8, refused.stderr, "under the family's policy benchmarks measure through shakedown.bench") != null);
     try adapting(a, tmp.dir);
-    const tested = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const tested = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(tested)) std.debug.print("{s}\n", .{tested.stderr});
     try std.testing.expect(command.succeeded(tested));
-    const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench" }, .cwd = .{ .dir = tmp.dir } });
+    const timed = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"bench"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(timed)) std.debug.print("{s}\n", .{timed.stderr});
     try std.testing.expect(command.succeeded(timed));
     try tmp.dir.access(io, if (builtin.target.os.tag == .windows) "zig-out/bench/tick.exe" else "zig-out/bench/tick", .{});
     // Two revisions compared is shakedown's: there is no comparison step to run.
-    const listed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "-l" }, .cwd = .{ .dir = tmp.dir } });
+    const listed = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{"-l"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(command.succeeded(listed));
     try std.testing.expect(std.mem.find(u8, listed.stdout, "bench-build") != null);
     try std.testing.expect(std.mem.find(u8, listed.stdout, "bench-ab") == null);
@@ -2302,19 +2321,19 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
         try tmp.dir.writeFile(io, .{ .sub_path = path, .data = try a.print("const sample = @import(\"sample\");\npub fn main() void {{ _ = sample.value(\"{s}\"); }}\n", .{kind}) });
     }
     for ([_][]const u8{ "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu" }) |target| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
     }
     for ([_][]const u8{ "test", "helper", "bench", "native" }) |kind| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }), .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
     }
     // `check` compiles what `ci-check` does here, running none of it: a benchmark and a program
     // the tests run (as an example is) fail it broken, where a benchmark failed only `test`'s smoke run.
     for ([_][]const u8{ "helper", "bench" }) |kind| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "check", "-Dci-lint=false", try a.print("-Dbroken={s}", .{kind}) }), .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(result.term == .exited and result.term.exited != 0);
         try std.testing.expect(std.mem.find(u8, result.stderr, "broken artifact") != null);
     }
@@ -2325,29 +2344,29 @@ test "owner cross objects retain SDK declarations and validate every artifact" {
     // optimizing compile costs more than all the other objects together.
     const good_bench = try tmp.dir.readFileAlloc(io, "bench/main.zig", a, .limited(4096));
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/main.zig", .data = "const sample = @import(\"sample\");\nconst builtin = @import(\"builtin\");\npub fn main() void { if (builtin.mode == .fast) @compileError(\"broken fast benchmark\"); _ = sample.value(\"bench\"); }\n" });
-    const debug_only = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const debug_only = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", "-Dtarget=x86_64-macos", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(debug_only.term == .exited and debug_only.term.exited == 0);
-    const fast_bench = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check-bench", "-Dtarget=x86_64-macos", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const fast_bench = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check-bench", "-Dtarget=x86_64-macos", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(fast_bench.term == .exited and fast_bench.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, fast_bench.stderr, "broken fast benchmark") != null);
     try tmp.dir.writeFile(io, .{ .sub_path = "bench/main.zig", .data = good_bench });
-    const native = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-link", "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const native = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-link", "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (native.term != .exited or native.term.exited != 0) std.debug.print("{s}", .{native.stderr});
     try std.testing.expect(native.term == .exited and native.term.exited == 0);
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     if (builtin.target.os.tag == .macos) {
         if (env.get("SDKROOT")) |sdk| {
-            const timed = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+            const timed = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "bench", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
             if (timed.term != .exited or timed.term.exited != 0) std.debug.print("{s}", .{timed.stderr});
             try std.testing.expect(timed.term == .exited and timed.term.exited == 0);
-            const explicit = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-link", "-Dtarget=x86_64-macos", "-Dcpu=baseline", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+            const explicit = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-link", "-Dtarget=x86_64-macos", "-Dcpu=baseline", try a.print("-Dci-sdk={s}", .{sdk}), "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
             if (explicit.term != .exited or explicit.term.exited != 0) std.debug.print("{s}", .{explicit.stderr});
             try std.testing.expect(explicit.term == .exited and explicit.term.exited == 0);
         }
     }
     try tmp.dir.writeFile(io, .{ .sub_path = "src/native.zig", .data = "export fn wrongNativeSymbol() u32 { return 7; }\n" });
-    const unlinked = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-link", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const unlinked = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-link", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(unlinked.term == .exited and unlinked.term.exited != 0);
     try std.testing.expect(std.mem.find(u8, unlinked.stderr, "nativeValue") != null);
 }
@@ -2384,7 +2403,7 @@ test "a helper program a test names by path is compiled to an object, not linked
     try tmp.dir.writeFile(io, .{ .sub_path = "src/helper.zig", .data = "pub fn main() void {}\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const options = @import(\"options\");\ntest \"names its helper\" { _ = options.helper_path; }\n" });
     for ([_][]const u8{ "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu" }) |target| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", try a.print("-Dtarget={s}", .{target}), "-Dcpu=baseline", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
     }
@@ -2399,7 +2418,7 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try tmp.dir.createDirPath(io, ".github/workflows");
-    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"shards\":{\"macos\":{\"min\":2}},\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ci/workflow.json", .data = "{\"targets\":[{\"target\":\"x86_64-macos\",\"cpu\":\"baseline\"}]}" });
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     // The fixture's build uses the local dependency. The generator independently
     // reads the declared publication pin, as it does after a consumer's repin.
@@ -2408,7 +2427,7 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     try fixtureGit(a, tmp.dir, &.{ "init", "--quiet" });
     // Made where no generated caller is, then found and made again, the same.
     for (0..2) |index| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "generate", "--", "--manifest", "pin.zon" }, .cwd = .{ .dir = tmp.dir } });
+        const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "generate", "--", "--manifest", "pin.zon" }), .cwd = .{ .dir = tmp.dir } });
         if (result.term != .exited or result.term.exited != 0) std.debug.print("{s}", .{result.stderr});
         try std.testing.expect(result.term == .exited and result.term.exited == 0);
         const text = try tmp.dir.readFileAlloc(io, ".github/workflows/ci.yml", a, .limited(1024 * 1024));
@@ -2436,7 +2455,7 @@ test "the plan links the macOS targets on a Mac when one of their builds links a
     // A hosted run sets GITHUB_OUTPUT, where the plan would write in place of stdout.
     var env = try std.testing.environ.createMap(a);
     _ = env.swapRemove("GITHUB_OUTPUT");
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "plan", "--", "--tier", "release" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "plan", "--", "--tier", "release" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;
@@ -2477,10 +2496,10 @@ test "toolchain measuring builds without executing and injects shakedown for a c
         \\const probe_hook: preflight.Bench.Imports = .{ .make = probeImports };
         \\fn probeImports(_: *const preflight.Bench.Imports, _: *std.Build, _: std.Build.ResolvedTarget, _: std.lang.Optimize) []const std.Build.Module.Import { return &.{}; }
     }) });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "bench-build" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"bench-build"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
-    const smoke = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const smoke = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(smoke)) std.debug.print("{s}", .{smoke.stderr});
     try std.testing.expect(command.succeeded(smoke));
 }
@@ -2506,7 +2525,11 @@ test "a package developed with bay runs the gate from dev, and its consumers fet
     var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try env.put("ZIG_LOCAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ package_root, ".zig-cache", "fixtures" }));
-    const built = try std.process.run(a, io, .{ .argv = &.{ bay, "dev", "ci-test", "bench-build", "-Dci-lint=false" }, .cwd = .{ .dir = developed }, .environ_map = &env });
+    // As the warm run built it: with the run's preflight, where it holds one.
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ bay, "dev", "ci-test", "bench-build", "-Dci-lint=false" });
+    if (held_checks) |path| try argv.append(a, try a.print("-Dci-checks={s}", .{path}));
+    const built = try std.process.run(a, io, .{ .argv = argv.items, .cwd = .{ .dir = developed }, .environ_map = &env });
     if (!command.succeeded(built)) std.debug.print("bay dev:\n{s}", .{built.stderr});
     try std.testing.expect(command.succeeded(built));
     // The consumer check is wired from dev too; building one is its own test's work.
@@ -2529,7 +2552,7 @@ test "toolchain hardened preserves test allocator ownership and detects write af
     try fixture(a, tmp.dir);
     const build = try tmp.dir.readFileAlloc(std.testing.io, "build.zig", a, .limited(1024 * 1024));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = build });
-    const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    const good = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data =
@@ -2541,7 +2564,7 @@ test "toolchain hardened preserves test allocator ownership and detects write af
         \\    ptr.* = 42;
         \\}
     });
-    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(bad));
     try std.testing.expect(std.mem.find(u8, bad.stderr, "write after free") != null or std.mem.find(u8, bad.stderr, "use after free") != null);
 }
@@ -2567,7 +2590,7 @@ test "the hardened run backs the test allocator with shakedown's quarantine: a r
         \\}
     });
     for (0..2) |_| {
-        const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+        const bad = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened"}), .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(!command.succeeded(bad));
         // Linux says a segmentation fault, macOS a bus error, of an inaccessible page.
         const faulted = std.mem.find(u8, bad.stderr, "Segmentation fault") != null or std.mem.find(u8, bad.stderr, "Bus error") != null;
@@ -2585,11 +2608,11 @@ test "without shakedown a stranger's hardened run is on std's allocator; the fam
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     try withoutShakedown(a, tmp.dir);
-    const refused = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    const refused = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(refused));
     try std.testing.expect(std.mem.find(u8, refused.stderr, "under the family's policy the hardened run backs std.testing.allocator with shakedown's quarantine") != null);
     try adapting(a, tmp.dir);
-    const ran = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened" }, .cwd = .{ .dir = tmp.dir } });
+    const ran = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(ran)) std.debug.print("{s}", .{ran.stderr});
     try std.testing.expect(command.succeeded(ran));
 }
@@ -2608,7 +2631,7 @@ test "toolchain facts come from the configured build including options and gener
         \\const tests = b.addTest(.{ .root_module = generated_module });
     );
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = generated });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "facts", "--", "-Doptimize=safe" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "facts", "--", "-Doptimize=safe" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stdout, "src/sample.zig") != null);
@@ -2627,10 +2650,10 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-tsan" }, .cwd = .{ .dir = tmp.dir } });
+    const good = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened-tsan"}), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
-    const sanitized = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-tsan=true", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const sanitized = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-tsan=true", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(sanitized)) std.debug.print("{s}", .{sanitized.stderr});
     try std.testing.expect(command.succeeded(sanitized));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
@@ -2652,7 +2675,7 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
         \\    second.join();
         \\}
     });
-    const bad = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-tsan" }, .cwd = .{ .dir = tmp.dir } });
+    const bad = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"hardened-tsan"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(bad));
     try std.testing.expect(std.mem.find(u8, bad.stderr, "data race") != null);
 }
@@ -2676,7 +2699,7 @@ test "toolchain hosted runner forwards its benchmark control exactly once" {
     // The builds the gate starts take the job's cache, which its workflow names, as the
     // fixtures' build does: in the fixture's own they compiled from cold what it had compiled.
     try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -2704,7 +2727,7 @@ test "toolchain hosted runner passes the SDK only to a build that declares it" {
     try env.put("SDKROOT", fixture_root);
     // The job's cache, as the fixtures' build has it (the test above).
     try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -2743,7 +2766,7 @@ test "toolchain hosted runner refuses a test that joined the tests after addCi r
     try env.put("PREFLIGHT_SETUP", "false");
     // The job's cache, as the fixtures' build has it.
     try env.put("ZIG_LOCAL_CACHE_DIR", try fixtureCache(a));
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "late-tests: `ci` runs it without preflight's runner") != null);
 }
@@ -2856,7 +2879,7 @@ test "the tests step fails a run root that holds no test" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try rootsFixture(a, tmp.dir, try rootsBuild(a, "src/empty.zig", null), &.{.{ "src/empty.zig", "pub const value = 1;\n" }});
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (std.mem.find(u8, result.stderr, "src/empty.zig") == null) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(!command.succeeded(result));
     try std.testing.expect(std.mem.find(u8, result.stderr, "src/empty.zig (run-tests): the binary holds no test") != null);
@@ -2883,7 +2906,7 @@ test "a test artifact two runs run takes preflight's runner in both" {
         \\}
         \\
     , &.{});
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -2908,7 +2931,7 @@ test "toolchain hosted runner prints the tests counted per root" {
     // (`ZIG_LOCAL_CACHE_DIR` names the workspace's), and the counts are still printed.
     try env.put("ZIG_LOCAL_CACHE_DIR", try std.Io.Dir.path.join(a, &.{ owner, ".zig-cache", "fixtures" }));
     _ = env.swapRemove("GITHUB_STEP_SUMMARY");
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "--build-file", build, try a.print("-Drepo-root={s}", .{fixture_root}), "run" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const output = try std.mem.concat(a, u8, &.{ result.stdout, result.stderr });
@@ -2942,7 +2965,7 @@ test "toolchain hardened selects LLVM for the native fuzz rebuild" {
     ;
     const modified = try std.mem.replaceOwned(u8, a, build, "preflight.addConsumerCheck(b, b,", replacement);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "backend-proof", "-Dci-hardened=true" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "backend-proof", "-Dci-hardened=true" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -2962,11 +2985,11 @@ test "toolchain a fuzzing build builds the fuzz step's tests with LLVM, and only
         \\preflight.addConsumerCheck(b, b,
     );
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
-    const fuzzing = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "backend-proof", "-Dci-fuzzing=true" }, .cwd = .{ .dir = tmp.dir } });
+    const fuzzing = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "backend-proof", "-Dci-fuzzing=true" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(fuzzing)) std.debug.print("{s}", .{fuzzing.stderr});
     try std.testing.expect(command.succeeded(fuzzing));
     // Without it the backend stays the package's: the ci tier's test jobs build as they did.
-    const plain = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "backend-proof" }, .cwd = .{ .dir = tmp.dir } });
+    const plain = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{"backend-proof"}), .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(plain));
     try std.testing.expect(std.mem.find(u8, plain.stderr, "the fuzz step's tests are not built with LLVM") != null);
 }
@@ -2991,7 +3014,7 @@ test "toolchain hardened leaves a module that takes its artifact's mode taking i
         \\preflight.addConsumerCheck(b, b,
     );
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "build.zig", .data = modified });
-    const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "modes-proof", "-Dci-hardened=true" }, .cwd = .{ .dir = tmp.dir } });
+    const result = try std.process.run(a, std.testing.io, .{ .argv = try fixtureBuild(a, &.{ "modes-proof", "-Dci-hardened=true" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
 }
@@ -3092,18 +3115,18 @@ test "owner cross objects preserve expected compile failure diagnostics without 
     try tmp.dir.writeFile(io, .{ .sub_path = "src/positive.zig", .data = "export fn positive() u32 { return 7; }\n" });
     for ([_][]const u8{ "aarch64-linux-musl", "x86_64-macos", "aarch64-macos", "x86_64-windows-gnu", "aarch64-windows-gnu" }) |target| {
         const target_arg = try a.print("-Dtarget={s}", .{target});
-        const good = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+        const good = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
         if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
         try std.testing.expect(command.succeeded(good));
-        const wrong = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false", "-Dwrong=true" }, .cwd = .{ .dir = tmp.dir } });
+        const wrong = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false", "-Dwrong=true" }), .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(!command.succeeded(wrong));
         try std.testing.expect(std.mem.find(u8, wrong.stderr, "wrong projection diagnostic") != null);
         try std.testing.expect(std.mem.find(u8, wrong.stderr, "should contain") != null);
-        const accepted = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false", "-Daccept=true" }, .cwd = .{ .dir = tmp.dir } });
+        const accepted = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-check", target_arg, "-Dcpu=baseline", "-Dci-lint=false", "-Daccept=true" }), .cwd = .{ .dir = tmp.dir } });
         try std.testing.expect(!command.succeeded(accepted));
         try std.testing.expect(std.mem.find(u8, accepted.stderr, "should contain") != null);
     }
-    const native = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-link", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
+    const native = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-link", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(native)) std.debug.print("{s}", .{native.stderr});
     try std.testing.expect(command.succeeded(native));
 }

@@ -1,4 +1,4 @@
-//! `<directory> <root> <bay> <cache>`: writes the package developed with bay that the
+//! `<directory> <root> <bay> <cache> <checks>`: writes the package developed with bay that the
 //! integration test of one runs ("a package developed with bay runs the gate from dev"), at
 //! `directory`, and runs its development build's gate and benchmarks there through `bay dev`,
 //! with the fixtures' cache `cache`, before the suite: the warm run of that package.
@@ -50,7 +50,7 @@ pub fn main(init: std.process.Init) !u8 {
     const a = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(a);
-    if (args.len != 5) return error.DevelopedArguments;
+    if (args.len != 6) return error.DevelopedArguments;
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, args[1]);
     var dir = try cwd.openDir(io, args[1], .{});
@@ -67,7 +67,12 @@ pub fn main(init: std.process.Init) !u8 {
     // cache outside the package, where `ZIG_LOCAL_CACHE_DIR` names the workspace's.
     var env = try init.environ_map.clone(a);
     try env.put("ZIG_LOCAL_CACHE_DIR", try cwd.realPathFileAlloc(io, args[4], a));
-    var child = try std.process.spawn(io, .{ .argv = &.{ try cwd.realPathFileAlloc(io, args[3], a), "dev", "ci-test", "bench-build", "-Dci-lint=false" }, .cwd = .{ .path = directory }, .environ_map = &env });
+    // `checks`, where the run holds one, is the preflight its gate runs (`-Dci-checks`), as the
+    // integration test hands it too: empty, the gate compiles its checks.
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(a, &.{ try cwd.realPathFileAlloc(io, args[3], a), "dev", "ci-test", "bench-build", "-Dci-lint=false" });
+    if (args[5].len != 0) try argv.append(a, try a.print("-Dci-checks={s}", .{args[5]}));
+    var child = try std.process.spawn(io, .{ .argv = argv.items, .cwd = .{ .path = directory }, .environ_map = &env });
     const term = try child.wait(io);
     return switch (term) {
         .exited => |code| code,

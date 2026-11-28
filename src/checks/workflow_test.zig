@@ -258,7 +258,8 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     try config.object.put(a, "fuzzed", .{ .bool = true });
     try std.testing.expectEqual(@as(usize, 1), (try matrix.plan(a, config, .fuzz)).len);
     for (std.enums.values(matrix.Tier)) |tier| {
-        try contains(caller, try a.print("      {t}-matrix: >-\n        {s}\n", .{ tier, try matrix.include(a, try matrix.plan(a, config, tier)) }));
+        const jobs = try matrix.plan(a, config, tier);
+        try contains(caller, try a.print("      {t}-matrix: >-\n        {s}\n      {t}-runners: {s}\n", .{ tier, try matrix.include(a, jobs), tier, try matrix.toolchainRunners(a, jobs) }));
     }
 }
 
@@ -346,6 +347,13 @@ test "one job builds the checks, and the others take them" {
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
     const built = try job(workflow, "toolchain");
     try contains(built, ".github/actions/toolchain");
+    // It builds the runners the planner listed beside the dispatched tier's matrix, in Zig and
+    // not in the workflow's shell.
+    try contains(built, "runners: ${{ inputs.tier == 'release' && inputs.release-runners || inputs.tier == 'nightly' && inputs.nightly-runners || inputs.tier == 'fuzz' && inputs.fuzz-runners || inputs.ci-runners }}");
+    try std.testing.expect(std.mem.find(u8, built, "jq ") == null);
+    const action = try read(arena.allocator(), ".github/actions/toolchain/action.yml");
+    try contains(action, "-Dtoolchain-runners=\"$RUNNERS\"");
+    try contains(action, "key: preflight-toolchain-${{ inputs.preflight-ref }}-${{ inputs.runners }}");
     try contains(built, "name: toolchain-${{ inputs.preflight-ref }}");
     // The documentation-only filter runs on what that job built.
     try contains(built, "preflight skip");

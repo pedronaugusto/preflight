@@ -149,6 +149,21 @@ pub fn addCheck(b: *std.Build, package: *std.Build, name: []const u8, source: []
     return executable;
 }
 
+/// The option naming the preflight the hosted runner holds, built from this commit (`-Dci-checks`).
+pub const prebuilt_checks = "ci-checks";
+/// The option naming the bay the hosted runner holds beside it (`-Dci-bay`).
+pub const prebuilt_bay = "ci-bay";
+
+/// What `-D<name>` gives the build, read before `addCi` declares the option: a build of its
+/// own takes the hosted runner's preflight and bay (`prebuilt_checks`, `prebuilt_bay`) in place
+/// of compiling them, and compiles them where they are unset, as a local run leaves them.
+pub fn prebuilt(b: *std.Build, name: []const u8) ?[]const u8 {
+    return switch (b.user_input_options.get(name) orelse return null) {
+        .scalar => |path| path,
+        else => null,
+    };
+}
+
 /// Declare the same CI controls when a root script must return early to
 /// discover its own lazy dependencies, before it can construct test steps.
 pub fn declareCiOptions(b: *std.Build) CiOptions {
@@ -158,7 +173,8 @@ pub fn declareCiOptions(b: *std.Build) CiOptions {
         .sdk = b.option([]const u8, "ci-sdk", "Native macOS SDK root, supplied by the hosted runner"),
         .lint_enabled = b.option(bool, "ci-lint", "Run glint's lint beside the tests; false leaves it out, and only it: the other source checks run either way") orelse true,
         .release = b.option(bool, "ci-release", "The release tier's source checks: every shipped ban's finding fails, the reported ones included") orelse false,
-        .checks = b.option([]const u8, "ci-checks", "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
+        .checks = b.option([]const u8, prebuilt_checks, "Path of a preflight built from this commit, which the hosted runner holds, in place of compiling the checks"),
+        .bay = b.option([]const u8, prebuilt_bay, "Path of the bay built beside it, which the hosted runner holds, in place of compiling bay"),
         .bound = b.option(bool, run_bound.option, "Run every run of preflight's steps under its bound; false only for reading the configured graph, which then holds each run as the build wrote it") orelse true,
         .vm = b.option(bool, "ci-vm", "Run what is built for riscv64 Linux or x86_64 FreeBSD on its own kernel under QEMU (qemu-system-riscv64, or qemu-system-x86_64 with KVM on an x86_64 Linux host, on PATH)") orelse false,
     };
@@ -171,6 +187,7 @@ pub const CiOptions = struct {
     lint_enabled: bool,
     release: bool,
     checks: ?[]const u8,
+    bay: ?[]const u8,
     vm: bool,
     /// Whether the runs of preflight's steps run under their bound (`runs.zig`).
     bound: bool,

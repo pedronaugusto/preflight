@@ -4,6 +4,10 @@ inputs:
   preflight-ref:
     description: The preflight commit the caller is pinned to, checked out at .preflight
     required: true
+  runners:
+    description: The runners to build for, space-separated (linux linux-arm macos windows windows-arm), those the run's jobs run on
+    required: false
+    default: linux linux-arm macos windows windows-arm
 outputs:
   source:
     description: Where the toolchain came from, cache, published or built
@@ -16,7 +20,8 @@ runs:
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .preflight-bin
-        key: preflight-toolchain-${{ inputs.preflight-ref }}
+        # The runners are in the key: a run of fewer leaves no cache a run of more would take.
+        key: preflight-toolchain-${{ inputs.preflight-ref }}-${{ inputs.runners }}
     # preflight's own run of a commit builds the toolchain for it and keeps it
     # ninety days under this name, so the callers pinned to the commit take it.
     - name: Take the toolchain preflight built for this commit
@@ -26,10 +31,16 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         REF: ${{ inputs.preflight-ref }}
+        RUNNERS: ${{ inputs.runners }}
       run: |
         mkdir -p .preflight-bin
         id=$(gh api "repos/pedronaugusto/preflight/actions/artifacts?name=toolchain-$REF&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | first | .id // empty' || true)
-        if [ -n "$id" ] && gh api "repos/pedronaugusto/preflight/actions/artifacts/$id/zip" > "$RUNNER_TEMP/toolchain.zip" && unzip -q -o "$RUNNER_TEMP/toolchain.zip" -d .preflight-bin; then
+        # A published toolchain holds the runners its run built: one without a runner this run
+        # needs is built again, every runner this run names.
+        complete() {
+          for runner in $RUNNERS; do [ -e ".preflight-bin/$runner/preflight" ] || [ -e ".preflight-bin/$runner/preflight.exe" ] || return 1; done
+        }
+        if [ -n "$id" ] && gh api "repos/pedronaugusto/preflight/actions/artifacts/$id/zip" > "$RUNNER_TEMP/toolchain.zip" && unzip -q -o "$RUNNER_TEMP/toolchain.zip" -d .preflight-bin && complete; then
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "Took preflight's toolchain for $REF (artifact $id)"
         else
@@ -45,13 +56,12 @@ runs:
     - name: Build the toolchain for every runner
       if: steps.cache.outputs.cache-hit != 'true' && steps.published.outputs.found != 'true'
       shell: bash
+      env:
+        RUNNERS: ${{ inputs.runners }}
       run: |
-        zig build --build-file .preflight/build.zig -Drepo-root="$GITHUB_WORKSPACE" toolchain -p "$RUNNER_TEMP/toolchain"
-        mkdir -p .preflight-bin
-        for runner in linux linux-arm macos windows windows-arm; do
-          mkdir -p ".preflight-bin/$runner"
-          find "$RUNNER_TEMP/toolchain/toolchain/$runner" -type f ! -name '*.pdb' -exec cp {} ".preflight-bin/$runner/" \;
-        done
+        zig build --build-file .preflight/build.zig -Drepo-root="$GITHUB_WORKSPACE" toolchain -Dtoolchain-runners="$RUNNERS" -p "$RUNNER_TEMP/toolchain"
+        find "$RUNNER_TEMP/toolchain/toolchain" -name '*.pdb' -delete
+        cp -R "$RUNNER_TEMP/toolchain/toolchain" .preflight-bin
     - name: Allow the checks to run
       shell: bash
       run: chmod +x .preflight-bin/*/*
@@ -60,4 +70,4 @@ runs:
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .preflight-bin
-        key: preflight-toolchain-${{ inputs.preflight-ref }}
+        key: preflight-toolchain-${{ inputs.preflight-ref }}-${{ inputs.runners }}

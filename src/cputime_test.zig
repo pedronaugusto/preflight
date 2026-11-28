@@ -27,13 +27,23 @@ fn growth(io: std.Io, root: cpu_time.Root, by: u64) !u64 {
 
 const floor_ns = 50 * std.time.ns_per_ms; // `watchdog.progress_floor`
 
+/// A shell line that spins until the kernel ends it: XCPU at its soft limit of a second of CPU
+/// time, and on Linux KILL at its hard limit of three. Linux sends KILL alone where the two
+/// limits are equal, as `ulimit -t` alone sets them, and macOS XCPU: the test holds what the
+/// limits guarantee, that the spin ends by a signal. The soft limit is set first: macOS refuses
+/// a hard limit below the soft one in force.
+const spin = "ulimit -S -t 1; ulimit -H -t 3; while :; do :; done";
+
 test "a tree's CPU time grows while a process it started works in a group of its own, and not while one is stopped" {
     if (os == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     const root = try cpu_time.own();
     // A grandchild in a process group of its own (job control's), as a nested preflight run's
     // tests are: found by its parent links. It ends of itself, after a second of CPU time.
-    var working = try std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", "set -m; /bin/sh -c 'ulimit -t 1; while :; do :; done' & wait" } });
+    var working = try std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", "set -m; /bin/sh -c '" ++ spin ++ "' & wait" } });
+    // Every path ends and reaps it: a failed read leaves no spinning grandchild behind (its
+    // CPU limits end it, its parent then).
+    errdefer working.kill(io);
     const grown = growth(io, root, floor_ns);
     _ = try working.wait(io);
     try std.testing.expect(try grown >= floor_ns);
@@ -55,10 +65,13 @@ test "a child's CPU time stays in the tree once it has ended and been waited for
     const io = std.testing.io;
     const root = try cpu_time.own();
     const from = try others(io, root);
-    var child = try std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", "ulimit -t 1; while :; do :; done" } });
+    var child = try std.process.spawn(io, .{ .argv = &.{ "/bin/sh", "-c", spin } });
     const term = try child.wait(io);
-    try std.testing.expectEqual(std.process.Child.Term{ .signal = .XCPU }, term);
-    // A second of the child's, less what the clock ticks round off.
+    // Ended by its limits, XCPU or KILL: never of itself.
+    if (term != .signal) std.debug.print("the spin ended {any}\n", .{term});
+    try std.testing.expect(term == .signal);
+    try std.testing.expect(term.signal == .XCPU or term.signal == .KILL);
+    // A second of the child's at least, less what the clock ticks round off.
     try std.testing.expect((try others(io, root)) -| from >= 900 * std.time.ns_per_ms);
 }
 

@@ -399,7 +399,7 @@ test "a finding written before the budget's end fails the job, printed with its 
     try std.testing.expect(std.mem.find(u8, held.written(), "which the budget's end interrupted") != null);
 }
 
-test "the budget is the flag, else the dispatched minutes, else the configuration's, else 15" {
+test "the budget is the flag, else the dispatched minutes, else the configuration's, else what a nightly job holds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -409,7 +409,7 @@ test "the budget is the flag, else the dispatched minutes, else the configuratio
     c.held = &held;
     const empty: src.Value = .{ .object = .empty };
     const five = (try std.json.parseFromSlice(src.Value, a, "{\"fuzz_minutes\":5}", .{})).value;
-    try std.testing.expectEqual(@as(usize, 15), try minutes(&c, null, empty));
+    try std.testing.expectEqual(matrix.max_fuzz_minutes, try minutes(&c, null, empty));
     try std.testing.expectEqual(@as(usize, 5), try minutes(&c, null, five));
     // A dispatch that leaves the minutes empty takes the configuration's.
     try env.put("PREFLIGHT_FUZZ_MINUTES", "");

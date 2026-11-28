@@ -192,6 +192,32 @@ pub fn include(a: std.mem.Allocator, jobs: []const Job) ![]const u8 {
     return std.json.Stringify.valueAlloc(a, .{ .include = jobs }, job_json);
 }
 
+/// The toolchain's names for the hosted runners (`zig build toolchain`'s), in its order.
+const toolchain_names = [_]struct { host: []const u8, name: []const u8 }{
+    .{ .host = hosts[0], .name = "linux" },
+    .{ .host = arm_hosts[0], .name = "linux-arm" },
+    .{ .host = hosts[1], .name = "macos" },
+    .{ .host = hosts[2], .name = "windows" },
+    .{ .host = arm_hosts[1], .name = "windows-arm" },
+};
+
+/// The runners a run of `jobs` takes the toolchain for, space-separated in the toolchain's
+/// order, as the caller hands them to the toolchain job: those its jobs run on, and Linux,
+/// where the run's own jobs run. The ci tier has no ARM job, and two ARM builds kept preflight's
+/// own ci run past its ten minutes.
+pub fn toolchainRunners(a: std.mem.Allocator, jobs: []const Job) ![]const u8 {
+    var names: std.ArrayList(u8) = .empty;
+    for (toolchain_names, 0..) |runner, index| {
+        const taken = index == 0 or for (jobs) |job| {
+            if (std.mem.eql(u8, job.os, runner.host)) break true;
+        } else false;
+        if (!taken) continue;
+        if (names.items.len != 0) try names.append(a, ' ');
+        try names.appendSlice(a, runner.name);
+    }
+    return names.toOwnedSlice(a);
+}
+
 /// A job's cache scope: everything that changes what it builds and runs.
 fn key(a: std.mem.Allocator, job: Job) ![]const u8 {
     var plain = job;
@@ -947,6 +973,22 @@ test "the release tier is the ci tier's jobs, ReleaseSafe on every runner, Relea
     try std.testing.expectEqualStrings("aarch64-linux-gnu x86_64-windows-gnu", cross.targets);
     // Its source checks hold the release bar.
     for (jobs) |job| if (std.mem.eql(u8, job.step, "lint")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-release") != null);
+}
+
+test "the toolchain is built for the runners a tier's jobs run on, and Linux, in the toolchain's order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("linux", try toolchainRunners(a, &.{}));
+    try std.testing.expectEqualStrings("linux macos windows-arm", try toolchainRunners(a, &.{
+        .{ .os = arm_hosts[1], .name = "on Windows ARM" },
+        .{ .os = hosts[1], .name = "on macOS" },
+        .{ .os = hosts[1], .name = "on macOS again" },
+    }));
+    const config = try parseJson(a, "{\"targets\":[\"aarch64-linux-gnu\",\"x86_64-linux-musl\"],\"policy\":\"family\",\"fuzzed\":true}");
+    // The ci tier runs nothing on ARM, so its run builds no ARM toolchain; the nightly takes all.
+    try std.testing.expect(std.mem.find(u8, try toolchainRunners(a, try plan(a, config, .ci)), "arm") == null);
+    try std.testing.expectEqualStrings("linux linux-arm macos windows windows-arm", try toolchainRunners(a, try plan(a, config, .nightly)));
 }
 
 test "the nightly tier is the heavy legs: ReleaseFast on macOS and Windows, the ARM runners, riscv64 and FreeBSD on their kernels, ThreadSanitizer, the fuzz runs" {

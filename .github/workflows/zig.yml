@@ -28,6 +28,22 @@ on:
         description: The fuzz job, zig build plan -- --tier fuzz; empty for a package with nothing to fuzz
         type: string
         default: '{"include":[]}'
+      ci-runners:
+        description: The runners the ci tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        type: string
+        default: linux linux-arm macos windows windows-arm
+      release-runners:
+        description: The runners the release tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        type: string
+        default: linux linux-arm macos windows windows-arm
+      nightly-runners:
+        description: The runners the nightly tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        type: string
+        default: linux linux-arm macos windows windows-arm
+      fuzz-runners:
+        description: The runners the fuzz tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        type: string
+        default: linux linux-arm macos windows windows-arm
       fuzz-minutes:
         description: A dispatched fuzz run's minutes, when not ci/workflow.json's fuzz_minutes
         type: string
@@ -72,6 +88,9 @@ jobs:
       - uses: ./.preflight/.github/actions/toolchain
         with:
           preflight-ref: ${{ inputs.preflight-ref }}
+          # The runners the tier's jobs run on, and Linux, where the run's own jobs run: the
+          # planner lists them beside each tier's matrix, so the ci tier builds no ARM toolchain.
+          runners: ${{ inputs.tier == 'release' && inputs.release-runners || inputs.tier == 'nightly' && inputs.nightly-runners || inputs.tier == 'fuzz' && inputs.fuzz-runners || inputs.ci-runners }}
       # The run checks the package with the preflight its manifest pins: a caller not made
       # again at a re-pin would run an older preflight than the build calls.
       - name: Check the package pins the preflight this caller runs

@@ -655,6 +655,8 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
             if (std.mem.eql(u8, name, "ci-bench-smoke")) try argv.append(c.a, "-Dci-bench-smoke=false");
             // This program is the checks the build would compile, built from the same commit.
             if (std.mem.eql(u8, name, "ci-checks")) try argv.append(c.a, try c.a.print("-Dci-checks={s}", .{try std.process.executablePathAlloc(c.io, c.a)}));
+            // And the bay the toolchain built beside it, for a build that would compile one.
+            if (std.mem.eql(u8, name, "ci-bay")) if (try heldBay(c)) |bay| try argv.append(c.a, try c.a.print("-Dci-bay={s}", .{bay}));
             // SDK identity is an explicit build option, so Zig configuration caches
             // cannot retain a different runner's SDKROOT environment. A build that
             // does not declare it (a nested package, a custom step) is not asked: Zig
@@ -690,6 +692,17 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     };
     c.report("{s}", .{counts});
     if (env.get("GITHUB_STEP_SUMMARY")) |summary| try append(c, summary, try c.a.print("```\n{s}```\n", .{counts}));
+}
+
+/// The bay the toolchain put beside this program, where it is there: the hosted runner's.
+fn heldBay(c: src.Context) !?[]const u8 {
+    const self = try std.process.executablePathAlloc(c.io, c.a);
+    const bay = try std.fs.path.join(c.a, &.{ std.fs.path.dirname(self) orelse ".", if (builtin.os.tag == .windows) "bay.exe" else "bay" });
+    std.Io.Dir.cwd().access(c.io, bay, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    return bay;
 }
 
 /// Compiles the targets this job covers, `PREFLIGHT_TARGETS` by name, to

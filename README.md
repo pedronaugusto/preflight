@@ -913,14 +913,18 @@ order, each target keeping its optional CPU and flags. The checks run on their h
 binary built once serves every runner model.
 
 Every job takes the checks as a binary, and none compiles them. The first job of a
-run, `toolchain`, builds `preflight` for Linux, macOS and Windows with `zig build
-toolchain` (about a minute apiece, cross compiled in one job), or takes the build
-that preflight's own run made of the pinned commit: that run keeps it ninety days as
-the artifact `toolchain-<commit>`, and a caller reads it from there. The other
-jobs download the run's copy and put it on the path; their `fetch`, `prepare` and
+run, `toolchain`, builds `preflight` and `bay` for the runners the tier's jobs run on
+(Linux always; the ARM runners only for a tier that has a job there), which the planner
+lists beside each tier's matrix in the caller (`<tier>-runners`), with `zig build toolchain
+-Dtoolchain-runners="<runners>"`, cross compiled in one job, or takes the build
+that preflight's own run made of the pinned commit where it holds those runners: that run
+keeps it ninety days as the artifact `toolchain-<commit>`, and a caller reads it from there.
+The other jobs download the run's copy and put it on the path; their `fetch`, `prepare` and
 `run` are its subcommands, and its `run` hands the build it starts as `-Dci-checks`,
-which `addCi` takes in place of compiling the checks (a build without the option
-compiles them, as local runs do). The Zig master leg builds its own, since the checks
+which `addCi` takes in place of compiling the checks, and the bay beside it as `-Dci-bay`
+(a build without the options compiles them, as local runs do). preflight's own suite takes
+both for its tests, its warm runs and every fixture's build, so a shard spends its minutes on
+its tests. The Zig master leg builds its own, since the checks
 read the configuration of the Zig that compiled them.
 
 Fetched packages, what Zig builds for itself and pinned external tools have separate

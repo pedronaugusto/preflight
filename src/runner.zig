@@ -463,10 +463,16 @@ fn serve(init: std.process.Init.Minimal) !void {
     var writer = protocol.out.writerStreaming(io, &output);
     var server: std.zig.Server = .{ .in = &reader.interface, .out = &writer.interface };
     try server.serveStringMessage(.zig_version, builtin.zig_version_string);
+    progress = .open(io, init.environ, options.artifact);
+    defer progress.close(io);
+    const started: std.Io.Clock.Timestamp = .now(io, .awake);
     while (true) {
         const header = try server.receiveMessage();
         switch (header.tag) {
-            .exit => return,
+            .exit => {
+                progress.line(io, "{d} tests in {d:.1}s, the {d} under a second taking {d:.1}s of it", .{ tests_timed, seconds(started.untilNow(io).raw.nanoseconds), tests_timed - tests_slow, seconds(quick_ns) });
+                return;
+            },
             .query_test_metadata => {
                 try metadata(&server);
                 try counted(init);
@@ -945,6 +951,17 @@ fn counted(init: std.process.Init.Minimal) !void {
     try timings.count(io, init.environ, stem, .{ .root = options.root, .artifact = options.artifact, .filtered = options.filtered, .tests = builtin.test_functions.len, .selected = order.len });
 }
 
+/// This process's progress file, which a hosted job prints as it lands (`timings.Progress`), and
+/// what it has timed: the tests, the slow ones among them, and the time the rest took.
+var progress: timings.Progress = .{};
+var tests_timed: usize = 0;
+var tests_slow: usize = 0;
+var quick_ns: i96 = 0;
+
+fn seconds(ns: i96) f64 {
+    return @as(f64, @floatFromInt(ns)) / std.time.ns_per_s;
+}
+
 fn runTest(server: *std.zig.Server, init: std.process.Init.Minimal) !void {
     const index = try server.receiveBody_u32();
     const test_fn = builtin.test_functions[order[index]];
@@ -958,7 +975,15 @@ fn runTest(server: *std.zig.Server, init: std.process.Init.Minimal) !void {
     errors.store(0, .monotonic);
     fuzz_called = false;
     try server.serveStringMessage(.test_started, &.{});
-    var status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
+    const started: std.Io.Clock.Timestamp = .now(io, .awake);
+    const outcome = test_fn.func();
+    const took = started.untilNow(io).raw.nanoseconds;
+    tests_timed += 1;
+    if (took >= timings.slow_ns) {
+        tests_slow += 1;
+        progress.line(io, "{s}: {d:.1}s", .{ test_fn.name, seconds(took) });
+    } else quick_ns += took;
+    var status: std.zig.Server.Message.TestResults.Status = if (outcome) |_| .pass else |err| switch (err) {
         error.SkipZigTest => .skip,
         else => failure: {
             report("{s}: {t}; seed {d}\n", .{ test_fn.name, err, testing.random_seed });

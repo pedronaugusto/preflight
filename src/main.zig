@@ -683,6 +683,12 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
         // PREFLIGHT_SHARD reaches the test runners through the environment.
         const timer = checks.phases.Timer.begin(c, try c.a.print("zig build {s}", .{step}));
         defer timer.end(c, log);
+        // A hosted job prints the runners' slow tests and binaries as they end: the build's
+        // summary comes only at its end, which a job its deadline ends never reaches.
+        var printer: checks.progress.Printer = .{ .c = c, .path = "", .started = .now(c.io, .awake) };
+        const hosted = if (env.get("PREFLIGHT_JOB")) |job| job.len != 0 else false;
+        if (hosted) try printer.start(env);
+        defer if (hosted) printer.stop();
         try checks.command.execute(counting, step, argv.items);
     }
     // A step that runs no tests counts none.

@@ -85,11 +85,15 @@ test "a guest leg's QEMU install ends a stalled download by apt's deadlines, wit
 test "a run stops before it builds when the package pins another preflight than its caller runs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const body = try job(try read(arena.allocator(), ".github/workflows/zig.yml"), "toolchain");
-    const toolchain = std.mem.find(u8, body, "- uses: ./.preflight/.github/actions/toolchain") orelse return error.TestExpectedToolchain;
+    const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
+    // The pin is checked with the Linux toolchain once every runner's is built, and the gate
+    // waits for it.
+    const body = try job(workflow, "pinned");
+    try contains(body, "needs: toolchain");
+    const linux = std.mem.find(u8, body, "name: toolchain-${{ inputs.preflight-ref }}-linux") orelse return error.TestExpectedToolchain;
     const check = std.mem.find(u8, body, "preflight pin --ref ${{ inputs.preflight-ref }}\n") orelse return error.TestExpectedPinCheck;
-    const upload = std.mem.find(u8, body, "- uses: actions/upload-artifact@") orelse return error.TestExpectedUpload;
-    try std.testing.expect(toolchain < check and check < upload);
+    try std.testing.expect(linux < check);
+    try contains(try job(workflow, "gate"), "needs: [toolchain, pinned]");
 }
 
 test "the Zig master leg has bay on the path before its setup fetches through it" {
@@ -233,7 +237,7 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "toolchain", "proof", "runners" }) |name| {
+    for ([_][]const u8{ "toolchain", "pinned", "proof", "runners" }) |name| {
         try std.testing.expect(std.mem.find(u8, try job(workflow, name), "\n    continue-on-error:") == null);
     }
     // The gate's jobs carry no job-level continue-on-error: a declared advisory job's steps
@@ -259,7 +263,7 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     try std.testing.expectEqual(@as(usize, 1), (try matrix.plan(a, config, .fuzz)).len);
     for (std.enums.values(matrix.Tier)) |tier| {
         const jobs = try matrix.plan(a, config, tier);
-        try contains(caller, try a.print("      {t}-matrix: >-\n        {s}\n      {t}-runners: {s}\n", .{ tier, try matrix.include(a, jobs), tier, try matrix.toolchainRunners(a, jobs) }));
+        try contains(caller, try a.print("      {t}-matrix: >-\n        {s}\n      {t}-runners: '{s}'\n", .{ tier, try matrix.include(a, jobs), tier, try matrix.toolchainRunners(a, jobs) }));
     }
 }
 
@@ -347,18 +351,24 @@ test "one job builds the checks, and the others take them" {
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
     const built = try job(workflow, "toolchain");
     try contains(built, ".github/actions/toolchain");
-    // It builds the runners the planner listed beside the dispatched tier's matrix, in Zig and
-    // not in the workflow's shell.
-    try contains(built, "runners: ${{ inputs.tier == 'release' && inputs.release-runners || inputs.tier == 'nightly' && inputs.nightly-runners || inputs.tier == 'fuzz' && inputs.fuzz-runners || inputs.ci-runners }}");
+    // One job per runner the planner listed beside the dispatched tier's matrix, in Zig and
+    // not in the workflow's shell: the run waits for the slowest build, not their sum.
+    try contains(built, "runner: ${{ fromJSON(inputs.tier == 'release' && inputs.release-runners || inputs.tier == 'nightly' && inputs.nightly-runners || inputs.tier == 'fuzz' && inputs.fuzz-runners || inputs.ci-runners) }}");
+    try contains(built, "runner: ${{ matrix.runner }}");
     try std.testing.expect(std.mem.find(u8, built, "jq ") == null);
+    // Each runner's build is cached and kept apart, so a release or nightly run of a commit
+    // takes what its ci run built.
     const action = try read(arena.allocator(), ".github/actions/toolchain/action.yml");
-    try contains(action, "-Dtoolchain-runners=\"$RUNNERS\"");
-    try contains(action, "key: preflight-toolchain-${{ inputs.preflight-ref }}-${{ inputs.runners }}");
-    try contains(built, "name: toolchain-${{ inputs.preflight-ref }}");
-    // The documentation-only filter runs on what that job built.
-    try contains(built, "preflight skip");
+    try contains(action, "-Dtoolchain-runners=\"$RUNNER\"");
+    try contains(action, "key: preflight-toolchain-${{ inputs.preflight-ref }}-${{ inputs.runner }}");
+    try contains(action, "NAME: toolchain-${{ inputs.preflight-ref }}-${{ inputs.runner }}");
+    try contains(built, "name: toolchain-${{ inputs.preflight-ref }}-${{ matrix.runner }}");
+    // The documentation-only filter runs on the Linux build, in the job after them all.
+    try contains(try job(workflow, "pinned"), "preflight skip");
+    try std.testing.expect(std.mem.find(u8, built, "preflight skip") == null);
     const gate = try job(workflow, "gate");
-    try contains(gate, "toolchain: toolchain-${{ inputs.preflight-ref }}");
+    // Each gate job takes its own runner's build, which the planner names in its matrix entry.
+    try contains(gate, "toolchain: toolchain-${{ inputs.preflight-ref }}-${{ matrix.toolchain }}");
     try contains(gate, "needs:");
     try std.testing.expect(std.mem.find(u8, gate, "build.zig") == null);
     // Zig master builds its own, by the Zig that the checks read.
@@ -434,7 +444,7 @@ test "each job of the gate names its token's permissions, and none writes" {
     const a = arena.allocator();
     const workflow = try read(a, ".github/workflows/zig.yml");
     try contains(workflow, "\npermissions: {}\njobs:\n");
-    for ([_][]const u8{ "tier", "toolchain", "gate", "master", "proof", "runners" }) |name| try contains(try job(workflow, name), "\n    permissions:");
+    for ([_][]const u8{ "tier", "toolchain", "pinned", "gate", "master", "proof", "runners" }) |name| try contains(try job(workflow, name), "\n    permissions:");
     try std.testing.expectEqual(0, std.mem.count(u8, workflow, "contents: write"));
     // The heavy legs' Zig master is the nightly tier's.
     try contains(try job(workflow, "master"), "if: inputs.tier == 'nightly'");

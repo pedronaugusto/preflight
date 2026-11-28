@@ -274,7 +274,7 @@ fn renderAllocating(a: std.mem.Allocator, config: src.Value, pin: []const u8, di
     defer matrices.deinit();
     for (std.enums.values(matrix.Tier)) |tier| {
         const jobs = try matrix.plan(a, config, tier);
-        try matrices.writer.print("      {t}-matrix: >-\n        {s}\n      {t}-runners: {s}\n", .{ tier, try matrix.include(a, jobs), tier, try matrix.toolchainRunners(a, jobs) });
+        try matrices.writer.print("      {t}-matrix: >-\n        {s}\n      {t}-runners: '{s}'\n", .{ tier, try matrix.include(a, jobs), tier, try matrix.toolchainRunners(a, jobs) });
     }
     const gate = if (own) "./.github/workflows/zig.yml" else try a.print("pedronaugusto/preflight/.github/workflows/zig.yml@{s}", .{pin});
     const tokens = [_][]const u8{ "@WORKFLOW@", "@GATE@", "@PIN@", "@DIRECTORY@", "@NIGHTLY@", "@MATRICES@", "@HELD_GIT@" };

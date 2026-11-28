@@ -29,21 +29,21 @@ on:
         type: string
         default: '{"include":[]}'
       ci-runners:
-        description: The runners the ci tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        description: The runners the ci tier's jobs take the toolchain for, a JSON list, as the planner lists them beside its matrix
         type: string
-        default: linux linux-arm macos windows windows-arm
+        default: '["linux","linux-arm","macos","windows","windows-arm"]'
       release-runners:
-        description: The runners the release tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        description: The runners the release tier's jobs take the toolchain for, a JSON list, as the planner lists them beside its matrix
         type: string
-        default: linux linux-arm macos windows windows-arm
+        default: '["linux","linux-arm","macos","windows","windows-arm"]'
       nightly-runners:
-        description: The runners the nightly tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        description: The runners the nightly tier's jobs take the toolchain for, a JSON list, as the planner lists them beside its matrix
         type: string
-        default: linux linux-arm macos windows windows-arm
+        default: '["linux","linux-arm","macos","windows","windows-arm"]'
       fuzz-runners:
-        description: The runners the fuzz tier's jobs take the toolchain for, space-separated, as the planner lists them beside its matrix
+        description: The runners the fuzz tier's jobs take the toolchain for, a JSON list, as the planner lists them beside its matrix
         type: string
-        default: linux linux-arm macos windows windows-arm
+        default: '["linux","linux-arm","macos","windows","windows-arm"]'
       fuzz-minutes:
         description: A dispatched fuzz run's minutes, when not ci/workflow.json's fuzz_minutes
         type: string
@@ -66,11 +66,45 @@ jobs:
         run: |
           if [ "$TIER" = fuzz ]; then echo "fuzz: this package has no fuzz job: it declares no shakedown, or ci/workflow.json's fuzz_minutes is 0"; exit 1; fi
           echo "tier must be ci, release, nightly or fuzz, not '$TIER'" && exit 1
-  # The checks are built once, for every runner, and every job takes them: no
-  # job compiles the toolchain. The same job tells a dispatched ci run whether its
+  # The checks are built once per runner, and every job takes its runner's: no
+  # job compiles the toolchain. `pinned` then tells a dispatched ci run whether its
   # branch changes documentation alone, which needs none of the gate.
   toolchain:
     if: contains(fromJSON('["ci","release","nightly","fuzz"]'), inputs.tier)
+    name: toolchain (${{ matrix.runner }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # One job per runner the tier's jobs run on, and Linux, where the run's own jobs run: the
+    # planner lists them beside each tier's matrix. The run waits for the slowest build, not
+    # their sum, and the ci tier builds no ARM toolchain.
+    strategy:
+      matrix:
+        runner: ${{ fromJSON(inputs.tier == 'release' && inputs.release-runners || inputs.tier == 'nightly' && inputs.nightly-runners || inputs.tier == 'fuzz' && inputs.fuzz-runners || inputs.ci-runners) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: pedronaugusto/preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: .preflight
+      - uses: ./.preflight/.github/actions/toolchain
+        with:
+          preflight-ref: ${{ inputs.preflight-ref }}
+          runner: ${{ matrix.runner }}
+      # preflight keeps its own run's toolchain ninety days, one artifact per runner, for the
+      # callers pinned to its commit; a caller's run keeps it for the run.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: toolchain-${{ inputs.preflight-ref }}-${{ matrix.runner }}
+          path: .preflight-bin
+          include-hidden-files: true
+          retention-days: ${{ github.repository == 'pedronaugusto/preflight' && 90 || 1 }}
+          overwrite: true
+  # What the run checks before its gate, with the Linux toolchain: the pin, and for a
+  # dispatched ci run whether only documentation changed. A job apart from the toolchain's,
+  # since a matrix job's outputs are whichever leg wrote last.
+  pinned:
+    needs: toolchain
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,26 +119,17 @@ jobs:
           repository: pedronaugusto/preflight
           ref: ${{ inputs.preflight-ref }}
           path: .preflight
-      - uses: ./.preflight/.github/actions/toolchain
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          preflight-ref: ${{ inputs.preflight-ref }}
-          # The runners the tier's jobs run on, and Linux, where the run's own jobs run: the
-          # planner lists them beside each tier's matrix, so the ci tier builds no ARM toolchain.
-          runners: ${{ inputs.tier == 'release' && inputs.release-runners || inputs.tier == 'nightly' && inputs.nightly-runners || inputs.tier == 'fuzz' && inputs.fuzz-runners || inputs.ci-runners }}
+          name: toolchain-${{ inputs.preflight-ref }}-linux
+          path: .preflight-bin
+      - name: Allow the checks to run
+        run: chmod +x .preflight-bin/linux/*
       # The run checks the package with the preflight its manifest pins: a caller not made
       # again at a re-pin would run an older preflight than the build calls.
       - name: Check the package pins the preflight this caller runs
         working-directory: ${{ inputs.working-directory }}
         run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight pin --ref ${{ inputs.preflight-ref }}
-      # preflight keeps its own run's toolchain ninety days, for the callers
-      # pinned to its commit; a caller's run keeps it for the run.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: toolchain-${{ inputs.preflight-ref }}
-          path: .preflight-bin
-          include-hidden-files: true
-          retention-days: ${{ github.repository == 'pedronaugusto/preflight' && 90 || 1 }}
-          overwrite: true
       # A documentation generator may run zig.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         if: github.event_name == 'workflow_dispatch' && inputs.tier == 'ci'
@@ -120,8 +145,8 @@ jobs:
           PREFLIGHT_TIER: ${{ inputs.tier }}
         run: $GITHUB_WORKSPACE/.preflight-bin/linux/preflight skip
   gate:
-    needs: toolchain
-    if: needs.toolchain.outputs.docs-only != 'true' && contains(fromJSON('["ci","release","nightly","fuzz"]'), inputs.tier)
+    needs: [toolchain, pinned]
+    if: needs.pinned.outputs.docs-only != 'true' && contains(fromJSON('["ci","release","nightly","fuzz"]'), inputs.tier)
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     permissions:
@@ -162,7 +187,8 @@ jobs:
           working-directory: ${{ matrix.directory || inputs.working-directory }}
           build-args: ${{ matrix.args }}
           build-key: ${{ matrix.step }}
-          toolchain: toolchain-${{ inputs.preflight-ref }}
+          # Its runner's toolchain alone, which the planner names in its matrix entry.
+          toolchain: toolchain-${{ inputs.preflight-ref }}-${{ matrix.toolchain }}
       # riscv64 Linux runs on its own kernel under QEMU's system emulation (`-Dci-vm`). Ubuntu 26.04
       # ships qemu-system-riscv64 in a package of its own; 24.04 has it in qemu-system-misc.
       # apt's own deadlines end a stalled download and retry it; the step's is a backstop with
@@ -375,7 +401,7 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         with:
-          name: toolchain-${{ inputs.preflight-ref }}
+          name: toolchain-${{ inputs.preflight-ref }}-linux
           path: ${{ runner.temp }}/toolchain
       - name: Take bay from the toolchain, building with Zig master
         id: bay
@@ -489,7 +515,7 @@ jobs:
   # This job names each, with its minutes queued, and fails; nothing is retried. It reads the
   # jobs with the token's actions: read.
   runners:
-    needs: [toolchain, gate, proof]
+    needs: [toolchain, pinned, gate, proof]
     if: always() && needs.toolchain.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -498,7 +524,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: toolchain-${{ inputs.preflight-ref }}
+          name: toolchain-${{ inputs.preflight-ref }}-linux
           path: .preflight-bin
       - name: Every job had a runner
         env:

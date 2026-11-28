@@ -912,14 +912,18 @@ Cross targets are dealt out to the Linux jobs `cross_jobs` asks for, one by defa
 order, each target keeping its optional CPU and flags. The checks run on their host's baseline CPU target, so a
 binary built once serves every runner model.
 
-Every job takes the checks as a binary, and none compiles them. The first job of a
-run, `toolchain`, builds `preflight` and `bay` for the runners the tier's jobs run on
+Every job takes the checks as a binary, and none compiles them. The first jobs of a
+run, `toolchain`, build `preflight` and `bay`, one job per runner the tier's jobs run on
 (Linux always; the ARM runners only for a tier that has a job there), which the planner
 lists beside each tier's matrix in the caller (`<tier>-runners`), with `zig build toolchain
--Dtoolchain-runners="<runners>"`, cross compiled in one job, or takes the build
-that preflight's own run made of the pinned commit where it holds those runners: that run
-keeps it ninety days as the artifact `toolchain-<commit>`, and a caller reads it from there.
-The other jobs download the run's copy and put it on the path; their `fetch`, `prepare` and
+-Dtoolchain-runners=<runner>`, cross compiled, so the run waits for the slowest build and not
+their sum. Each runner's build is cached under the commit and the runner, so a release or
+nightly run of a commit takes what its ci run built, or takes the build that preflight's own
+run made of the pinned commit: that run keeps it ninety days, one artifact per runner,
+`toolchain-<commit>-<runner>`, and a caller reads it from there. `pinned` then checks the
+package pins that preflight and, for a dispatched ci run, whether only documentation changed.
+Each other job downloads its own runner's build, which its matrix entry names
+(`toolchain`), and puts it on the path; their `fetch`, `prepare` and
 `run` are its subcommands, and its `run` hands the build it starts as `-Dci-checks`,
 which `addCi` takes in place of compiling the checks, and the bay beside it as `-Dci-bay`
 (a build without the options compiles them, as local runs do). preflight's own suite takes

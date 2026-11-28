@@ -1290,6 +1290,34 @@ test "shards split the tests once between them by name" {
     for (all, seen.items) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
 }
 
+test "a hosted run's runner writes each slow test and its binary's time to its progress file as they end" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try fixture(a, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = "const std = @import(\"std\");\ntest \"takes its time\" {\n    try std.testing.io.sleep(.fromMilliseconds(1200), .awake);\n}\ntest \"is quick\" {}\n" });
+    try tmp.dir.createDirPath(io, "progress");
+    var env = try std.testing.environ.createMap(a);
+    defer env.deinit();
+    try env.put("PREFLIGHT_PROGRESS", try tmp.dir.realPathFileAlloc(io, "progress", a));
+    const result = try std.process.run(a, io, .{ .argv = try fixtureBuild(a, &.{ "ci-test", "-Dci-lint=false" }), .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+    try std.testing.expect(command.succeeded(result));
+    var progress = try tmp.dir.openDir(io, "progress", .{ .iterate = true });
+    defer progress.close(io);
+    var files = progress.iterate();
+    var text: std.ArrayList(u8) = .empty;
+    while (try files.next(io)) |entry| try text.appendSlice(a, try progress.readFileAlloc(io, entry.name, a, .limited(64 * 1024)));
+    // The slow test by name, the quick one only in its binary's line.
+    try std.testing.expect(std.mem.find(u8, text.items, "takes its time: 1.") != null);
+    try std.testing.expect(std.mem.find(u8, text.items, "is quick") == null);
+    try std.testing.expect(std.mem.find(u8, text.items, ": 2 tests in ") != null);
+    try std.testing.expect(std.mem.find(u8, text.items, "the 1 under a second") != null);
+}
+
 test "a crash fails its test alone, and the process the build starts again runs the tests after it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

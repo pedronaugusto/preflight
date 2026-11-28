@@ -122,6 +122,10 @@ pub const Job = struct {
     /// The configured target a test job builds and runs on its runner, when it is not the
     /// runner's own (`ownTargetJobs`); null for the runner's own.
     target: ?[]const u8 = null,
+    /// The toolchain the job's runner takes, by its name (`toolchain_names`): the gate downloads
+    /// that runner's artifact alone. The caller's matrix sets it (`include`); the plan, whose
+    /// jobs are keyed without it, leaves it null.
+    toolchain: ?[]const u8 = null,
 };
 
 /// A target no hosted runner is, whose tests run on its own kernel under QEMU.
@@ -187,9 +191,11 @@ fn shardName(a: std.mem.Allocator, index: usize, count: usize) ![]const u8 {
 /// was before the field was.
 const job_json: std.json.Stringify.Options = .{ .emit_null_optional_fields = false };
 
-/// `jobs` as a hosted caller's matrix.
+/// `jobs` as a hosted caller's matrix, each naming the toolchain its runner takes.
 pub fn include(a: std.mem.Allocator, jobs: []const Job) ![]const u8 {
-    return std.json.Stringify.valueAlloc(a, .{ .include = jobs }, job_json);
+    const named = try a.dupe(Job, jobs);
+    for (named) |*job| job.toolchain = try toolchainName(job.os);
+    return std.json.Stringify.valueAlloc(a, .{ .include = named }, job_json);
 }
 
 /// The toolchain's names for the hosted runners (`zig build toolchain`'s), in its order.
@@ -201,21 +207,25 @@ const toolchain_names = [_]struct { host: []const u8, name: []const u8 }{
     .{ .host = arm_hosts[1], .name = "windows-arm" },
 };
 
-/// The runners a run of `jobs` takes the toolchain for, space-separated in the toolchain's
-/// order, as the caller hands them to the toolchain job: those its jobs run on, and Linux,
-/// where the run's own jobs run. The ci tier has no ARM job, and two ARM builds kept preflight's
-/// own ci run past its ten minutes.
+/// The toolchain's name for the runner `host`, which every job's is (`every_host`).
+fn toolchainName(host: []const u8) error{UnknownHost}![]const u8 {
+    for (toolchain_names) |runner| if (std.mem.eql(u8, runner.host, host)) return runner.name;
+    return error.UnknownHost;
+}
+
+/// The runners a run of `jobs` takes the toolchain for, as a JSON list in the toolchain's
+/// order, which the caller hands the toolchain job's matrix: one job per runner, so the run
+/// waits for the slowest build and not for their sum. Those its jobs run on, and Linux, where
+/// the run's own jobs run. The ci tier has no ARM job, and builds no ARM toolchain.
 pub fn toolchainRunners(a: std.mem.Allocator, jobs: []const Job) ![]const u8 {
-    var names: std.ArrayList(u8) = .empty;
+    var names: std.ArrayList([]const u8) = .empty;
     for (toolchain_names, 0..) |runner, index| {
         const taken = index == 0 or for (jobs) |job| {
             if (std.mem.eql(u8, job.os, runner.host)) break true;
         } else false;
-        if (!taken) continue;
-        if (names.items.len != 0) try names.append(a, ' ');
-        try names.appendSlice(a, runner.name);
+        if (taken) try names.append(a, runner.name);
     }
-    return names.toOwnedSlice(a);
+    return std.json.Stringify.valueAlloc(a, names.items, .{});
 }
 
 /// A job's cache scope: everything that changes what it builds and runs.
@@ -975,12 +985,12 @@ test "the release tier is the ci tier's jobs, ReleaseSafe on every runner, Relea
     for (jobs) |job| if (std.mem.eql(u8, job.step, "lint")) try std.testing.expect(std.mem.find(u8, job.args, "-Dci-release") != null);
 }
 
-test "the toolchain is built for the runners a tier's jobs run on, and Linux, in the toolchain's order" {
+test "the toolchain is built for the runners a tier's jobs run on, and Linux, one job each, and each job takes its runner's" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try std.testing.expectEqualStrings("linux", try toolchainRunners(a, &.{}));
-    try std.testing.expectEqualStrings("linux macos windows-arm", try toolchainRunners(a, &.{
+    try std.testing.expectEqualStrings("[\"linux\"]", try toolchainRunners(a, &.{}));
+    try std.testing.expectEqualStrings("[\"linux\",\"macos\",\"windows-arm\"]", try toolchainRunners(a, &.{
         .{ .os = arm_hosts[1], .name = "on Windows ARM" },
         .{ .os = hosts[1], .name = "on macOS" },
         .{ .os = hosts[1], .name = "on macOS again" },
@@ -988,7 +998,12 @@ test "the toolchain is built for the runners a tier's jobs run on, and Linux, in
     const config = try parseJson(a, "{\"targets\":[\"aarch64-linux-gnu\",\"x86_64-linux-musl\"],\"policy\":\"family\",\"fuzzed\":true}");
     // The ci tier runs nothing on ARM, so its run builds no ARM toolchain; the nightly takes all.
     try std.testing.expect(std.mem.find(u8, try toolchainRunners(a, try plan(a, config, .ci)), "arm") == null);
-    try std.testing.expectEqualStrings("linux linux-arm macos windows windows-arm", try toolchainRunners(a, try plan(a, config, .nightly)));
+    try std.testing.expectEqualStrings("[\"linux\",\"linux-arm\",\"macos\",\"windows\",\"windows-arm\"]", try toolchainRunners(a, try plan(a, config, .nightly)));
+    // Each job of the caller's matrix names its runner's toolchain, which the gate downloads.
+    const written = try include(a, try plan(a, config, .nightly));
+    try std.testing.expect(std.mem.find(u8, written, "\"os\":\"windows-11-arm\"") != null);
+    try std.testing.expect(std.mem.find(u8, written, "\"toolchain\":\"windows-arm\"") != null);
+    for (try plan(a, config, .nightly)) |job| try std.testing.expect(job.toolchain == null);
 }
 
 test "the nightly tier is the heavy legs: ReleaseFast on macOS and Windows, the ARM runners, riscv64 and FreeBSD on their kernels, ThreadSanitizer, the fuzz runs" {

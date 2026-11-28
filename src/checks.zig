@@ -25,6 +25,7 @@ pub const command = @import("checks/command.zig");
 pub const input = @import("checks/input.zig");
 pub const phases = @import("checks/phases.zig");
 pub const counts = @import("checks/counts.zig");
+pub const progress = @import("checks/progress.zig");
 
 test {
     _ = @import("cli.zig");

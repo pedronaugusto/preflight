@@ -32,6 +32,77 @@ fn fixture(a: std.mem.Allocator, dir: std.Io.Dir) !void {
     const manifest = try a.print(".{{ .name = .preflight_sample, .version = \"0.0.0\", .minimum_zig_version = \"0.17.0\", .fingerprint = 0x5460136369dcf618, .paths = .{{ \"build.zig\", \"build.zig.zon\", \"src\", \"LICENSE\", \"README.md\", \"CHANGELOG.md\" }}, .dependencies = .{{ .preflight = .{{ .path = \"{f}\" }}, .shakedown = .{{ .url = \"{f}\", .hash = \"{f}\", .lazy = true }} }} }}", .{ std.zig.fmtString(relative), std.zig.fmtString(shakedown.url), std.zig.fmtString(shakedown.hash) });
     defer a.free(manifest);
     try dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = manifest });
+    try linkPackages(a, dir, package_root);
+}
+
+/// Links the fixture's `zig-pkg` to preflight's own. Zig copies every package a build uses into
+/// its package's `zig-pkg`, preflight's whole tree of them (1.1 GB) for each fixture, and builds
+/// each again from the copy: seven of a fixture's first build's seconds on a Mac at rest, in
+/// every test that builds one, which made the macOS suite's jobs overrun (nightly 46100567386).
+/// Linked, a package is fetched once and compiled once: Zig writes each package under a name of
+/// its own and renames it to its hash, so builds fetching into the link at once do not race.
+/// The fixture's cleanup (`deleteTree`) removes the link and not what it names, which a test
+/// asserts on every system. Where the system refuses a link, the fixture copies as before.
+fn linkPackages(a: std.mem.Allocator, dir: std.Io.Dir, package_root: []const u8) !void {
+    const io = std.testing.io;
+    const packages = try std.Io.Dir.path.join(a, &.{ package_root, "zig-pkg" });
+    defer a.free(packages);
+    // A package fetched into the link lands in preflight's own directory: it has to exist.
+    try std.Io.Dir.cwd().createDirPath(io, packages);
+    dir.symLink(io, packages, "zig-pkg", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => {},
+        else => return err,
+    };
+}
+
+test "a fixture's cleanup removes its link to the packages and leaves the packages" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    // A tree of its own behind the link, so what the cleanup must not delete is the test's.
+    var owner = std.testing.tmpDir(.{});
+    defer owner.cleanup();
+    try owner.dir.createDirPath(io, "zig-pkg/dep-0.0.0-sentinel/src");
+    try owner.dir.writeFile(io, .{ .sub_path = "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .data = "pub const kept = true;\n" });
+    const owner_root = try owner.dir.realPathFileAlloc(io, ".", a);
+    var linked = std.testing.tmpDir(.{});
+    try linkPackages(a, linked.dir, owner_root);
+    try linked.dir.access(io, "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .{});
+    linked.cleanup();
+    try owner.dir.access(io, "zig-pkg/dep-0.0.0-sentinel/src/root.zig", .{});
+    // And preflight's own, behind every fixture's link: a fixture made and cleaned up leaves
+    // each of its packages.
+    const package_root = try std.Io.Dir.cwd().realPathFileAlloc(io, root, a);
+    var packages = try std.Io.Dir.cwd().openDir(io, try std.Io.Dir.path.join(a, &.{ package_root, "zig-pkg" }), .{ .iterate = true });
+    defer packages.close(io);
+    const before = try entries(a, packages);
+    var made = std.testing.tmpDir(.{});
+    try fixture(a, made.dir);
+    made.cleanup();
+    const after = try entries(a, packages);
+    try std.testing.expectEqual(before.len, after.len);
+    for (before, after) |x, y| try std.testing.expectEqualStrings(x, y);
+}
+
+/// The names in `dir`, sorted.
+fn entries(a: std.mem.Allocator, dir: std.Io.Dir) ![][]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var iterator = dir.iterate();
+    while (try iterator.next(std.testing.io)) |entry| try names.append(a, try a.dupe(u8, entry.name));
+    std.mem.sort([]const u8, names.items, {}, lessThan);
+    return names.items;
+}
+
+/// Gives the fixture a `zig-pkg` of its own in place of the link to preflight's, for a test
+/// that writes into it: what it writes stays the fixture's.
+fn ownPackages(dir: std.Io.Dir) !void {
+    const io = std.testing.io;
+    dir.deleteFile(io, "zig-pkg") catch |err| switch (err) {
+        // No link: the system refused one.
+        error.FileNotFound => {},
+        else => return err,
+    };
 }
 
 /// A consumer that names none of the sample's declarations, for a fixture whose test writes
@@ -191,6 +262,7 @@ test "format checks owned sources and ignores extracted dependency packages" {
     try fixture(a, tmp.dir);
     const formatted = try std.process.run(a, io, .{ .argv = &.{ "zig", "fmt", "build.zig", "build.zig.zon", "src", "ci" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(formatted.term == .exited and formatted.term.exited == 0);
+    try ownPackages(tmp.dir);
     try tmp.dir.createDirPath(io, "zig-pkg/third-party");
     try tmp.dir.writeFile(io, .{ .sub_path = "zig-pkg/third-party/value.zig", .data = "const value=1;\n" });
     // A build of its own under a checked directory, such as a conformance
@@ -633,21 +705,26 @@ fn lintFixtureWith(a: std.mem.Allocator, dir: std.Io.Dir, options: []const []con
     return seam.build(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .environ_map = &env });
 }
 
-fn recordedOrder(a: std.mem.Allocator, dir: std.Io.Dir) ![]const u8 {
-    var timings = try dir.openDir(std.testing.io, ".zig-cache/preflight-timings", .{ .iterate = true });
-    defer timings.close(std.testing.io);
-    var iterator = timings.iterate();
-    var names: std.ArrayList(u8) = .empty;
-    while (try iterator.next(std.testing.io)) |entry| {
-        const text = try seam.file(std.testing.io, timings, entry.name, a, .record);
-        var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
-            try names.appendSlice(a, try src.string(src.get(row, "name"), ""));
-            try names.append(a, '\n');
-        }
+/// The marker every fixture test that wants its run seen prints first (`std.debug.print`).
+const ran_marker = "preflight-ran ";
+
+/// The tests a run's output says ran, in the order they ran: each line its test printed
+/// `ran_marker` on, the test's own name after it.
+fn ranOrder(a: std.mem.Allocator, output: []const u8) ![][]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.tokenizeAny(u8, output, "\r\n");
+    while (lines.next()) |line| {
+        const at = std.mem.find(u8, line, ran_marker) orelse continue;
+        try names.append(a, std.mem.trim(u8, line[at + ran_marker.len ..], " "));
     }
     return names.items;
+}
+
+/// `count` tests named `prefix` and a number, each printing `ran_marker` and its name.
+fn markedTests(a: std.mem.Allocator, prefix: []const u8, from: usize, count: usize) ![]const u8 {
+    var text: std.Io.Writer.Allocating = .init(a);
+    for (from..from + count) |i| try text.writer.print("test \"{s}-{d}\" {{\n    @import(\"std\").debug.print(\"{s}{s}-{d}\\n\", .{{}});\n}}\n", .{ prefix, i, ran_marker, prefix, i });
+    return text.written();
 }
 
 test "the sample's tests shuffle reproducibly with an explicit seed" {
@@ -657,10 +734,8 @@ test "the sample's tests shuffle reproducibly with an explicit seed" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    var text: std.Io.Writer.Allocating = .init(a);
-    for (0..16) |i| try text.writer.print("test \"order-{d}\" {{}}\n", .{i});
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try timingsAsked(a);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = try markedTests(a, "order", 0, 16) });
+    var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" };
     var orders: [3][]const u8 = undefined;
@@ -669,7 +744,9 @@ test "the sample's tests shuffle reproducibly with an explicit seed" {
         const result = try std.process.run(a, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
         if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
         try std.testing.expect(command.succeeded(result));
-        order.* = try recordedOrder(a, tmp.dir);
+        const ran = try ranOrder(a, result.stderr);
+        try std.testing.expectEqual(@as(usize, 16), ran.len);
+        order.* = try std.mem.join(a, "\n", ran);
     }
     try std.testing.expectEqualStrings(orders[0], orders[1]);
     try std.testing.expect(!std.mem.eql(u8, orders[0], orders[2]));
@@ -1150,45 +1227,11 @@ test "check compiles the tests for every target of the ci tier, where a test beh
     try std.testing.expect(std.mem.find(u8, result.stderr, "x86_64-windows") != null);
 }
 
-/// Test names recorded in timing files whose names end with `suffix`.
-fn recordedNames(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]const []const u8 {
-    var timings = try dir.openDir(std.testing.io, ".zig-cache/preflight-timings", .{ .iterate = true });
-    defer timings.close(std.testing.io);
-    var iterator = timings.iterate();
-    var names: std.ArrayList([]const u8) = .empty;
-    while (try iterator.next(std.testing.io)) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
-        const text = try seam.file(std.testing.io, timings, entry.name, a, .record);
-        var lines = std.mem.tokenizeScalar(u8, text, '\n');
-        while (lines.next()) |line| {
-            const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
-            try names.append(a, try a.dupe(u8, try src.string(src.get(row, "name"), "")));
-        }
-    }
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn less(_: void, x: []const u8, y: []const u8) bool {
-            return std.mem.lessThan(u8, x, y);
-        }
-    }.less);
-    return names.items;
+fn lessThan(_: void, x: []const u8, y: []const u8) bool {
+    return std.mem.lessThan(u8, x, y);
 }
 
-/// The durations column the runner recorded under, which it balances shards by.
-fn recordedKey(a: std.mem.Allocator, dir: std.Io.Dir, suffix: []const u8) ![]const u8 {
-    var timings = try dir.openDir(std.testing.io, ".zig-cache/preflight-timings", .{ .iterate = true });
-    defer timings.close(std.testing.io);
-    var iterator = timings.iterate();
-    while (try iterator.next(std.testing.io)) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, suffix)) continue;
-        const text = try seam.file(std.testing.io, timings, entry.name, a, .record);
-        const line = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
-        const row = (try std.json.parseFromSlice(src.Value, a, line, .{})).value;
-        return a.dupe(u8, try src.string(src.get(row, "key"), ""));
-    }
-    return error.NoTimingRecord;
-}
-
-test "shards split the tests once between them by recorded duration" {
+test "shards split the tests once between them by name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1196,48 +1239,39 @@ test "shards split the tests once between them by recorded duration" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    var text: std.Io.Writer.Allocating = .init(a);
-    for (0..12) |i| try text.writer.print("test \"case-{d}\" {{}}\n", .{i});
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try timingsAsked(a);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try markedTests(a, "case", 0, 12) });
+    var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("PREFLIGHT_SHARD");
-    const whole = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const argv: []const []const u8 = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" };
+    const whole = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(whole)) std.debug.print("{s}\n", .{whole.stderr});
     try std.testing.expect(command.succeeded(whole));
-    const all = try recordedNames(a, tmp.dir, "-all.ndjson");
+    const all = try ranOrder(a, whole.stderr);
     try std.testing.expectEqual(@as(usize, 12), all.len);
-    // One test outweighs the rest together, so its shard runs it alone.
-    var heavy: []const u8 = "";
-    var durations: std.Io.Writer.Allocating = .init(a);
-    try durations.writer.print("{{\"keys\":[\"{s}\"],\"tests\":{{", .{try recordedKey(a, tmp.dir, "-all.ndjson")});
-    for (all, 0..) |name, i| {
-        if (std.mem.endsWith(u8, name, "case-0")) heavy = name;
-        try durations.writer.print("{s}{f}:[{d}]", .{ if (i == 0) "" else ",", std.json.fmt(name, .{}), @as(u32, if (std.mem.endsWith(u8, name, "case-0")) 100 else 1) });
-    }
-    try durations.writer.writeAll("}}");
-    try tmp.dir.writeFile(io, .{ .sub_path = "ci/durations.json", .data = durations.written() });
+    std.mem.sort([]const u8, all, {}, lessThan);
     var seen: std.ArrayList([]const u8) = .empty;
-    var shards: [3][]const []const u8 = undefined;
-    for (&shards, 1..) |*names, shard| {
+    for (1..4) |shard| {
         try env.put("PREFLIGHT_SHARD", try a.print("{d}/3", .{shard}));
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-        if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
-        try std.testing.expect(command.succeeded(result));
-        names.* = try recordedNames(a, tmp.dir, try a.print("-{d}of3.ndjson", .{shard}));
-        try seen.appendSlice(a, names.*);
-        for (names.*) |name| if (std.mem.eql(u8, name, heavy)) try std.testing.expectEqual(@as(usize, 1), names.len);
-    }
-    std.mem.sort([]const u8, seen.items, {}, struct {
-        fn less(_: void, x: []const u8, y: []const u8) bool {
-            return std.mem.lessThan(u8, x, y);
+        // The same shard twice runs the same tests: the split is the names', not the run's.
+        var runs: [2][]const u8 = undefined;
+        for (&runs) |*run_names| {
+            const result = try std.process.run(a, io, .{ .argv = argv, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+            if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
+            try std.testing.expect(command.succeeded(result));
+            const names = try ranOrder(a, result.stderr);
+            std.mem.sort([]const u8, names, {}, lessThan);
+            run_names.* = try std.mem.join(a, "\n", names);
+            if (run_names == &runs[0]) try seen.appendSlice(a, names);
         }
-    }.less);
+        try std.testing.expectEqualStrings(runs[0], runs[1]);
+    }
+    std.mem.sort([]const u8, seen.items, {}, lessThan);
     try std.testing.expectEqual(all.len, seen.items.len);
     for (all, seen.items) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
 }
 
-test "a crash keeps the records of the tests before it, and a fresh run starts the record again" {
+test "a crash fails its test alone, and the process the build starts again runs the tests after it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1245,24 +1279,20 @@ test "a crash keeps the records of the tests before it, and a fresh run starts t
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
-    var text: std.Io.Writer.Allocating = .init(a);
-    try text.writer.writeAll("test \"case-0\" { @panic(\"case-0 crashes\"); }\n");
-    for (1..8) |i| try text.writer.print("test \"case-{d}\" {{}}\n", .{i});
-    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try timingsAsked(a);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/sample.zig", .data = try std.mem.concat(a, u8, &.{ "test \"case-0\" { @panic(\"case-0 crashes\"); }\n", try markedTests(a, "case", 1, 7) }) });
+    var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     _ = env.swapRemove("PREFLIGHT_SHARD");
     // An order that runs the crash after other tests, which the process the
-    // build starts again after it must not drop.
+    // build starts again after it must not run twice or drop.
     try env.put("PREFLIGHT_TEST_SEED", "1");
-    for (0..2) |_| {
-        const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-        try std.testing.expect(!command.succeeded(result));
-        try std.testing.expect(std.mem.find(u8, result.stderr, "case-0 crashes") != null);
-        const names = try recordedNames(a, tmp.dir, "-all.ndjson");
-        try std.testing.expectEqual(@as(usize, 7), names.len);
-        for (names, 1..) |name, i| try std.testing.expect(std.mem.endsWith(u8, name, try a.print("case-{d}", .{i})));
-    }
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    try std.testing.expect(!command.succeeded(result));
+    try std.testing.expect(std.mem.find(u8, result.stderr, "case-0 crashes") != null);
+    const names = try ranOrder(a, result.stderr);
+    std.mem.sort([]const u8, names, {}, lessThan);
+    try std.testing.expectEqual(@as(usize, 7), names.len);
+    for (names, 1..) |name, i| try std.testing.expectEqualStrings(try a.print("case-{d}", .{i}), name);
 }
 
 test "a test's environment holds none of preflight's controls, so a build it starts runs all of its own tests" {
@@ -1629,14 +1659,6 @@ fn edit(a: std.mem.Allocator, dir: std.Io.Dir, path: []const u8, from: []const u
     try dir.writeFile(io, .{ .sub_path = path, .data = changed });
 }
 
-/// The test's environment with its runs' timings asked for, as a hosted job asks
-/// (`PREFLIGHT_TIMINGS`).
-fn timingsAsked(a: std.mem.Allocator) !std.process.Environ.Map {
-    var env = try std.testing.environ.createMap(a);
-    try env.put("PREFLIGHT_TIMINGS", "true");
-    return env;
-}
-
 fn gate(a: std.mem.Allocator, dir: std.Io.Dir, extra: []const []const u8) !std.process.RunResult {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" });
@@ -1816,10 +1838,10 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     defer tmp.cleanup();
     try fixture(a, tmp.dir);
     var text: std.Io.Writer.Allocating = .init(a);
-    try text.writer.writeAll("const std = @import(\"std\");\ntest \"logs an error\" {\n    std.log.err(\"preflight-error-marker\", .{});\n}\n");
-    for (0..4) |i| try text.writer.print("test \"fuzzes {d}\" {{\n    try std.testing.fuzz({{}}, struct {{\n        fn one(_: void, smith: *std.testing.Smith) anyerror!void {{\n            _ = smith;\n        }}\n    }}.one, .{{}});\n}}\n", .{i});
+    try text.writer.print("const std = @import(\"std\");\ntest \"logs an error\" {{\n    std.debug.print(\"{s}logs an error\\n\", .{{}});\n    std.log.err(\"preflight-error-marker\", .{{}});\n}}\n", .{ran_marker});
+    for (0..4) |i| try text.writer.print("test \"fuzzes {d}\" {{\n    std.debug.print(\"{s}fuzzes {d}\\n\", .{{}});\n    try std.testing.fuzz({{}}, struct {{\n        fn one(_: void, smith: *std.testing.Smith) anyerror!void {{\n            _ = smith;\n        }}\n    }}.one, .{{}});\n}}\n", .{ i, ran_marker, i });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/sample.zig", .data = text.written() });
-    var env = try timingsAsked(a);
+    var env = try std.testing.environ.createMap(a);
     defer env.deinit();
     try env.put("PREFLIGHT_TEST_SEED", "42");
     const result = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
@@ -1832,7 +1854,7 @@ test "an error one test logs fails that test alone, and a fuzz test after it run
     try std.testing.expect(std.mem.find(u8, result.stderr, "'sample.test.logs an error' logged 1 errors") != null);
     // The seed puts a fuzz test after the one that logs, or nothing here
     // would be tried.
-    const order = try recordedOrder(a, tmp.dir);
+    const order = try std.mem.join(a, "\n", try ranOrder(a, result.stderr));
     const logged = std.mem.find(u8, order, "logs an error").?;
     try std.testing.expect(std.mem.findLast(u8, order, "fuzzes ").? > logged);
 }
@@ -1977,7 +1999,7 @@ test "a test that breaks only under a configuration's option fails the package's
     const planner = @import("matrix.zig");
     for ([_][]const u8{ "default", "no-feature" }) |name| {
         const job = for (try planner.plan(a, config, .ci)) |each| {
-            if (std.mem.eql(u8, planner.recordName(each.name), try a.print("check ({s})", .{name}))) break each;
+            if (std.mem.eql(u8, each.name, try a.print("check ({s})", .{name}))) break each;
         } else return error.TestUnexpectedResult;
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.appendSlice(a, &.{ "zig", "build", "--cache-dir", try fixtureCache(a), job.step });
@@ -2044,35 +2066,6 @@ test "a configuration's modules are its options' own: one the default build does
     const plain = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "check-consumer" }, .cwd = .{ .dir = tmp.dir } });
     try std.testing.expect(!command.succeeded(plain));
     try std.testing.expect(std.mem.find(u8, plain.stderr, "configuration plain: the package exports no module \"sample_schema\"") != null);
-}
-
-test "timing records of two test runs with one name stay apart" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try fixture(a, tmp.dir);
-    const run_line = "step.dependOn(&b.addRunArtifact(tests).step);\n";
-    // A second module whose test artifact takes the same default name, and a
-    // run that shares the first module and so its record.
-    const second = "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(\"src/sample.zig\"), .target = target, .optimize = optimize }) })).step);\n";
-    const shared = "    step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = module })).step);\n";
-    try edit(a, tmp.dir, "build.zig", run_line, run_line ++ second ++ shared);
-    var env = try timingsAsked(a);
-    defer env.deinit();
-    const result = try seam.build(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
-    if (!command.succeeded(result)) std.debug.print("{s}\n", .{result.stderr});
-    try std.testing.expect(command.succeeded(result));
-    var dir = try tmp.dir.openDir(io, ".zig-cache/preflight-timings", .{ .iterate = true });
-    defer dir.close(io);
-    var files: usize = 0;
-    var iterator = dir.iterate();
-    while (try iterator.next(io)) |entry| {
-        if (std.mem.endsWith(u8, entry.name, ".ndjson")) files += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), files);
 }
 
 test "a dispatched run compares the branch with main, so a docs-only last commit keeps the gate" {
@@ -2429,7 +2422,7 @@ test "owner caller regeneration replaces stale pin without a consumer planner" {
     try std.testing.expect(std.mem.find(u8, made, "\n* text=auto eol=lf\n") != null);
 }
 
-test "the plan links a macOS target on Linux unless its build links a framework" {
+test "the plan links the macOS targets on a Mac when one of their builds links a framework" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -2443,31 +2436,20 @@ test "the plan links a macOS target on Linux unless its build links a framework"
     // A hosted run sets GITHUB_OUTPUT, where the plan would write in place of stdout.
     var env = try std.testing.environ.createMap(a);
     _ = env.swapRemove("GITHUB_OUTPUT");
-    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "plan", "--", "--tier", "full" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
+    const result = try std.process.run(a, io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "plan", "--", "--tier", "release" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &env });
     if (!command.succeeded(result)) std.debug.print("{s}", .{result.stderr});
     try std.testing.expect(command.succeeded(result));
     const matrix = (try std.json.parseFromSlice(src.Value, a, result.stdout, .{})).value;
-    // A job of legs runs several: each leg counts as the job it is.
-    var planned: std.ArrayList(src.Value) = .empty;
-    for (try src.items(src.get(matrix, "include"))) |job| {
-        const legs = src.get(job, "legs");
-        if (legs == .string) {
-            try planned.appendSlice(a, try src.items((try std.json.parseFromSlice(src.Value, a, legs.string, .{})).value));
-        } else try planned.append(a, job);
-    }
+    // The macOS links are one job, on a Mac since one of them links a framework.
     var seen: usize = 0;
-    for (planned.items) |job| {
-        const name = try src.string(src.get(job, "name"), "");
-        const os = try src.string(src.get(job, "os"), "");
-        if (std.mem.startsWith(u8, name, "SDK link (x86_64-macos)")) {
-            try std.testing.expectEqualStrings("macos-latest", os);
-            seen += 1;
-        } else if (std.mem.startsWith(u8, name, "link (aarch64-macos)")) {
-            try std.testing.expectEqualStrings("ubuntu-latest", os);
-            seen += 1;
-        }
+    for (try src.items(src.get(matrix, "include"))) |job| {
+        if (!std.mem.eql(u8, try src.string(src.get(job, "step"), ""), "preflight-link")) continue;
+        try std.testing.expectEqualStrings("SDK link (macOS)", try src.string(src.get(job, "name"), ""));
+        try std.testing.expectEqualStrings("macos-latest", try src.string(src.get(job, "os"), ""));
+        try std.testing.expectEqualStrings("x86_64-macos aarch64-macos", try src.string(src.get(job, "targets"), ""));
+        seen += 1;
     }
-    try std.testing.expectEqual(@as(usize, 2), seen);
+    try std.testing.expectEqual(@as(usize, 1), seen);
 }
 
 test "toolchain measuring builds without executing and injects shakedown for a consumer" {
@@ -2648,13 +2630,9 @@ test "toolchain TSan executes a native consumer and detects an intentional race"
     const good = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "hardened-tsan" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(good)) std.debug.print("{s}", .{good.stderr});
     try std.testing.expect(command.succeeded(good));
-    // A sanitized run records its durations in a column of its own.
-    var asked = try timingsAsked(a);
-    defer asked.deinit();
-    const sanitized = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-tsan=true", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir }, .environ_map = &asked });
+    const sanitized = try std.process.run(a, std.testing.io, .{ .argv = &.{ "zig", "build", "--cache-dir", try fixtureCache(a), "ci-test", "-Dci-tsan=true", "-Dci-lint=false" }, .cwd = .{ .dir = tmp.dir } });
     if (!command.succeeded(sanitized)) std.debug.print("{s}", .{sanitized.stderr});
     try std.testing.expect(command.succeeded(sanitized));
-    try std.testing.expect(std.mem.endsWith(u8, try recordedKey(a, tmp.dir, "-all.ndjson"), "-debug-tsan"));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "src/testing/hardened.zig", .data =
         \\const std = @import("std");
         \\var go: std.atomic.Value(bool) = .init(false);

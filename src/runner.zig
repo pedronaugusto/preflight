@@ -1,4 +1,4 @@
-//! Zig's test protocol with per-test timing records, shard selection, a
+//! Zig's test protocol with per-root test counts, shard selection, a
 //! watchdog and the package's log level. The fuzzer is upstream's; a fuzz test
 //! that never reaches it in the fuzzing build fails by name.
 const std = @import("std");
@@ -361,7 +361,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     if (Supervisor.possible) if (lifeline) |handle| Supervisor.follow(handle) catch |err| std.debug.panic("preflight test runner: the supervisor's lifeline: {t}", .{err});
     if (listen and lifeline == null and Supervisor.possible) Supervisor.run(init, args);
     if (!builtin.single_threaded and options.test_timeout_ns != 0) tests_tree = cpu_time.own() catch |err| std.debug.panic("preflight test runner: the tests' process tree, for the watchdog to read: {t}", .{err});
-    order = order_module.init(io, init, args, builtin.test_functions, options.durations, !listen, options.unsharded) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
+    order = order_module.init(io, init, args, builtin.test_functions, !listen, options.unsharded) catch |err| std.debug.panic("test runner seed, shard and order: {t}", .{err});
     job_deadline = readDeadline(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_DEADLINE: {t}", .{err});
     FuzzNames.read(init.environ) catch |err| std.debug.panic("test runner PREFLIGHT_FUZZ_NAMES: {t}", .{err});
     if (!listen) return terminal(init) catch |err| std.debug.panic("preflight test runner: {t}", .{err});
@@ -463,18 +463,15 @@ fn serve(init: std.process.Init.Minimal) !void {
     var writer = protocol.out.writerStreaming(io, &output);
     var server: std.zig.Server = .{ .in = &reader.interface, .out = &writer.interface };
     try server.serveStringMessage(.zig_version, builtin.zig_version_string);
-    const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
-    defer recorder.deinit(io);
     while (true) {
         const header = try server.receiveMessage();
         switch (header.tag) {
             .exit => return,
             .query_test_metadata => {
-                try recorder.begin(io);
                 try metadata(&server);
                 try counted(init);
             },
-            .run_test => try runTest(&server, recorder, init),
+            .run_test => try runTest(&server, init),
             else => return error.UnexpectedRunnerMessage,
         }
     }
@@ -948,7 +945,7 @@ fn counted(init: std.process.Init.Minimal) !void {
     try timings.count(io, init.environ, stem, .{ .root = options.root, .artifact = options.artifact, .filtered = options.filtered, .tests = builtin.test_functions.len, .selected = order.len });
 }
 
-fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.process.Init.Minimal) !void {
+fn runTest(server: *std.zig.Server, init: std.process.Init.Minimal) !void {
     const index = try server.receiveBody_u32();
     const test_fn = builtin.test_functions[order[index]];
     var watchdog: Watchdog = .{ .name = test_fn.name };
@@ -961,7 +958,6 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
     errors.store(0, .monotonic);
     fuzz_called = false;
     try server.serveStringMessage(.test_started, &.{});
-    const start: std.Io.Clock.Timestamp = .now(io, .awake);
     var status: std.zig.Server.Message.TestResults.Status = if (test_fn.func()) |_| .pass else |err| switch (err) {
         error.SkipZigTest => .skip,
         else => failure: {
@@ -986,8 +982,6 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
             fuzz_called = false;
         }
     }
-    const elapsed: u64 = @intCast(start.untilNow(io).raw.nanoseconds);
-    try recorder.record(io, test_fn.name, elapsed, @tagName(status));
     try server.serveTestResults(.{ .index = index, .flags = .{
         .status = status,
         .fuzz = fuzz_called,
@@ -998,9 +992,6 @@ fn runTest(server: *std.zig.Server, recorder: timings.Recorder, init: std.proces
 
 fn terminal(init: std.process.Init.Minimal) !void {
     try counted(init);
-    const recorder = try timings.Recorder.init(io, init.environ, options.timings, order_module.key);
-    defer recorder.deinit(io);
-    try recorder.begin(io);
     var failures: usize = 0;
     for (order) |index| {
         const test_fn = builtin.test_functions[index];
@@ -1012,7 +1003,6 @@ fn terminal(init: std.process.Init.Minimal) !void {
         testing.allocator_instance = .init(Backing.begin(), allocator_options);
         testing.io_instance = .init(testing.allocator, .{ .argv0 = .init(init.args), .environ = testing.environ });
         errors.store(0, .monotonic);
-        const start: std.Io.Clock.Timestamp = .now(io, .awake);
         const status: []const u8 = if (test_fn.func()) |_| "pass" else |err| switch (err) {
             error.SkipZigTest => "skip",
             else => failed: {
@@ -1026,7 +1016,6 @@ fn terminal(init: std.process.Init.Minimal) !void {
         const leaks = testing.allocator_instance.deinit();
         Backing.end();
         watchdog.phase.store(.reporting, .release);
-        try recorder.record(io, test_fn.name, @intCast(start.untilNow(io).raw.nanoseconds), status);
         if (std.mem.eql(u8, status, "fail") or leaks != 0 or errors.load(.monotonic) != 0) failures += 1;
     }
     if (failures != 0) {

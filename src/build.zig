@@ -18,8 +18,6 @@ pub const Config = struct {
     tests: *std.Build.Step,
     layers: []const u8 = "ci/layers.zig",
     config: []const u8 = "ci/preflight.json",
-    /// Recorded per-test durations that balance the hosted shards.
-    durations: []const u8 = "ci/durations.json",
     /// The watchdog: one test, its Io teardown included, fails by name,
     /// phase and seed once it makes no progress this long (its process tree
     /// uses no CPU time), in local runs too.
@@ -253,7 +251,7 @@ const Steps = struct {
         var roots_buffer: [2]*std.Build.Step = .{ config.tests, config.tests };
         if (b.top_level_steps.get(fuzzed)) |top| roots_buffer[1] = &top.step;
         const roots: []const *std.Build.Step = &roots_buffer;
-        const counted = record.add(b, package, roots, pkg, executable, .{ .test_timeout = bounded, .test_log_level = config.test_log_level, .durations = config.durations, .quarantine = steps.profile_options.active, .policy = policy, .unsharded = config.unsharded });
+        const counted = record.add(b, roots, pkg, executable, .{ .test_timeout = bounded, .test_log_level = config.test_log_level, .quarantine = steps.profile_options.active, .policy = policy, .unsharded = config.unsharded });
         const bench_build = bench.add(b, package, pkg, config.tests, config.bench, steps.smoke, policy);
         if (steps.profile_options.fuzzing) hardened.fuzzing(b, roots);
         fuzz.add(b, package, config.tests, fuzzed, config.fuzz_step != null, executable);

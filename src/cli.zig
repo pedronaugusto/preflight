@@ -21,7 +21,6 @@ pub const Cli = struct {
         run,
         skip: Skip,
         attest,
-        profile: Profile,
         runners: Runners,
         fuzz_campaign: Campaign,
         fuzz_budget: Budget,
@@ -206,26 +205,6 @@ pub const Snippets = struct {
     pub const spec: ensign.Spec(@This()) = .{
         .about = "Check the documented snippets alone: a lint that fails, or refuses its configuration, never hides a broken one",
         .options = .{ .config = .{ .value_name = "FILE", .hint = .file, .help = "The source checks' configuration, whose `docs` names the snippets" }, .zig_exe = zig_exe },
-    };
-};
-
-pub const Profile = struct {
-    input: []const u8 = ".preflight-timings",
-    durations: []const u8 = "ci/durations.json",
-    output: ?[]const u8 = null,
-    costs: []const u8 = "ci/costs.json",
-    costs_output: ?[]const u8 = null,
-    partial: bool = false,
-    pub const spec: ensign.Spec(@This()) = .{
-        .about = "The jobs' timing records summarized: the tests' durations and the phases' costs",
-        .options = .{
-            .partial = .{ .help = "The records are of a run that did not finish: a test they do not record keeps its earlier durations" },
-            .input = .{ .value_name = "DIR", .hint = .directory, .help = "The timing records the jobs left" },
-            .durations = .{ .value_name = "FILE", .hint = .file, .help = "The durations so far" },
-            .output = .{ .value_name = "FILE", .hint = .file, .help = "Where the durations go; over --durations by default" },
-            .costs = .{ .value_name = "FILE", .hint = .file, .help = "The phases' costs so far" },
-            .costs_output = .{ .value_name = "FILE", .hint = .file, .help = "Where the costs go; over --costs by default" },
-        },
     };
 };
 
@@ -435,9 +414,6 @@ test "the hosted workflows' commands" {
     try std.testing.expect(!(try parsed(a, &.{"prepare"})).command.prepare.held_git);
     const pin = (try parsed(a, &.{ "pin", "--ref", "c2f1d775a45316a76daf72dcb750c6e343044669" })).command.pin;
     try std.testing.expectEqualStrings("build.zig.zon", pin.manifest);
-    const profile = (try parsed(a, &.{ "profile", "--durations", "pkg/ci/durations.json", "--output", ".preflight-timings/durations.json", "--costs", "pkg/ci/costs.json", "--costs-output", ".preflight-timings/costs.json" })).command.profile;
-    try std.testing.expectEqualStrings(".preflight-timings", profile.input);
-    try std.testing.expectEqualStrings(".preflight-timings/costs.json", profile.costs_output.?);
     try std.testing.expectEqualStrings("jobs.json", (try parsed(a, &.{ "runners", "--jobs", "jobs.json" })).command.runners.jobs);
 }
 

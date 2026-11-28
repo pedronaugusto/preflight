@@ -5,12 +5,12 @@
   "fuzz_minutes": 3,
   "git": {"version": "2.56.0", "sha256": "26c56c296b38c0695b26fa95f475f1d01704d2d38e73465ca30b0b2f5dc789d3", "windows": {"x86_64": "eceb5e061aa90df2f69ddd3e90f0030e1b8037a7829934bc40e4be1caa1accc1", "aarch64": "edd9bd32aefa5d2bd4b938c38c18ceca306a7f6b29a6951cd6a4bb16d9d28d8f"}},
   "jobs": [
-    {"name": "preflight's own suite, a smoke", "step": "verify", "directory": ".", "os": ["ubuntu-latest"], "args": ["-Dci-bench-smoke=false", "-Dfixtures=false", "-Dtest-filter=checks.matrix.test", "-Dtest-filter=checks.workflow.test", "-Dtest-filter=checks.profile.test", "-Dtest-filter=checks.attest.test", "-Dtest-filter=watchdog_test.test"], "tiers": ["ci"], "setup": false},
-    {"name": "preflight's own suite", "step": "verify", "directory": ".", "os": ["ubuntu-latest", "windows-latest"], "args": ["-Dci-bench-smoke=false"], "tiers": ["full"], "setup": false, "shards": 4},
+    {"name": "preflight's own suite, a smoke", "step": "verify", "directory": ".", "os": ["ubuntu-latest"], "args": ["-Dci-bench-smoke=false", "-Dfixtures=false", "-Dtest-filter=checks.matrix.test", "-Dtest-filter=checks.workflow.test", "-Dtest-filter=order_test.test", "-Dtest-filter=checks.attest.test", "-Dtest-filter=watchdog_test.test"], "tiers": ["ci"], "setup": false},
+    {"name": "preflight's own suite", "step": "verify", "directory": ".", "os": ["ubuntu-latest"], "args": ["-Dci-bench-smoke=false"], "tiers": ["release"], "setup": false},
     {"name": "preflight's own suite on macOS", "step": "verify", "directory": ".", "os": ["macos-latest"], "args": ["-Dci-bench-smoke=false"], "tiers": ["nightly"], "setup": false, "shards": 3},
-    {"name": "a project with no configuration", "step": "ci", "directory": "sample/zero", "os": ["ubuntu-latest"], "tiers": ["full"]},
-    {"name": "a project developed with bay", "step": "ci", "directory": "sample/bay", "os": ["ubuntu-latest"], "tiers": ["full"]},
+    {"name": "preflight's own suite on Windows", "step": "verify", "directory": ".", "os": ["windows-latest"], "args": ["-Dci-bench-smoke=false"], "tiers": ["nightly"], "setup": false, "shards": 2},
+    {"name": "a project with no configuration", "step": "ci", "directory": "sample/zero", "os": ["ubuntu-latest"], "tiers": ["ci"]},
     {"name": "a project with no configuration elsewhere", "step": "ci", "directory": "sample/zero", "os": ["macos-latest", "windows-latest"], "tiers": ["nightly"]},
-    {"name": "a project developed with bay elsewhere", "step": "ci", "directory": "sample/bay", "os": ["macos-latest", "windows-latest"], "tiers": ["nightly"]}
+    {"name": "a project developed with bay", "step": "ci", "directory": "sample/bay", "os": ["ubuntu-latest", "windows-latest"], "tiers": ["nightly"]}
   ]
 }

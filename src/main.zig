@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const aegis = @import("aegis");
 const ensign = @import("ensign");
 const checks = @import("checks.zig");
 const deprecations = @import("deprecations.zig");
@@ -46,7 +45,6 @@ pub fn main(init: std.process.Init) !void {
             if (args.held_git) return;
             if (try setupStep(c, init.environ_map)) |step| try checks.command.execute(c, step, try std.mem.concat(a, []const u8, &.{ c.buildCommand(), &.{step} }));
         },
-        .profile => |args| try profileCommand(c, args),
         .runners => |args| {
             c.summary_path = init.environ_map.get("GITHUB_STEP_SUMMARY");
             try checks.runners.check(&c, args.jobs);
@@ -97,16 +95,6 @@ pub fn main(init: std.process.Init) !void {
         },
     }
     if (c.errors != 0) return error.CheckFailed;
-}
-
-/// `profile`: the jobs' timing records summarized beside the durations and costs so far.
-fn profileCommand(c: src.Context, args: @FieldType(Command, "profile")) !void {
-    const previous = if (try c.exists(args.durations)) try c.json(args.durations) else .null;
-    const summary = try checks.profile.summarize(c, args.input, previous, args.partial);
-    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.output orelse args.durations, .data = try checks.profile.render(c.a, summary) });
-    // The phases the jobs timed, beside the test durations.
-    const measured = try checks.profile.measure(c, args.input, if (try c.exists(args.costs)) try c.json(args.costs) else .null);
-    try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = args.costs_output orelse args.costs, .data = try checks.profile.renderCosts(c.a, measured) });
 }
 
 /// `deprecations`: what this Zig release deprecated, rewritten, or with `--write` applied.
@@ -279,7 +267,7 @@ fn lintCommand(c: *src.Context, init: std.process.Init, args: @FieldType(Command
     const exported = try modules(a, args.module);
     const exported_roots = try a.alloc([]const u8, exported.len);
     for (exported_roots, exported) |*root, module| root.* = module.root;
-    try lint(c, init.gpa, config, sources, code, tests.items, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .release = args.release, .skip_glint = args.skip_glint }, try checks.phases.Log.init(a, init.environ_map));
+    try lint(c, init.gpa, config, sources, code, tests.items, .{ .modules = build_modules, .std_dir = args.zig_std, .exported = exported_roots }, exported, .{ .fix = args.fix, .release = args.release, .skip_glint = args.skip_glint }, checks.phases.Log.init(init.environ_map));
     try facts.revisions.check(c, &snapshot.config, snapshot.package, try checks.manifest.name(c), try checks.manifest.coexist(c));
     try checks.manifest.nested(c);
     try checks.lazy_import.check(c);
@@ -296,7 +284,7 @@ fn hostedRefusals(c: *src.Context, base: facts.Snapshot, build_option: []const [
     const workflow = try checks.workflow.configuration(c.*, "ci/workflow.json");
     var refusing: Refusing = .{ .c = c };
     try refusing.snapshots.put(c.a, try std.mem.join(c.a, " ", build_option), base);
-    for (std.enums.values(checks.matrix.Tier)) |tier| for (try checks.matrix.planned(c.a, workflow, tier)) |job| {
+    for (std.enums.values(checks.matrix.Tier)) |tier| for (try checks.matrix.plan(c.a, workflow, tier)) |job| {
         // A job in a directory of its own runs another build; `preflight-` steps are preflight's commands.
         if (job.directory.len != 0 or std.mem.startsWith(u8, job.step, "preflight-")) continue;
         // The job's options alone, as its runner configures the build.
@@ -387,7 +375,7 @@ fn testSteps(c: *src.Context, config: src.Value, named: []const []const u8) ![]c
     try steps.put(c.a, "ci", {});
     for (named) |name| try steps.put(c.a, name, {});
     const workflow = try checks.workflow.configuration(c.*, "ci/workflow.json");
-    for ([_]checks.matrix.Tier{ .full, .nightly }) |tier| for (try checks.matrix.planned(c.a, workflow, tier)) |job| {
+    for ([_]checks.matrix.Tier{ .release, .nightly }) |tier| for (try checks.matrix.plan(c.a, workflow, tier)) |job| {
         // A job in a directory of its own runs another build's steps.
         if (job.directory.len == 0) try steps.put(c.a, job.step, {});
     };
@@ -556,50 +544,13 @@ fn setupStep(c: src.Context, env: *const std.process.Environ.Map) !?[]const u8 {
     return if (step == .string) step.string else null;
 }
 
-/// Runs the job `env` describes, as the hosted job runs it, and records what it spent
-/// (`recordLeg`), whatever its outcome.
+/// Runs the job `env` describes, as the hosted job runs it.
 fn runGate(context: src.Context, env: *std.process.Environ.Map) !void {
-    if (env.get("PREFLIGHT_LEGS")) |legs| if (legs.len != 0) return runLegs(context, env, legs);
-    const started: std.Io.Clock.Timestamp = .now(context.io, .awake);
-    defer recordLeg(context, env, started) catch |err| context.report("preflight: the job's record of what it spent is not written ({t}): the next plan sizes it by the last one\n", .{err});
     try runJob(context, env);
-}
-
-/// How long a job's run took, in nanoseconds as std keeps it.
-const Elapsed = aegis.units.Duration(.nanosecond, i96);
-/// An instant of the real clock, in nanoseconds as std keeps it.
-const Now = aegis.units.Instant(std.Io.Clock.real, .nanosecond, i96);
-/// A hosted job's deadline: whole seconds of the real clock.
-const JobEnd = aegis.units.Instant(std.Io.Clock.real, .second, i64);
-
-/// The record a hosted job keeps of itself, where its upload takes its tests' records
-/// (`profile.legRecord`): its name less its shard, its shard, the seconds its run took, those
-/// its tests took, how many tests ran, and whether it ended before its job's deadline. The profile folds the
-/// shards' records into `legs` in `ci/durations.json`, by which the next plan deals its tier's
-/// work into jobs. A run outside a hosted job (`PREFLIGHT_NAME` unset) keeps none.
-fn recordLeg(c: src.Context, env: *std.process.Environ.Map, started: std.Io.Clock.Timestamp) !void {
-    const name = env.get("PREFLIGHT_NAME") orelse return;
-    const job = env.get("PREFLIGHT_JOB") orelse return;
-    if (name.len == 0 or job.len == 0) return;
-    const seconds = Elapsed.fromIoDuration(started.durationTo(.now(c.io, .awake)).raw, .exact).toSeconds(f64);
-    const tests = try checks.profile.testSeconds(c, checks.phases.Log.directory);
-    const finished = if (try watchdog.jobDeadline(env)) |deadline| (try Now.fromIoTimestamp(.now(c.io, .real), .exact)).compare(JobEnd.fromRaw(deadline).convert(.nanosecond, i96, .exact)) == .lt else true;
-    const line = try checks.profile.legRecord(c.a, checks.matrix.recordName(name), env.get("PREFLIGHT_SHARD") orelse "", seconds, tests, try ranTests(c), finished);
-    try c.directory().createDirPath(c.io, checks.phases.Log.directory);
-    try c.directory().writeFile(c.io, .{ .sub_path = try c.a.print("{s}/leg-{s}.ndjson", .{ checks.phases.Log.directory, job }), .data = try c.a.print("{s}\n", .{line}) });
 }
 
 /// Where a job's build writes the tests it counted per root, in the package's directory.
 const counts_summary = ".zig-cache/preflight-counts/" ++ checks.counts.summary_name;
-
-/// The tests the job's build counted as run, every root's together, or 0 where it ran none.
-fn ranTests(c: src.Context) !usize {
-    const text = c.read(counts_summary ++ checks.counts.ran_suffix) catch |err| switch (err) {
-        error.FileNotFound => return 0,
-        else => return err,
-    };
-    return std.fmt.parseUnsigned(usize, std.mem.trim(u8, text, " \n"), 10);
-}
 
 /// Runs the job `env` describes.
 fn runJob(context: src.Context, env: *std.process.Environ.Map) !void {
@@ -607,9 +558,6 @@ fn runJob(context: src.Context, env: *std.process.Environ.Map) !void {
     // The plan compiles the other targets in jobs of their own: its builds' `check` leaves them
     // (`targets`). A test's environment holds none of preflight's controls, this one either.
     try env.put("PREFLIGHT_PLANNED", "true");
-    // Every job's tests record their seconds, a declared job's as a planned one's: the record
-    // sizes them all, and the runner asks nothing of the build for it.
-    try env.put("PREFLIGHT_TIMINGS", "true");
     c.environ_map = env;
     // The test runners end a test that runs when the job's time is up, named,
     // before the host cancels the job and says nothing of what ran.
@@ -618,11 +566,9 @@ fn runJob(context: src.Context, env: *std.process.Environ.Map) !void {
         c.environ_map = env;
     }
     const step = env.get("STEP") orelse "ci";
-    if (std.mem.eql(u8, step, "ci") or std.mem.eql(u8, step, "ci-test") or std.mem.eql(u8, step, "ci-run"))
-        try checks.profile.reset(c, ".zig-cache/preflight-timings");
     const config = try c.options("ci/workflow.json");
-    const log = try checks.phases.Log.init(c.a, env);
-    if (std.mem.startsWith(u8, step, "preflight-cross")) return crossCompile(c, env, config, std.mem.eql(u8, step, "preflight-cross-bench"));
+    const log = checks.phases.Log.init(env);
+    if (std.mem.startsWith(u8, step, "preflight-cross")) return crossCompile(c, env, config, std.mem.eql(u8, step, "preflight-cross-release"));
     if (std.mem.eql(u8, env.get("PREFLIGHT_SETUP") orelse "false", "true")) {
         if (try setupStep(c, env)) |setup_step| if (!std.mem.eql(u8, env.get("PREFLIGHT_PREPARED") orelse "false", "true")) {
             const timer = checks.phases.Timer.begin(c, "install the external tools");
@@ -636,85 +582,28 @@ fn runJob(context: src.Context, env: *std.process.Environ.Map) !void {
             try checks.command.execute(c, before.string, try std.mem.concat(c.a, []const u8, &.{ c.buildCommand(), &.{before.string} }));
         }
     }
+    if (std.mem.eql(u8, step, "preflight-link")) return linkTargets(c, env, log, config);
     try buildStep(c, env, log, step, env.get("BUILD_ARGS") orelse "");
 }
 
-/// Runs each of a job's legs (the work `matrix.pack` dealt into it, on its one runner) in
-/// sequence, as its own job would run: its fetch, then `preflight run` in its directory with its
-/// step, arguments, shard, targets, build jobs and setup, every leg within the job's deadline.
-/// Every leg runs whatever another's outcome; each that fails is named, and the job fails after
-/// the last. Each leg's records, its record of itself among them, are kept apart, under the
-/// package's `.zig-cache/preflight-timings/<leg>`, where the job's upload takes them and the
-/// profile reads every record below.
-/// The legs are the plan preflight made, read as it wrote them.
-fn runLegs(c: src.Context, env: *std.process.Environ.Map, text: []const u8) !void {
-    const legs = std.json.parseFromSliceLeaky([]const checks.matrix.Job, c.a, text, .{}) catch return error.InvalidLegs;
-    const self = try std.process.executablePathAlloc(c.io, c.a);
-    const package = try std.Io.Dir.cwd().realPathFileAlloc(c.io, ".", c.a);
-    const kept = try std.Io.Dir.path.join(c.a, &.{ package, ".zig-cache", "preflight-legs" });
-    try std.Io.Dir.cwd().deleteTree(c.io, kept);
-    try std.Io.Dir.cwd().createDirPath(c.io, kept);
-    var failed: std.ArrayList([]const u8) = .empty;
-    for (legs) |leg| {
-        const directory = if (leg.directory.len == 0) package else try std.Io.Dir.path.join(c.a, &.{ env.get("GITHUB_WORKSPACE") orelse return error.LegOutsideHostedRun, leg.directory });
-        var leg_env = try env.clone(c.a);
-        _ = leg_env.swapRemove("PREFLIGHT_LEGS");
-        try leg_env.put("STEP", leg.step);
-        try leg_env.put("BUILD_ARGS", leg.args);
-        try leg_env.put("PREFLIGHT_SHARD", leg.shard);
-        try leg_env.put("PREFLIGHT_SETUP", if (leg.setup) "true" else "false");
-        try leg_env.put("PREFLIGHT_TARGETS", leg.targets);
-        try leg_env.put("PREFLIGHT_JOB", leg.cache_key);
-        try leg_env.put("PREFLIGHT_NAME", leg.name);
-        try leg_env.put("PREFLIGHT_JOBS", if (leg.build_jobs) |count| try c.a.print("{d}", .{count}) else "");
-        // The job set up the package's own tools; a leg with a step or a directory of its own
-        // sets up its tools.
-        try leg_env.put("PREFLIGHT_SETUP_STEP", leg.prepare);
-        try leg_env.put("PREFLIGHT_PREPARED", if (leg.prepare.len == 0 and leg.directory.len == 0) "true" else "false");
-        c.report("::group::{s}\n", .{leg.name});
-        const passed = try legStep(c, &leg_env, directory, &.{ self, "fetch" }) and try legStep(c, &leg_env, directory, &.{ self, "run" });
-        c.report("::endgroup::\n", .{});
-        if (!passed) {
-            c.report("::error title={s}::{s} failed; the job's other legs ran\n", .{ leg.name, leg.name });
-            try failed.append(c.a, leg.name);
-        }
-        const records = try std.Io.Dir.path.join(c.a, &.{ directory, ".zig-cache", "preflight-timings" });
-        std.Io.Dir.rename(.cwd(), records, .cwd(), try std.Io.Dir.path.join(c.a, &.{ kept, leg.cache_key }), c.io) catch |err| switch (err) {
-            // A leg that runs no tests leaves no records.
-            error.FileNotFound => {},
-            else => return err,
+/// Links the targets this job covers, `PREFLIGHT_TARGETS` by name, on the runner whose SDK or
+/// linker they need: `ci-link` once per target, configured for it. A name the configuration
+/// lacks fails the job, since the generated workflow no longer matches `ci/workflow.json`.
+fn linkTargets(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.Log, config: src.Value) !void {
+    const targets = try src.items(src.get(config, "targets"));
+    var names = std.mem.tokenizeScalar(u8, env.get("PREFLIGHT_TARGETS") orelse "", ' ');
+    var covered: usize = 0;
+    while (names.next()) |name| {
+        const target = for (targets) |target| {
+            if (std.mem.eql(u8, try checks.matrix.targetName(target), name)) break target;
+        } else {
+            c.report("preflight: {s} is no target of ci/workflow.json; regenerate the workflow\n", .{name});
+            return error.UnknownCrossTarget;
         };
+        covered += 1;
+        try buildStep(c, env, log, "ci-link", try std.mem.join(c.a, " ", try checks.matrix.crossOptions(c.a, config, target)));
     }
-    const timings = try std.Io.Dir.path.join(c.a, &.{ package, ".zig-cache", "preflight-timings" });
-    try std.Io.Dir.cwd().deleteTree(c.io, timings);
-    try std.Io.Dir.rename(.cwd(), kept, .cwd(), timings, c.io);
-    if (env.get("GITHUB_STEP_SUMMARY")) |summary| {
-        var table: std.Io.Writer.Allocating = .init(c.a);
-        try table.writer.print("\n| Leg | Outcome |\n|---|---|\n", .{});
-        for (legs) |leg| {
-            var lost = false;
-            for (failed.items) |name| lost = lost or std.mem.eql(u8, name, leg.name);
-            try table.writer.print("| {s} | {s} |\n", .{ leg.name, if (lost) "failed" else "passed" });
-        }
-        try append(c, summary, table.written());
-    }
-    if (failed.items.len != 0) {
-        c.report("preflight: {d} of {d} legs failed: {s}\n", .{ failed.items.len, legs.len, try std.mem.join(c.a, "; ", failed.items) });
-        return error.LegsFailed;
-    }
-}
-
-/// Runs one command of a leg in its directory with its environment; whether it exited 0. A
-/// command that cannot start is that leg's failure, named by the caller; a cancel ends the job.
-fn legStep(c: src.Context, env: *const std.process.Environ.Map, directory: []const u8, argv: []const []const u8) std.Io.Cancelable!bool {
-    const name = c.a.print("{s} in {s}", .{ argv[1], directory }) catch return false;
-    return c.runChild(.{ .name = name, .argv = argv, .cwd = .{ .path = directory }, .environ_map = env }) catch |err| switch (err) {
-        error.Canceled => return error.Canceled,
-        else => {
-            c.report("preflight: {s} did not run in {s} ({t})\n", .{ argv[1], directory, err });
-            return false;
-        },
-    };
+    if (covered == 0) return error.MissingCrossTargets;
 }
 
 /// Runs `child` under preflight's bound (`bounded.zig`), whose bound here is the hosted job's
@@ -779,7 +668,7 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
     // so an earlier run's count is gone first. The count is told where to write them, in
     // the package's directory: the build's cache, where its records are, can be anywhere.
     const counted = counts_summary;
-    for ([_][]const u8{ counted, counted ++ checks.counts.ran_suffix }) |stale| c.directory().deleteFile(c.io, stale) catch |err| switch (err) {
+    c.directory().deleteFile(c.io, counted) catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -804,12 +693,12 @@ fn buildStep(c: src.Context, env: *std.process.Environ.Map, log: checks.phases.L
 }
 
 /// Compiles the targets this job covers, `PREFLIGHT_TARGETS` by name, to
-/// objects: one build each, in Debug, and with `bench` the ReleaseFast
-/// benchmarks in a second build, timed apart so that a plan can tell the two
-/// costs. A name the configuration lacks fails the job, since
-/// the generated workflow no longer matches `ci/workflow.json`.
-fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value, bench: bool) !void {
-    const log = try checks.phases.Log.init(c.a, env);
+/// objects: one build each, in Debug, and with `release` the ReleaseFast
+/// benchmarks and the ReleaseSmall objects in builds of their own, each timed.
+/// A name the configuration lacks fails the job, since the generated workflow
+/// no longer matches `ci/workflow.json`.
+fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value, release: bool) !void {
+    const log = checks.phases.Log.init(env);
     const jobs = checks.matrix.jobsFrom(env) catch return error.InvalidJobs;
     const wanted = env.get("PREFLIGHT_TARGETS") orelse "";
     var names = std.mem.tokenizeScalar(u8, wanted, ' ');
@@ -821,7 +710,7 @@ fn crossCompile(c: src.Context, env: *std.process.Environ.Map, config: src.Value
             if (!std.mem.eql(u8, try checks.matrix.targetName(target), name)) continue;
             found = true;
             covered += 1;
-            try compileTarget(c, log, config, target, bench, jobs);
+            try compileTarget(c, log, config, target, release, jobs);
         }
         if (!found) {
             c.report("preflight: {s} is no target of ci/workflow.json; regenerate the workflow\n", .{name});
@@ -840,7 +729,7 @@ fn targetsCommand(context: src.Context, environ: *std.process.Environ.Map, args:
     if (environ.get("PREFLIGHT_PLANNED") != null) return;
     if (args.zig_exe) |zig| c.zig = zig;
     const config = try c.options(args.config);
-    const log = try checks.phases.Log.init(c.a, environ);
+    const log = checks.phases.Log.init(environ);
     const jobs = checks.matrix.jobsFrom(environ) catch {
         c.report("targets: PREFLIGHT_JOBS is a count of jobs, at least 1, not {s}\n", .{environ.get("PREFLIGHT_JOBS").?}); // safe: only a value set and unreadable is refused
         return error.CheckFailed;
@@ -848,15 +737,19 @@ fn targetsCommand(context: src.Context, environ: *std.process.Environ.Map, args:
     for (try checks.matrix.fastTargets(c.a, config)) |target| try compileTarget(c, log, config, target, false, jobs);
 }
 
-/// One target's objects in Debug, and with `bench` its ReleaseFast benchmarks in a second
-/// build, each timed.
-fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, target: src.Value, bench: bool, jobs: ?u32) !void {
+/// One target's objects in Debug, and with `release` its ReleaseFast benchmarks and its
+/// ReleaseSmall objects in builds of their own, each timed.
+fn compileTarget(c: src.Context, log: checks.phases.Log, config: src.Value, target: src.Value, release: bool, jobs: ?u32) !void {
     const name = try checks.matrix.targetName(target);
-    for ([_]struct { step: []const u8, label: []const u8 }{ .{ .step = "ci-check", .label = "compile" }, .{ .step = "ci-check-bench", .label = "benchmarks" } }, 0..) |kind, index| {
-        if (index == 1 and !bench) break;
-        const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step, jobs);
-        // The compile's tree at its most, with the jobs it ran at once: what the next plan sizes
-        // a cross job's `-j` by. Zig's default is a job per CPU.
+    for ([_]struct { step: []const u8, optimize: []const u8, label: []const u8 }{
+        .{ .step = "ci-check", .optimize = "debug", .label = "compile" },
+        .{ .step = "ci-check-bench", .optimize = "debug", .label = "benchmarks" },
+        .{ .step = "ci-check", .optimize = "small", .label = "compile ReleaseSmall" },
+    }, 0..) |kind, index| {
+        if (index != 0 and !release) break;
+        const argv = try checks.matrix.crossArgs(c.a, c.buildCommand(), config, target, kind.step, kind.optimize, jobs);
+        // The compile's tree at its most, with the jobs it ran at once, in the job's summary.
+        // Zig's default is a job per CPU.
         var peak: ?src.Peak = null;
         var measured = c;
         measured.peak = &peak;

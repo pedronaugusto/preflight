@@ -13,8 +13,6 @@ pub const Options = struct {
     /// The watchdog's bound on one test; 0 turns it off.
     test_timeout: std.Io.Duration,
     test_log_level: std.log.Level,
-    /// The package's recorded durations, repository-relative.
-    durations: []const u8,
     /// The hardened run: `std.testing.allocator` is backed by the package's own
     /// shakedown's quarantine, which the runner imports as `preflight_quarantine`, or by
     /// std's allocator in a package with no shakedown outside the family's policy.
@@ -56,12 +54,9 @@ pub const TestTimeout = union(enum) {
 /// `roots`: the test step and the step the package fuzzes, whose test runs
 /// all take the runner, one way. `checker` is preflight's command program,
 /// which refuses a shard at run time for a test runner that cannot honour one,
-/// and counts the tests step's tests per root after its runs (`counts`). The
-/// durations are `package`'s, read from its repository: with bay, `b` is the
-/// development build, whose root is no repository.
-pub fn add(b: *std.Build, package: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) Counted {
-    const durations = configure.read(package, options.durations, 64 * 1024 * 1024) orelse "";
-    var state: State = .{ .context = .{ .pkg = pkg, .checker = checker, .options = options, .durations = durations } };
+/// and counts the tests step's tests per root after its runs (`counts`).
+pub fn add(b: *std.Build, roots: []const *std.Build.Step, pkg: *std.Build, checker: Tool, options: Options) Counted {
+    var state: State = .{ .context = .{ .pkg = pkg, .checker = checker, .options = options } };
     for (roots, 0..) |root, index| visit(b, root, &state, index == 0);
     return .{ .names = state.counted.keys(), .runs = state.runs.items };
 }
@@ -74,8 +69,6 @@ const Context = struct {
     pkg: *std.Build,
     checker: Tool,
     options: Options,
-    /// The recorded durations' text, built into each runner.
-    durations: []const u8,
 };
 
 const State = struct {
@@ -129,7 +122,7 @@ pub fn counts(b: *std.Build, holder: *std.Build.Step, checker: Tool, counted: Co
 pub const records_dir = "preflight-counts";
 
 /// Gives the test artifact `run` runs preflight's runner and its modules,
-/// and the run its watchdog, durations, timing record and count record.
+/// and the run its watchdog, shard and count record.
 fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
     const context = state.context;
     const options = context.options;
@@ -139,7 +132,7 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
     // tool path would find it stale.
     if (run.environ_map != null) refuse("{s}: a test run carries no environment of the build's; Zig 0.17 keeps it in the cached configuration, where it goes stale. Read it when the tests run", b, run, .{artifact.name});
     // The runner's modules and options are the test module's imports, so
-    // artifacts that share a root module share them, timing record included.
+    // artifacts that share a root module share them, count record included.
     if (artifact.root_module.import_table.get("preflight_runner_options") == null) {
         const module = b.createModule(.{ .root_source_file = context.pkg.path("src/timings.zig") });
         artifact.root_module.addImport("preflight_timings", module);
@@ -155,8 +148,6 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         runner.addOption(std.log.Level, "test_log_level", options.test_log_level);
         const name = recordName(b, artifact, &state.names);
         state.records.put(b.allocator, artifact.root_module, name) catch @panic("OOM");
-        // The runner records where the run asks (`PREFLIGHT_TIMINGS`), here.
-        runner.addOption([]const u8, "timings", b.fmt(".zig-cache/preflight-timings/{s}", .{name}));
         runner.addOption([]const u8, "counts", b.fmt("{s}/{s}", .{ records_dir, name }));
         // The root as the package names it: its own file, or one a development build takes
         // from the package as a dependency (`package.path`); a generated one by its artifact.
@@ -167,7 +158,6 @@ fn instrument(b: *std.Build, run: *std.Build.Step.Run, state: *State) void {
         });
         runner.addOption([]const u8, "artifact", artifact.name);
         runner.addOption(bool, "filtered", artifact.filters.len != 0);
-        runner.addOption([]const u8, "durations", context.durations);
         const quarantined = options.quarantine and quarantine(b, run, artifact, options.policy);
         runner.addOption(bool, "quarantine", quarantined);
         runner.addOption(bool, "unsharded", std.mem.findScalar(*std.Build.Step.Compile, options.unsharded, artifact) != null);

@@ -98,47 +98,33 @@ not linked into bay: the preflight that judges a package is the one its manifest
 
 ## Where a release is proven
 
-A release is proven by the hosted full and nightly tiers on the commit it tags: `bay release`
-dispatches both on a release batch's head and tags only once each run on that commit is green
+A release is proven by the hosted release and nightly tiers on the commit it tags: `bay release`
+dispatches both on a release's head and tags only once each run on that commit is green
 (`attest` finds each proof artifact). `gate` runs no job: it checks in seconds what a release
 needs beside those runs (the caller `generate` makes, the version the CHANGELOG's newest
-release, the public API's changes named there). Every push to main and every pull request runs
+release, the public API's changes named there). Every push to main and to a `land/` branch and every pull request runs
 the ci tier, and `bay ci` runs its checks on the machine at hand. The nightly tier also runs
 daily at the package's own minute of the day.
 
-## Tiers, bounds and the record
+## Tiers and bounds
 
-The owner's model (2026-11-25): a landing never waits on GitHub. It pushes after the Mac's fast
-checks, and its run is read after. So every push runs the ci tier, a handful of jobs of at most
-ten minutes; the full matrix runs once per release batch, on the head the batch is cut from;
-and the heavy legs (emulated architectures, VM kernels, sanitizers, fuzz campaigns) run nightly
-and on that head. No job of the full or nightly tier passes fifteen minutes, so a run's wall
+The owner's model (2026-11-25, and 11-27): a landing never waits on GitHub at the Mac. It
+pushes a `land/` branch after the Mac's fast checks, the branch's ci run is read, and main
+fast-forwards to it only when it is green. So every push runs the ci tier, a handful of jobs of
+at most ten minutes; the release tier runs once per release, on the head it is cut from; and
+the heavy legs (emulated architectures, VM kernels, sanitizers, fuzz campaigns) run nightly
+and on that head. No job of the release or nightly tier passes fifteen minutes, so a run's wall
 time is a job's.
 
-The account runs 20 jobs at once and 5 on macOS (GitHub Free). A run asks for at most 20 and 3
-on macOS, which leaves a second run's macOS room; bay paces a batch's runs within the account's
-20. A run that asked for more than the account gives queued until GitHub cancelled jobs it
-never gave a runner (almanac 44324896023, strand 44137916154), so a plan past either bound is
-refused by name, at `generate`, never queued. To fit, the planner deals each runner's measured
-work into as few jobs as hold it, a job of several running them as legs in sequence; each leg
-keeps its own build, shard and records, and its failure is named.
-
-The plan is sized by what the runs measured, by no hand: each job records what it spent beside
-its tests' seconds, and the next plan holds a job's work to four fifths of its tier's minutes. A
-suite no run has measured is seeded from the minutes the plan before the tiers gave it, scaled by
-its kind's slowdown, in jobs of its own that the bounds do not count: nothing says what they
-hold, and their run records them.
-
-The record lives on a branch of the package's repository, `preflight-durations`, which holds
-no code: `ci/durations.json` and `ci/costs.json` at their paths, one commit per full or nightly
-run of main that measured something. A run folds onto the newest record there, so the full and
-nightly runs keep each other's columns; a push that loses to another run's folds onto that one
-and pushes again, and none is forced. Only the profile job of main's full and nightly runs
-writes it, with the one `contents: write` the caller grants (zig.yml gives every other job
-read); a pull request never does, and a push by the run's own token starts no run. A landing
-takes the record with `git fetch` (over SSH; nothing reads it over the web) and makes the caller
-again, and the lint refuses a caller stale against the files it took. The branch is kept: a
-sweep of merged or stale branches leaves it.
+The matrix is fixed, by no record: each tier is the jobs `matrix.zig` names, each host's suites
+in the jobs `shards` gives it, the tests split by a hash of their names. The plan before it
+sized jobs from what runs measured (a record on a branch, legs, a margin), and every landing
+waited on a run that might move it; a fixed matrix is read once and holds. The account runs
+20 jobs at once and 5 on macOS (GitHub Free), and each tier takes a share that leaves bay's
+landings room (6 jobs, 2 on macOS): ci at most 8 jobs, 2 on macOS; release 14, 3 on macOS;
+nightly 20 with Zig master's, 5 on macOS. A run that asked for more than the account gives
+queued until GitHub cancelled jobs it never gave a runner (almanac 44324896023, strand
+44137916154), so a plan past its tier's share is refused by name, at `generate`, never queued.
 
 Since a landing reads its run after it pushes, a refusal the hosted run makes before it runs
 anything has a counterpart on the machine. A job's refusals are the build's, read from its
@@ -166,8 +152,7 @@ the package's declared jobs among them, the triggers and the concurrency groups.
 job is a build step with hosts, tiers, a directory and a setup step, run by the gate's job with
 its setup and caches, so its refs, inputs and `needs` cannot go stale and a change waits for it
 like any job of the gate. The generator refuses to replace a caller holding a job the
-configuration does not declare. A caller lands, tags and releases nothing: its one write is the
-record (above), which only the gate's profile job makes.
+configuration does not declare. A caller lands, tags, releases and writes nothing: its token reads.
 
 ## The runner's streams
 
@@ -198,9 +183,7 @@ tests in the one process, with the protocol still moved.
 ## Shard and watchdog boundaries
 
 `Shard.init` and `Shard.parse` establish a nonzero count and an index below it.
-`assign` rechecks those contracts because Zig permits direct field construction,
-checks that `count * sizeof(f64)` fits before load allocation, and rejects unequal
-name/weight lengths before allocating or indexing. The modules link std alone: they
+`assign` rechecks those contracts because Zig permits direct field construction. The modules link std alone: they
 are compiled into every package's test binaries, where any package they imported could
 be a second copy beside the package's own.
 

@@ -63,9 +63,10 @@ finds there preflight's runner, and the gate refuses one added after, by name.
 Every push to main and every pull request then runs the ci tier on that commit (the source
 checks, the Debug suite on Linux, macOS and Windows, and a compile of every configured
 target, each job within ten minutes), save a push that changes documentation alone
-(`docs/**`, top-level Markdown). The full tier, the full matrix, and the nightly tier, the
-heavy legs, run on the head a release batch is cut from, the nightly tier nightly too, and a
-tag needs both green on its commit. Locally, `bay ci` (`zig build ci`) is the ci tier's checks
+(`docs/**`, top-level Markdown); a push to a `land/` branch runs it too, so a landing
+fast-forwards main only from a green head. The release tier, the release modes and links,
+and the nightly tier, the heavy legs, run on the head a release is cut from, the nightly tier
+nightly too, and a tag needs both green on its commit. Locally, `bay ci` (`zig build ci`) is the ci tier's checks
 on the machine at hand: the source checks and its tests.
 Every option has a default: `ci/preflight.json` chooses what the source checks read and
 hold, `ci/workflow.json` what the hosted gate runs, and `ci/layers.zig` a source layering
@@ -438,7 +439,7 @@ with the reason: `"fuzz": { "trusted": { "parseCache": "the package's own cache 
 
 ### Hardened profile
 
-Under the family's policy every package runs the hardened profile (aegis's design §7), and without it a package that says `"hardened": true` in `ci/workflow.json` (see "The family's policy"); only a configuration that runs no native tests (a freestanding target) sets `Config.hardened = null`, visibly. `Config.hardened` chooses its steps: `.{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, by default `test` for both. A package with nothing to fuzz says so, `.fuzz_step = null`, and its campaign has nothing to run. Under the family's policy the planner schedules the hardened jobs for every package, the safety-on run in the full tier and ThreadSanitizer and the fuzz campaign in the nightly tier, and `"hardened"` in `ci/workflow.json` may only be `true`. Dedicated steps must execute tests. A package whose fuzz step finds no fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign. The fuzz step's tests run on preflight's runner, as `tests` do. A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build (one that skips when `builtin.fuzz` is set) fails the campaign by name: the build found it a fuzz test in the unfuzzed build, and the fuzzer would select it forever. A property that is not the fuzzer's says so where it is written (shakedown's `.fuzz = false`).
+Under the family's policy every package runs the hardened profile (aegis's design §7), and without it a package that says `"hardened": true` in `ci/workflow.json` (see "The family's policy"); only a configuration that runs no native tests (a freestanding target) sets `Config.hardened = null`, visibly. `Config.hardened` chooses its steps: `.{ .fuzz_step = "profile-tests", .tsan_step = "profile-tests", .fuzz_iterations = 1000 }`, by default `test` for both. A package with nothing to fuzz says so, `.fuzz_step = null`, and its campaign has nothing to run. Under the family's policy the planner schedules the hardened jobs for every package, the safety-on run in the release tier and ThreadSanitizer and the fuzz campaign in the nightly tier, and `"hardened"` in `ci/workflow.json` may only be `true`. Dedicated steps must execute tests. A package whose fuzz step finds no fuzz tests receives Zig's `no fuzz tests found` failure rather than a compile-only green campaign. The fuzz step's tests run on preflight's runner, as `tests` do. A fuzz test that ends without calling `std.testing.fuzz` in the fuzzing build (one that skips when `builtin.fuzz` is set) fails the campaign by name: the build found it a fuzz test in the unfuzzed build, and the fuzzer would select it forever. A property that is not the fuzzer's says so where it is written (shakedown's `.fuzz = false`).
 
 **What ships is ReleaseSafe.** `bay install` builds a package's programs ReleaseSafe. Under the family's policy, an installed artifact the build itself makes ReleaseFast or ReleaseSmall, when the caller chose no mode, fails the lint unless `Config.release_fast` names it with the measurement that says why (`.{ .artifact = "decoder", .reason = "..." }`). A name that matches no such artifact fails too.
 
@@ -458,34 +459,13 @@ Compiling and invoked Zig must be the same build, and one `src/zig_version.zig` 
 
 ### Test runs
 
-A tier records the durations of every host and mode it executes, through Zig's test
-protocol, and each job records what it spent besides its tests (its setup, configuring and
-building) beside them. The profile job folds the records into `ci/durations.json` and
-`ci/costs.json`, keeping what the run did not measure: a column per system, architecture and
-mode of each test's seconds, and `legs`, each job's by its name less its shard. It uploads them
-as the proof artifact, `preflight-<tier>-<sha>`, where the run went green, else as
-`records-<tier>-<sha>`, which proves nothing: a job that ran out of time still leaves the
-record that sizes the next plan (`profile --partial`).
-
-A full or nightly run of main also writes them to the repository's `preflight-durations`
-branch, folded onto the newest record there, so a nightly run keeps what the full run measured
-and the other way round. Its commits append; a run whose push loses to another's folds onto
-that one and pushes again, and a push by the run's own token starts no run. No pull request
-writes it. A landing takes the record over git and makes the caller again, so the plan follows
-what the runs measured, by no hand:
-
-```sh
-git fetch origin preflight-durations
-git checkout FETCH_HEAD -- ci/durations.json ci/costs.json
-bay generate
-```
-
-From a package root, `zig build --build-file <preflight>/build.zig -Drepo-root=. profile --
---input <dir>` folds local records into `ci/durations.json` in place.
+A green run's `proof` job uploads the proof artifact, `preflight-<tier>-<sha>`, named for the
+tier and the exact commit it tested: a tag needs the release and nightly tiers' (`attest`).
+A red run uploads none.
 
 The run's last job, `runners`, names each job GitHub never gave a runner. A job queued
 until GitHub cancelled it ("not acquired by Runner") ends cancelled with no runner and no
-step, and a cancelled result is no job's red: the profile skips, and the run could end with
+step, and a cancelled result is no job's red, and the run could end with
 a platform's tests never run and nothing failing by name. `runners` reads the run attempt's
 jobs with the token's `actions: read` (`preflight runners --jobs`) and fails on each, with
 the minutes it was queued; a non-blocking job (Zig master's, an advisory declared job's) is
@@ -497,12 +477,11 @@ nothing, each failure line names the seed, and a crash shows it as the failed
 command's `--seed`. Set `PREFLIGHT_TEST_SEED` to reproduce an order. Direct
 test binaries also accept `--seed=<number>`.
 Custom runners can import `preflight_order`, whose `init` seeds, selects the
-shard's tests and orders them, and `preflight_timings` to record durations;
-`preflight_runner_options` carries the recorded durations and the record's name.
+shard's tests (by a hash of each test's fully qualified name) and orders them, and
+`preflight_timings` to count a binary's tests.
 Test runs carry no environment from the build: Zig keeps a run's environment in
 its cached configuration, so the runner reads the shard and seed when it runs.
-Test artifacts that share a root module share its runner options, timing record and
-count record.
+Test artifacts that share a root module share its runner options and count record.
 
 `-Dci-vm` runs what a build makes for riscv64 Linux, which no hosted runner is, on a
 riscv64 Linux kernel under QEMU's system emulation (`qemu-system-riscv64` on the PATH),
@@ -624,27 +603,31 @@ these bounds by name.
   `configurations`, and its own jobs that name the tier. Test, helper and public-module objects
   are compiled for each target, and the benchmarks in Debug: this proves compilation, not
   linking. Main is kept green: a red push is fixed forward at once.
-- **full**: the full matrix, dispatched on the head a release batch is cut from: every mode on
-  every host (Debug, ReleaseSafe and ReleaseFast, ARM Linux and Windows included), the Debug
-  suite of each configured target a runner executes on an ABI not its own (msvc on the Windows
-  runners, musl on the Linux ones), ReleaseSmall compiled on each system, every cross target
-  with the ReleaseFast benchmarks, the links of every macOS and Windows target (a macOS one on a
-  Mac only when its build links a framework), the hardened safety-on run, the source checks at
-  the release bar, and the package's own jobs that name the tier.
+- **release**: dispatched on the head a release is cut from: the ci tier's jobs (its source
+  checks at the release bar), the ReleaseSafe suite on Linux, macOS and Windows, the ReleaseFast
+  suite on Linux, the cross job compiling every target's ReleaseFast benchmarks and ReleaseSmall
+  objects as well as its Debug ones, one link job per system whose SDK a target needs
+  (`SDK link (Windows)` on the Windows runner; `SDK link (macOS)` on a Mac where a macOS
+  target's build links a framework, else `link (macOS)` on Linux), the hardened safety-on run,
+  and the package's own jobs that name the tier.
 - **nightly**: the heavy legs, nightly at the package's own minute and on the head a release
-  batch is cut from: the Debug suite on a riscv64 Linux kernel under QEMU and on FreeBSD's
-  kernel under KVM, the hardened ThreadSanitizer run and fuzz campaign, the fuzz job
-  (`fuzz_minutes` of the package's properties, where it declares shakedown), the package's own
-  jobs that name the tier, and the Debug suite on Linux with Zig master.
+  is cut from: the ReleaseFast suite on macOS and Windows, the Debug suite on the ARM runners
+  (Linux and Windows on aarch64), the Debug suite of each configured target a runner executes
+  on an ABI not its own (msvc on the Windows runners, musl on the Linux ones), the Debug suite
+  on a riscv64 Linux kernel under QEMU and on FreeBSD's kernel under KVM, the hardened
+  ThreadSanitizer run and fuzz campaign, the fuzz job (`fuzz_minutes` of the package's
+  properties, where it declares shakedown), the package's own jobs that name the tier, and the
+  Debug suite on Linux with Zig master.
 
-A tag needs green full and nightly runs on its commit, each leaving its proof, the artifacts
-`preflight-full-<sha>` and `preflight-nightly-<sha>`, which `preflight attest` looks for.
+A tag needs green release and nightly runs on its commit, each leaving its proof, the artifacts
+`preflight-release-<sha>` and `preflight-nightly-<sha>`, which `preflight attest` looks for.
 
-Work the record measures on one runner is dealt into as few jobs as hold it, the longest first:
-a job of several runs them as legs, in sequence on its runner, each with its own build, shard
-and records and each failure named, all within the job's deadline. A job no run has measured is
-a job of its own, its name marked `unmeasured`, and the bounds on a run do not count it, since
-nothing says what it holds: its run records it.
+The matrix is fixed: each job is the one this list names, each suite in the jobs `shards` gives
+its host. Each tier holds its share of the account's 20 runners and 5 macOS ones, so the
+landings' ci runs always find room: the ci tier at most 8 jobs, 2 of them on macOS; the release
+tier 14, 3 on macOS; the nightly tier 20 with Zig master's, 5 on macOS. A plan past its tier's
+is refused by name at `generate`, naming each runner's jobs: lower a host's `shards`, or move a
+job of the package's own to another tier.
 
 The nightly tier's Zig master job, the next release in development, never blocks: the run's
 summary reports its result, and a break is a note for the next port's rewrite table.
@@ -670,15 +653,16 @@ holds a repository's own workflows to the same: a `uses:` under `.github` that n
 or a branch, which the action's owners can move, fails it by file and line. The sample caller in this
 repository shows the trigger and concurrency policy:
 
-- Each push to main runs the ci tier on its own commit, so every commit on main has its
-  status; a push that changes only `docs/**` and top-level Markdown (`paths-ignore`) runs
-  nothing, and work-branch pushes start no run.
+- Each push to main and to a `land/` branch runs the ci tier on its own commit, so every
+  commit on main has its status and a landing fast-forwards main only from a green head; a
+  push that changes only `docs/**` and top-level Markdown (`paths-ignore`) runs nothing, and
+  other branches' pushes start no run.
 - Pull requests run the ci tier, the status check to require; a newer push to a pull
   request cancels the run of the older.
 - A schedule runs the nightly tier daily, at the package's own minute of the day (from its
   manifest's fingerprint), so the account's runners never take every package's heavy legs at
-  once. Dispatch runs the tier it names, ci by default: bay dispatches the full and nightly
-  tiers on a release batch's head.
+  once. Dispatch runs the tier it names, ci by default: bay dispatches the release and nightly
+  tiers on a release's head.
 
 The options of `ci/workflow.json`, all off or defaulted in a new project. Any other key is
 refused, so a misspelt option fails the plan instead of quietly changing nothing.
@@ -688,42 +672,40 @@ refused, so a misspelt option fails the plan instead of quietly changing nothing
   ```json
   {"jobs": [
     {"name": "conformance", "step": "test", "directory": "conformance", "os": ["ubuntu-latest", "macos-latest"]},
-    {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["full"]},
-    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["ci", "full"], "setup": false, "timeout": 8},
+    {"name": "report formats", "step": "check-reports", "setup": "reports-setup", "tiers": ["release"]},
+    {"name": "corpus sizes", "step": "check-sizes", "tiers": ["ci", "release"], "setup": false, "timeout": 8},
     {"name": "ThreadSanitizer", "step": "test", "args": ["-Dthread-sanitizer=true"], "tiers": ["nightly"], "shards": 3},
     {"name": "git master", "step": "ci-git-master", "advisory": true}
   ]}
   ```
 
-  `os` defaults to Ubuntu and `tiers` to ci and full (each of ci, full and nightly; any other
-  name, `release` among them, is refused); `args` holds whitespace-free `-D`
+  `os` defaults to Ubuntu and `tiers` to ci and release (each of ci, release and nightly; any
+  other name is refused); `args` holds whitespace-free `-D`
   flags (the package's `build_args` are its own builds', not a declared job's); `directory` is
   relative to the repository and defaults to the package; `setup` runs the package's
   `setup_step` (true, the default), nothing (false) or a step of the job's own; `timeout` is
-  in minutes, at most each named tier's (its own when shorter); `shards` splits a test step over that many jobs on each host, each running the
+  in minutes, at most each named tier's (its own when shorter); `shards` splits a test step over that many jobs on each host, a fixed count, each running the
   share `PREFLIGHT_SHARD` names, as the hosts' own test jobs are split. A declared job has the gate's setup, caches and toolchain, and a landing waits for
   it. `advisory: true` runs it and shows its result without taking it, as the Zig master job
   is run: each of its steps continues on error and has a budget, so the job ends "success"
   whatever they did, its name says `non-blocking`, and its last step names each outcome in the
   run's summary and warns on the run when its suite did not pass (a package's tests against a
   dependency's unreleased head, such as relic's against git's). Its `timeout` is its run's,
-  at most 240 minutes; its job has that and 120 more for its other steps, and it runs on a
-  runner of its own, never as a leg of another job, counted among the run's jobs. A blocking job's `shards` is a
-  floor the record raises: twice its shards where one ran out of its minutes, as many as hold
-  its tests' seconds where they were recorded, and never fewer than it ran where they were not;
-  a shard whose setup and build alone pass a job of its tier is refused by name. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
+  at most 245 minutes; its job has that and 115 more for its other steps, and it runs on a
+  runner of its own, counted among the run's jobs. Work that is not a check, such as a measurement dispatched by hand, belongs in a workflow
   of its own.
-- `targets`, `build_args`, `shards`, `cross_jobs`, `cross_seconds`, `hardened`: what the
-  tiers build and run, described below.
-- `compile_step` (default `check`): the step the full tier's ReleaseSmall jobs and the ci
-  tier's configurations compile.
+- `targets`, `build_args`, `shards`, `cross_jobs`, `hardened`: what the tiers build and run,
+  described below.
+- `compile_step` (default `check`): the step the ci tier's configurations compile.
 - `setup_step`: a build step that installs the package's external tools, run before its tests
   with three attempts of five minutes (the first thirty on a tools-cache miss); `before_tests_step`: a step run before the tests.
 - `git`: the held git every test job runs (above), written by `preflight held-git-pin`.
   `windows_git_latest` is refused: it took whatever release was newest that day.
 - `test_job_timeout`, `windows_job_timeout`, `source_job_timeout`, `cross_job_timeout`,
-  `riscv64_seconds` and `portable_hosts` were removed in 0.20.0 and are refused by name: a
-  job's limit is its tier's, and its work is sized to it from the record.
+  `riscv64_seconds`, `portable_hosts` and `cross_seconds` were removed in 0.20.0 and are
+  refused by name: a job's limit is its tier's, and its work is what `shards` and `cross_jobs`
+  give it. So are `ci/durations.json` and `ci/costs.json` beside the configuration, and a
+  `shards` floor or cap object: the count is a number of jobs.
 - `fuzz_minutes`: the nightly tier's fuzz job's minutes, 10 by default and at most; 0 for no
   fuzz job. A dispatched fuzz run (tier `fuzz`) can give its own.
 
@@ -885,13 +867,13 @@ These flags must be individual whitespace-free `-D` arguments. Malformed
 triples, arrays, CPUs, shard counts and booleans are refused, and so is `windows_git_latest` (the held git replaces it). A
 workflow-level `test_timeout` is refused: `Config.test_timeout` bounds each test.
 The source checks and the cross compile are jobs of their own. `cross_jobs` sets how many jobs share the cross
-targets, and `cross_seconds` how many seconds of compiling each may hold. Static jobs explicitly distinguish `execute`, `objects` and
+targets, one by default. Static jobs explicitly distinguish `execute`, `objects` and
 `link` operations; SDK links stay on their system's runner.
 
 `ci-check` emits objects for the configured test graph, installed artifacts,
 the `check` graph and public modules, the benchmarks in Debug,
 helpers, generated inputs and transitive native libraries. `ci-check-bench` emits
-the benchmarks as they are built to run, in ReleaseFast: the full tier
+the benchmarks as they are built to run, in ReleaseFast: the release tier
 compiles them for every target, and the ci tier does not, since that optimizing
 compile takes longer than all the other objects together. The compile
 projection carries target, CPU, optimization and source/header options; SDK
@@ -910,57 +892,24 @@ The first job of a dispatched ci run filters changes. A dispatched branch whose 
 since it left `origin/main` touch only Markdown outside `src`, LICENSE or images runs the
 documented-snippet check alone. Mixed changes, source Markdown and an unavailable base
 keep the test gate. A push to main that changes only `docs/**` and top-level Markdown starts
-no run; a pull request and the full and nightly tiers always run the whole gate, documentation or
+no run; a pull request and the release and nightly tiers always run the whole gate, documentation or
 not, so what a landing passes does not depend on a path filter.
 
-Each suite is sized by its record, its tier's minutes and a margin of a quarter: a job holds
-four fifths of its minutes of work, 480 s in ci and 720 s in full and nightly. A suite the
-record measures (`legs`) takes as few jobs as hold its tests beside the most any of its jobs
-spent on the rest; one whose jobs ran out of their minutes takes twice as many. One with only
-its tests' seconds (its columns) takes as few as hold twice those, its setup and build the
-other half. A column a finished run measured is `complete`, and holds every test that job runs:
-only those are weighed. A column no finished run measured weighs every test, one it has none of
-by its Linux Debug record times the ratio of the two columns over the tests both recorded, so a
-suite whose run never finished is still sized by what it did run. A suite with no record is
-seeded: as many jobs of its own as the 20 minutes the plan before the tiers gave it, scaled by
-how much slower its kind runs (FreeBSD under KVM 2, ThreadSanitizer 3, riscv64 under QEMU 4)
-and by the margin, take in its tier's minutes. A job that runs whole (the source checks, a
-link, a compile) the record puts past its tier's work is refused by name, as one that ran out
-of its minutes is. `"shards": {"windows": {"max": 4}, "macos": {"min": 2}}` caps or floors a
-host's count where a package means one (keys `linux`, `macos`, `windows`, `linux_arm`,
-`windows_arm`, `riscv64`, `freebsd`, and `tsan` for the hardened ThreadSanitizer run); a cap
-that leaves a job more than it holds is refused. Every job compiles the whole suite once, and the test runner picks its share of the test cases: longest
-first onto the least-loaded shard, by the seconds recorded for that target in
-`ci/durations.json`, a column per system, architecture and mode, and one more for a
-ThreadSanitizer build (`linux-debug-tsan`). Every hosted job's tests record their seconds, a
-declared job's as a planned one's: the job asks the runner through its environment
-(`PREFLIGHT_TIMINGS=true`, as it names the shard with `PREFLIGHT_SHARD`), and a local run sets
-it to record them too. A shard whose tests ran and recorded no seconds is refused by the
-profile as a recording error. A test with no record in its column weighs its Linux
-Debug record (`linux-debug`) times the ratio of the two columns over the tests both
-recorded, and failing that the mean of those with one; without records the split is by
-count. Every shard computes the same split, so
-each test runs exactly once. A test binary whose tests answer each other, or a step of the
+Each host's suites run in the jobs `"shards"` gives it, a number per host, one by default:
+`"shards": {"windows": 2, "macos": 2}` (keys `linux`, `macos`, `windows`, `linux_arm`,
+`windows_arm`, `riscv64`, `freebsd`, and `tsan` for the hardened ThreadSanitizer run). A
+count past what the tier's caps leave is refused at `generate`, naming each runner's jobs.
+Every job compiles the whole suite once, and the test runner picks its share of the test
+cases: a test runs on the shard a hash of its fully qualified name picks, so every shard
+computes the same split, each test runs exactly once, and a test's shard does not move when
+others are added. A test binary whose tests answer each other, or a step of the
 host's beside the run, is named in `Config.unsharded` and runs whole on shard 1/n and not at
 all on the others: split, one side waits on a side another shard holds (the sample's FreeBSD
 machine tests, whose host's side waits for a test's word and reads what it made). Its host
 steps act where the tests do, on shard 1/n or where `PREFLIGHT_SHARD` is unset. A package's own jobs are declared in `ci/workflow.json`
 `jobs` and run in the tiers they name (see the options below).
-Cross targets are dealt out to as many Linux jobs as hold `cross_seconds` (200) of
-compiling each, longest target first onto the job with the least, each target keeping
-its optional CPU and flags. A target costs what the last full run measured
-of it (`ci/costs.json`, which the run's proof artifact carries beside
-`ci/durations.json`). No job holds more compiling than its tier's minutes leave after
-300 s of setup, and a target past that is refused by name. A target no run has measured
-has a job of its own, named for it (`Cross compile <target>, unmeasured`): no guess of its
-cost could be held to a bound, and its job measures it. `cross_jobs` fixes the count instead, those jobs among it. A cross job runs as
-many compiles at once (`-j`) as three quarters of its runner's memory (16 GB) holds of its
-largest single compile, its CPUs at most: each phase's entry in `ci/costs.json` (`peaks`) is
-its job tree's most and the most any one process of it held, recorded on Linux and Windows
-beside the `-j` it ran at. Compiles run at once do not share the tree's peak evenly: relic's
-x86_64-windows-gnu held 15 GiB at -j4, 8.6 GB of it in one compile, so it runs one at a time.
-A job of several targets takes the fewest any allows, and a target with no recorded peak runs
-one compile at a time, which its run records. The checks run on their host's baseline CPU target, so a
+Cross targets are dealt out to the Linux jobs `cross_jobs` asks for, one by default, in their
+order, each target keeping its optional CPU and flags. The checks run on their host's baseline CPU target, so a
 binary built once serves every runner model.
 
 Every job takes the checks as a binary, and none compiles them. The first job of a
@@ -1056,23 +1005,20 @@ or directories after `--` to read only those.
 | Declaration | What it does |
 |---|---|
 | `addCi(b, Config)` | Adds `lint`, `ci`, object `ci-check`, native `ci-link`, `plan`, `facts`, `check-imports`, `docs`, `cache` and `deprecations`; optional bench and hardened steps |
-| `Config`, `TestTimeout`, `Bench`, `Hardened` | The gate's paths, shard records, watchdog, test log level and benchmarks |
+| `Config`, `TestTimeout`, `Bench`, `Hardened` | The gate's paths, unsharded binaries, watchdog, test log level and benchmarks |
 | `addConsumerCheck(b, package, ConsumerOptions)` | Adds `check-consumer` |
 | `addNestedBuild(b, package, NestedBuild)` | Returns the step that assembles a nested build under the cache, its manifest from the package's own pins, and runs it |
 | `addCheck(b, package, name, source)` | Builds, tests and runs a repository check program as step `name` |
 
 A test runner of a package's own can import `preflight_order` and
-`preflight_timings`. `preflight_order.init(io, init, args, tests, durations)` seeds,
-selects the shard's tests and orders them, returning `InitError` for a seed that is no
-`u32`, a shard that is not `i/n` or durations of the wrong shape. Its `weigh` and
-`assign` are the shard split by themselves. `Shard` holds a zero-based `index` below a
+`preflight_timings`. `preflight_order.init(io, init, args, tests, announce, unsharded)`
+seeds, selects the shard's tests and orders them, returning `InitError` for a seed that is
+no `u32` or a shard that is not `i/n`. Its `assign(gpa, names, shard)` is the shard split
+by itself: the tests whose fully qualified names hash to the shard. `Shard` holds a zero-based `index` below a
 nonzero `count`; construct one with `Shard.init(index, count)` or parse hosted `i/n` text.
 These modules link std alone, as everything preflight adds to a test binary does.
-`assign` rejects invalid shards, overflowing load-storage counts or unequal name/weight lengths in every build
-mode. `TestTimeout.duration()` returns a checked `std.Io.Duration`; a custom bound
-above `u64` nanoseconds fails configuration. Public waits keep std's Io vocabulary. `preflight_timings.Recorder.init(io,
-environ, stem, key)` opens the timing record, `record(io, name, nanoseconds, status)`
-appends one test and `deinit(io)` closes it; the recorder keeps no `Io`.
+`assign` rejects invalid shards in every build mode. `TestTimeout.duration()` returns a checked `std.Io.Duration`; a custom bound
+above `u64` nanoseconds fails configuration. Public waits keep std's Io vocabulary.
 `preflight_timings.count(io, environ, stem, record)` writes the count of a binary's
 tests the tests step reads after its runs (`stem` under the build's `--cache-dir`,
 `preflight_runner_options.counts`); a runner of its own that writes none is not

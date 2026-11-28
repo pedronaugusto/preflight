@@ -152,15 +152,18 @@ pub fn checkPin(c: *src.Context, manifest_path: []const u8, ref: []const u8) !vo
     return error.StaleCaller;
 }
 
-/// The configuration at `path`, with what the last full and nightly runs measured
-/// beside it: the phases' costs (`costs.json`) as `measured`, and each test's
-/// seconds (`durations.json`) as `durations`.
+/// The configuration at `path`, with the policy of the `preflight.json` beside it. A record
+/// beside it (`costs.json`, `durations.json`) is refused by name: preflight 0.20.0 plans a fixed
+/// matrix, and a record left behind would read as though it sized one.
 pub fn configuration(c: src.Context, path: []const u8) !src.Value {
     var config = try c.options(path);
     const directory = std.Io.Dir.path.dirname(path) orelse ".";
-    for ([_][]const u8{ "costs.json", "durations.json" }, [_][]const u8{ "measured", "durations" }) |file, name| {
+    for ([_][]const u8{ "costs.json", "durations.json" }) |file| {
         const recorded = try std.Io.Dir.path.join(c.a, &.{ directory, file });
-        if (config == .object and try c.exists(recorded)) try config.object.put(c.a, name, try c.json(recorded));
+        if (try c.exists(recorded)) {
+            c.report("{s}: preflight 0.20.0 removed the record (CHANGELOG): the matrix is fixed, each host's suites in the jobs `shards` gives it; delete the file\n", .{recorded});
+            return error.RecordRemoved;
+        }
     }
     // The project's policy, which the planner holds the hardened jobs to, is the source checks'
     // configuration's, beside this one: one key, read by the build and the checks alike.
@@ -364,7 +367,7 @@ test "caller generation is deterministic with all tier matrices and refreshes it
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":{\"min\":3}}}", .{})).value;
+    const config = (try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\",\"aarch64-macos\"],\"shards\":{\"windows\":2}}", .{})).value;
     const first_pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const next_pin = "76b1366323da4700bc0dcd3e24f2d7c4ee0e0ce9";
     const first = try render(a, config, first_pin, ".", false, "ci.yml", 0);
@@ -437,7 +440,7 @@ test "caller output refuses symlink files and directories and propagates write f
 }
 
 fn allocationRender(a: std.mem.Allocator) !void {
-    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":{\"min\":2}}}", .{});
+    const parsed = try std.json.parseFromSlice(src.Value, a, "{\"targets\":[\"x86_64-macos\"],\"shards\":{\"windows\":2}}", .{});
     defer parsed.deinit();
     // Rendering uses an arena by contract. Exercise each allocation in the
     // arena's growth, and verify its error cleanup against the leak checker.
@@ -474,26 +477,25 @@ test "regeneration refuses to drop a job the configuration does not declare, and
     try keepsEveryJob(declared, declared, &.{});
 }
 
-test "every caller runs the ci tier on each push to main and pull request, and the nightly tier daily at its own minute" {
+test "every caller runs the ci tier on each push to main or a land/ branch and pull request, and the nightly tier daily at its own minute" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const pin = "9af905ed85cab6dbb19d9431c65ee3f41fbaa74d";
     const plain = try render(a, (try std.json.parseFromSlice(src.Value, a, "{}", .{})).value, pin, ".", false, "ci.yml", 0x1234);
-    try std.testing.expect(std.mem.find(u8, plain, "  push:\n    branches: [main]\n") != null);
-    // A push of documentation alone runs nothing; the full tier and a dispatch are unchanged.
+    try std.testing.expect(std.mem.find(u8, plain, "  push:\n    # main, and a `land/` branch, which fast-forwards main only when its ci tier is green.\n    branches: [main, 'land/**']\n") != null);
+    // A push of documentation alone runs nothing; the release tier and a dispatch are unchanged.
     try std.testing.expect(std.mem.find(u8, plain, "    paths-ignore: ['docs/**', '*.md']\n  pull_request:\n") != null);
     try std.testing.expect(std.mem.find(u8, plain, "  pull_request:\n") != null);
     try std.testing.expect(std.mem.find(u8, plain, try a.print("    - cron: '{s}'\n", .{try nightly(a, 0x1234)})) != null);
     try std.testing.expect(std.mem.find(u8, plain, "github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci'") != null);
-    try std.testing.expect(std.mem.find(u8, plain, "options: [ci, full, nightly, fuzz]") != null);
+    try std.testing.expect(std.mem.find(u8, plain, "options: [ci, release, nightly, fuzz]") != null);
     // Each push runs on its own commit; nothing confirms another run's.
     try std.testing.expect(std.mem.find(u8, plain, "format('push-{0}', github.sha)") != null);
-    for ([_][]const u8{ "ci", "full", "nightly", "fuzz" }) |tier| try std.testing.expect(std.mem.find(u8, plain, try a.print("      {s}-matrix: >-\n", .{tier})) != null);
-    // Releasing is bay's: no caller lands or tags. Its one write is the gate's, whose profile job
-    // alone records what a full or nightly run of main measured (zig.yml).
-    try std.testing.expect(std.mem.find(u8, plain, "land") == null);
-    try std.testing.expectEqual(1, std.mem.count(u8, plain, "contents: write"));
+    for ([_][]const u8{ "ci", "release", "nightly", "fuzz" }) |tier| try std.testing.expect(std.mem.find(u8, plain, try a.print("      {s}-matrix: >-\n", .{tier})) != null);
+    // Releasing is bay's: no caller lands or tags, and none writes.
+    try std.testing.expect(std.mem.find(u8, plain, "  land:") == null);
+    try std.testing.expectEqual(0, std.mem.count(u8, plain, "contents: write"));
     try std.testing.expect(std.mem.find(u8, plain, "  gate:\n    uses: pedronaugusto/preflight/.github/workflows/zig.yml@" ++ pin ++ "\n") != null);
 }
 

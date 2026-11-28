@@ -14,34 +14,41 @@ pub const preflight = [_][]const u8{
     "binary",
 };
 
-/// The options of `ci/workflow.json`, and keys the planner adds to it as it reads it (from
-/// `ci/costs.json` and `ci/durations.json` beside it, from the build, and the policy from
-/// the `ci/preflight.json` beside it).
+/// The options of `ci/workflow.json`, and keys the planner adds to it as it reads it (from the
+/// build, and the policy from the `ci/preflight.json` beside it).
 pub const workflow = written ++ planned;
 
 /// The options a package writes in `ci/workflow.json`.
 const written = [_][]const u8{
-    "jobs",           "targets",           "build_args", "shards",
-    "cross_jobs",     "cross_seconds",     "hardened",   "compile_step",
-    "setup_step",     "before_tests_step", "git",        "fuzz_minutes",
-    "configurations",
+    "jobs",              "targets",  "build_args",   "shards",
+    "cross_jobs",        "hardened", "compile_step", "setup_step",
+    "before_tests_step", "git",      "fuzz_minutes", "configurations",
 };
 
 /// Added as the planner reads the file, never written in it.
-const planned = [_][]const u8{ "measured", "durations", "sdk_targets", "policy", "fuzzed" };
+const planned = [_][]const u8{ "sdk_targets", "policy", "fuzzed" };
+
+/// What replaced the job limits 0.20.0 removed.
+const tier_limits = ": preflight 0.20.0 removed it (CHANGELOG): a job's limit is its tier's, 10 minutes in ci and 15 in release and nightly";
 
 /// The options 0.20.0 removed from `ci/workflow.json`, each refused by name with what replaced
-/// it: a job's limit is its tier's, and its work is sized to it from the record.
-const removed = [_][]const u8{ "test_job_timeout", "windows_job_timeout", "source_job_timeout", "cross_job_timeout", "riscv64_seconds", "portable_hosts" };
+/// it.
+const removed = [_]struct { []const u8, []const u8 }{
+    .{ "test_job_timeout", tier_limits },
+    .{ "windows_job_timeout", tier_limits },
+    .{ "source_job_timeout", tier_limits },
+    .{ "cross_job_timeout", tier_limits },
+    .{ "riscv64_seconds", tier_limits },
+    .{ "portable_hosts", ": preflight 0.20.0 removed it (CHANGELOG): each runner builds the tests it runs" },
+    .{ "cross_seconds", ": preflight 0.20.0 removed it (CHANGELOG): the targets compile in one job, or in the `cross_jobs` asked for" },
+};
 
 pub const File = enum { preflight, workflow };
 
 /// What to say of `key`, unknown to `file`: the file it belongs in, or the nearest key of
 /// this one, or nothing.
 pub fn hint(a: std.mem.Allocator, file: File, key: []const u8) ![]const u8 {
-    if (file == .workflow) for (removed) |name| if (std.mem.eql(u8, name, key)) {
-        return ": preflight 0.20.0 removed it (CHANGELOG): a job's limit is its tier's, 10 minutes in ci and 15 in full and nightly, and the plan sizes each job's work to it from ci/durations.json";
-    };
+    if (file == .workflow) for (removed) |entry| if (std.mem.eql(u8, entry[0], key)) return entry[1];
     const other: []const []const u8 = switch (file) {
         .preflight => &workflow,
         .workflow => &preflight,
@@ -130,4 +137,6 @@ test "a key of the other file is told where it belongs; a misspelt one its neare
     for (workflow) |key| try std.testing.expect(known(.workflow, key));
     try std.testing.expect(!known(.preflight, "hardened"));
     try std.testing.expectEqual(@as(usize, 3), distance("kitten", "sitting"));
+    // A key 0.20.0 removed says what replaced it; the hint is the table's own text.
+    try std.testing.expectEqualStrings(": preflight 0.20.0 removed it (CHANGELOG): the targets compile in one job, or in the `cross_jobs` asked for", try hint(a, .workflow, "cross_seconds"));
 }

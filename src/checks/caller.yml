@@ -2,9 +2,10 @@
 name: CI
 on:
   push:
-    branches: [main]
+    # main, and a `land/` branch, which fast-forwards main only when its ci tier is green.
+    branches: [main, 'land/**']
     # A commit that changes documentation alone runs nothing: the next commit's run, a pull
-    # request and the full tier check it.
+    # request and the release tier check it.
     paths-ignore: ['docs/**', '*.md']
   pull_request:
   schedule:
@@ -14,16 +15,16 @@ on:
   workflow_dispatch:
     inputs:
       tier:
-        description: ci (what every push and pull request runs), full (the full matrix) or nightly (the heavy legs), both of which a tag requires on its commit, or fuzz (the fuzz job alone)
+        description: ci (what every push and pull request runs), release (the ci tier and the release modes, which a tag requires on its commit, with the last nightly run), nightly (the heavy legs) or fuzz (the fuzz job alone)
         type: choice
-        options: [ci, full, nightly, fuzz]
+        options: [ci, release, nightly, fuzz]
         default: ci
       fuzz-minutes:
         description: The fuzz job's minutes, when not ci/workflow.json's fuzz_minutes (at most 330)
         type: string
         default: ''
 concurrency:
-  # Every push to main runs on its own commit, so each commit gets its status; a newer
+  # Every push runs on its own commit, so each commit gets its status; a newer
   # update of a pull request replaces the run of the older; a dispatched or scheduled
   # run queues per ref and tier.
   group: ci-${{ github.event_name == 'push' && format('push-{0}', github.sha) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}-{2}', github.event_name, github.ref, github.event_name == 'schedule' && 'nightly' || inputs.tier) }}
@@ -34,11 +35,6 @@ permissions:
 jobs:
   gate:
     uses: @GATE@
-    # A full or nightly run on main writes what it measured to the preflight-durations branch,
-    # by its profile job alone; every other job of the gate reads (zig.yml's own permissions).
-    permissions:
-      contents: write
-      actions: read
     with:
       tier: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && inputs.tier || 'ci' }}
       working-directory: @DIRECTORY@

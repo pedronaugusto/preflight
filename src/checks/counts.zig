@@ -13,11 +13,6 @@ pub const summary_name = "summary.txt";
 /// cache, where the records are, can be anywhere (`--cache-dir`, `ZIG_LOCAL_CACHE_DIR`).
 pub const summary_variable = "PREFLIGHT_COUNTS";
 
-/// The tests the run's shard ran, every root's together, beside the summary as this suffix
-/// of its name: a job's record of itself holds it (`profile.legRecord`), so a shard whose
-/// tests ran and recorded no seconds is a recording error and not a measurement.
-pub const ran_suffix = ".ran";
-
 /// The runner's record, as `timings.Count` writes it.
 const Record = struct { root: []const u8, artifact: []const u8, filtered: bool, tests: usize, selected: usize, shard: []const u8 = "" };
 
@@ -33,7 +28,6 @@ pub fn check(c: *src.Context, records: []const u8, names: []const []const u8, sh
     defer dir.close(c.io);
     var line: std.Io.Writer.Allocating = .init(c.a);
     try line.writer.writeAll("preflight: tests per root:");
-    var ran: usize = 0;
     for (names, 0..) |name, i| {
         const text = seam.file(c.io, dir, try c.a.print("{s}-{s}.json", .{ name, part }), c.a, .record) catch |err| switch (err) {
             error.FileNotFound => {
@@ -48,21 +42,15 @@ pub fn check(c: *src.Context, records: []const u8, names: []const []const u8, sh
         };
         if (record.tests == 0 and !record.filtered)
             c.fail("{s} ({s}): the binary holds no test: its tests are in modules it imports, which Zig never runs, or it has none; give its root the tests, or drop the run", .{ record.root, record.artifact });
-        ran += record.selected;
         try line.writer.print("{s} {s} {d}", .{ if (i == 0) "" else ",", record.root, record.selected });
         if (record.selected != record.tests) try line.writer.print(" of {d}", .{record.tests});
         try line.writer.print(" ({s})", .{record.artifact});
     }
     try line.writer.writeByte('\n');
-    const total = try c.a.print("{d}", .{ran});
     if (summary) |path| {
         if (std.Io.Dir.path.dirname(path)) |parent| try std.Io.Dir.cwd().createDirPath(c.io, parent);
         try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = line.written() });
-        try std.Io.Dir.cwd().writeFile(c.io, .{ .sub_path = try c.a.print("{s}{s}", .{ path, ran_suffix }), .data = total });
-    } else {
-        try dir.writeFile(c.io, .{ .sub_path = summary_name, .data = line.written() });
-        try dir.writeFile(c.io, .{ .sub_path = summary_name ++ ran_suffix, .data = total });
-    }
+    } else try dir.writeFile(c.io, .{ .sub_path = summary_name, .data = line.written() });
 }
 
 test "the counts name each root, and fail a missing record and a binary with no test" {
@@ -82,7 +70,6 @@ test "the counts name each root, and fail a missing record and a binary with no 
     try check(&c, records, &.{ "tests-macos-Debug", "only-macos-Debug" }, "", null);
     try std.testing.expectEqual(@as(usize, 0), c.errors);
     try std.testing.expectEqualStrings("preflight: tests per root: src/root.zig 3 (tests), src/only.zig 0 (only)\n", try tmp.dir.readFileAlloc(io, summary_name, a, .limited(1024)));
-    try std.testing.expectEqualStrings("3", try tmp.dir.readFileAlloc(io, summary_name ++ ran_suffix, a, .limited(1024)));
     try check(&c, records, &.{"tests-macos-Debug"}, "2/2", null);
     try std.testing.expectEqualStrings("preflight: tests per root: src/root.zig 1 of 3 (tests)\n", try tmp.dir.readFileAlloc(io, summary_name, a, .limited(1024)));
     try check(&c, records, &.{ "empty-macos-Debug", "gone-macos-Debug" }, "", null);

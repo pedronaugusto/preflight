@@ -233,14 +233,14 @@ test "hosted advisory deadlines expire before the job can cancel the run" {
     try contains(body, "        if: always()\n");
     try contains(body, "steps.suite.outcome");
     const workflow = try read(arena.allocator(), ".github/workflows/zig.yml");
-    for ([_][]const u8{ "toolchain", "profile", "runners" }) |name| {
+    for ([_][]const u8{ "toolchain", "proof", "runners" }) |name| {
         try std.testing.expect(std.mem.find(u8, try job(workflow, name), "\n    continue-on-error:") == null);
     }
     // The gate's jobs carry no job-level continue-on-error: a declared advisory job's steps
     // continue instead (`nonBlocking`).
     try std.testing.expect(std.mem.find(u8, try job(workflow, "gate"), "\n    continue-on-error:") == null);
     // Publishing the blocking gate's proof never depends on master.
-    try contains(try job(workflow, "profile"), "needs: [toolchain, gate]");
+    try contains(try job(workflow, "proof"), "needs: [toolchain, gate]");
 }
 
 test "generated caller uses the shared gate and exactly the planned matrices" {
@@ -256,12 +256,6 @@ test "generated caller uses the shared gate and exactly the planned matrices" {
     // does), and whether it has the fuzz job's step: it has, as it declares shakedown.
     try config.object.put(a, "sdk_targets", .{ .array = .init(a) });
     try config.object.put(a, "fuzzed", .{ .bool = true });
-    // The plan is sized by what the sample's last runs measured, as the caller was made
-    // (`configuration` reads `costs.json` and `durations.json` beside it).
-    try config.object.put(a, "measured", (try std.json.parseFromSlice(std.json.Value, a, try read(a, "sample/ci/costs.json"), .{})).value);
-    if (read(a, "sample/ci/durations.json")) |text| {
-        try config.object.put(a, "durations", (try std.json.parseFromSlice(std.json.Value, a, text, .{})).value);
-    } else |err| if (err != error.FileNotFound) return err;
     try std.testing.expectEqual(@as(usize, 1), (try matrix.plan(a, config, .fuzz)).len);
     for (std.enums.values(matrix.Tier)) |tier| {
         try contains(caller, try a.print("      {t}-matrix: >-\n        {s}\n", .{ tier, try matrix.include(a, try matrix.plan(a, config, tier)) }));
@@ -343,9 +337,7 @@ test "the gate runs the step each planned job names, on the targets it names" {
     try contains(body, "STEP: ${{ matrix.step }}");
     try contains(body, "PREFLIGHT_TARGETS: ${{ matrix.targets }}");
     try contains(body, "hardened-fuzz");
-    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'full' && inputs.full-matrix || inputs.tier == 'nightly' && inputs.nightly-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}");
-    // Each job keeps its record of what it spent by its name, which the next plan is sized by.
-    try contains(body, "PREFLIGHT_NAME: ${{ matrix.name }}");
+    try contains(body, "matrix: ${{ fromJSON(inputs.tier == 'release' && inputs.release-matrix || inputs.tier == 'nightly' && inputs.nightly-matrix || inputs.tier == 'fuzz' && inputs.fuzz-matrix || inputs.ci-matrix) }}");
 }
 
 test "one job builds the checks, and the others take them" {
@@ -380,12 +372,12 @@ test "the fuzz job: dispatched alone or in the nightly tier, its corpora cached,
     defer arena.deinit();
     const a = arena.allocator();
     const caller = try read(a, "src/checks/caller.yml");
-    try contains(caller, "options: [ci, full, nightly, fuzz]");
+    try contains(caller, "options: [ci, release, nightly, fuzz]");
     try contains(caller, "fuzz-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.fuzz-minutes || '' }}");
     const workflow = try read(a, ".github/workflows/zig.yml");
     // A fuzz dispatch for a package with no fuzz job fails at once, saying why.
     try contains(try job(workflow, "tier"), "inputs.tier == 'fuzz' && inputs.fuzz-matrix == '{\"include\":[]}'");
-    try contains(try job(workflow, "toolchain"), "contains(fromJSON('[\"ci\",\"full\",\"nightly\",\"fuzz\"]'), inputs.tier)");
+    try contains(try job(workflow, "toolchain"), "contains(fromJSON('[\"ci\",\"release\",\"nightly\",\"fuzz\"]'), inputs.tier)");
     const gate = try job(workflow, "gate");
     try contains(gate, "inputs.tier == 'fuzz' && inputs.fuzz-matrix ||");
     // A dispatch's own minutes: the job holds GitHub's whole limit and the budget ends it.
@@ -401,14 +393,11 @@ test "the fuzz job: dispatched alone or in the nightly tier, its corpora cached,
     try contains(gate, "      - name: Save the fuzz corpora\n        if: always() && matrix.step == 'ci-fuzz'\n");
     // Findings, their tapes among them, and the corpora, an input that crashed the fuzzer too.
     try contains(gate, try a.print("            {s}findings\n            {s}cache/f\n", .{ store, store }));
-    // The fuzz run times no tests.
-    try contains(try job(workflow, "profile"), "inputs.tier != 'fuzz'");
-    // A red gate is folded (its test jobs are the gate's), and never the proof: the proof's
-    // name needs the gate's success with the rest (relic's run 43621719158 left no records).
-    const profile = try job(workflow, "profile");
-    try contains(profile, "if: always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') && inputs.tier != 'fuzz'\n");
-    try contains(profile, "FINISHED: ${{ needs.gate.result == 'success' }}");
-    try contains(profile, "name: ${{ env.FINISHED == 'true' && 'preflight' || 'records' }}-");
+    // The fuzz run proves no tier, and a red gate is never a proof: the proof needs the
+    // gate's success and is named for the tier and the exact commit.
+    const proof = try job(workflow, "proof");
+    try contains(proof, "if: needs.gate.result == 'success' && inputs.tier != 'fuzz'\n");
+    try contains(proof, "name: preflight-${{ inputs.tier }}-${{ github.sha }}\n");
 }
 
 test "the held git's build is cached by its release, the recipe and the machine, restored before the tools and saved after the tests" {
@@ -431,22 +420,14 @@ test "the held git's build is cached by its release, the recipe and the machine,
     try std.testing.expect(std.mem.find(u8, setup, "choco") == null);
 }
 
-test "each job of the gate names its token's permissions: every one reads, and the profile job alone writes the record" {
+test "each job of the gate names its token's permissions, and none writes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const workflow = try read(a, ".github/workflows/zig.yml");
     try contains(workflow, "\npermissions: {}\njobs:\n");
-    for ([_][]const u8{ "tier", "toolchain", "gate", "master", "profile", "runners" }) |name| try contains(try job(workflow, name), "\n    permissions:");
-    try std.testing.expectEqual(1, std.mem.count(u8, workflow, "contents: write"));
-    const profile = try job(workflow, "profile");
-    try contains(profile, "    permissions:\n      contents: write\n");
-    // Only main's full and nightly runs write it; never a pull request's.
-    try contains(profile, "RECORD: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.tier == 'full' || inputs.tier == 'nightly') }}");
-    // It folds onto the newest record and appends: never a force push, and a lost race folds again.
-    try contains(profile, "git fetch -q --depth=1 origin preflight-durations");
-    try contains(profile, "git -C \"$record\" push -q origin HEAD:refs/heads/preflight-durations");
-    try std.testing.expect(std.mem.find(u8, profile, "--force") == null and std.mem.find(u8, profile, "push -f") == null);
+    for ([_][]const u8{ "tier", "toolchain", "gate", "master", "proof", "runners" }) |name| try contains(try job(workflow, name), "\n    permissions:");
+    try std.testing.expectEqual(0, std.mem.count(u8, workflow, "contents: write"));
     // The heavy legs' Zig master is the nightly tier's.
     try contains(try job(workflow, "master"), "if: inputs.tier == 'nightly'");
 }

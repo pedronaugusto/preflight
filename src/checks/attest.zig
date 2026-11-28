@@ -1,11 +1,11 @@
-//! A tag requires a commit that passed the full and the nightly tiers: `bay release` asks this
+//! A tag requires a commit that passed the release and the nightly tiers: `bay release` asks this
 //! before it tags.
 const std = @import("std");
 const src = @import("source.zig");
 
 /// The tiers whose successful runs, each with its proof artifact, stand together for a commit a
-/// tag may name: the full matrix and the heavy legs.
-const proof_tiers = [_][]const u8{ "full", "nightly" };
+/// tag may name: the release tier and the heavy legs.
+const proof_tiers = [_][]const u8{ "release", "nightly" };
 
 /// Whether `artifact` is `tier`'s proof for commit `sha`: `preflight-<tier>-<sha>`.
 fn proves(artifact: []const u8, tier: []const u8, sha: []const u8) bool {
@@ -40,7 +40,7 @@ pub fn run(c: src.Context, env: *const std.process.Environ.Map) !void {
         if (!passed) try missing.append(c.a, tier);
     }
     if (missing.items.len == 0) return;
-    c.report("No successful {s} run recorded for exact commit {s}; dispatch it for this commit, and tag once the full and nightly runs are green.\n", .{ try std.mem.join(c.a, " or ", missing.items), sha });
+    c.report("No successful {s} run recorded for exact commit {s}; dispatch it for this commit, and tag once the release and nightly runs are green.\n", .{ try std.mem.join(c.a, " or ", missing.items), sha });
     return error.NoSuccessfulReleaseRun;
 }
 
@@ -57,13 +57,13 @@ fn get(c: src.Context, client: *std.http.Client, token: []const u8, url: []const
     return (try std.json.parseFromSlice(src.Value, c.a, output.written(), .{ .allocate = .alloc_always })).value;
 }
 
-test "a tag requires the full and nightly tiers' proofs, each named for its exact commit" {
-    try std.testing.expect(proves("preflight-full-0f1e", "full", "0f1e"));
+test "a tag requires the release and nightly tiers' proofs, each named for its exact commit" {
+    try std.testing.expect(proves("preflight-release-0f1e", "release", "0f1e"));
     try std.testing.expect(proves("preflight-nightly-0f1e", "nightly", "0f1e"));
-    try std.testing.expect(!proves("preflight-nightly-0f1e", "full", "0f1e"));
-    try std.testing.expect(!proves("preflight-ci-0f1e", "full", "0f1e"));
-    try std.testing.expect(!proves("preflight-release-0f1e", "full", "0f1e"));
-    try std.testing.expect(!proves("preflight-full-0f1e", "full", "other"));
-    try std.testing.expect(!proves("preflight-full0f1e", "full", "0f1e"));
-    try std.testing.expect(!proves("records-full-0f1e", "full", "0f1e"));
+    try std.testing.expect(!proves("preflight-nightly-0f1e", "release", "0f1e"));
+    try std.testing.expect(!proves("preflight-ci-0f1e", "release", "0f1e"));
+    try std.testing.expect(!proves("preflight-full-0f1e", "release", "0f1e"));
+    try std.testing.expect(!proves("preflight-release-0f1e", "release", "other"));
+    try std.testing.expect(!proves("preflight-release0f1e", "release", "0f1e"));
+    try std.testing.expect(!proves("records-release-0f1e", "release", "0f1e"));
 }

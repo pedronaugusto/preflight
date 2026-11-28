@@ -268,12 +268,20 @@ pub fn main(init: std.process.Init) !void {
     var dependency_options: std.ArrayList(Option) = .empty;
     var system = try gatherStart(io, cwd, args[3]);
     defer system.close(io);
+    // Whether the packages are copied, which the check says once.
+    var copying = false;
     for (args[9..]) |arg| {
         if (std.mem.startsWith(u8, arg, "-D")) {
             try dependency_options.append(a, try parseOption(arg[2..]));
         } else if (std.mem.startsWith(u8, arg, package_flag)) {
             const hash, const path = std.mem.cutScalar(u8, arg[package_flag.len..], '=') orelse return error.InvalidPackageArgument;
-            try place(io, a, system, hash, path);
+            if (try place(io, a, system, hash, path) == .copied and !copying) {
+                copying = true;
+                var buffer: [256]u8 = undefined;
+                var stderr = std.Io.File.stderr().writerStreaming(io, &buffer);
+                try stderr.interface.writeAll("check-consumer: this system refused a link to a package, so the consumer's packages are copied, which takes longer\n");
+                try stderr.interface.flush();
+            }
         } else try modules.append(a, arg);
     }
     const shape: Shape = .{ .package = args[6], .modules = modules.items, .options = dependency_options.items };
@@ -335,12 +343,13 @@ fn gatherStart(io: std.Io, cwd: std.Io.Dir, path: []const u8) !std.Io.Dir {
 
 /// The package `hash`, at `path`, as the consumer's build finds it among its packages: a link
 /// to it, on every system, which the next check's `gatherStart` unlinks without entering. A
-/// system that refuses the link gets a copy, as Zig copies a fixture's packages without one.
-fn place(io: std.Io, a: std.mem.Allocator, system: std.Io.Dir, hash: []const u8, path: []const u8) !void {
+/// system that refuses the link gets a copy, as Zig copies a fixture's packages without one,
+/// and the check says so.
+fn place(io: std.Io, a: std.mem.Allocator, system: std.Io.Dir, hash: []const u8, path: []const u8) !enum { linked, copied } {
     // The build names it from where it runs, as this program does; a link names it from where
     // the link is, so it takes the whole path.
     const whole = try std.Io.Dir.cwd().realPathFileAlloc(io, path, a);
-    if (system.symLink(io, whole, hash, .{ .is_directory = true })) |_| return else |err| switch (err) {
+    if (system.symLink(io, whole, hash, .{ .is_directory = true })) |_| return .linked else |err| switch (err) {
         error.AccessDenied, error.PermissionDenied => {},
         else => return err,
     }
@@ -350,6 +359,7 @@ fn place(io: std.Io, a: std.mem.Allocator, system: std.Io.Dir, hash: []const u8,
     defer to.close(io);
     var entries = from.iterate();
     while (try entries.next(io)) |entry| try nested.copy(io, a, from, to, entry.name);
+    return .copied;
 }
 
 /// Where the project keeps the package as a fetch gives it.
